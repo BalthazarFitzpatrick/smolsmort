@@ -1,0 +1,65 @@
+# secrets — never commit these
+*.env
+.env
+.env.*
+.env.local
+credentials*.yaml
+credentials*.json
+*.key
+*.pem
+secrets.*
+*_token*
+*_secret*
+*_password*
+
+# macos
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+
+# python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# claude code — settings.local.json is machine-local permission grants, never shared
+.claude/settings.local.json
+
+# codegraph index — never commit
+.codegraph/
+
+# outputs and logs
+output/
+outputs/
+*.log
+*.tmp
+*.bak
+
+# THE RULE FOR THIS REPO'S OWN DATA, learned the expensive way downstream: ignore what a command
+# can regenerate, KEEP what only a human can produce. Tiles are cut from boxes by a script and can
+# be recut on demand; the judgement of which class each tile belongs to cannot be recovered from
+# anything if it is lost. So the pixels go and the index stays, and any consumer of this package
+# should split its own working data the same way.
+tiles/
+weights/
+predictions/
+
+# working ledgers - kept locally and in a private notes repo, never in a public one
+TASKS.jsonl
+WORKLOG.md

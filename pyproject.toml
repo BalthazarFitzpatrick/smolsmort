@@ -1,0 +1,61 @@
+[project]
+name = "smolsmort"
+version = "0.1.0"
+description = "a human-in-the-loop sorting loop: find candidates, judge them, train, predict, judge again"
+# 3.11, matching the oldest consumer. a floor above a consumer's makes the package unusable there
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = [
+    "numpy>=2.0",
+    "pillow>=11.0",
+]
+
+# TORCH IS OPTIONAL, deliberately. the loop itself does not need it - only the vision backend does,
+# and a consumer doing tabular work should not be made to install 2 GB of cuda wheels to use the
+# judging half. `detect/model.py` imports torch lazily inside `_torch()` for exactly this reason.
+[project.optional-dependencies]
+vision = ["torch>=2.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["smolsmort"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+# THE SAME SELECTION AS THE CONSUMER IT WAS EXTRACTED FROM, deliberately. The code moved across
+# verbatim; a different rule set here would flag lines that are fine upstream, and "fixing" them
+# would create drift between two copies of the same file for no reason but a config difference.
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes (undefined names, unused imports)
+    "I",    # isort (import ordering)
+    "UP",   # pyupgrade (modernise syntax)
+    "B",    # flake8-bugbear (common bug patterns)
+    "C4",   # flake8-comprehensions (simplify list/dict/set comprehensions)
+    "SIM",  # flake8-simplify (simplify boolean logic)
+]
+ignore = [
+    "E501",   # line too long — handled by formatter, not linter
+    "B008",   # function calls in default args
+    "SIM108", # ternary — full if/else is often clearer
+    "UP007",  # x | y union syntax — keep optional[] for readability
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["smolsmort"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+
+[dependency-groups]
+dev = ["ruff>=0.11.0", "pytest>=8.0", "torch>=2.0"]

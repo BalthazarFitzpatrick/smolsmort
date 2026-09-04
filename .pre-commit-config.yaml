@@ -1,0 +1,33 @@
+repos:
+  - repo: local
+    hooks:
+      # THE PROJECT'S OWN RUFF, not a pinned copy pre-commit downloads. this used to point at
+      # ruff-pre-commit v0.11.0 while the project ran 0.16.5, and the two format differently - so
+      # the hook would reformat a file one way, then `uv run ruff format` (what ci-parity and the
+      # old github job both run) would reformat it back, and a commit could pass the hook and fail
+      # the check. they even fought each other in a loop on the same file. one ruff, one answer.
+      - id: ruff-lint
+        name: ruff lint
+        entry: uv run ruff check --fix
+        language: system
+        types_or: [python, pyi]
+        stages: [pre-commit]
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types_or: [python, pyi]
+        stages: [pre-commit]
+
+      # NOT a plain "uv run pytest". that runs against the working tree, which holds ~12 MB of
+      # gitignored screenshots, the kernel pools and recorded sessions - so a test reading one of
+      # those passed here and failed on a clean checkout. that gap is exactly why the github run
+      # kept going red while local was green. ci-parity.sh runs the same checks against a temp
+      # worktree of tracked files only, which is what a fresh clone actually has.
+      - id: ci-parity
+        name: ci parity (tracked files only)
+        entry: ./scripts/ci-parity.sh
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+        always_run: true

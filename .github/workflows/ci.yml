@@ -1,0 +1,40 @@
+# WHAT THIS CATCHES THAT ci-parity.sh CANNOT, and it is the whole reason to have both: that script
+# runs a tracked-files-only export on the developer's machine, and says so - "a Linux runner is not
+# macOS". This is the Linux runner. It also tests the OLDEST python the package claims to support,
+# which nothing local does; declaring >=3.11 while only ever running 3.14 is an aspiration, not a
+# fact.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      # fail-fast off: when 3.11 breaks and 3.14 does not, the interesting information is that only
+      # one of them broke, which a cancelled sibling job hides
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: sync
+        run: uv sync --dev --python ${{ matrix.python }}
+
+      - name: ruff check
+        run: uv run ruff check .
+
+      - name: ruff format --check
+        run: uv run ruff format --check .
+
+      - name: pytest
+        run: uv run pytest -q
