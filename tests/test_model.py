@@ -92,9 +92,26 @@ def test_decode_returns_capture_coordinates_not_heatmap_ones():
     heat[5, 7] = 0.9
     (peak,) = decode_peaks(heat)
     scale = STRIDE * DOWNSCALE
-    assert peak.x == 7 * scale + scale // 2
-    assert peak.y == 5 * scale + scale // 2
+    assert peak.x == 7 * scale
+    assert peak.y == 5 * scale
     assert peak.score == pytest.approx(0.9)
+
+
+def test_decode_inverts_the_snap_the_training_target_applies():
+    """the round trip that was broken: a snapped centre must decode back to where it came from.
+
+    decode added scale//2, a convention that fits a FLOOR snap. the target snaps with round(), so
+    the half-cell was pure bias - measured at +7px in x and +9px in y against real plates, which
+    cost more localisation than everything else in the detector put together.
+    """
+    scale = STRIDE * DOWNSCALE
+    for cx, cy in ((112, 80), (0, 0), (16, 304)):
+        cell_x, cell_y = round(cx / DOWNSCALE / STRIDE), round(cy / DOWNSCALE / STRIDE)
+        heat = np.zeros((20, 20), dtype=np.float32)
+        heat[cell_y, cell_x] = 0.9
+        (peak,) = decode_peaks(heat)
+        assert (peak.x, peak.y) == (cell_x * scale, cell_y * scale)
+        assert abs(peak.x - cx) <= scale // 2 and abs(peak.y - cy) <= scale // 2
 
 
 def test_decode_suppresses_a_neighbouring_cell_of_the_same_blob():
