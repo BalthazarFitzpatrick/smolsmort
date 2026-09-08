@@ -198,9 +198,10 @@ def decode_peaks(
             for p in peaks
         ):
             continue
-        peaks.append(
-            Peak(x=int(x * scale + scale // 2), y=int(y * scale + scale // 2), score=score)
-        )
+        # NO HALF-CELL HERE. the training target snaps a centre with round() (detect/train.py),
+        # so cell k means capture coordinate k*scale exactly, not the middle of a cell spanning
+        # k*scale..(k+1)*scale. adding scale//2 shifted every prediction 8px down and right
+        peaks.append(Peak(x=int(x * scale), y=int(y * scale), score=score))
         if limit is not None and len(peaks) >= limit:
             break
     return peaks
