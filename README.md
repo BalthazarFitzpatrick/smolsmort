@@ -36,8 +36,14 @@ worth stating plainly:
 
 ## What is honest about it today
 
-- The **vision backend** is real and used daily: a small heatmap CNN, ~50k parameters, that finds
-  objects of a fixed known size.
+- There are **two vision backends**, picked by name through `smolsmort.backends`:
+  - `heatmap` is real and used daily: a small heatmap CNN, ~50k parameters, that finds objects of a
+    fixed known size.
+  - `box` handles objects that vary in size (4x and more), in frames of different resolutions, and
+    predicts each object's own box. It is new and proven only on synthetic frames. There it found
+    97% of objects standing apart, but only about half of those overlapping another.
+- **A model is plugged in, not built in.** Anything with the `ModelBackend` shape (train, predict,
+  save, load) joins with one `backends.register(...)` call. The loop does not change.
 - The **tabular backend** (xgboost) is planned, not written. The seams exist for it; the
   implementation does not.
 - The **first honest evaluation of a trained model in the parent project returned 24% precision on a
@@ -50,7 +56,7 @@ worth stating plainly:
 
 ```bash
 uv add smolsmort                 # the loop
-uv add "smolsmort[vision]"       # ...and the CNN backend, which pulls torch
+uv add "smolsmort[vision]"       # ...and the CNN backends, which pull torch
 ```
 
 Torch is optional on purpose: the judging half does not need it, and a consumer doing tabular work
