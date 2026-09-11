@@ -18,14 +18,16 @@ port card lifts them verbatim into `smolsmort/review/seams.py`, at which point
 from __future__ import annotations
 
 import ast
+import json
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Protocol, TypedDict, runtime_checkable
 
 import pytest
 
 # ---------------------------------------------------------------- the candidate schema
+
 
 # the one dict every seam speaks in. drawn boxes, template matches and model sweeps all already emit
 # exactly this, so a candidate from any source opens in the judge tab unchanged. `negative` is the
@@ -42,6 +44,7 @@ class Candidate(TypedDict, total=False):
 
 
 # ---------------------------------------------------------------- the four seams
+
 
 @runtime_checkable
 class ExampleSource(Protocol):
@@ -96,6 +99,7 @@ class ModelBackend(Protocol):
 
 # ---------------------------------------------------------------- a judgement
 
+
 @dataclass
 class Judgement:
     """what a human decides about one candidate: keep or not, and (if kept) which class."""
@@ -105,6 +109,7 @@ class Judgement:
 
 
 # ---------------------------------------------------------------- FAKE seam implementations
+
 
 @dataclass
 class FakeSource:
@@ -223,14 +228,19 @@ class FakeBackend:
     def save(self, weights: object, path: Path) -> Path:
         assert isinstance(weights, FakeWeights)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(repr(weights))
+        path.write_text(json.dumps(asdict(weights)))
         return path
 
     def load(self, path: Path) -> object:
-        return eval(path.read_text(), {"FakeWeights": FakeWeights})  # noqa: S307 - trusted test data
+        # plain json, never eval: a weights file is data, and a real backend's loader sets the pattern
+        data = json.loads(path.read_text())
+        return FakeWeights(
+            classes=data["classes"], trained_on=data["trained_on"], box=tuple(data["box"])
+        )
 
 
 # ---------------------------------------------------------------- the loop, over the seams
+
 
 @dataclass
 class LoopResult:
@@ -304,6 +314,7 @@ def run_loop(
 
 # ---------------------------------------------------------------- fixtures
 
+
 @pytest.fixture
 def seams():
     scheme = FakeScheme(names=["hostile", "friendly", "neutral"])
@@ -323,6 +334,7 @@ def seams():
 
 # ---------------------------------------------------------------- the seams are what the doc says
 
+
 def test_every_fake_satisfies_its_seam_protocol(seams):
     """the shapes are pinned: a fake that drifts from its protocol fails here, and a real port that
     conforms passes the same check for free (runtime_checkable protocols)."""
@@ -341,6 +353,7 @@ def test_the_guesser_is_optional(seams):
 
 
 # ---------------------------------------------------------------- the loop closes
+
 
 def test_find_judge_train_predict_closes_the_loop(seams):
     """one full turn against fakes. keep everything at or above a threshold, take the guess as the
@@ -370,7 +383,10 @@ def test_find_judge_train_predict_closes_the_loop(seams):
 
     # and the proposals really do re-enter judging unchanged - the loop is a loop
     second_pass = judge(
-        result.proposed, seams["renderer"], seams["guesser"], lambda c, g: Judgement(keep=True, label=g)
+        result.proposed,
+        seams["renderer"],
+        seams["guesser"],
+        lambda c, g: Judgement(keep=True, label=g),
     )
     assert len(second_pass) == len(result.proposed)
 
@@ -432,7 +448,9 @@ def test_no_smolsmort_module_imports_mutable_paths_by_value():
                 continue
             taken = {alias.name for alias in node.names} & MUTABLE_PATHS
             if taken:
-                offenders.append(f"{path.relative_to(_SMOLSMORT)}:{node.lineno} imports {sorted(taken)}")
+                offenders.append(
+                    f"{path.relative_to(_SMOLSMORT)}:{node.lineno} imports {sorted(taken)}"
+                )
     assert not offenders, (
         "these bind a copy a runtime repoint and every test monkeypatch will miss - "
         "read them as paths.<NAME> instead:\n  " + "\n  ".join(offenders)
@@ -459,6 +477,7 @@ def test_attribute_access_sees_a_repoint_but_a_by_value_copy_does_not():
 
 
 # --------------------------------------------- the port target, signalled by an xfail that flips
+
 
 @pytest.mark.xfail(
     reason="smolsmort/review/seams.py is authored by the first port card; until then the seams live "
