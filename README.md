@@ -67,8 +67,8 @@ model, history = train(examples, epochs=40, batch=8)
 save(model, "bars.pt")
 
 model = load("bars.pt")
-maps = heatmaps_for(model, "frame.png")          # (classes, h, w), one channel per class
-peaks = decode_peaks(maps[0], limit=3)           # centres in capture pixels, strongest first
+maps = heatmaps_for(model, "frame.png")  # (classes, h, w), one channel per class
+peaks = decode_peaks(maps[0], limit=3)  # centres in capture pixels, strongest first
 boxes = boxes_from_peaks(peaks, width=132, height=12)
 
 print("\n".join(score([boxes], [[Box(left, top, 132, 12)]]).lines()))
