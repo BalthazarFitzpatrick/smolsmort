@@ -232,8 +232,10 @@ def train(
     # an object is clipped at the jitter extremes, so a caller taking this from a human checks first
     window = snapped_window(CROP if crop is None else int(crop))
     torch = _torch()
-    usable = [e for e in examples if e.object_count]
-    if not usable:
+    # an exhaustive frame with zero objects is a confirmed-empty frame, not an unknown one - the
+    # cleanest negative there is, so it stays even though object_count is zero
+    usable = [e for e in examples if e.object_count or e.exhaustive]
+    if not any(e.object_count for e in usable):
         raise TrainError("no example has a confirmed object - nothing to learn from")
 
     if device is None:

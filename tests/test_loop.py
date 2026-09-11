@@ -277,12 +277,22 @@ def _examples_from(candidates: list[Candidate], judgements: list[Judgement]) -> 
             continue
         example = by_frame.setdefault(
             candidate["path"],
-            {"path": candidate["path"], "centres": [], "labels": [], "width": 0, "height": 0},
+            {
+                "path": candidate["path"],
+                "centres": [],
+                "labels": [],
+                "sizes": [],
+                "width": 0,
+                "height": 0,
+            },
         )
         example["centres"].append(
             (candidate["left"] + candidate["width"] / 2, candidate["top"] + candidate["height"] / 2)
         )
         example["labels"].append(decision.label)
+        # each object's own size, parallel to centres - a size-aware backend learns it, and a
+        # fixed-size one reads the single width/height below instead
+        example["sizes"].append((candidate["width"], candidate["height"]))
         example["width"], example["height"] = candidate["width"], candidate["height"]
     return list(by_frame.values())
 

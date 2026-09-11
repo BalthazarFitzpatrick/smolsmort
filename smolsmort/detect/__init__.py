@@ -24,5 +24,6 @@ a magic number.
 ONE ASSUMPTION IS NOT GENERIC, and is called out where it lives: `model.py` exploits the object
 being a FIXED KNOWN SIZE, which is why it predicts a centre heatmap and regresses no box at all.
 That is a real constraint on what this backend can detect, so it is stated rather than hidden. A
-consumer whose objects vary in size needs a different backend behind the same loop.
+consumer whose objects vary in size uses `smolsmort.boxes` instead, behind the same loop - picked by
+name through `smolsmort.backends`.
 """

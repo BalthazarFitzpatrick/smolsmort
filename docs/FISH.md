@@ -8,24 +8,29 @@ describing it as though it does.
 
 ## 0. First decide whether this fits your problem
 
-**Read this before installing anything.** smolsmort's vision backend makes one strong assumption,
-and if your problem breaks it the rest of the guide will waste your afternoon.
+**Read this before installing anything.** smolsmort has two vision backends, and which one fits
+decides the rest of your afternoon.
 
-> The object is a **fixed known size** on screen. The model predicts *where* something is, and
-> regresses no width or height at all.
+> The `heatmap` backend assumes the object is a **fixed known size** on screen. It predicts *where*
+> something is, and regresses no width or height at all. The `box` backend drops that assumption
+> and predicts each object's own box.
 
-That is why it is ~50k parameters instead of millions. It is also a real limit.
+The heatmap backend is ~50k parameters instead of millions because of that assumption, and it is a
+real limit. This guide describes the heatmap backend. The box backend runs through the same loop:
+pick it with `smolsmort.backends.get_backend("box")`.
 
 | your setup | does it fit? |
 |---|---|
 | Fixed camera over a **tank**, **conveyor**, **counting window** or **fish ladder** — fish pass at roughly one distance | **Yes.** This is the good case. |
 | **Top-down** camera at a fixed height, fish at one depth | **Yes.** |
-| Free-swimming fish at any distance, or a moving/handheld camera | **No.** Apparent size varies with distance, and a centre-only model cannot express that. Use a box-regression detector (YOLO, DETR) instead. |
+| Fish at different distances, or species of very different sizes | **Use the `box` backend.** Apparent size varies, and a centre-only model cannot express that. The box backend predicts each fish's own box. Its measured weak spot is fish overlapping each other. |
+| A moving or handheld camera | **Not tested.** Both backends were built for a fixed camera. |
 | You need the fish **outlined**, not located | **No.** You want segmentation. |
 | You need **species**, and each species has its own channel | Yes, with a caveat — see §6. |
 
 **Quick self-test.** Take twenty frames, measure a fish in pixels in each. If the largest is more
-than roughly 1.5× the smallest, the fixed-size assumption is broken and you should stop here.
+than roughly 1.5× the smallest, the fixed-size assumption is broken: use the `box` backend, not
+the heatmap one this guide walks through.
 
 ---
 
@@ -253,5 +258,5 @@ re-acquire (a median over a neighbourhood, which is the only thing that catches 
 - **A partly-labelled frame with no `ignore`** teaches the model that fish are background.
 - **A `min_score` above the model's output range** returns nothing and looks like success.
 - **A holdout derived from model output** reports agreement, not accuracy.
-- **Fish at varying distance** breaks the fixed-size assumption; the failure looks like a model that
-  never quite converges, not like a wrong choice of tool.
+- **Fish at varying distance on the heatmap backend** breaks its fixed-size assumption; the failure
+  looks like a model that never quite converges, not like a wrong choice of tool. Use `box`.

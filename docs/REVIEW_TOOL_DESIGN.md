@@ -117,6 +117,21 @@ The backend carries the box size it was trained at (from the training set), so `
 weights, frames and the class map. `smolsmort/detect` is the first implementation (a ~50k-parameter
 heatmap CNN); a tabular one (xgboost, for forecasting) is meant to sit beside it, not replace it.
 
+**Two implementations exist, picked by name.** `smolsmort/boxes` is the second: a size-aware CNN
+that predicts each object's own box, for objects that vary in size and frames of different
+resolutions. `smolsmort/backends.py` maps a name (`heatmap`, `box`) to the class that implements it,
+imported lazily so listing names never imports torch. That list is what the train tab offers, and
+`register()` adds an outside model without editing smolsmort. A JSON sidecar saved beside each
+checkpoint names the backend that wrote it; a checkpoint without one is a heatmap checkpoint. The
+example dicts the loop hands a backend carry per-object `sizes` beside `centres`: a size-aware
+backend learns them, and a fixed-size one reads the single width/height.
+
+**Two labelling modes, decided per frame, in the dataset layer rather than in any backend.**
+*Explicit* is the default: whatever a human did not keep is ignored, because Discard also covers
+misaligned and clipped tiles. *Exhaustive* means a human declared the frame complete, so whatever
+was proposed and not kept becomes a negative. The exception is a discard centred inside a kept box,
+which is a misaligned copy of a real object. Both backends get both modes for free.
+
 **Torch stays optional.** `detect/model.py` imports torch lazily inside `_torch()`, and the package
 declares it as an optional `vision` extra (`pyproject.toml`). The loop itself never imports torch,
 so a consumer doing tabular work is not made to install it. Tests that exercise the real CNN keep
@@ -136,6 +151,14 @@ the same change).
         train.py            the training loop and `sweep` (the predict edge)
         dataset.py          judged decisions -> training Examples
         box.py scoring.py track.py   geometry, scoring, single-object tracking
+        backend.py          the ModelBackend adapter
+
+      boxes/                 model backend seam, implementation #2: the size-aware box CNN.
+        model.py train.py    the net, its targets and decode; training and `sweep`
+        synthetic.py         frames with known boxes, for proving it without real data
+        backend.py           the ModelBackend adapter
+
+      backends.py           backends by name: what the train tab offers, `register()` for more
 
       review/               the loop: the WoW-free review web tool. NO domain facts live here.
         seams.py            the four Protocols (lifted verbatim from tests/test_loop.py by the
@@ -167,7 +190,7 @@ the same change).
         render/             example renderer seam implementations
           crop.py           padded-crop + whole-frame rendering (from state + tools/playback)
 
-      tabular/              model backend seam, implementation #2 (xgboost). FUTURE - named here so
+      tabular/              model backend seam, implementation #3 (xgboost). FUTURE - named here so
                             the seam is visibly plural and detect is visibly not the product.
 
     docs/
