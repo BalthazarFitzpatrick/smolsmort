@@ -6,10 +6,12 @@ rate <= 5% of frames that contain none. Anything that does not clearly beat the 
 measured ~75% / ~75% on the same frames means the learned route is abandoned rather than tuned - so
 the teacher's own output is scored through this exact function too, and is the number to beat.
 
-MATCHING IS PER-FRAME AND POSITIONAL, not IoU. detect/box.Box.overlaps already carries the
-right test, and it is right for a reason worth not rediscovering: the reference object is long and thin - about 132x12, so
-eight pixels of vertical offset drops IoU to 0.12 - area overlap is hopeless on a shape this thin.
-What identifies it is that the two boxes lie along the same row and cover the same span.
+MATCHING IS PER-FRAME AND POSITIONAL BY DEFAULT, not IoU. detect/box.Box.overlaps is the default
+matcher, and it is right for a reason worth not rediscovering: the reference object is long and thin
+- about 132x12, so eight pixels of vertical offset drops IoU to 0.12 - area overlap is hopeless on a
+shape this thin. What identifies it is that the two boxes lie along the same row and cover the same
+span. For objects of other shapes, IoU is the right matcher instead, and `score` takes one through
+`match=`, e.g. `match=iou_match(0.5)`.
 
 AN EMPTY FRAME IS SCORED, NOT SKIPPED. it is the only place a false positive can be counted
 cleanly, and it is where all three measured false-positive classes live - the chat frame, brown dirt
@@ -19,9 +21,10 @@ as perfect while it lit up on every tree.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
-from smolsmort.detect.box import Box
+from smolsmort.detect.box import SAME_OBJECT_MIN_IOU, Box
 
 # the plan's pass marks, kept here so the numbers and the code that checks them cannot drift
 TARGET_RECALL = 0.90
@@ -82,12 +85,31 @@ class Score:
         ]
 
 
-def _matches(predicted: Box, truth: list[Box]) -> bool:
-    return any(predicted.overlaps(box) for box in truth)
+def iou_match(threshold: float = SAME_OBJECT_MIN_IOU) -> Callable[[Box, Box], bool]:
+    """a `match=` matcher for `score`, for objects where IoU is the right test - see the module
+    docstring for when that is and is not the case
+    """
+
+    def _iou_match(predicted: Box, truth: Box) -> bool:
+        return predicted.iou(truth) >= threshold
+
+    return _iou_match
 
 
-def score(predictions: list[list[Box]], truths: list[list[Box]]) -> Score:
-    """one entry per frame in each list, in the same order"""
+def _matches(predicted: Box, truth: list[Box], match: Callable[[Box, Box], bool]) -> bool:
+    return any(match(predicted, box) for box in truth)
+
+
+def score(
+    predictions: list[list[Box]],
+    truths: list[list[Box]],
+    match: Callable[[Box, Box], bool] | None = None,
+) -> Score:
+    """one entry per frame in each list, in the same order.
+
+    `match` decides whether a predicted box and a truth box are the same object; None keeps
+    today's default, `Box.overlaps`. Pass `iou_match(threshold)` for size-aware matching instead.
+    """
     if len(predictions) != len(truths):
         raise ScoringError(
             f"{len(predictions)} predicted frames against {len(truths)} labelled ones - "
@@ -96,13 +118,15 @@ def score(predictions: list[list[Box]], truths: list[list[Box]]) -> Score:
     if not truths:
         raise ScoringError("nothing to score")
 
+    matcher = match if match is not None else Box.overlaps
+
     with_object = without_object = hits = misses = fp_frames = spurious = 0
     for predicted, truth in zip(predictions, truths, strict=True):
-        unmatched = sum(1 for box in predicted if not _matches(box, truth))
+        unmatched = sum(1 for box in predicted if not _matches(box, truth, matcher))
         spurious += unmatched
         if truth:
             with_object += 1
-            if any(_matches(box, truth) for box in predicted):
+            if any(_matches(box, truth, matcher) for box in predicted):
                 hits += 1
             else:
                 misses += 1
@@ -131,4 +155,20 @@ def boxes_from_peaks(peaks, width: int = 132, height: int = 12) -> list[Box]:
             origin="model",
         )
         for peak in peaks
+    ]
+
+
+def boxes_from_candidates(candidates) -> list[Box]:
+    """a variable-size sweep's own output - each candidate already carries its own box, so unlike
+    `boxes_from_peaks` no fixed size is assumed
+    """
+    return [
+        Box(
+            left=candidate["left"],
+            top=candidate["top"],
+            width=candidate["width"],
+            height=candidate["height"],
+            origin="model",
+        )
+        for candidate in candidates
     ]

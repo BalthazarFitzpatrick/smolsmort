@@ -2,7 +2,19 @@
 
 from __future__ import annotations
 
-from smolsmort.detect.dataset import MARGIN_X, MARGIN_Y, build_from, centre_of, summarise
+import json
+
+import pytest
+
+from smolsmort.detect.dataset import (
+    MARGIN_X,
+    MARGIN_Y,
+    DatasetError,
+    build_from,
+    build_training_set,
+    centre_of,
+    summarise,
+)
 
 
 def candidate(path="f.jpg", left=500, top=300, width=132, height=20):
@@ -76,3 +88,109 @@ def test_summarise_counts_what_the_caller_needs(tmp_path):
     assert got["frames"] == 1 and got["objects"] == 1
     assert got["ignored"] == 2  # the discard AND the unreviewed one
     assert got["max_per_frame"] == 1
+
+
+def test_exhaustive_frame_turns_a_clean_discard_into_a_negative(tmp_path):
+    """THE PLAN'S VERIFY CASE. one frame, three candidates: kept at left=500, discarded well away
+    at left=1500, discarded at left=510 whose centre sits inside the kept box. explicit -> both
+    discards are ignored. exhaustive -> the misaligned one at 510 is dropped, the clean one at
+    1500 becomes a negative."""
+    (tmp_path / "f.jpg").write_bytes(b"x")
+    cands = [candidate(left=500), candidate(left=1500), candidate(left=510)]
+    decisions = {"0": {"keep": True}, "1": {"discard": True}, "2": {"discard": True}}
+
+    explicit = build_from(cands, decisions, tmp_path)[0]
+    assert explicit.object_count == 1
+    assert len(explicit.ignore) == 2
+    assert explicit.negatives == []
+
+    exhaustive = build_from(cands, decisions, tmp_path, exhaustive_frames={"f.jpg"})[0]
+    assert exhaustive.object_count == 1
+    assert exhaustive.ignore == []
+    assert len(exhaustive.negatives) == 1
+    assert exhaustive.negatives[0][0] == 1500 + 132 / 2.0  # centre x of the candidate at left=1500
+    assert exhaustive.exhaustive is True
+
+
+def test_exhaustive_frame_result_is_order_independent(tmp_path):
+    """REGRESSION. a discard exempted by a kept box can come BEFORE the kept candidate in list
+    order, so testing extent needs two passes - one pass would miss the exemption."""
+    (tmp_path / "f.jpg").write_bytes(b"x")
+    cands = [candidate(left=510), candidate(left=1500), candidate(left=500)]
+    decisions = {"0": {"discard": True}, "1": {"discard": True}, "2": {"keep": True}}
+    example = build_from(cands, decisions, tmp_path, exhaustive_frames={"f.jpg"})[0]
+    assert example.object_count == 1
+    assert example.ignore == []
+    assert len(example.negatives) == 1
+
+
+def test_unreviewed_candidate_on_an_exhaustive_frame_is_a_negative(tmp_path):
+    (tmp_path / "f.jpg").write_bytes(b"x")
+    example = build_from([candidate()], {}, tmp_path, exhaustive_frames={"f.jpg"})[0]
+    assert example.object_count == 0
+    assert example.negatives == [(566.0, 310.0)]
+    assert example.ignore == []
+
+
+def test_kept_without_a_rect_uses_the_candidates_own_size(tmp_path):
+    (tmp_path / "f.jpg").write_bytes(b"x")
+    example = build_from([candidate(width=132, height=20)], {"0": {"keep": True}}, tmp_path)[0]
+    assert example.sizes == [(132, 20)]
+
+
+def test_kept_with_a_rect_uses_uniform_width_and_delta_height(tmp_path):
+    (tmp_path / "f.jpg").write_bytes(b"x")
+    decision = {"keep": True, "rect": {"left": 0, "top": 0}, "height_delta": 6}
+    example = build_from(
+        [candidate()], {"0": decision}, tmp_path, uniform_width=64, uniform_height=14
+    )[0]
+    assert example.sizes == [(64, 20)]
+
+
+def test_summarise_counts_exhaustive_frames(tmp_path):
+    (tmp_path / "f.jpg").write_bytes(b"x")
+    examples = build_from([candidate()], {}, tmp_path, exhaustive_frames={"f.jpg"})
+    assert summarise(examples)["exhaustive_frames"] == 1
+
+
+def _training_row(recording="rec", frame="f.jpg", left=500, top=300, width=132, height=20, **extra):
+    return {
+        "recording": recording,
+        "frame": frame,
+        "left": left,
+        "top": top,
+        "width": width,
+        "height": height,
+        "label": "plate",
+        **extra,
+    }
+
+
+def test_build_training_set_fills_sizes_and_marks_exhaustive_frames(tmp_path):
+    frames = tmp_path / "rec" / "frames"
+    frames.mkdir(parents=True)
+    (frames / "f.jpg").write_bytes(b"x")
+    row = _training_row(width=132, height=20, exhaustive=True)
+    path = tmp_path / "training.jsonl"
+    path.write_text(json.dumps(row) + "\n")
+    examples, _ = build_training_set(path, tmp_path)
+    assert examples[0].sizes == [(132, 20)]
+    assert examples[0].exhaustive is True
+
+
+def test_build_training_set_allows_mixed_resolutions_when_asked(tmp_path):
+    from PIL import Image
+
+    for recording, size in (("rec_a", (200, 50)), ("rec_b", (400, 100))):
+        frames = tmp_path / recording / "frames"
+        frames.mkdir(parents=True)
+        Image.new("RGB", size).save(frames / "f.jpg")
+    rows = [_training_row(recording="rec_a"), _training_row(recording="rec_b")]
+    path = tmp_path / "training.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+
+    examples, _ = build_training_set(path, tmp_path, refuse_mixed_resolutions=False)
+    assert len(examples) == 2
+
+    with pytest.raises(DatasetError):
+        build_training_set(path, tmp_path)

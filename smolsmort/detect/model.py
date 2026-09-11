@@ -8,8 +8,9 @@ the millions a box-regression detector carries around to solve a problem this on
 
 That assumption is a CONSTRAINT ON WHAT THIS CAN DETECT, not a fact about the world. A consumer
 whose objects vary in size needs a different model, and should be told so rather than discovering
-it in the loss curve. (Provenance: it was written for a 132px border over ~12px of
-bar on a 2560px capture, measured off real frames.)
+it in the loss curve - that model is `smolsmort/boxes/model.py`, which regresses each object's
+size and leaves this one exactly as it was. (Provenance: it was written for a 132px border over
+~12px of bar on a 2560px capture, measured off real frames.)
 
 WHY A MODEL AT ALL, given a classical detector already finds these by their border pair: that
 teacher measures ~75% precision and ~75% recall on real frames. Near, large instances are trivial
