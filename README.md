@@ -1,72 +1,204 @@
 # smolsmort
 
-A human-in-the-loop sorting loop: find candidates, judge them, train on the judgements, predict, and
-feed the predictions back in to be judged again.
-
-The loop is the product. What you are detecting, how a person looks at one, and which model you fit
-are all plugged in.
+A small detector you train by judging its guesses. It finds objects on screen, proposes new ones on
+frames nobody has labelled, and those proposals come back to you to judge. Every round of judging
+makes the next model better. The model is swappable: a fixed-size and a variable-size one are built
+in, and your own plugs in by name.
 
 ```
-  data  ──FIND──▶  candidates ──cut──▶  tiles ──JUDGE──▶  classes
-                                                            │
-                                                         promote
-                                                            │
-                                                            ▼
-   predictions  ◀──predict──  weights  ◀──TRAIN──  training set
-         │
-         └──cut──▶  tiles  ──▶  JUDGE   (the loop closes here)
+  frames ──find──▶ candidates ──cut──▶ tiles ──judge──▶ classes
+                                                          │
+                                                       promote
+                                                          ▼
+  proposals ◀──sweep── weights ◀──────train─────── training set
+      │
+      └──────────▶ judge again   (the loop closes here)
 ```
 
-**The loop closes at judging**, and that is the whole point. A wrong prediction becomes a labelled
-hard negative rather than being thrown away, which is what makes the next model better instead of
-merely retrained.
+The loop closes at judging. A wrong proposal becomes a labelled hard negative instead of being
+thrown away, and that is what makes the next model better rather than just retrained.
 
-## Why this exists
+## Does it fit your problem?
 
-It was extracted from a game-screen object detector, where the loop turned out to be the part
-worth keeping and the objects the part that was not. Two things follow from that history and are
-worth stating plainly:
+One question picks the backend: **is the object a fixed, known size in pixels?**
 
-- **Every measured default carries its provenance.** Numbers like a 40px "same object" tolerance
-  were measured on a ~132x12 target bar. They are parameters with a stated origin, not facts —
-  a default without its provenance is a magic number, and you should pass your own.
-- **One lesson is baked into the design.** Judging a candidate is not the same as producing it. The
-  pixels can be recut from a script; the human's verdict on them cannot be recovered from anything.
-  The two are stored, versioned and ignored differently throughout.
+- **Yes: `heatmap`.** The model only answers *where* and *which class*. It regresses no width or
+  height, which is why it has about 100,000 parameters instead of millions.
+- **No: `box`.** It predicts each object's own box, for objects that vary 4x and more in size, in
+  frames of different resolutions. About 844,000 parameters. It is new and proven only on synthetic
+  frames: it found 97% of objects standing apart, at a median IoU of 0.74, but only about half of
+  those overlapping another.
 
-## What is honest about it today
+| your setup | backend |
+|---|---|
+| Fixed camera, objects at one distance: a tank, a conveyor, a counting window, a game's UI | `heatmap` |
+| Top-down camera at a fixed height | `heatmap` |
+| Objects at different distances, or classes of very different sizes | `box` |
+| Objects that crowd and overlap a lot | `box`, but overlap is its measured weak spot |
+| A moving camera | untested with either |
+| You need outlines, not positions | neither, you want segmentation |
 
-- There are **two vision backends**, picked by name through `smolsmort.backends`:
-  - `heatmap` is real and used daily: a small heatmap CNN, ~50k parameters, that finds objects of a
-    fixed known size.
-  - `box` handles objects that vary in size (4x and more), in frames of different resolutions, and
-    predicts each object's own box. It is new and proven only on synthetic frames. There it found
-    97% of objects standing apart, but only about half of those overlapping another.
-- **A model is plugged in, not built in.** Anything with the `ModelBackend` shape (train, predict,
-  save, load) joins with one `backends.register(...)` call. The loop does not change.
-- The **tabular backend** (xgboost) is planned, not written. The seams exist for it; the
-  implementation does not.
-- The **first honest evaluation of a trained model in the parent project returned 24% precision on a
-  genuine holdout**, with the highest-scoring detections being the wrong ones. That is not a
-  criticism of the loop — it is what the loop is for finding out, and the number was invisible until
-  a hand-drawn holdout existed. Read a separation score as "did training converge", never as "is it
-  right".
+Quick test: measure your object in twenty frames. If the largest is more than about 1.5 times the
+smallest, use `box`. [docs/FISH.md](docs/FISH.md) walks through a full setup with `heatmap` on a
+worked example.
 
 ## Install
 
+Not on PyPI. Pin a commit from git:
+
 ```bash
-uv add smolsmort                 # the loop
-uv add "smolsmort[vision]"       # ...and the CNN backends, which pull torch
+uv add "smolsmort[vision] @ git+https://github.com/BalthazarFitzpatrick/smolsmort.git@82d7374"
 ```
 
-Torch is optional on purpose: the judging half does not need it, and a consumer doing tabular work
-should not have to install it to use the rest.
+`[vision]` pulls torch (about 2 GB). Without it you get the box maths, scoring and tracking, which
+need only numpy and pillow. Pin `82d7374` or later: the `v0.1.0` tag predates a fix that moved every
+decoded peak 8 px down and right.
+
+Python 3.11 and newer. CI runs 3.11 and 3.14 on Linux.
+
+## Quickstart
+
+Train on labelled centres, then find objects on frames the model has not seen. This runs as written
+on synthetic frames with a 132x12 bar on noise:
+
+```python
+from smolsmort.detect.box import Box
+from smolsmort.detect.dataset import Example
+from smolsmort.detect.model import decode_peaks
+from smolsmort.detect.scoring import boxes_from_peaks, score
+from smolsmort.detect.train import heatmaps_for, load, save, train
+
+# one Example per frame: where the objects are, in capture pixels
+examples = [Example(path=path, centres=[(cx, cy)]) for path, (cx, cy) in labelled]
+
+model, history = train(examples, epochs=40, batch=8)
+save(model, "bars.pt")
+
+model = load("bars.pt")
+maps = heatmaps_for(model, "frame.png")  # (classes, h, w), one channel per class
+peaks = decode_peaks(maps[0], limit=3)  # centres in capture pixels, strongest first
+boxes = boxes_from_peaks(peaks, width=132, height=12)
+
+print("\n".join(score([boxes], [[Box(left, top, 132, 12)]]).lines()))
+```
+
+On 20 training frames, 40 epochs on CPU found all 4 held-out bars within 8 px. Two things to know
+from that run:
+
+- Weaker secondary peaks around 0.4 appear beside a strong one. `decode_peaks` keeps anything above
+  `min_score` (0.35 by default), so raise it or pass `limit`.
+- `score` reports FAIL when the truth has no empty frames, even at 100% recall. False positives can
+  only be counted on frames with nothing in them, so include some.
+
+## Swapping the model
+
+Every backend has the same four methods: train, predict, save and load. The loop drives whichever
+one it is handed and never learns which:
+
+```python
+from smolsmort import backends
+
+backend = backends.get_backend("box")  # or "heatmap"
+backends.register("mine", "my_package.backend", "MyBackend")  # your own model, no smolsmort edit
+```
+
+Listing or picking a backend never imports torch until a vision backend is actually built. A JSON
+file saved beside each checkpoint names the backend that wrote it (`backends.backend_of`), and a
+checkpoint without one is a heatmap checkpoint. `smolsmort.boxes.synthetic` writes frames with known
+boxes, for proving a setup before any real data is labelled.
+
+## How it works
+
+**The model.** A fully convolutional net with one heatmap channel per class. It runs on the frame
+downscaled 4x, and the heatmap has a stride of 4 on top of that, so one heatmap cell covers 16x16
+capture pixels. A wide 3x9 kernel near the end helps it see across long, thin objects. Parameters:
+99,769 with one class, 100,210 with ten. Fully convolutional means it trains on small crops and runs
+on whole frames of any size.
+
+**Peaks, not boxes.** `decode_peaks` finds local maxima above a threshold, suppresses neighbours
+within 3 cells, and returns centres in capture pixels. Since the object size is known, the box
+follows from the centre (`boxes_from_peaks`). The channel a peak comes from is its class.
+
+**The box backend.** The same heatmap idea, plus two more outputs at each cell: the object's log
+width and height, and where its centre sits inside the cell. An encoder down to stride 32 gives each
+cell a view of about 440 px, enough to size the largest object it is trained on, and training
+refuses an object bigger than that rather than sizing it wrong. Every frame is scaled to one working
+long side (768 px) first, which is why frames of different resolutions can train together.
+
+**Training.** Each batch is cut into 256 px windows (1024 capture pixels). Half the windows are
+centred on a real object, offset up to 40% of the window so the model learns objects anywhere, not
+just near the middle. A quarter are centred on hard negatives when a frame has them, the rest are
+random. Targets are small Gaussian blobs snapped to cell centres, trained with a CentreNet-style
+focal loss. Channels train independently, so a rare class is not drowned out by a common one.
+
+**What a label means.** Keeping a candidate makes it a positive. Discarding one does not make it a
+negative: a discard can mean misaligned or redundant just as often as "not an object". Discarded and
+never-reviewed candidates become ignore regions the loss does not look at. Explicit negatives come
+only from places the model fired and was told no. A frame can also be marked exhaustive, meaning
+every object on it was proposed and judged. There, anything proposed and not kept becomes a
+negative, except a discard centred inside a kept box. A `heatmap` training set must use one capture
+resolution, since the object is a different pixel size on each screen, and mixing them is refused;
+`box` scales every frame to one working size instead.
+
+**Sweeping.** `sweep` runs trained weights over whole frames and returns candidates in the same
+schema the judging step reads, capped per frame and strongest first. It decodes the next frames on
+worker threads while the model runs: at 3420x2224, decoding a JPEG took 51 ms against 39 ms for the
+forward pass, so the model was otherwise waiting on pillow.
+
+**Scoring.** Matching is per frame and positional. Two boxes match when they cover the same span on
+the same row. IoU fails on thin objects: on a 132x12 bar, an 8 px vertical offset drops IoU to 0.12.
+For squarer or variable-size objects, pass `match=iou_match(0.5)` instead. Empty frames are scored,
+because that is the only place a false positive can be counted cleanly. The built-in pass marks are
+90% recall with at most 5% false-positive frames. `beats_the_teacher` compares against a 75% recall,
+75% precision classical detector, the baseline the model was built to beat.
+
+**Tracking.** `track` follows one object across a recording from per-frame detections:
+- With no history, it takes the strongest peak. After that, it takes the strongest peak within a
+  plausible step, not the nearest, so it does not chase decoys.
+- `despike` drops frames that disagree with the median of their neighbours, which catches a tracker
+  that re-acquired onto a decoy and followed it smoothly.
+- `chrome_cells` finds detections that stay put while the camera turns. Those are part of the
+  interface, not the world.
+
+## Defaults and where they came from
+
+Every tuned number was measured on the first consumer, a game-screen detector for long, thin bars
+about 132x12 px at 2560 wide. They are parameters with a stated origin, so pass your own for a
+different object.
+
+| setting | default | where it lives |
+|---|---|---|
+| same object across frames | 40 px corner distance | `box.SAME_OBJECT_PX` |
+| same object within a frame | half the narrower width shared, within 1.5 box heights | `box.SAME_OBJECT_MIN_SHARE`, `SAME_OBJECT_MAX_ROWS_APART` |
+| input downscale / heatmap stride | 4 / 4 | `model.DOWNSCALE`, `model.STRIDE` |
+| peak threshold / separation | 0.35 / 3 cells | `model.PEAK_MIN_SCORE`, `PEAK_MIN_SEPARATION` |
+| training window / offset | 256 px / 40% | `train.CROP`, `train.JITTER_FRACTION` |
+| tracker step / lost after | 600 px / 5 frames | `track.MAX_STEP_PX`, `LOST_AFTER_FRAMES` |
+| box backend working long side | 768 px, from a synthetic spike | `boxes.model.WORK_LONG_SIDE` |
+
+`train.minimum_window(width, height)` tells you the smallest window that never clips your object at
+the offset extremes. `train.snapped_window` rounds a window up to a whole number of cells, which the
+model and target need to agree on.
+
+## In use
+
+[consumer-app](https://github.com/BalthazarFitzpatrick/consumer-app) finds nameplates with it: 10 classes,
+100,210 parameters, about 44 ms per 3420x2224 frame on an Apple M4 including the JPEG decode. Its
+first honest evaluation on a hand-drawn holdout returned 24% precision, with the highest-scoring
+detections the wrong ones. That is what the loop exists to find out. Read a falling loss as "training
+converged", never as "the model is right". Only a holdout tells you that.
 
 ## Status
 
-Early. The package is being extracted in stages from its first consumer, and the API will move until
-that is finished.
+- **Here now:** the heatmap backend in `smolsmort/detect/` (box, model, dataset, train, scoring,
+  track), the box backend in `smolsmort/boxes/`, and backends by name in `smolsmort/backends.py`.
+- **In progress:** the review web tool, where candidates are found, judged and promoted. It is being
+  ported from consumer-app in PR #2.
+- **Planned:** a train tab that picks the backend by name, and a tabular backend (xgboost) beside the
+  vision ones.
+
+The API will move until the port is finished.
 
 ## Licence
 
-MIT - see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).
