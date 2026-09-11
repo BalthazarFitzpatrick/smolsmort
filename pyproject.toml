@@ -27,6 +27,8 @@ packages = ["smolsmort"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# reference material being carved into the package, not code of this project - see snapshot/README.md
+extend-exclude = ["snapshot"]
 
 # THE SAME SELECTION AS THE CONSUMER IT WAS EXTRACTED FROM, deliberately. The code moved across
 # verbatim; a different rule set here would flag lines that are fine upstream, and "fixing" them

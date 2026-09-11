@@ -1,0 +1,608 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>template review</title>
+<!-- base.css is ui_base's shared visual language, served from the pinned package rather than a
+     copy; tabs.css is this tool's per-tab layout on top of it. That order IS the cascade, so
+     tabs.css may override base.css and base.css can never accidentally win. -->
+<link rel="stylesheet" href="/ui/base.css">
+<link rel="stylesheet" href="/ui/tabs.css">
+<script src="/ui/menu.js"></script>
+<script src="/ui/select.js"></script>
+</head>
+<body>
+<div id="top-bar">
+  <div id="nav-bar" role="tablist">
+    <div class="nav-tab active" data-tab="find" role="tab" tabindex="0">find</div>
+    <div class="nav-tab" data-tab="cluster" role="tab" tabindex="-1">select</div>
+    <div class="nav-tab" data-tab="train" role="tab" tabindex="-1">cnn</div>
+    <div class="nav-tab" data-tab="vlm" role="tab" tabindex="-1">vlm</div>
+    <div class="nav-tab" data-tab="interface" role="tab" tabindex="-1">interface</div>
+    <div class="nav-tab" data-tab="scripts" role="tab" tabindex="-1">scripts</div>
+    <div class="nav-tab" data-tab="map" role="tab" tabindex="-1">map</div>
+    <div class="nav-tab" data-tab="navigation" role="tab" tabindex="-1">navigation</div>
+    <div class="nav-tab" data-tab="camera" role="tab" tabindex="-1">camera</div>
+    <div class="nav-tab" data-tab="control" role="tab" tabindex="-1">control</div>
+    <div class="nav-tab" data-tab="housekeeping" role="tab" tabindex="-1">housekeeping</div>
+  </div>
+  <span id="top-bar-actions">
+    <div class="toggle" id="open-settings">settings</div>
+  </span>
+</div>
+
+<div id="tab-panels">
+<div class="tab-panel" data-panel="find">
+  <!-- find IS drawing: the mining modes needed a template library to match against, which a cold
+       start does not have, and the cnn replaces them once it is trained. the dividers that used to
+       separate mode row from paths from controls went with them -->
+  <div id="draw-panel">
+    <div id="draw-bar">
+      <div class="toggle dropdown-head iface-picker" id="draw-open" data-label="dataset">
+        <span id="draw-where" class="placeholder">recordings</span>
+      </div>
+      <div class="toggle dropdown-head" id="crop-open"><span>crop size</span></div>
+      <div class="toggle dropdown-head narrow" id="draw-percent" data-value="20"
+           title="how much of the recording to draw on"><span>20%</span></div>
+      <div class="toggle" id="draw-prev">prev</div>
+      <!-- a scrubber for a long run, BETWEEN the buttons rather than replacing them - prev/next
+           and b/n are how a careful pass steps one frame at a time -->
+      <div class="draw-scrub">
+        <div class="draw-scrub-row">
+          <span class="draw-end" id="draw-first">-</span>
+          <input type="range" id="draw-slider" min="0" max="0" value="0" step="1"
+                 title="scrub through the frames offered">
+          <span class="draw-end" id="draw-last">-</span>
+        </div>
+        <span class="field-value" id="draw-pos">-</span>
+      </div>
+      <div class="toggle" id="draw-next">next</div>
+      <!-- WAS PROSE, AND IT WRAPPED. at a narrow window "drag to add - click a box to remove"
+           broke to three lines and took the row's height with it, which nothing in a control row
+           may do. the guidance is the same, it just waits until asked for -->
+      <div class="toggle help" id="draw-help" title="how drawing works">?</div>
+      <div class="divider"></div>
+      <span id="draw-zoom-value">100%</span>
+      <div class="toggle" id="draw-zoom-fit">reset view</div>
+      <span class="spacer"></span>
+      <!-- says the assumption out loud, where the decision is made: everything not boxed counts
+           as background, so each drawn box implies one -->
+      <span class="stat" id="draw-count">0 positives &middot; 0 negatives</span>
+      <div class="toggle adds" id="draw-save">save</div>
+    </div>
+    <div id="draw-wrap"><canvas id="draw-canvas"></canvas></div>
+    <!-- BELOW THE ROW, NOT ABOVE IT. anything this said used to push the first control row down,
+         so the row's height depended on whether there was news -->
+    <div id="find-status"></div>
+  </div>
+</div>
+
+<div class="tab-panel hidden" data-panel="cluster">
+  <div id="clusters-bar">
+    <div class="toggle dropdown-head" id="cluster-open-set"><span>boxes</span></div>
+    <div class="toggle dropdown-head" id="cluster-classdef"><span>classes</span></div>
+    <span class="spacer"></span>
+    <div class="toggle adds" id="cluster-promote">promote to training</div>
+    <span class="spacer"></span>
+    <!-- RE-READ, NOT RE-SORT. The order is a fact about what has been judged, so there is no
+         count to choose any more - this just picks up judgements made since the last load. -->
+    <div class="toggle" id="recluster">reload</div>
+    <span class="stat sep" id="cluster-k-note"></span>
+    <span class="field-label">showing</span>
+    <span class="field-value" id="clusters-count">0 / 0</span>
+    <span id="clusters-status" class="stat"></span>
+    <!-- only appears once something is selected: a selection you cannot see the size of is one you
+         cannot safely act on, and right-click tags every selected tile at once -->
+    <span class="stat sep" id="cluster-selected" hidden></span>
+    <!-- the plate is already confirmed by not being tagged "not a class", so this never judges -
+         it only moves the crop onto the plate so a training cycle sees a centred box -->
+    <div class="toggle" id="cluster-smart-center" hidden
+         title="re-cut the picked tiles with the plate centred">smart center</div>
+    <div class="toggle" id="cluster-select-all" title="select every tile shown (cmd/ctrl+A)">select all</div>
+    <div class="toggle removes" id="cluster-clear-sel" hidden title="clear the selection (Escape)">clear</div>
+  </div>
+  <div class="h-divider"></div>
+  <!-- ONE COLUMN PER DIMENSION, built from the active class definition rather than three fixed
+       ones named generics/classes/brightness. those three were the definition, hardcoded here and
+       again in app.js and again in state.py -->
+  <div id="cluster-filter" class="label-columns">
+    <div id="filter-dims" class="label-columns"></div>
+    <div class="divider"></div>
+    <!-- judged tiles sink to the bottom of the grid; this is how you go and look at them -->
+    <div class="col" id="filter-judged"></div>
+  </div>
+  <div class="h-divider"></div>
+  <div id="cluster-groups"></div>
+  <div id="label-popup" class="panel-floating hidden">
+    <div id="label-current" class="label-columns">
+      <div id="current-dims" class="label-columns"></div>
+    </div>
+    <div class="h-divider"></div>
+    <div id="label-dims" class="label-columns"></div>
+    <div class="h-divider"></div>
+    <!-- ORDER IS REJECT, REPAIR, ACCEPT - the three verdicts on a crop, left to right in the order
+         they escalate, with the confirming press last where a system dialogue puts it -->
+    <div id="label-bottom-row">
+      <!-- EXCLUDING IS HOW A NEGATIVE IS MARKED, and nothing said so. promote_to_training already
+           writes an excluded kernel as {"negative": true} - a hard negative, the model fired there
+           and was told no - but the only way to reach it was a plain click labelled "exclude",
+           which reads as "hide" rather than "teach the model this is wrong" -->
+      <!-- RED, the same stone as every other action that takes something away. it sat in the plain
+           grey the two buttons beside it wear, so the one control in this row that throws a
+           selection out of the training set read as the same kind of press as tagging it -->
+      <div class="toggle removes" id="label-negative">not a class</div>
+      <div class="toggle" id="label-fix-alignment">fix alignment</div>
+      <div class="toggle disabled" id="label-submit">apply</div>
+    </div>
+  </div>
+  <!-- a crop that is a pixel off used to be discardable and nothing else - the tune tab could
+       correct one, but only for the dataset that happened to be bound. this corrects the drawn
+       box itself and re-cuts that one kernel over the old file, so its label survives -->
+  <div id="align-popup" class="panel-floating hidden">
+    <div id="align-name" class="field-value">-</div>
+    <div class="h-divider"></div>
+    <div id="align-wrap">
+      <div class="image-viewport" id="align-viewport">
+        <img class="drag-image" id="align-image">
+        <div class="guide-overlay" id="align-guide"></div>
+      </div>
+    </div>
+    <div id="align-legend">drag, or <b>wasd</b> for 1px, to sit the plate inside the guide</div>
+    <div id="align-bottom-row">
+      <div class="toggle adds" id="align-save">save and re-cut</div>
+      <div class="toggle" id="align-cancel">cancel</div>
+    </div>
+    <div id="align-status" class="stat"></div>
+  </div>
+</div>
+</div>
+
+<div class="tab-panel hidden" data-panel="navigation">
+  <div class="row-label">nav lines: what was marked, and what it should have been</div>
+  <div class="h-divider"></div>
+  <!-- THE NUMBERS ARE THE POINT, the map is there to catch a coordinate typed wrong. Balthazar
+       Fitzpatrick asked for line id, line type, line point id and x/y, read live while walking and
+       correctable afterwards - the map tab already draws maps and is not duplicated here -->
+  <div id="nav-body" class="split">
+    <div class="pane nav-col">
+      <div class="run-controls sweep-row">
+        <div class="toggle dropdown-head grow" id="nav-open"><span>recordings</span></div>
+        <div class="toggle dropdown-head" id="nav-map" data-value=""><span>map</span></div>
+        <div class="toggle adds" id="nav-add">add point</div>
+        <div class="toggle" id="nav-save">save</div>
+        <div class="toggle" id="nav-popout">pop out</div>
+        <div class="toggle help" id="nav-help">?</div>
+      </div>
+      <div id="nav-table-wrap"><table id="nav-table"><thead><tr>
+        <th>line</th><th>type</th><th>point</th><th>x</th><th>y</th><th></th>
+      </tr></thead><tbody id="nav-rows"></tbody></table></div>
+      <div class="h-divider"></div>
+      <!-- MOUSE BY DEFAULT: the dpi button marks, alt + it starts a line, alt + scroll picks go or
+           no-go. "change" waits for the next key, mouse button or scroll, modifiers included, and
+           stores it for the next recording. escape cancels. -->
+      <div class="row-label">hotkeys, picked up next time wt-record starts</div>
+      <div id="nav-keys">
+        <span class="field-label">set point</span>
+        <span class="nav-key-combo" id="navkey-log_point">-</span>
+        <div class="toggle nav-key-change" data-action="log_point">change</div>
+        <span class="field-label">next line</span>
+        <span class="nav-key-combo" id="navkey-new_line">-</span>
+        <div class="toggle nav-key-change" data-action="new_line">change</div>
+        <span class="field-label">go zone</span>
+        <span class="nav-key-combo" id="navkey-go_zone">-</span>
+        <div class="toggle nav-key-change" data-action="go_zone">change</div>
+        <span class="field-label">no-go zone</span>
+        <span class="nav-key-combo" id="navkey-nogo_zone">-</span>
+        <div class="toggle nav-key-change" data-action="nogo_zone">change</div>
+      </div>
+      <div id="nav-keys-note" class="stat"></div>
+      <div id="nav-status" class="stat">nothing recorded yet</div>
+    </div>
+    <div class="divider"></div>
+    <div class="pane nav-col">
+      <div id="nav-canvas-wrap"><canvas id="nav-canvas"></canvas></div>
+      <div id="nav-hint" class="stat">the selected point, on the zone</div>
+    </div>
+  </div>
+</div>
+
+<div class="tab-panel hidden" data-panel="map">
+  <div class="run-controls sweep-row">
+    <div class="toggle dropdown-head grow" id="map-pick"><span>map</span></div>
+    <div class="toggle dropdown-head grow" id="map-recordings"><span>recordings</span></div>
+    <div class="toggle dropdown-head grow" id="map-layers"><span>layers</span></div>
+    <div class="toggle dropdown-head grow" id="map-opacity"><span>layer visualisation</span></div>
+    <span class="spacer"></span>
+    <div id="map-status" class="stat">nothing opened</div>
+  </div>
+  <div class="h-divider"></div>
+  <!-- THE CANVAS IS THE ZONE, sized to its own rectangle rather than to this box, so a point in
+       canvas pixels is x/100 of the width and pan/zoom is a transform on top that nothing else
+       has to know about -->
+  <div id="map-wrap"><canvas id="map-canvas"></canvas></div>
+</div>
+
+
+<div class="tab-panel hidden" data-panel="train">
+  <div class="pane-split split">
+    <div class="pane">
+      <!-- FULL WIDTH, AND THEY NAME WHAT IS LOADED. a picker that reads "open a training set"
+           after one is open answers the wrong question - the thing you need at a glance is which
+           set and which weights are in play right now -->
+      <div class="toggle dropdown-head wide" id="train-open"><span>training sets</span></div>
+      <div class="toggle dropdown-head wide" id="train-load"><span>weights</span></div>
+      <div id="train-summary" class="train-facts"></div>
+      <div class="h-divider"></div>
+
+      <div class="field-label">run</div>
+      <div class="run-controls">
+        <div class="stepper">
+          <span class="stat">epochs</span>
+          <div class="toggle" data-train-step="epochs:-50">-</div>
+          <span class="field-value" id="train-epochs">200</span>
+          <div class="toggle" data-train-step="epochs:50">+</div>
+        </div>
+        <div class="stepper">
+          <span class="stat">batch</span>
+          <div class="toggle" data-train-step="batch:-2">-</div>
+          <span class="field-value" id="train-batch">8</span>
+          <div class="toggle" data-train-step="batch:2">+</div>
+        </div>
+        <!-- the window each sample is cut at. shown in capture pixels too, since 256 input px
+             means 1024 capture px and only one of those numbers is intuitive -->
+        <div class="stepper">
+          <span class="stat">window</span>
+          <div class="toggle" data-train-step="crop:-32">-</div>
+          <span class="field-value" id="train-crop">256</span>
+          <div class="toggle" data-train-step="crop:32">+</div>
+        </div>
+        <span class="stat" id="train-crop-note"></span>
+        <div class="toggle" id="train-config">config</div>
+        <div class="toggle" id="train-start">train</div>
+        <div class="toggle removes disabled" id="train-abort">abort</div>
+        <div class="toggle adds" id="train-save">save weights</div>
+      </div>
+      <div class="progress-row">
+        <div class="bar"><div id="train-bar-fill"></div></div>
+        <span class="stat" id="train-progress-text">idle</span>
+      </div>
+      <div class="h-divider"></div>
+
+      <div class="field-label">sweep</div>
+      <!-- THE NAME GETS THE ROOM. a recording's name is the long thing here and the only one that
+           varies, so it takes the slack while "of it 100%" and "sweep" sit against the divider -->
+      <div class="run-controls sweep-row">
+        <div class="toggle dropdown-head grow" id="sweep-open"><span>recordings</span></div>
+        <div class="stepper">
+          <span class="stat">of it</span>
+          <div class="toggle dropdown-head narrow" id="sweep-percent" data-value="100"><span>100%</span></div>
+        </div>
+        <div class="toggle" id="sweep-start">sweep</div>
+      </div>
+      <!-- a threshold is a position on a range, so it gets an axis rather than a list -->
+      <div id="sweep-sliders" class="slider-row"></div>
+      <div class="progress-row">
+        <div class="bar"><div id="sweep-bar-fill"></div></div>
+        <span class="stat" id="sweep-progress-text">idle</span>
+      </div>
+      <!-- ALWAYS VISIBLE, disabled until a sweep has produced something. appearing only on
+           success made the next step a thing to discover rather than a thing to wait for -->
+      <div class="toggle adds disabled" id="sweep-send">send above threshold to select</div>
+      <div class="h-divider"></div>
+
+      <div class="field-label">separation</div>
+      <div id="train-accuracy" class="train-facts"></div>
+      <div class="h-divider"></div>
+      <div class="field-label">val split</div>
+      <div id="train-holdout" class="train-facts"></div>
+      <div class="h-divider"></div>
+      <div class="field-label">loss</div>
+      <canvas id="train-loss" height="90"></canvas>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="pane">
+      <div class="row-label">confirmed frames</div>
+      <div id="train-frames"></div>
+      <div class="h-divider"></div>
+      <div id="train-view-head">
+        <span class="field-label" id="train-view-label">heatmap</span>
+        <span class="spacer"></span>
+        <span class="stat" id="train-zoom-value">100%</span>
+        <div class="toggle" id="train-zoom-fit">reset view</div>
+      </div>
+      <!-- which class channel to burn in. the channels are independent sigmoids, so "all" is the
+           loudest of them rather than their sum -->
+      <div class="filter-row" id="train-channels"></div>
+      <!-- the model is held by a training run, so the heatmap under here is stale until it ends.
+           masked rather than merely captioned: a picture that looks current and is not is worse
+           than no picture -->
+      <div class="viewport train-viewport">
+        <div id="train-stage"><img id="train-view-img" alt=""></div>
+        <div id="train-busy" hidden><div class="busy-card">training in progress</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="tab-panel hidden" data-panel="vlm">
+  <div class="pane-split split">
+    <div class="pane">
+      <div class="row-label">verifier</div>
+      <div id="vlm-summary" class="train-facts"></div>
+      <div class="h-divider"></div>
+
+      <div class="field-label">run</div>
+      <div class="run-controls">
+        <div class="stepper">
+          <span class="stat">frames</span>
+          <div class="toggle" data-vlm-step="frames:-1">-</div>
+          <span class="field-value" id="vlm-frames">3</span>
+          <div class="toggle" data-vlm-step="frames:1">+</div>
+        </div>
+        <div class="stepper">
+          <span class="stat">peaks each</span>
+          <div class="toggle" data-vlm-step="peaks:-1">-</div>
+          <span class="field-value" id="vlm-peaks">4</span>
+          <div class="toggle" data-vlm-step="peaks:1">+</div>
+        </div>
+        <div class="toggle" id="vlm-start">verify</div>
+      </div>
+      <div class="progress-row">
+        <div class="bar"><div id="vlm-bar-fill"></div></div>
+        <span class="stat" id="vlm-progress-text">idle</span>
+      </div>
+      <div class="h-divider"></div>
+
+      <div class="field-label">verdicts</div>
+      <div id="vlm-counts" class="train-facts"></div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="pane">
+      <div class="field-label">peaks shown</div>
+      <div id="vlm-list"></div>
+      <div class="h-divider"></div>
+      <div class="field-label" id="vlm-view-label">verdicts</div>
+      <div class="viewport"><img id="vlm-view-img" alt=""></div>
+    </div>
+  </div>
+</div>
+<div class="tab-panel hidden" data-panel="interface">
+  <div id="iface-top">
+    <div class="toggle dropdown-head iface-picker" id="iface-realm" data-label="server"></div>
+    <div class="toggle dropdown-head iface-picker" id="iface-character" data-label="character"></div>
+    <div class="toggle dropdown-head iface-picker" id="iface-profile" data-label="screen profile"></div>
+    <div class="toggle dropdown-head" id="iface-keybinds"><span>keybinds</span></div>
+    <span class="spacer"></span>
+    <span class="field-label" id="iface-saved">marks save automatically</span>
+  </div>
+  <div class="h-divider"></div>
+  <div id="iface-body">
+    <div id="iface-list-col">
+      <div id="iface-list-head">
+        <span class="field-label">elements</span>
+        <span class="spacer"></span>
+        <div class="toggle" id="iface-add">+</div>
+        <div class="toggle removes" id="iface-remove">&minus;</div>
+      </div>
+      <div id="iface-list"></div>
+
+    </div>
+    <div class="divider"></div>
+    <div id="iface-shot-col">
+      <div id="iface-shot-head">
+        <div class="toggle" id="iface-upload">add screenshots</div>
+        <div class="toggle removes" id="iface-remove-shot">&minus;</div>
+        <input type="file" id="iface-file" accept="image/png,image/jpeg" multiple hidden>
+        <span class="field-label">showing</span>
+        <div id="iface-shots"></div>
+        <span class="spacer"></span>
+        <div class="divider"></div>
+        <span id="iface-zoom-value">100%</span>
+        <div class="toggle" id="iface-zoom-fit">reset view</div>
+        <div class="divider"></div>
+        <div class="toggle" id="iface-mode-rect">rect</div>
+        <div class="toggle" id="iface-mode-point">point</div>
+        <div class="divider"></div>
+        <div class="toggle" id="iface-clear">clear all marks</div>
+      </div>
+      <div id="iface-canvas-wrap">
+        <!-- the stage is transformed as a whole, so the image and its overlay can never drift
+             apart and the canvas stays at the screenshot's natural size - which means a drawn
+             rect is already in screenshot pixels with no conversion to get wrong -->
+        <div id="iface-stage">
+          <img id="iface-img" alt="">
+          <canvas id="iface-overlay"></canvas>
+        </div>
+      </div>
+      <div id="iface-status">drag on the screenshot</div>
+    </div>
+  </div>
+</div>
+
+<div class="tab-panel hidden" data-panel="scripts">
+  <div class="row-label">entry points</div>
+  <div class="h-divider"></div>
+  <div class="label-columns">
+    <div class="col" id="script-categories"></div>
+    <div class="divider"></div>
+    <div class="col" id="script-subcategories"></div>
+    <div class="divider"></div>
+    <div class="col" id="script-names"></div>
+  </div>
+  <div class="h-divider"></div>
+  <div class="field-label">command</div>
+  <div class="field-value" id="script-command">pick a script</div>
+  <div id="script-args"></div>
+  <div class="popup-buttons" style="justify-content:flex-start">
+    <div class="toggle" id="script-copy">copy command</div>
+  </div>
+  <div id="script-status" class="stat"></div>
+</div>
+
+  <div class="tab-panel hidden" data-panel="camera">
+  <!-- READ-ONLY, DELIBERATELY. this tab watches the recording wt-record is writing; it does not
+       start it. the browser does not launch anything that records input or drives the game, which
+       is the same rule the scripts tab follows -->
+  <div class="run-controls sweep-row">
+    <div class="toggle dropdown-head grow" id="cam-open"><span>recordings</span></div>
+    <div class="toggle" id="cam-popout">pop out</div>
+    <div class="toggle help" id="cam-help">?</div>
+  </div>
+
+  <!-- the live strip: where the camera is right now -->
+  <!-- ONE BORDERED BOX PER READING, like every other control on the page. this was a single
+       full-bleed bar with internal rules and upper-case labels - an idiom nothing else here uses -->
+  <div id="cam-live" class="run-controls">
+    <div class="readout"><span class="cam-k">distance</span><span class="cam-v" id="cam-dist">-</span></div>
+    <div class="readout"><span class="cam-k">bearing</span><span class="cam-v" id="cam-bearing">-</span></div>
+    <div class="readout"><span class="cam-k">pitch</span><span class="cam-v" id="cam-pitch">-</span></div>
+    <div class="readout"><span class="cam-k">zoom</span><span class="cam-v" id="cam-zoom">-</span></div>
+    <div class="readout"><span class="cam-k">facing</span><span class="cam-v" id="cam-facing">-</span></div>
+    <div class="readout"><span class="cam-k">position</span><span class="cam-v" id="cam-pos">-</span></div>
+    <div class="readout"><span class="cam-k">camera</span><span class="cam-v" id="cam-steady">-</span></div>
+  </div>
+
+  <div class="h-divider"></div>
+
+  <div id="cam-body">
+    <!-- FOUR TO ONE. the steps are what you are following; the log is what the recording was
+         recognised as doing, which is only worth a glance unless the steps stop moving -->
+    <div id="cam-steps">
+      <div class="field-label">setup</div>
+      <div id="cam-setup" class="cam-block"></div>
+      <div class="h-divider"></div>
+      <div class="field-label">the five cycles</div>
+      <div id="cam-cycles" class="label-columns"></div>
+      <div class="h-divider"></div>
+      <div class="field-label">then once, at the end</div>
+      <div id="cam-closing" class="cam-block"></div>
+      <div id="cam-status" class="stat">nothing recorded yet</div>
+    </div>
+    <div class="divider"></div>
+    <div id="cam-log-col">
+      <div class="field-label">recognised</div>
+      <div id="cam-log"></div>
+    </div>
+  </div>
+</div>
+
+  <div class="tab-panel hidden" data-panel="control">
+  <!-- the SAME OverlayModel wt-overlay-shadow and the tkinter OverlayWindow draw, read back as
+       json from a sink file - see tools/review/control.py's docstring for why this tab never
+       captures the screen or input itself. structure ported straight from OverlayWindow.draw():
+       run state, a note, the keyboard at real qwerty positions, mouse click/scroll lamps, the
+       heading dial and the mouse vector - just this panel's own drawing instead of a canvas
+       widget's -->
+  <div class="run-controls sweep-row">
+    <div class="toggle" id="control-popout">pop out</div>
+    <span id="control-run" class="cam-v">-</span>
+    <span id="control-mode" class="cam-v"></span>
+    <span class="spacer"></span>
+    <span id="control-note" class="stat"></span>
+  </div>
+
+  <div class="h-divider"></div>
+
+  <div id="control-body">
+    <div id="control-keys"></div>
+    <div id="control-dials">
+      <!-- ONE CANVAS, TWO DIALS - drawn as primitive pixel lines (flat strokes, no gradients,
+           thickness the only thing that varies) the same way the training loss bar and the
+           progress bar on this page are a flat fill and nothing else -->
+      <canvas id="control-canvas" width="300" height="170"></canvas>
+      <div id="control-mouse-buttons"></div>
+    </div>
+  </div>
+  <div id="control-status" class="stat"></div>
+</div>
+
+<div class="tab-panel hidden" data-panel="housekeeping">
+  <!-- recordings get deleted by hand and nothing downstream ever finds out - this is where the
+       boxes, tiles, sets and checkpoints they left behind get found and cleared. an orphan
+       (asset with no live recording behind it) shows up here too, marked, since it is the whole
+       reason this tab exists -->
+  <div class="row-label">recordings and everything trained off them</div>
+  <div class="h-divider"></div>
+  <div class="label-columns" id="hk-columns">
+    <div class="col" id="hk-recordings"></div>
+    <div class="divider"></div>
+    <div class="col" id="hk-assets-col">
+      <div id="hk-assets-bar" class="run-controls">
+        <div class="toggle" id="hk-select-all">select all for this recording</div>
+        <span class="spacer"></span>
+        <span class="stat" id="hk-selected-count">nothing selected</span>
+        <div class="toggle adds" id="hk-archive">archive</div>
+        <div class="toggle removes" id="hk-delete">delete</div>
+      </div>
+      <div id="hk-assets"></div>
+    </div>
+  </div>
+  <div id="hk-status" class="stat"></div>
+</div>
+
+  <!-- base paths: what each picker may browse. changing these points the whole tool at a
+       different vision task - its own frames, labels and template library -->
+<!-- the two hyperparameters train() always took and nothing could reach: every run this tool
+     ever started used 3e-4 and seed 0. A run that diverges needs a different rate, and a run
+     worth repeating needs its seed, so both belong where the epochs and batch already are -->
+<div id="train-config-popup" class="panel-floating hidden">
+    <div class="popup-title">training hyperparameters</div>
+    <div class="h-divider"></div>
+    <div class="settings-field">
+      <span class="field-label">learning rate</span>
+      <input id="train-rate" type="text" spellcheck="false" placeholder="3e-4">
+    </div>
+    <div class="settings-field">
+      <span class="field-label">seed</span>
+      <input id="train-seed" type="text" spellcheck="false" placeholder="0">
+    </div>
+    <div class="h-divider"></div>
+    <div class="stat" id="train-config-note">blank uses the default. the rate is clamped to
+      1e-6..1e-1 - a rate above that diverges in the first epochs and wastes the whole run.</div>
+    <div class="h-divider"></div>
+    <div class="toggle" id="train-config-close">close</div>
+</div>
+
+<div id="settings-popup" class="panel-floating hidden">
+    <div class="popup-title">where each kind of data lives</div>
+    <div class="h-divider"></div>
+    <!-- READ ONLY FOR NOW, deliberately. These are the layout's defaults, and showing them is the
+         point: the tool used to read six directories buried inside the python package and there
+         was nowhere to see that. Picking your own is the next step - the tree picker and
+         /api/set-bases both still exist behind BASES_EDITABLE - but a picker offered before the
+         move had settled would have let a half-repointed pool write tiles into the wrong folder -->
+    <div class="settings-field"><span class="field-label">base path</span><input id="base-root" type="text" spellcheck="false" readonly></div>
+    <div class="h-divider"></div>
+    <div class="settings-field"><span class="field-label">recordings</span><div class="grow" id="base-sessions"><span>-</span></div></div>
+    <div class="settings-field"><span class="field-label">boxes</span><div class="grow" id="base-labels"><span>-</span></div></div>
+    <div class="settings-field"><span class="field-label">library</span><div class="grow" id="base-templates"><span>-</span></div></div>
+    <!-- the pool is a directory, so this is how a generated or borrowed set of tiles is
+         looked at without disturbing the real one -->
+    <div class="settings-field"><span class="field-label">tile pool</span><div class="grow" id="base-pool"><span>-</span></div></div>
+    <div class="h-divider"></div>
+    <div class="settings-note" id="settings-note">the tile pool takes several folders - add training/tiles-synth to review the generated set beside the real one</div>
+    <div class="popup-buttons">
+      <div class="toggle adds hidden" id="settings-save">apply</div>
+      <div class="toggle" id="settings-close">close</div>
+    </div>
+  </div>
+
+
+<!-- OUTSIDE every tab panel, deliberately. this is position:fixed, but a display:none ANCESTOR
+     hides it regardless - and nested inside the CLUSTER panel it was hidden exactly when the
+     interface tab was open, so clicking a picker opened a popup nobody could see. -->
+<!-- ONE picker for both find and cluster: which recording is bound is a single fact, and two
+     lists of it would be two places to get it wrong -->
+<script>
+const MARGIN = {margin_x};
+const MARGIN_Y_JS = {margin_y};
+</script>
+<script src="/ui/shell.js"></script>
+<script src="/ui/align.js"></script>
+<script src="/ui/app.js"></script>
+</body>
+</html>
