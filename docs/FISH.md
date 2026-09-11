@@ -85,10 +85,10 @@ from smolsmort.detect.dataset import Example
 examples = [
     Example(
         path=Path("frames/0001.jpg"),
-        centres=[(412.0, 233.0), (690.0, 251.0)],   # fish centres, in FRAME pixels
-        labels=[None, None],                         # or ["trout", "salmon"] - see §6
-        negatives=[(120.0, 400.0)],                  # places you KNOW hold no fish
-        ignore=[],                                   # regions to exclude from the loss entirely
+        centres=[(412.0, 233.0), (690.0, 251.0)],  # fish centres, in FRAME pixels
+        labels=[None, None],  # or ["trout", "salmon"] - see §6
+        negatives=[(120.0, 400.0)],  # places you KNOW hold no fish
+        ignore=[],  # regions to exclude from the loss entirely
     ),
     # ...
 ]
@@ -117,7 +117,7 @@ from smolsmort.detect.train import train, save
 model, history = train(
     examples,
     epochs=30,
-    crop=256,              # training window, in INPUT px. See the note below.
+    crop=256,  # training window, in INPUT px. See the note below.
     on_progress=lambda p: print(p),
 )
 save(model, Path("weights/fish-v1.pt"))
@@ -129,7 +129,8 @@ whole one:
 
 ```python
 from smolsmort.detect.train import minimum_window
-print(minimum_window(FISH_W, FISH_H))   # the smallest crop that will not clip
+
+print(minimum_window(FISH_W, FISH_H))  # the smallest crop that will not clip
 ```
 
 Note the net runs on a **4×-downscaled** frame, so a 120px fish is 30px to the model — several
@@ -145,9 +146,12 @@ from smolsmort.detect.train import sweep, load
 
 model = load(Path("weights/fish-v1.pt"))
 candidates = sweep(
-    model, {"fish": 0}, sorted(Path("unlabelled/").glob("*.jpg")),
-    width=FISH_W, height=FISH_H,
-    min_score=0.30,        # deliberately low - see below
+    model,
+    {"fish": 0},
+    sorted(Path("unlabelled/").glob("*.jpg")),
+    width=FISH_W,
+    height=FISH_H,
+    min_score=0.30,  # deliberately low - see below
     max_per_frame=12,
 )
 ```
@@ -191,7 +195,7 @@ channel that fires on noise, and it will look like the model working.
 from smolsmort.detect.scoring import score, boxes_from_peaks
 from smolsmort.detect.box import Box
 
-result = score(predictions, truths)   # both: one list of Box per frame, same order
+result = score(predictions, truths)  # both: one list of Box per frame, same order
 print("\n".join(result.lines()))
 ```
 
@@ -216,7 +220,8 @@ resolution produced apparently catastrophic results that were entirely the scale
 
 ```python
 from smolsmort.detect.track import track
-positions = track(per_frame, ordered_paths)   # {frame path: (x, y)}
+
+positions = track(per_frame, ordered_paths)  # {frame path: (x, y)}
 ```
 
 `per_frame` maps a frame path to its candidate list. **`ordered_paths` must be in recording order** —
