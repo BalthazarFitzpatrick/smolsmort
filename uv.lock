@@ -723,7 +723,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.0" },
     { name = "pillow", specifier = ">=11.0" },
     { name = "torch", marker = "extra == 'vision'", specifier = ">=2.0" },
-    { name = "ui-base", git = "https://github.com/BalthazarFitzpatrick/smortui.git?rev=de99a50432d2696de9dbb9d39283a111bd97c262" },
+    { name = "ui-base", git = "https://github.com/BalthazarFitzpatrick/smortui.git?rev=3ea805c331a000e057a490cef661735e8d7003c3" },
 ]
 provides-extras = ["vision"]
 
@@ -818,4 +818,4 @@ wheels = [
 [[package]]
 name = "ui-base"
 version = "0.1.0"
-source = { git = "https://github.com/BalthazarFitzpatrick/smortui.git?rev=de99a50432d2696de9dbb9d39283a111bd97c262#de99a50432d2696de9dbb9d39283a111bd97c262" }
+source = { git = "https://github.com/BalthazarFitzpatrick/smortui.git?rev=3ea805c331a000e057a490cef661735e8d7003c3#3ea805c331a000e057a490cef661735e8d7003c3" }
