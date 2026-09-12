@@ -9,11 +9,20 @@ importorskip so this file collects and mostly runs even where torch is not insta
 from __future__ import annotations
 
 import json
+import threading
+from pathlib import Path
 
 import pytest
 
 from smolsmort import backends
-from smolsmort.review.train import DEFAULT_LEARNING_RATE, DEFAULT_SEED, TrainState, TrainStateError
+from smolsmort.backends import sidecar
+from smolsmort.review.train import (
+    DEFAULT_LEARNING_RATE,
+    DEFAULT_SEED,
+    TrainState,
+    TrainStateError,
+    saved_checkpoints,
+)
 
 # ---------------------------------------------------------------- fake backend, no torch at all
 
@@ -136,6 +145,194 @@ def test_loading_reads_provenance_missing_a_training_set(tmp_path):
     info = reloaded.load_weights(path)
     assert info["training_set"] is None
     assert info["classes"] == ["friendly", "hostile"]
+
+
+# ---------------------------------------------------------------- background training + abort
+#
+# ported from the parent project's snapshot/tests/test_train_abort.py: a training run can be
+# stopped from the page, at the next epoch, without saving anything. the fixture there paused a
+# real detect.train() epoch loop on a threading.Event; this pauses a fake backend's train() the
+# same way, since `start`/`abort` now sit above the seam rather than above smolsmort.detect directly.
+
+
+class PausableBackend:
+    """a fake backend whose train() blocks per epoch on a release event, so an abort can be
+    exercised deterministically with no timing luck beyond the event itself."""
+
+    def __init__(self, epochs=50, release=None, seen=None):
+        self.epochs = epochs
+        self.release = release if release is not None else threading.Event()
+        self.seen = seen if seen is not None else []
+
+    def train(self, examples, *, classes, on_progress=None):
+        for epoch in range(1, self.epochs + 1):
+            self.release.wait(5)
+            self.seen.append(epoch)
+            if on_progress:
+                on_progress(epoch, self.epochs)
+        return {"classes": dict(classes)}
+
+    def predict(self, weights, frames, *, classes):
+        return []
+
+    def save(self, weights, path):
+        Path(path).write_text(json.dumps(weights))
+        return Path(path)
+
+    def load(self, path):
+        return json.loads(Path(path).read_text())
+
+
+@pytest.fixture
+def _pausable():
+    backends.register("pausable", "test_review_train", "PausableBackend")
+    try:
+        yield
+    finally:
+        backends._REGISTRY.pop("pausable", None)
+
+
+def _abortable_trainer(_pausable, epochs=50):
+    release = threading.Event()
+    seen: list[int] = []
+    trainer = TrainState("pausable", epochs=epochs, release=release, seen=seen)
+    trainer.bind(FAKE_EXAMPLES, FAKE_CLASSES)
+    return trainer, release, seen
+
+
+def test_an_abort_stops_at_the_next_epoch_and_saves_nothing(_pausable):
+    trainer, release, seen = _abortable_trainer(_pausable)
+    assert trainer.start() == {"ok": True}
+    assert trainer.abort() == {"ok": True}
+    release.set()
+    trainer._worker.join(5)
+
+    job = trainer.status()
+    assert job["running"] is False and job["finished"] is False
+    assert job["aborted"] == 1
+    assert seen == [1]
+    assert trainer.weights is None
+
+
+def test_an_abort_with_nothing_running_is_refused(_pausable):
+    trainer, *_ = _abortable_trainer(_pausable)
+    assert "error" in trainer.abort()
+
+
+def test_starting_twice_is_refused_while_one_is_already_running(_pausable):
+    trainer, release, _ = _abortable_trainer(_pausable)
+    trainer.start()
+    assert "error" in trainer.start()
+    trainer.abort()
+    release.set()
+    trainer._worker.join(5)
+
+
+def test_the_run_after_an_abort_is_not_aborted_too(_pausable):
+    """the flag is cleared by start, or one abort would kill every later run at epoch one"""
+    trainer, release, _ = _abortable_trainer(_pausable, epochs=3)
+    trainer.start()
+    trainer.abort()
+    release.set()
+    trainer._worker.join(5)
+
+    trainer.start()
+    trainer._worker.join(5)
+    job = trainer.status()
+    assert job["finished"] is True and job["aborted"] is None
+    assert trainer.weights is not None
+
+
+def test_a_training_error_surfaces_through_status_rather_than_hanging_the_poller(_pausable):
+    trainer = TrainState("pausable", epochs=1)  # nothing bound - train() raises TrainStateError
+    trainer.start()
+    trainer._worker.join(5)
+    job = trainer.status()
+    assert job["running"] is False and job["finished"] is False
+    assert "bind a training set first" in job["error"]
+
+
+# ---------------------------------------------------------------- checkpoint-folder browsing
+#
+# ported from the parent project's `checkpoint_folders` / `saved_checkpoints`, which read the
+# checkpoints root off `review.paths.CHECKPOINTS_DIR`. that module does not exist on this branch
+# yet, so `root` is an explicit argument here - the routes card wires the real one in later.
+
+
+def test_checkpoint_folders_lists_subfolders_and_suggests_a_name(tmp_path):
+    trainer = TrainState("fake")
+    trainer.bind(FAKE_EXAMPLES, FAKE_CLASSES, training_set="set_a")
+    (tmp_path / "run-1").mkdir()
+    (tmp_path / "run-2").mkdir()
+
+    listing = trainer.checkpoint_folders(tmp_path)
+    assert listing["here"] == ""
+    assert listing["parent"] is None
+    assert listing["folders"] == ["run-1", "run-2"]
+    assert listing["name"].startswith("set_a-")
+
+
+def test_checkpoint_folders_descends_into_a_subfolder(tmp_path):
+    trainer = TrainState("fake")
+    (tmp_path / "run-1" / "nested").mkdir(parents=True)
+
+    listing = trainer.checkpoint_folders(tmp_path, "run-1")
+    assert listing["here"] == "run-1"
+    assert listing["parent"] == ""
+    assert listing["folders"] == ["nested"]
+
+
+def test_checkpoint_folders_falls_back_to_root_rather_than_escaping_it(tmp_path):
+    trainer = TrainState("fake")
+    outside = trainer.checkpoint_folders(tmp_path, "../../etc")
+    assert outside["here"] == ""
+
+
+def test_resolve_checkpoint_refuses_a_name_that_would_leave_root(tmp_path):
+    trainer = TrainState("fake")
+    trainer.bind(FAKE_EXAMPLES, FAKE_CLASSES)
+    trainer.train()
+    saved = trainer.save(tmp_path / "run.pt")
+    assert saved
+
+    assert trainer.resolve_checkpoint(tmp_path, "run.pt") == tmp_path / "run.pt"
+    assert trainer.resolve_checkpoint(tmp_path, "../elsewhere/run.pt") is None
+    assert trainer.resolve_checkpoint(tmp_path, "missing.pt") is None
+
+
+def test_saved_checkpoints_lists_named_saves_newest_first_with_their_classes(tmp_path):
+    trainer = TrainState("fake")
+    trainer.bind(FAKE_EXAMPLES, FAKE_CLASSES, training_set="set_a")
+    trainer.train()
+    trainer.save(tmp_path / "a.pt")
+    trainer.save(tmp_path / "sub" / "b.pt")
+
+    listing = saved_checkpoints(tmp_path)
+    names = [w["name"] for w in listing["weights"]]
+    assert set(names) == {"a.pt", "sub/b.pt"}
+    for weights in listing["weights"]:
+        assert weights["classes"] == ["friendly", "hostile"]
+        assert weights["training_set"] == "set_a"
+
+
+def test_saved_checkpoints_falls_back_to_the_backend_sidecar_with_no_provenance(tmp_path):
+    """a checkpoint saved by a bare backend.save() - no review-level provenance beside it at all -
+    must still be listable, with the classes the backend's OWN sidecar knows"""
+    path = tmp_path / "bare.pt"
+    path.write_text("stub")
+    sidecar(path).write_text(
+        json.dumps({"backend": "fake", "classes": {"friendly": 0, "hostile": 1}})
+    )
+
+    listing = saved_checkpoints(tmp_path)
+    assert listing["weights"] == [
+        {"name": "bare.pt", "training_set": None, "classes": ["friendly", "hostile"], "kb": 0}
+    ]
+
+
+def test_saved_checkpoints_over_an_empty_or_missing_root(tmp_path):
+    assert saved_checkpoints(tmp_path / "does-not-exist") == {"weights": []}
+    assert saved_checkpoints(tmp_path) == {"weights": []}
 
 
 # ---------------------------------------------------------------- the reference backend, gated
