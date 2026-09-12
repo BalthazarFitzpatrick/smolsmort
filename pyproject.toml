@@ -61,6 +61,7 @@ python_files = ["test_*.py"]
 python_functions = ["test_*"]
 
 [tool.uv.sources]
+# pinned to a sha, not a tag: smortui's tags do not bump its version yet
 ui-base = { git = "https://github.com/BalthazarFitzpatrick/smortui.git", rev = "3ea805c331a000e057a490cef661735e8d7003c3" }
 
 [dependency-groups]
