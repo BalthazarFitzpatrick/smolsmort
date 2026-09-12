@@ -1,17 +1,17 @@
-"""where the review tool looks, and the tunables that go with it.
+"""where the review loop looks, and the tunables that go with it.
 
 **ALWAYS REFERENCE THESE AS ATTRIBUTES** - `paths.SESSIONS_DIR`, never
 `from ...paths import SESSIONS_DIR`. The difference is not style, and it is not small.
 
-`SESSIONS_DIR` and `LABELS_DIR` are DEFAULTS that get repointed at runtime by the settings popup,
-and they are monkeypatched by six test fixtures so a test writes into its own tmp_path instead of
-into real recordings. An importing module binds a COPY at import time: the test then patches this
-module's name while the code goes on reading its own, and the failure is silent - the suite still
-passes, having quietly read and written the real `sessions/` and `training/boxes/` directories. That is a
-data-loss bug wearing a green test suite, which is why the module split that made this file
-necessary started here rather than ending here.
+`SESSIONS_DIR`, `LABELS_DIR` and `INTERFACE_SHOTS` are DEFAULTS that get repointed at runtime (by a
+settings popup, in the parent project this was carried from) and are monkeypatched by test fixtures
+so a test writes into its own tmp_path instead of into real recordings. An importing module binds a
+COPY at import time: the test then patches this module's name while the code goes on reading its own,
+and the failure is silent - the suite still passes, having quietly read and written the real
+`sessions/` and `training/` directories. That is a data-loss bug wearing a green test suite.
 
-`tests/test_review_paths.py` fails the build if any module imports these two by value.
+`tests/test_review_paths.py` and `tests/test_loop.py` fail the build if any module imports these by
+value.
 """
 
 from __future__ import annotations
@@ -23,7 +23,8 @@ from pathlib import Path
 # ABSOLUTE, NOT RELATIVE. these were once relative ("sessions", "labels"), so the tool only listed
 # anything when launched from the repo root - from anywhere else it silently found nothing, and the
 # obvious repair (typing "sessions" into the settings popup) is then wrong from the root.
-_REPO = Path(__file__).resolve().parents[3]
+# this file lives at smolsmort/review/paths.py, so the repo root is three levels up.
+_REPO = Path(__file__).resolve().parents[2]
 _ROOT = _REPO if (_REPO / "pyproject.toml").exists() else Path.cwd()
 
 # everything the labelling loop produces, in one place: boxes, tiles, sets, weights, library
@@ -52,8 +53,8 @@ BASE_KEYS = ("root", "sessions", "labels", "templates", "pool")
 #
 # NOT sessions: `SESSIONS_DIR` is a single Path that promote turns into every training row's
 # recording field via relative_to, so a list there is a change to the training-set schema. NOT
-# templates: the library is what plate_track matches against and merging several has no defined
-# meaning. Both are one path until something actually needs otherwise.
+# templates: the example source it feeds matches against one library and merging several has no
+# defined meaning. Both are one path until something actually needs otherwise.
 MULTI_BASES = ("pool",)
 
 SESSIONS_DIR = Path(DEFAULT_BASES["sessions"])
@@ -61,7 +62,7 @@ LABELS_DIR = Path(DEFAULT_BASES["labels"])
 
 # the shared design system and the page, served under /ui/ - nothing else in that directory is
 # reachable through the route (see the handler's _serve_ui_asset)
-REVIEW_UI_DIR = Path(__file__).resolve().parents[1] / "review_ui"
+REVIEW_UI_DIR = Path(__file__).resolve().parent / "review_ui"
 
 # ---------------------------------------------------------------- the data flow, in one place
 
@@ -69,7 +70,7 @@ REVIEW_UI_DIR = Path(__file__).resolve().parents[1] / "review_ui"
 # so "where do the weights go" had seven answers and moving anything meant finding all of them.
 # The flow, in the order a box travels:
 #
-#   1. RECORDINGS     a session: frames/ plus a jsonl of inputs and state. Nothing writes here.
+#   1. RECORDINGS     a session: frames/ plus a log of inputs and state. Nothing writes here.
 #   2. LABELS_DIR     training/boxes. Two kinds, and telling them apart is the whole trick:
 #                       <recording>.drawn-<stamp>.candidates.jsonl   a human drew these
 #                       <recording>.cnn-<stamp>.candidates.jsonl     a sweep proposed these
@@ -86,13 +87,8 @@ REVIEW_UI_DIR = Path(__file__).resolve().parents[1] / "review_ui"
 #
 # and then a sweep of the new model writes back into (2) as a cnn- file, which is what closes it.
 #
-# THEY USED TO SIT INSIDE THE PYTHON PACKAGE, under vision/ - 1.2 GB of tiles, weights
-# and an archive inside an importable module tree, which is how they came to be tracked in git and
-# how a test run could delete curated tiles. Task 140. They are data, and they now live under
-# `training/` beside `sessions/`, which is the other half of the same picture.
-#
-# (This comment cited task 100 for months. 100 is the CAMERA module move - an unrelated,
-# still-queued task - and the citation was simply wrong.)
+# these are data, and they live under `training/` beside `sessions/` rather than inside the
+# importable package tree - so a test run, or a `pip install`, cannot touch curated tiles.
 
 RECORDINGS = (
     SESSIONS_DIR  # an alias that says what it is, since SESSIONS_DIR is repointed at runtime
@@ -110,21 +106,10 @@ MODEL_PATH = WEIGHTS_DIR / "plate_model.pt"
 CHECKPOINTS_DIR = WEIGHTS_DIR / "checkpoints"
 DATASETS_DIR = _TRAINING / "sets"
 
-# ONE WORKING SET PER SCREEN, under a directory named for the screen profile. a flat directory
-# shared by every screen kept the previous screen's captures on screen with rects measured against
-# a different resolution. It sits under profiles/ because that is what it is keyed by - and
-# because it is data, which the package it used to live in is not.
+# WHERE A SCREEN CAPTURE (or other whole-frame reference shot) THE FIND STEP DRAWS AGAINST LIVES.
+# repointed at runtime and monkeypatched by tests the same way SESSIONS_DIR and LABELS_DIR are -
+# see the module docstring's warning.
 INTERFACE_SHOTS = _ROOT / "profiles" / "interface_shots"
-
-# EVERY MAP LAYER, one directory per zone: maps/<map_name>/<layer>/. The generated layers are
-# gitignored per-layer rather than by ignoring maps/ itself, because git never descends into an
-# ignored directory - so the hand-authored markers and the manifest beside them stay tracked
-MAPS_DIR = _ROOT / "maps"
-
-# where wt-overlay-shadow --sink-file writes OverlayModel.snapshot() and the control tab reads it
-# back from - see tools/review/control.py's docstring for why this is a file and not the server
-# capturing anything itself. under output/, already gitignored - it is a live pointer, not source
-CONTROL_SINK = _ROOT / "output" / "control_snapshot.json"
 
 
 def drawn_candidates(labels_root: Path, tag: str):
@@ -141,11 +126,12 @@ def swept_candidates(labels_root: Path, tag: str):
 
 # a sweep keeps everything at or above this, whatever threshold is chosen afterwards - low enough
 # that the distribution has a shape to look at, high enough that an undertrained model's noise
-# floor does not become the whole answer
+# floor does not become the whole answer. MEASURED in the parent project this was carried from.
 SWEEP_KEEP_FLOOR = 0.05
 
 # drag slack around a candidate, not compensation for a wrong starting position: candidates start
-# centred on the detected box, so this only has to cover a hand adjustment
+# centred on the detected box, so this only has to cover a hand adjustment. MEASURED in the parent
+# project this was carried from.
 MARGIN_X = 30
 MARGIN_Y = 12
 
@@ -153,11 +139,12 @@ PAGE_SIZE = 4
 
 # HOW MUCH GROUND AROUND A DRAWN BOX a cut tile keeps, as a fraction of the box on each side.
 # Two numbers rather than one: vertical pad used to be derived from a fixed tile aspect, which made
-# it depend on the box's SHAPE - measured 71% of height for a 132x24 box and 144% for a 162x18 one,
-# for the same setting. Both are settable at runtime from find's crop menu.
+# it depend on the box's SHAPE - MEASURED at 71% of height for a 132x24 box and 144% for a 162x18
+# one, for the same setting. Both are settable at runtime from find's crop menu.
 #
-# defaults chosen to sit near what the tile-derived pad produced for a real plate (226x35 -> 89%),
-# so this change does not silently reframe every existing crop
+# defaults chosen to sit near what the tile-derived pad produced for a real object in the parent
+# project this was carried from (226x35 -> 89%), so this change does not silently reframe every
+# existing crop
 PAD_X_DEFAULT = 0.25
 PAD_Y_DEFAULT = 0.9
 

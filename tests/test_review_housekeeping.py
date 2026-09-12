@@ -9,14 +9,13 @@ import json
 
 import pytest
 
-from snapshot.review import housekeeping as hk
-from snapshot.review import paths
+from smolsmort.review import housekeeping as hk
+from smolsmort.review import paths
 
 
 @pytest.fixture
 def bases(tmp_path, monkeypatch):
-    """a full training/ tree under tmp_path, with paths.* repointed at it - the same monkeypatch
-    shape test_review_camera.py already uses for SESSIONS_DIR/LABELS_DIR"""
+    """a full training/ tree under tmp_path, with paths.* repointed at it"""
     sessions = tmp_path / "sessions"
     training = tmp_path / "training"
     labels = training / "boxes"
@@ -49,15 +48,15 @@ def bases(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "tag,expected",
     [
-        ("nameplate_pipeline_test__1_cnn-20260908-090744_k00797", "nameplate_pipeline_test__1"),
-        ("nameplate_pipeline_test__3.drawn-20260901-0148", "nameplate_pipeline_test__3"),
-        ("nameplate_pipeline_test__3.cnn-20260907-011512", "nameplate_pipeline_test__3"),
+        ("some_test__1_cnn-20260908-090744_k00797", "some_test__1"),
+        ("some_test__3.drawn-20260901-0148", "some_test__3"),
+        ("some_test__3.cnn-20260907-011512", "some_test__3"),
         # two stamps stacked - a re-swept set's source name
         (
             "target_bearing_distance_more_zooms_cnn-20260903-222136",
             "target_bearing_distance_more_zooms",
         ),
-        ("camera_calibration__2026-09-06_k00207", "camera_calibration__2026-09-06"),
+        ("calibration_run__2026-09-06_k00207", "calibration_run__2026-09-06"),
     ],
 )
 def test_tag_to_recording_peels_stamps_and_tile_index(tag, expected):
@@ -65,20 +64,20 @@ def test_tag_to_recording_peels_stamps_and_tile_index(tag, expected):
 
 
 def test_unflatten_restores_the_nested_session_path():
-    assert hk.unflatten("nameplate_pipeline_test__1") == "nameplate_pipeline_test/1"
+    assert hk.unflatten("some_test__1") == "some_test/1"
 
 
 # ---------------------------------------------------------------- recording discovery
 
 
 def test_live_recording_is_found_and_grouped_by_its_directory(bases):
-    (bases["sessions"] / "nameplate_pipeline_test" / "1" / "frames").mkdir(parents=True)
+    (bases["sessions"] / "some_test" / "1" / "frames").mkdir(parents=True)
     recordings = hk.all_recordings()
     assert len(recordings) == 1
     rec = recordings[0]
-    assert rec.tag == "nameplate_pipeline_test__1"
-    assert rec.path == "nameplate_pipeline_test/1"
-    assert rec.group == "nameplate_pipeline_test"
+    assert rec.tag == "some_test__1"
+    assert rec.path == "some_test/1"
+    assert rec.group == "some_test"
     assert rec.missing is False
 
 
@@ -128,7 +127,7 @@ def test_a_set_with_every_source_gone_is_orphaned(bases):
 
 
 def test_assets_for_finds_boxes_tiles_and_their_sidecars(bases):
-    tag = "nameplate_pipeline_test__1"
+    tag = "some_test__1"
     jsonl = bases["labels"] / f"{tag}.drawn-20260901-0018.candidates.jsonl"
     jsonl.write_text("{}")
     decisions = bases["labels"] / f"{tag}.drawn-20260901-0018.candidates.decisions.json"
