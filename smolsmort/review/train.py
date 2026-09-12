@@ -1,5 +1,6 @@
-"""training a model behind the ModelBackend seam: bind a training set or load weights, train, sweep,
-look at the heatmap channel by channel, save the result under a name.
+"""training a model behind the ModelBackend seam: bind a training set or load weights, train (in the
+foreground or on a background thread, with abort), sweep, look at the heatmap channel by channel,
+save the result under a name, browse where checkpoints live.
 
 THE REFERENCE DRIVER OF SEAM 4 (see docs/REVIEW_TOOL_DESIGN.md). `smolsmort/detect` - the heatmap cnn
 - is the first `ModelBackend` and the one every method below is proven against, but training, sweeping
@@ -10,18 +11,22 @@ inspection reaches past the seam, because looking at the raw response before any
 not something the seam's `predict` can answer - see `channel_heatmap` below for why that is backend
 -shaped rather than seam-shaped.
 
-DELIBERATELY WITHOUT the web tool's threading, `paths` module or `ReviewState` - those belong to later
-port cards (see the package layout in the design doc). This holds a backend and the state of one run;
-it touches the filesystem only at the checkpoint path it is given.
+STILL WITHOUT `ReviewState` or a `paths` module - those belong to later port cards (see the package
+layout in the design doc). This holds a backend and the state of one run; the checkpoint-browsing
+methods below take the checkpoints folder as an argument for the same reason, rather than importing
+`smolsmort.review.paths.CHECKPOINTS_DIR`, which does not exist on this branch yet.
 """
 
 from __future__ import annotations
 
+import json
+import threading
 from collections.abc import Callable, Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from smolsmort.backends import get_backend
+from smolsmort.backends import get_backend, sidecar
 from smolsmort.review.backends import load_provenance, save_named
 
 # the heatmap backend's own default learning rate (smolsmort/detect/train.py's `train`) - the backend
@@ -34,6 +39,16 @@ DEFAULT_SEED = 0
 
 class TrainStateError(Exception):
     pass
+
+
+class TrainingAborted(Exception):
+    """raised from inside the `on_progress` callback `start` wraps around `train` - a backend only
+    ever calls back once per epoch, so that is the only place an abort can land without cutting a
+    backend's own training loop open (ported from the parent project's `TrainingAborted`)."""
+
+    def __init__(self, epoch: int):
+        super().__init__(f"aborted at epoch {epoch}")
+        self.epoch = epoch
 
 
 class TrainState:
@@ -54,6 +69,22 @@ class TrainState:
         self.training_set: str | None = None
         self.weights: Any = None
         self.loaded_weights: Path | None = None
+        # BACKGROUND TRAINING STATE. the parent project's own reason still holds: this is meant to be
+        # driven from a web server, and a blocked server has no progress bar and no way to look at
+        # anything while a run works - so `start` below trains on a worker thread instead of the
+        # caller's own, and `job` is what a poller reads back.
+        self._job_lock = threading.Lock()
+        self._worker: threading.Thread | None = None
+        # set by `abort`, read from the wrapped progress callback, cleared by every `start`
+        self._abort = threading.Event()
+        self.job: dict[str, Any] = {
+            "running": False,
+            "epoch": 0,
+            "epochs": 0,
+            "error": None,
+            "finished": False,
+            "aborted": None,
+        }
 
     # ---- binding ------------------------------------------------------------------------
     def bind(self, examples: list, classes: Mapping[str, int], *, training_set: str | None = None):
@@ -109,6 +140,79 @@ class TrainState:
         )
         self.loaded_weights = None
         return self.class_names()
+
+    # ---- background training + abort -----------------------------------------------------
+    def start(self, *, on_progress: Callable[[int, int], None] | None = None) -> dict:
+        """train on a BACKGROUND THREAD, so a caller (the http server this eventually sits behind)
+        stays responsive - the exact reason the parent project's own `start` gave for the same move.
+
+        This drives the same `train` above, from a worker, wrapping `on_progress` to also update
+        `job` and to raise `TrainingAborted` once `abort` has been called - a backend calls back once
+        per epoch, so that is the only boundary an abort can land on without reaching into a
+        backend's own loop. Precondition failures (nothing bound, a stale checkpoint on
+        `training_set`) surface through `job['error']` after the thread runs, exactly as any other
+        training failure does - `train` itself is unchanged and still raises when called directly.
+        """
+        with self._job_lock:
+            if self._worker is not None and self._worker.is_alive():
+                return {"error": "a training run is already going"}
+            self._abort.clear()
+            self.job = {
+                "running": True,
+                "epoch": 0,
+                "epochs": 0,
+                "error": None,
+                "finished": False,
+                "aborted": None,
+            }
+
+        def progress(epoch: int, epochs: int) -> None:
+            with self._job_lock:
+                self.job["epoch"] = epoch
+                self.job["epochs"] = epochs
+            if self._abort.is_set():
+                raise TrainingAborted(epoch)
+            if on_progress:
+                on_progress(epoch, epochs)
+
+        def run() -> None:
+            try:
+                self.train(on_progress=progress)
+                with self._job_lock:
+                    self.job["running"] = False
+                    self.job["finished"] = True
+            except TrainingAborted as stop:
+                # NOTHING IS SAVED. `train` only assigns `self.weights` after the backend's own
+                # `train` returns, and it raised before that - so whatever was trained or loaded
+                # before this run stays exactly as it was.
+                with self._job_lock:
+                    self.job["running"] = False
+                    self.job["aborted"] = stop.epoch
+            except Exception as exc:  # noqa: BLE001
+                # deliberately broad: this runs on a worker thread, so anything not caught here
+                # leaves `job` pinned at running=True and a poller reading a dead run forever
+                with self._job_lock:
+                    self.job["running"] = False
+                    self.job["error"] = f"{type(exc).__name__}: {exc}"
+
+        self._worker = threading.Thread(target=run, daemon=True)
+        self._worker.start()
+        return {"ok": True}
+
+    def abort(self) -> dict:
+        """stop the running background training at its next epoch boundary. nothing is saved, so
+        whatever was trained or loaded before this run stays in use."""
+        with self._job_lock:
+            running = self.job["running"] and self._worker is not None and self._worker.is_alive()
+        if not running:
+            return {"error": "no training run is going"}
+        self._abort.set()
+        return {"ok": True}
+
+    def status(self) -> dict:
+        """a snapshot of the background run - safe to poll from another thread while `start` runs"""
+        with self._job_lock:
+            return dict(self.job)
 
     # ---- sweeping (predict) ---------------------------------------------------------------
     def sweep(self, frames: list) -> list[dict]:
@@ -175,3 +279,92 @@ class TrainState:
             classes=[name for name, _ in sorted(self.classes.items(), key=lambda kv: kv[1])],
             options=options,
         )
+
+    # ---- checkpoint-folder browsing ---------------------------------------------------------
+    # `root` IS THE CHECKPOINTS FOLDER, taken as an argument everywhere below rather than read off a
+    # `smolsmort.review.paths` module - that module does not exist on this branch yet (a later port
+    # card adds it and the routes that call these with `paths.CHECKPOINTS_DIR`). Ported from the
+    # parent project's `checkpoint_folders` / `saved_checkpoints`, which read it off `review.paths`.
+    def checkpoint_folders(self, root: Path, under: str = "") -> dict:
+        """the folders under `root` a checkpoint can be saved into, one level at a time, with a
+        suggested name for the next save.
+
+        CONFINED TO `root`: the picker only ever lists what is under it, so a checkpoint saved
+        anywhere else could never be found again by browsing from the page.
+        """
+        root = Path(root)
+        root.mkdir(parents=True, exist_ok=True)
+        here = _confine(root, under or "")
+        if here is None or not here.is_dir():
+            here = root.resolve()
+        relative = here.relative_to(root.resolve()).as_posix()
+        relative = "" if relative == "." else relative
+        parent = None
+        if relative:
+            parent = Path(relative).parent.as_posix()
+            parent = "" if parent == "." else parent
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        return {
+            "here": relative,
+            "parent": parent,
+            "folders": sorted(p.name for p in here.iterdir() if p.is_dir()),
+            "name": f"{self.training_set or 'unbound'}-{stamp}",
+        }
+
+    def resolve_checkpoint(self, root: Path, name: str) -> Path | None:
+        """a checkpoint's path under `root` by the name `saved_checkpoints` listed it under, or
+        None when `name` would leave `root` - the same confinement `checkpoint_folders` applies to
+        where a save may go applies to where a load may come from."""
+        path = _confine(root, name)
+        return path if path is not None and path.is_file() else None
+
+
+def saved_checkpoints(root: Path) -> dict:
+    """the named checkpoints under `root`, newest first, each with the classes it carries.
+
+    the classes come from the review-level provenance `save_named` writes beside a checkpoint first;
+    a checkpoint saved by a bare `backend.save()` (no review-level provenance at all) falls back to
+    the seam's own sidecar (`smolsmort.backends.sidecar`) the same way `TrainState.load_weights` does
+    - a checkpoint predating this is still listable, just without a training set to show for it.
+    """
+    root = Path(root)
+    found = []
+    saved = (
+        sorted(root.rglob("*.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if root.is_dir()
+        else []
+    )
+    for path in saved:
+        meta = load_provenance(path)
+        classes = meta.get("classes")
+        if not classes:
+            backend_meta = sidecar(path)
+            if backend_meta.is_file():
+                try:
+                    raw_classes = json.loads(backend_meta.read_text()).get("classes")
+                except json.JSONDecodeError:
+                    raw_classes = None
+                if isinstance(raw_classes, dict):
+                    classes = sorted(raw_classes, key=raw_classes.get)
+                elif raw_classes:
+                    classes = list(raw_classes)
+        found.append(
+            {
+                "name": path.relative_to(root).as_posix(),
+                "training_set": meta.get("training_set"),
+                "classes": classes or [],
+                "kb": round(path.stat().st_size / 1024),
+            }
+        )
+    return {"weights": found}
+
+
+def _confine(root: Path, relative: str) -> Path | None:
+    """a path inside `root`, or None when `relative` would leave it"""
+    root = Path(root).resolve()
+    target = (root / relative).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        return None
+    return target
