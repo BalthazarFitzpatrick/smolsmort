@@ -68,8 +68,8 @@ def test_nothing_here_offers_a_guesser():
 
 
 def test_the_definitions_directory_is_not_rooted_in_a_profile():
-    """no WoW profile root: the old default lived under a per-game profiles directory, keyed by
-    screen. this one sits beside the rest of what the loop produces instead."""
+    """no game-profile root: the old default lived under the parent project's per-screen profiles
+    directory. this one sits beside the rest of what the loop produces instead."""
     parts = {p.lower() for p in classscheme.DEFS_DIR.parts}
     assert "profiles" not in parts
     assert classscheme.DEFS_DIR.is_absolute()
