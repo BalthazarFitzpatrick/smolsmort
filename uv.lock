@@ -703,6 +703,7 @@ dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pillow" },
+    { name = "ui-base" },
 ]
 
 [package.optional-dependencies]
@@ -722,6 +723,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.0" },
     { name = "pillow", specifier = ">=11.0" },
     { name = "torch", marker = "extra == 'vision'", specifier = ">=2.0" },
+    { name = "ui-base", git = "https://github.com/BalthazarFitzpatrick/smortui.git?rev=de99a50432d2696de9dbb9d39283a111bd97c262" },
 ]
 provides-extras = ["vision"]
 
@@ -812,3 +814,8 @@ sdist = { url = "https://files.pythonhosted.org/packages/f6/cc/6253133b5bb138fc3
 wheels = [
     { url = "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl", hash = "sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8", size = 45571, upload-time = "2026-07-02T08:40:04.659Z" },
 ]
+
+[[package]]
+name = "ui-base"
+version = "0.1.0"
+source = { git = "https://github.com/BalthazarFitzpatrick/smortui.git?rev=de99a50432d2696de9dbb9d39283a111bd97c262#de99a50432d2696de9dbb9d39283a111bd97c262" }

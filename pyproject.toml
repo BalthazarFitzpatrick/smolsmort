@@ -9,6 +9,7 @@ license-files = ["LICENSE"]
 dependencies = [
     "numpy>=2.0",
     "pillow>=11.0",
+    "ui-base",
 ]
 
 # TORCH IS OPTIONAL, deliberately. the loop itself does not need it - only the vision backend does,
@@ -58,6 +59,10 @@ known-first-party = ["smolsmort"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
+
+[tool.uv.sources]
+# pinned to a sha, not a tag: smortui's tags do not bump its version yet
+ui-base = { git = "https://github.com/BalthazarFitzpatrick/smortui.git", rev = "de99a50432d2696de9dbb9d39283a111bd97c262" }
 
 [dependency-groups]
 dev = ["ruff>=0.11.0", "pytest>=8.0", "torch>=2.0"]
