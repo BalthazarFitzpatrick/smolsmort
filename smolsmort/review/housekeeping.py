@@ -25,7 +25,7 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from snapshot.review import paths
+from smolsmort.review import paths
 
 # a stamp is "-<yyyymmdd>-<hhmm[ss]>", joined to what came before it by either separator - boxes
 # use a dot ("<recording>.cnn-20260907-010714"), tiles and set sources use an underscore
@@ -69,8 +69,8 @@ class HousekeepingError(ValueError):
 
 @dataclass
 class Recording:
-    tag: str  # flat form, e.g. "nameplate_pipeline_test__1"
-    path: str  # sessions/-relative, e.g. "nameplate_pipeline_test/1"
+    tag: str  # flat form, e.g. "some_test__1"
+    path: str  # sessions/-relative, e.g. "some_test/1"
     group: str
     missing: bool  # True when nothing lives at `path` any more - an orphan
 
@@ -84,12 +84,7 @@ class AssetGroup:
 
 
 def _session_frame_dirs(root: Path) -> list[Path]:
-    """every frames/ directory under `root`, however deep a recording is nested.
-
-    a thin re-walk rather than importing state's `_session_frames_dirs` - that one depends on
-    `resolve_session_paths` and the imitation session format, which housekeeping has no other
-    reason to import; frames/ existing directly is the only signal this needs.
-    """
+    """every frames/ directory under `root`, however deep a recording is nested."""
     if not root.is_dir():
         return []
     found: list[Path] = []
@@ -319,8 +314,8 @@ def _apply(raw_paths: list[str], mover) -> dict:
 
 
 def archive_paths(raw_paths: list[str]) -> dict:
-    """moves every path into a sibling `_archive/` beside it - the same recoverable move
-    `_archive_template` already does for an un-kept pool tile"""
+    """moves every path into a sibling `_archive/` beside it - the same recoverable move an
+    un-kept pool tile already gets"""
 
     def _move(path: Path) -> None:
         archive_dir = path.parent / "_archive"

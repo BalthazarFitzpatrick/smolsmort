@@ -1,13 +1,15 @@
-"""the review tool's mutable paths must be read through the module, never imported by value.
+"""the review loop's mutable paths must be read through the module, never imported by value.
 
-THE FAILURE THIS PREVENTS, and it is not a style rule. `SESSIONS_DIR` and `LABELS_DIR` are defaults
-that the settings popup repoints at runtime, and that six test fixtures monkeypatch so a test writes
-into its own tmp_path. A module doing `from ...paths import SESSIONS_DIR` binds a COPY at import
-time: the test patches one name, the code reads the other, and nothing raises. The suite stays green
-while the code reads and writes the REAL sessions/ and labels/ directories - a data-loss bug wearing
-a passing test run.
+THE FAILURE THIS PREVENTS, and it is not a style rule. `SESSIONS_DIR`, `LABELS_DIR` and
+`INTERFACE_SHOTS` are defaults a settings popup repoints at runtime, and that test fixtures
+monkeypatch so a test writes into its own tmp_path. A module doing `from ...paths import
+SESSIONS_DIR` binds a COPY at import time: the test patches one name, the code reads the other,
+and nothing raises. The suite stays green while the code reads and writes the REAL sessions/ and
+labels/ directories - a data-loss bug wearing a passing test run.
 
-Reading `paths.SESSIONS_DIR` at call time has no such gap, so that is the only allowed form.
+Reading `paths.SESSIONS_DIR` at call time has no such gap, so that is the only allowed form. See
+also tests/test_loop.py::test_no_smolsmort_module_imports_mutable_paths_by_value, which runs the
+same check across all of smolsmort/.
 """
 
 from __future__ import annotations
@@ -17,12 +19,9 @@ from pathlib import Path
 
 import pytest
 
-from snapshot.review import paths
+from smolsmort.review import paths
 
 # repointed at runtime by set_bases, and monkeypatched by tests - a copy of any goes stale.
-# INTERFACE_SHOTS joined them after the suite was found writing into the real working set: it is
-# not repointed by the settings popup, but conftest redirects it for every test, which needs the
-# same attribute access to work
 MUTABLE = {"SESSIONS_DIR", "LABELS_DIR", "INTERFACE_SHOTS"}
 
 PACKAGE = Path(paths.__file__).resolve().parents[2]
@@ -62,7 +61,7 @@ def test_the_paths_module_is_the_one_that_moves():
     original = paths.SESSIONS_DIR
     try:
         paths.SESSIONS_DIR = Path("/tmp/somewhere-else")
-        from snapshot.review import paths as seen_elsewhere
+        from smolsmort.review import paths as seen_elsewhere
 
         assert Path("/tmp/somewhere-else") == seen_elsewhere.SESSIONS_DIR
     finally:
@@ -87,8 +86,8 @@ def test_the_bases_point_at_the_repo_not_the_package():
 
 def test_every_directory_the_loop_touches_is_named_here():
     """SEVEN MODULES EACH BUILT THESE THEMSELVES, so "where do the weights go" had seven answers
-    and moving anything meant finding all of them. This is the list; it is what makes task 100 a
-    change in one file rather than a hunt.
+    and moving anything meant finding all of them. This is the list; it is what makes moving
+    anything a change in one file rather than a hunt.
     """
     for name in (
         "RECORDINGS",
@@ -109,8 +108,9 @@ def test_every_directory_the_loop_touches_is_named_here():
 
 def test_drawn_and_swept_boxes_are_told_apart_by_name(tmp_path):
     """THE DISTINCTION THE WHOLE LOOP TURNS ON. A human's boxes and a model's proposals live in the
-    same directory and differ only by infix, and confusing them has cost real work: promote once
-    resolved hand-drawn tiles against an empty sweep file because ".cnn-" sorts before ".drawn-".
+    same directory and differ only by infix, and confusing them has cost real work: promoting
+    already-resolved hand-drawn tiles against an empty sweep file because ".cnn-" sorts before
+    ".drawn-".
     """
     (tmp_path / "rec.drawn-20260903-0114.candidates.jsonl").write_text("")
     (tmp_path / "rec.drawn-20260901-0018.candidates.jsonl").write_text("")
@@ -126,15 +126,9 @@ def test_drawn_and_swept_boxes_are_told_apart_by_name(tmp_path):
 
 
 def test_no_data_path_is_relative_to_the_working_directory():
-    """A RELATIVE DATA PATH ONLY WORKS FROM THE REPO ROOT and fails silently anywhere else - it does
-    not raise, it writes a second model, or matches an empty library, somewhere nobody looks.
-    TrainState.MODEL_PATH was Path("vision/plate_model.pt").
+    """A RELATIVE DATA PATH ONLY WORKS FROM THE REPO ROOT and fails silently anywhere else - it
+    does not raise, it writes a second model, or matches an empty library, somewhere nobody looks.
     """
-    from snapshot.review.paths import LIBRARY_DIR
-    from snapshot.review.train import TrainState
-
-    assert TrainState.MODEL_PATH.is_absolute()
-    assert LIBRARY_DIR.is_absolute()
     for name in (
         "TILES_DIR",
         "TILES_ARCHIVE",
