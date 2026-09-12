@@ -11,9 +11,9 @@ from __future__ import annotations
 def _flat(name: str) -> str:
     """a session name as ONE filename component.
 
-    a nested recording is named by its path from sessions/ - "nameplate_pipeline_test/1" - and
-    that slash would otherwise make labels/nameplate_pipeline_test/1.candidates.jsonl, a directory
-    nobody created. flattening keeps every sidecar beside its siblings in labels/.
+    a nested recording is named by its path from sessions/ - "some_test/1" - and that slash would
+    otherwise make labels/some_test/1.candidates.jsonl, a directory nobody created. flattening keeps
+    every sidecar beside its siblings in labels/.
     """
     return name.replace("/", "__")
 
