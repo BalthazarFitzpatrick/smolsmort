@@ -199,6 +199,37 @@ converged", never as "the model is right". Only a holdout tells you that.
 
 The API will move until the port is finished.
 
+## Troubleshooting
+
+### A smortboard card stopped on `LEASE_CONFLICT`
+
+Work on this repo runs as [smortboard](https://github.com/BalthazarFitzpatrick/smortboard) cards. A
+card may only write the files its lease allows; when it writes outside it, the card stops with
+`LEASE_CONFLICT` and its note names the files it needed. Widen the lease, then resume the card:
+
+```bash
+curl -s -X PATCH 127.0.0.1:8000/api/cards/<card-id> \
+  -H 'content-type: application/json' \
+  -d '{"leases": ["smolsmort/detect/**", "tests/**"]}'
+curl -s -X POST 127.0.0.1:8000/api/cards/<card-id>/answer \
+  -H 'content-type: application/json' \
+  -d '{"message": "lease widened to smolsmort/detect/**, tests/** - go ahead"}'
+```
+
+The PATCH replaces the whole lease, so repeat any glob it should keep. Card ids come from
+`curl -s 127.0.0.1:8000/api/boards/<board-id>/cards`. The full procedure, and how globs are
+matched, is in [smortboard's troubleshooting](https://github.com/BalthazarFitzpatrick/smortboard#troubleshooting).
+
+Common leases for this repo:
+
+| Change | Lease |
+|---|---|
+| the heatmap backend | `smolsmort/detect/**`, `tests/**` |
+| the box backend | `smolsmort/boxes/**`, `tests/test_boxes.py`, `tests/test_variable_boxes.py` |
+| backends by name | `smolsmort/backends.py`, `tests/**` |
+| the review tool | `smolsmort/review/**`, `snapshot/**` |
+| docs | `README.md`, `docs/**` |
+
 ## Licence
 
 MIT, see [LICENSE](LICENSE).
