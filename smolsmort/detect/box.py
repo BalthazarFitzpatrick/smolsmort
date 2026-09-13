@@ -23,6 +23,9 @@ SAME_OBJECT_PX = 40
 # SAME_OBJECT_MAX_ROWS_APART box-heights of each other vertically, are one object seen twice
 SAME_OBJECT_MIN_SHARE = 0.5
 SAME_OBJECT_MAX_ROWS_APART = 1.5
+# the conventional detection threshold (pascal voc), not measured here - a caller with a different
+# shape or tolerance for its objects should pass its own
+SAME_OBJECT_MIN_IOU = 0.5
 
 
 @dataclass(frozen=True)
@@ -62,7 +65,7 @@ class Box:
 
         what actually identifies it is that the boxes lie along the same row and cover the same
         span, so that is what this measures. A caller whose objects are not long and thin should
-        pass its own thresholds, or use IoU, which is fine for a squarer shape.
+        pass its own thresholds, or use IoU, which is fine for a squarer shape - see `Box.iou`.
         """
         left = max(self.left, other.left)
         right = min(self.left + self.width, other.left + other.width)
@@ -74,3 +77,23 @@ class Box:
             self.height, other.height, 1
         )
         return share >= min_share and rows_apart <= max_rows_apart
+
+    def iou(self, other: Box) -> float:
+        """intersection over union of the two rectangles.
+
+        THE RIGHT MATCHER FOR SQUARER OR VARIABLE-SIZE OBJECTS, where `overlaps` is not: on a long
+        thin shape a small vertical offset already collapses the intersection, which is why
+        `overlaps` exists at all - see its docstring. 0.0 when the boxes do not intersect, or
+        either has zero area.
+        """
+        left = max(self.left, other.left)
+        top = max(self.top, other.top)
+        right = min(self.left + self.width, other.left + other.width)
+        bottom = min(self.top + self.height, other.top + other.height)
+        if right <= left or bottom <= top:
+            return 0.0
+        intersection = (right - left) * (bottom - top)
+        union = self.width * self.height + other.width * other.height - intersection
+        if union <= 0:
+            return 0.0
+        return intersection / union

@@ -21,6 +21,11 @@ candidate sat squarely on a perfectly legible object. Training that as backgroun
 teaches the model to suppress the very thing it is for. Discards are therefore ignored too, and this
 dataset carries NO explicit negatives - the background is everything the mining never proposed,
 which is almost all of every frame and is plenty.
+
+THAT REASONING HOLDS ONLY WHERE THE MINING WAS A FILTERED SUBSET. A human can also declare a frame
+EXHAUSTIVE - every object in it has been proposed and reviewed, nothing else is out there. On such
+a frame an unkept candidate is not an unknown, it is a confirmed absence, so it becomes a real
+negative instead of an ignore region. See build_from and Example.exhaustive.
 """
 
 from __future__ import annotations
@@ -51,6 +56,11 @@ class Example:
     labels: list[str | None] = field(default_factory=list)
     ignore: list[tuple[float, float, float, float]] = field(default_factory=list)
     negatives: list[tuple[float, float]] = field(default_factory=list)
+    # (width, height) in frame px, parallel to `centres`. optional - the fixed-size backend
+    # never reads it, since its whole premise is one box size for every object
+    sizes: list[tuple[float, float]] = field(default_factory=list)
+    # true when a human declared this frame's mining complete - see the module docstring
+    exhaustive: bool = False
 
     @property
     def object_count(self) -> int:
@@ -102,7 +112,9 @@ def build(
     )
 
 
-def build_training_set(path: Path, sessions_dir: Path) -> tuple[list[Example], dict[str, int]]:
+def build_training_set(
+    path: Path, sessions_dir: Path, *, refuse_mixed_resolutions: bool = True
+) -> tuple[list[Example], dict[str, int]]:
     """the promoted training set on disk -> examples, plus the class->channel map to train with.
 
     ONE FILE, MANY RECORDINGS. each row names its own recording, so a set assembled from several
@@ -112,6 +124,11 @@ def build_training_set(path: Path, sessions_dir: Path) -> tuple[list[Example], d
     the channel map is derived from the labels PRESENT, sorted, so it is stable across runs on the
     same file. it is returned rather than stored because a checkpoint is only meaningful with the
     map it was trained under - see detect.train.load's classes argument.
+
+    refuse_mixed_resolutions is on by default because the fixed-size backend has no single box
+    size that is right across two capture resolutions - see _refuse_mixed_resolutions. a
+    size-aware backend rescales its input instead, so that premise does not hold for it and it
+    passes False.
     """
     if not path.is_file():
         raise DatasetError(f"no training set at {path}")
@@ -126,6 +143,8 @@ def build_training_set(path: Path, sessions_dir: Path) -> tuple[list[Example], d
         key = (row["recording"], row["frame"])
         image = sessions_dir / row["recording"] / "frames" / row["frame"]
         example = by_frame.setdefault(key, Example(path=image))
+        if row.get("exhaustive"):
+            example.exhaustive = True
         centre = (row["left"] + row["width"] / 2.0, row["top"] + row["height"] / 2.0)
         if row.get("negative"):
             # A HARD NEGATIVE: somewhere the model fired and was told no. sampled deliberately
@@ -135,8 +154,10 @@ def build_training_set(path: Path, sessions_dir: Path) -> tuple[list[Example], d
         else:
             example.centres.append(centre)
             example.labels.append(row["label"])
+            example.sizes.append((row["width"], row["height"]))
     examples = [e for e in by_frame.values() if e.path.is_file()]
-    _refuse_mixed_resolutions(examples, path)
+    if refuse_mixed_resolutions:
+        _refuse_mixed_resolutions(examples, path)
     return examples, classes
 
 
@@ -174,6 +195,14 @@ def _refuse_mixed_resolutions(examples: list[Example], path: Path) -> None:
         )
 
 
+def _inside_kept_extent(centre: tuple[float, float], example: Example) -> bool:
+    """true if centre sits inside any of this frame's kept boxes, using their own sizes"""
+    for (cx, cy), (width, height) in zip(example.centres, example.sizes, strict=True):
+        if abs(centre[0] - cx) <= width / 2.0 and abs(centre[1] - cy) <= height / 2.0:
+            return True
+    return False
+
+
 def build_from(
     candidates: list[dict],
     decisions: dict,
@@ -182,14 +211,30 @@ def build_from(
     uniform_width: int = 64,
     uniform_height: int = 14,
     labels: dict[int, str] | None = None,
+    exhaustive_frames: set[str] | None = None,
 ) -> list[Example]:
     """same, from lists already in memory - the review server holds live decisions that the file
-    on disk may not have caught up with yet"""
+    on disk may not have caught up with yet.
+
+    EXHAUSTIVE MODE. exhaustive_frames names frames a human declared complete - every candidate on
+    them was proposed and reviewed, nothing else is out there. On those frames an unkept candidate
+    is a confirmed absence, so it becomes a NEGATIVE rather than an ignore region. This needs two
+    passes over the frame's candidates, because a kept box that should exempt a nearby discard can
+    come later in list order than the discard itself. A discard whose centre falls inside a kept
+    box's own extent is dropped entirely - neither ignore nor negative - since that is a
+    misaligned or redundant tile of a real object, not evidence of absence. Explicit (non-
+    exhaustive) frames are unaffected: the module docstring's "a discard is not a negative" still
+    holds there.
+    """
+    exhaustive_frames = exhaustive_frames or set()
     by_frame: dict[str, Example] = {}
+    pending: list[tuple[str, tuple[float, float]]] = []
     for index, candidate in enumerate(candidates):
         decision = decisions.get(str(index))
         image = frames_dir / candidate["path"]
         example = by_frame.setdefault(candidate["path"], Example(path=image))
+        if candidate["path"] in exhaustive_frames:
+            example.exhaustive = True
         centre = centre_of(candidate, decision, uniform_width, uniform_height)
 
         if decision and decision.get("keep"):
@@ -198,10 +243,24 @@ def build_from(
             # kernel name (see ReviewState.pool_labels) because index alone collides across
             # datasets; the caller resolves that to indices before handing it here
             example.labels.append((labels or {}).get(index))
+            rect = (decision or {}).get("rect")
+            if rect:
+                height = max(4, uniform_height + decision.get("height_delta", 0))
+                example.sizes.append((uniform_width, height))
+            else:
+                example.sizes.append((candidate["width"], candidate["height"]))
         else:
-            # everything else - discarded OR never ruled on - is unknowable as a label. see the
-            # module docstring: Discard means "not wanted as a tile", not "not an object"
-            # mined but never ruled on - unknowable, so the loss must not score it either way
+            # everything else - discarded OR never ruled on - is unknowable as a label on an
+            # explicit frame; on an exhaustive one it is resolved in the second pass below
+            pending.append((candidate["path"], centre))
+
+    for path, centre in pending:
+        example = by_frame[path]
+        if example.exhaustive:
+            if _inside_kept_extent(centre, example):
+                continue
+            example.negatives.append(centre)
+        else:
             half = (uniform_width, uniform_height)
             example.ignore.append(
                 (centre[0] - half[0], centre[1] - half[1], centre[0] + half[0], centre[1] + half[1])
@@ -217,5 +276,6 @@ def summarise(examples: list[Example]) -> dict:
         "with_objects": sum(1 for e in examples if e.object_count),
         "negatives": sum(len(e.negatives) for e in examples),
         "ignored": sum(len(e.ignore) for e in examples),
+        "exhaustive_frames": sum(1 for e in examples if e.exhaustive),
         "max_per_frame": max((e.object_count for e in examples), default=0),
     }

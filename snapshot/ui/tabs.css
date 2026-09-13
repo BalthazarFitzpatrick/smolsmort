@@ -1,0 +1,786 @@
+/* per-tab layout for the review tool.
+
+   EXTRACTED FROM A PYTHON STRING LITERAL on 2026-09-02, the same move app.js made. app.css is
+   the shared visual language - tokens, .toggle, dividers, the row height - and this is the
+   layout each tab needs on top of it. Loaded second, so it may lean on app.css's tokens and
+   override its own defaults where a tab genuinely differs. */
+  /* everything below is layout specific to this tool - the shared visual language (colours,
+     .toggle, .h-divider/.divider, .panel-floating, #nav-bar/.nav-tab, .label-columns) lives in
+     the linked app.css now, not duplicated here */
+  body { display: flex; flex-direction: column; overflow: hidden; }
+  #top-bar { flex: 0 0 auto; display: flex; align-items: flex-end; }
+  #top-bar-actions {
+    margin-left: auto; display: flex; align-items: center; gap: 6px; color: var(--text-dim);
+    padding: 10px 14px 8px 0;
+  }
+  #status { flex: 0 0 auto; padding: 8px 14px; color: var(--text-dim); }
+  /* inset separators, not full-bleed borders - the "never touch the container's own edge" rule
+     from app.css, applied between the top-bar sections this page has that the shared shell
+     doesn't know about. only margin-top/bottom are set here - margin-left/right stay the 15px
+     inset .h-divider already declares */
+
+  /* A ROUND ONE, for guidance that would otherwise sit in the row as prose and wrap it. Same
+     border, same font, same height as every other control - only the radius and a square footprint
+     differ, so it reads as one of ours rather than an icon borrowed from somewhere else.
+     RESTORED: dd9188d dropped this while adopting ui_base's tokens, in the same hunk that renamed
+     --keep-on, and kept its .toggle.help.on sibling - a partial merge rather than a restyle, which
+     is why pinning still turned it cream while the shape stayed square. */
+  .toggle.help {
+    width: var(--row-height); padding: 0; border-radius: 50%; font-weight: 600;
+  }
+
+  /* the panels' container has to be a flex column that FILLS the page, or nothing inside it has
+     a height to inherit. without this rule #tab-panels is a plain block sized by its content, so
+     .tab-panel's flex:1 has no parent to expand into, #found gets no height, and every row
+     collapses to ~28px of empty outline. before the four-tab restructure #found was a direct
+     flex child of body, which is where its height used to come from */
+  #tab-panels { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+  /* when every panel inside it is hidden, the container must not keep growing - the visible panel
+     is a SIBLING of it (overlay/train/vlm/scripts sit outside), and two flex:1 children split the
+     page between them, which pushed those tabs' content a third of the way down */
+  #tab-panels:not(:has(> .tab-panel:not(.hidden))) { flex: 0 0 auto; }
+
+  /* one tab-panel visible at a time (the others get .hidden) - tune/cluster manage their own
+     inner scroll/fill exactly as before, load/find are plain scrollable padded panels */
+  /* ONE INSET FOR EVERY TAB, and the reason it is here rather than per panel: each tab used to
+     supply its own, so the first row started at a different height on every one of them - find at
+     16px, cluster at 12, navigation at 10 plus a label, camera at ZERO with its head flush in the
+     corner. Switching tabs moved the controls under the pointer. A panel may still add gap or
+     scrolling; what it may not do is restate the inset. */
+  .tab-panel {
+    flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
+    padding: var(--inset) var(--inset-x); gap: var(--gap);
+  }
+  .tab-panel[data-panel="find"] { overflow-y: auto; }
+  /* scripts is padded like load/find, but its columns must not stretch the panel: the cascade
+     lists 26 entries where the label popup lists a handful, and .label-columns stretches to its
+     tallest column. bound the block and scroll each column in place instead */
+  /* interface tab: a narrow element list beside the screenshot being marked on */
+  .tab-panel[data-panel="interface"] { display: flex; flex-direction: column; min-height: 0; }
+  #iface-top, #iface-list-head, #iface-shot-head {
+    display: flex; align-items: center; gap: 8px;
+  }
+  #iface-body { display: flex; flex: 1 1 auto; min-height: 0; }
+  /* no border-right here: a full-height rule is not the design language. the column is separated
+     by a .divider element instead, which insets 15px from both ends like every other one */
+  #dataset-picker-list { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; }
+  /* the per-popup layout that used to live here (dataset-picker-list, iface-picker-*) is
+     .menu-panel in app.css now - one panel, one set of rules */
+  .tree-group { padding: 8px 0 2px; }
+  /* A MEMBER SITS UNDER ITS DIMENSION. the dimension used to be a heading and read as a level by
+     being a different shape; it is a removable row now, so the indent is what carries the nesting */
+  .classdef-item.member { margin-left: 18px; }
+  .iface-states { display: flex; flex-direction: column; gap: 4px; }
+  .iface-picker { justify-content: space-between; gap: 10px; min-width: 190px; }
+  .iface-picker .placeholder { opacity: 0.5; }
+  #iface-list-col {
+    width: 30%; min-width: 250px; max-width: 380px; display: flex; flex-direction: column;
+    min-height: 0;
+  }
+  #iface-list { overflow-y: auto; flex: 1 1 auto; padding: 4px 8px 12px; }
+
+  /* the same .toggle row the scripts list uses, so the two read as one language */
+  .iface-item { justify-content: flex-start; gap: 8px; white-space: nowrap; margin-bottom: 4px; }
+  /* states expand UNDER the item they belong to, indented - a separate dropdown elsewhere on the
+     page made you look away from the thing you were describing */
+  .iface-state-row {
+    justify-content: flex-start; gap: 8px; margin: 0 0 4px 22px;
+  }
+  .iface-state-row .shown {
+    margin-left: auto; opacity: 0.55;
+    max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .iface-state-row .dot { width: 6px; height: 6px; border-radius: 50%; background: #555;
+    flex: none; }
+  /* the work is real and unattached - say so rather than showing three blank fields above it */
+  .iface-unattached { color: #d84; opacity: 1; }
+  .iface-state-row.marked .dot { background: #6c6; }
+  .iface-state-row.needed .dot { background: #d84; }
+  /* a marked element reads at a glance - the point of the tab is knowing what is still missing */
+  .iface-item .dot { width: 7px; height: 7px; border-radius: 50%; background: #555; flex: none; }
+  .iface-item.marked .dot { background: #6c6; }
+  /* required and still unmarked - the readers cannot work without these */
+  .iface-item.needed .dot { background: #d84; }
+  .iface-item.needed { opacity: 1; }
+  .iface-item .coords { margin-left: auto; opacity: 0.55; }
+  #iface-shot-col { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+  #iface-shots { display: flex; flex-wrap: wrap; gap: 6px; }
+  /* numbered, not named: filenames are long and a dozen of them wrap the whole header away */
+  #iface-shots .toggle { min-width: 26px; text-align: center; padding: 0 6px; }
+  /* the head is one row, so its dividers take their height from it rather than the 15px inset a
+     full-height column uses */
+  #iface-shot-head .divider { align-self: stretch; margin: 4px 4px; }
+  /* overflow HIDDEN, not auto: panning is a transform on the stage, not the container's
+     scrollbars - scrolling only ever worked when the image already overflowed, which is exactly
+     when panning is least needed */
+  #iface-canvas-wrap {
+    position: relative; flex: 1 1 auto; overflow: hidden; margin: 0 14px; min-height: 0;
+  }
+  #iface-stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+  #iface-img { display: block; }
+  #iface-overlay { position: absolute; left: 0; top: 0; cursor: crosshair; }
+  #iface-status { padding: 8px 14px; opacity: 0.7; }
+  /* scripts inherits the shared inset; only its column bounding is its own */
+  .tab-panel[data-panel="scripts"] .label-columns { flex: 1 1 auto; min-height: 0; }
+  .tab-panel[data-panel="scripts"] .col { overflow-y: auto; min-height: 0; }
+  /* only the columns give way: the command row, its arguments and the copy button keep their own
+     height, where default flex-shrink squeezed the command preview to a sliver of glyphs (audit
+     2026-09-11) */
+  .tab-panel[data-panel="scripts"] > :not(.label-columns) { flex-shrink: 0; }
+
+  /* #found FILLS whatever height is left after status/legend, and each row gets an equal
+     share of it - Balthazar Fitzpatrick's ask: 3 rows is the right count, but they should fill the screen,
+     not just take whatever height their own content happens to need */
+  #found {
+    flex: 1 1 auto; display: flex; flex-direction: column; padding: 16px; gap: 28px;
+    min-height: 0; overflow: hidden;
+  }
+
+  /* overflow:visible everywhere the glow could bleed past a box's own edge - box-image needs
+     overflow:hidden for the drag viewport, but that must not leak onto its siblings or the glow
+     on the rightmost toggle gets clipped against its own container edge with no room to render */
+  .row { flex: 1 1 0; min-height: 0; display: flex; align-items: stretch; gap: 14px; overflow: visible; }
+  .box-image, .box-tile, .box-options {
+    background: var(--panel-row); border: 2px solid var(--grey-border);
+  }
+  /* 3px on top/left/right, 0 on the bottom - the caption supplies its own 3px margin-top, so the
+     total gap from image to caption text is 3px, per spec. same scheme on both image and tile
+     boxes so the picture actually fills the cell instead of floating in a padded frame */
+  .box-image, .box-tile { padding: 3px 3px 0 3px; display: flex; flex-direction: column; }
+  /* grows to fill whatever's left after tile's percentage and options' fixed width are taken -
+     with box-options now a fixed px rather than a percentage, a plain percentage here could leave
+     a dead gap (or overflow) depending on the row's actual width */
+  .box-image { flex: 1 1 0; overflow: hidden; position: relative; }
+  .box-image .viewport-wrap {
+    flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
+    overflow: hidden;
+  }
+  .box-image .caption, .box-tile .label {
+    flex: 0 0 auto; margin-top: 3px; color: var(--text-dim); text-align: center;
+  }
+  .box-tile { flex: 0 0 27%; }
+  /* no label dropdown any more - Keep/Discard/+/- as four equal buttons, comfortably sharing
+     the space side by side. fixed px, not a percentage, so it can't shrink below what four real
+     buttons need on a narrower screen */
+  .box-options {
+    flex: 0 0 320px; display: grid; grid-template-columns: repeat(4, 1fr);
+    align-items: center; gap: 10px; overflow: visible; padding: 8px 12px;
+  }
+  /* focused: the box's own 2px border stays exactly as it is ("frame intact"), and a stepped
+     glow steps outward from it - 2px bright cream, then one dimmer px, then one dimmer still,
+     so it reads as fading from cream into the grey rather than a blurred halo. box-shadow
+     entries paint EARLIEST-on-top, so the smallest spread must come first for the banding to
+     show as rings rather than one flat rectangle. */
+  /* the FOCUSED option is filled, not merely ringed. Balthazar Fitzpatrick discarded eight good fits without
+     noticing the highlight had parked on Discard, so the focused cell now reads at a glance and
+     the destructive one reads differently from the safe one */
+  .box-options .col.focused .toggle { border-color: var(--cream); color: var(--cream); }
+  .box-options .col.focused .toggle.discard { border-color: #c98b8b; color: #e8b4b4; }
+  .row.focused, .box-options .col.focused {
+    box-shadow:
+      0 0 0 2px var(--cream),
+      0 0 0 3px rgba(232, 221, 195, 0.55),
+      0 0 0 4px rgba(232, 221, 195, 0.28);
+  }
+  /* no border/padding here - they were eating into the column's own width, leaving less room
+     than the 72px toggle needed and pushing it 8px past .col's right edge (margin:auto can't go
+     negative, so an oversized child overflows right-only, not evenly - that's what was actually
+     "clipping" the glow: the toggle's own edge sitting on top of it, not real CSS clipping) */
+  .box-options .col { overflow: visible; }
+
+  /* already decided - dimmed so a page you're paging back through to REVIEW clearly reads as
+     settled, not as a still-open row you forgot to act on */
+  .row.done { opacity: 0.5; }
+  .reviewed-btn {
+    position: absolute; top: 4px; right: 4px; z-index: 2;
+    background: var(--panel-row); color: var(--text-dim); border: 1px solid var(--grey-border);
+    padding: 2px 8px; cursor: pointer;
+  }
+  .reviewed-btn:hover { color: var(--cream); border-color: var(--cream); }
+
+  .image-viewport { position: relative; overflow: hidden; cursor: grab; }
+  .image-viewport:active { cursor: grabbing; }
+  .image-viewport img.drag-image {
+    position: absolute; top: 0; left: 0; image-rendering: pixelated; user-select: none;
+    pointer-events: none;
+  }
+  /* element-agnostic: tune's guide is the library template's own mirrored PNG, the pool aligner's
+     is a bare div - both are the same fixed target and want the same outline */
+  .image-viewport .guide-overlay {
+    position: absolute; image-rendering: pixelated; pointer-events: none;
+    /* outline, not border - an outline never adds to the box's own size, so it can't nudge the
+       width/height JS sets to size this against the target rect. negative offset draws it
+       inward instead of around the outside, right on the rect's true boundary */
+    outline: 3px dashed var(--cream); outline-offset: -3px;
+  }
+
+  /* fills whatever height box-tile has (now the full row, per the layout above) rather than a
+     small fixed height - object-fit still keeps a differently-sized extraction from reflowing
+     the row, which is what actually made it look like it was "jumping" while dragging */
+  .box-tile .frame {
+    flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
+  }
+  .box-tile img {
+    /* width/height 100% (not max-width/max-height) so it actually UPSCALES to fill the frame -
+       max-width alone caps at the image's natural size and never grows past it, which is why
+       the tile preview stayed tiny even once its frame got much bigger */
+    width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; display: block;
+  }
+
+  /* .toggle itself is deliberately unsized in app.css (it's used for everything from a nav tab
+     to a text pill) - .row-btn is the local modifier for the tune tab's 4 equal option buttons,
+     which need a fixed width/height to sit evenly in the options grid */
+  .toggle.row-btn { width: 100%; }
+  .col.focused .toggle:not(.on) { background: rgba(232, 221, 195, 0.25); }
+  .toggle.discard.on { background: var(--muted-on); color: var(--text); }
+
+  #legend { color: var(--text-dim); padding: 4px 14px 14px; }
+  #legend b { color: var(--text); }
+
+  /* flex:1 1 auto + min-height:0, same as #found - without it #clusters has no bounded height
+     to scroll WITHIN, and body's own overflow:hidden just silently clips anything taller than
+     the viewport instead of ever showing a scrollbar */
+  #clusters { padding: 16px; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+  /* ONE flat grid of every kept-and-clustered tile, fixed 100x100 tiles, however many
+     columns fit - ordered by cluster (server sends them that way) but not boxed into separate
+     per-cluster containers, so the filter row above can freely narrow what's visible without
+     leaving empty cluster boxes behind */
+  /* the grid has to CLAIM the leftover height and scroll inside it. the panel is overflow:hidden
+     (so tune's own inner scrolling works), which meant every tile below the fold was simply
+     unreachable - no page scrollbar, no panel scrollbar, nothing */
+  #cluster-groups {
+    /* columns follow the TILE, which is bar-shaped now (208x40) - at the old 75px they
+       overlapped each other, because the grid still assumed square tiles */
+    display: grid; grid-template-columns: repeat(auto-fill, 208px); gap: 10px;
+    flex: 1 1 auto; min-height: 0; overflow-y: auto;
+    align-content: start; padding: 0 14px 14px;
+  }
+  #clusters-bar { display: flex; gap: 10px; align-items: center; white-space: nowrap; }
+  /* the two readouts are separate facts; a divider between them stops them reading as one
+     run-on sentence, and the controls sit at the right rather than mid-sentence */
+  /* a long save status must truncate rather than wrap the row */
+  #clusters-bar .sep { padding-right: 10px; border-right: 1px solid var(--grey-border); }
+  #clusters-bar input { font: inherit; padding: 4px 10px; width: 3.5em; text-align: center;
+    background: var(--panel-row); color: var(--cream); border: 2px solid var(--grey-border); }
+  #clusters-bar input:focus { outline: none; border-color: var(--cream); }
+  /* a rejected keystroke has to be visible or it reads as a dead field */
+  #clusters-bar input.rejected { border-color: #a05252; }
+  /* RECTANGULAR, MATCHING THE BAR. a plate is 226x35 - about 6.5:1 - and a square tile with a
+     stretched image squashed it beyond recognition. the old 75x75 tile was written when a tile
+     was 64x14 AND only its left 40%, where the distortion was mild; a full-width tile makes it
+     absurd. object-fit: contain then shows the bar in its true proportions, letterboxed rather
+     than stretched, which is what makes two primitives comparable by eye */
+  /* NATURAL HEIGHT BY DEFAULT. the column width is fixed so the grid still scans, but the tile
+     takes the crop's own aspect - a fixed 208x60 cell letterboxed anything that was not that
+     shape, and the pad is now two independent numbers so crops genuinely differ. rows go ragged;
+     that is the honest rendering. */
+  .cluster-item {
+    position: relative; cursor: pointer; width: 208px; padding: 1px;
+    box-sizing: border-box; border: 2px solid var(--grey-border); background: var(--panel-row);
+    /* THE SPACE IS RESERVED BEFORE THE PIXELS ARRIVE, which is what makes loading="lazy" work at
+       all. Without a height of its own a cell is as tall as its image, so an unloaded grid is five
+       thousand zero-height cells - every one of them inside the viewport, every one fetched at
+       once, which is the pile-up lazy loading was added to stop. 46px is a plate tile at this
+       width; the real height takes over the moment the image lands. */
+    min-height: 46px;
+  }
+  .cluster-item img { display: block; width: 100%; height: auto; }
+  /* uniform is a VIEW setting and costs nothing to switch - the npz holds the real pixels either
+     way, so this never needs a re-cut. for when comparing shapes matters more than seeing each
+     crop as it is. */
+  #cluster-groups.uniform-tiles .cluster-item { height: 60px; }
+  #cluster-groups.uniform-tiles .cluster-item img { height: 100%; object-fit: contain; }
+  /* THE DIMMING IS ON THE CONTENTS, NOT THE TILE. `opacity` on .cluster-item faded the whole
+     element - including the box-shadow ring below - so an excluded tile could be selected and had
+     no way to show it. that made the net look like it skipped judged tiles when it had actually
+     caught them, and the press that followed then inverted them */
+  .cluster-item.excluded { border-color: var(--cream); }
+  .cluster-item.excluded .tile-viewport,
+  .cluster-item.excluded > img { opacity: 0.35; }
+  /* cmd/ctrl+click multi-select, distinct from excluded's dim+cream look - a bright ring, not
+     a border swap, since a selected tile also needs to read clearly if it's ALSO excluded */
+  .cluster-item.selected {
+    box-shadow: 0 0 0 2px var(--cream), 0 0 0 4px rgba(232, 221, 195, 0.55);
+  }
+  /* fixed 70px-wide window filling the tile's available height - the backend crop is always
+     exactly 2x the bar's own height, so scaling it to fill height:100% reproduces a 25%/50%/25%
+     background/bar/background split regardless of the tile's absolute size. width overflow past
+     70px (nearly always, since the crop is deliberately over-wide) is silently cropped by
+     overflow:hidden - left-anchored, never squeezed to fit */
+  .tile-viewport { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+
+  /* WHERE THIS TILE STANDS, readable across a grid of 226 without opening anything. NOT inside
+     .tile-viewport, deliberately - that is what `excluded` dims to 0.35, and a verdict that fades
+     on the tiles carrying a verdict is the one case it must stay legible. The ring is the tile's
+     own ground rather than a colour, so the dot reads on grass, on stone and on a health bar
+     without introducing a fourth hue */
+  .tile-dot {
+    position: absolute; right: 4px; bottom: 4px;
+    width: 8px; height: 8px; border-radius: 50%;
+    border: 2px solid var(--panel-row); box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
+    pointer-events: none;
+  }
+  .tile-dot.is-class    { background: var(--lichen); }
+  .tile-dot.is-negative { background: var(--stone-red); }
+  .tile-dot.is-unset    { background: var(--text-dim); }
+
+  .tile-viewport img {
+    width: 100%; height: 100%; display: block; image-rendering: pixelated;
+    object-fit: contain;   /* true proportions, never squashed to the tile */
+  }
+  .cluster-item .x-mark {
+    display: none; position: absolute; inset: 0; align-items: center; justify-content: center;
+    font-size: 2.4em; font-weight: bold; color: var(--cream); text-shadow: 0 0 6px #000;
+  }
+  .cluster-item.excluded .x-mark { display: flex; }
+
+  /* right-click narrowing popup - .panel-floating (app.css) supplies the border/background/
+     shadow/padding, this just adds the flex layout on top of it */
+  #label-popup { position: fixed; z-index: 10; display: flex; flex-direction: column; gap: 12px; }
+  /* current-label row shares the exact same 3-column/divider layout as the picker below it,
+     so a class name lands directly above its own column - blank cells where a label has
+     nothing to say (a class label has nothing for the generics column, etc) */
+  #label-current .col { color: var(--cream); text-align: center; }
+  #label-bottom-row { display: flex; gap: 10px; justify-content: center; }
+  /* the pool aligner, same floating shell as the label popup it opens from */
+  #align-popup { position: fixed; z-index: 11; display: flex; flex-direction: column; gap: 10px; }
+  #align-name { text-align: center; }
+  #align-wrap { display: flex; align-items: center; justify-content: center; }
+  #align-legend { color: var(--text-dim); text-align: center; }
+  #align-bottom-row { display: flex; gap: 10px; justify-content: center; }
+  #align-status { text-align: center; min-height: 14px; }
+  /* the top-of-page cluster FILTER reuses the same 3-group/divider layout as the right-click
+     popup, but as one single row - each group's own options flow horizontally, not stacked */
+  #cluster-filter { padding: 0; }
+  #cluster-filter .col { flex-direction: row; flex-wrap: wrap; gap: 6px; padding: 0 var(--inset-x); }
+  #cluster-filter .divider { margin: 4px 0; }
+  #cluster-filter .toggle.label-option { padding: 0 10px; }
+
+  /* OPENED IS A FACT, TICKED IS AN INTENT, and they may not look the same. `on` is the cream fill
+     every toggle uses for "you chose this"; a dataset that is merely in the pool gets the quieter
+     outline instead, so clearing a tick leaves the open ones visibly open */
+  .menu-item.opened { border-color: var(--lichen-deep); color: var(--lichen); }
+  /* dataset tags are whole session names, far wider than a class name. as a fourth column they
+     wrapped the identity columns onto two lines each; on their own row they simply flow */
+  /* .filter-row is ui_base's now; only the tab's own inset stays here */
+  .filter-row, #tune-controls { padding: 0 var(--inset-x); }
+  /* the row labels sit in a column of their own width, so the "dataset" pills line up
+     up with each other instead of each starting wherever its own word happens to end */
+  .filter-row > .field-label { flex: 0 0 54px; }
+  .filter-row + .filter-row { padding-top: 0; }
+  .filter-row:last-of-type { padding-bottom: 11px; }
+  .filter-row .toggle { padding: 0 10px; width: auto; }
+  .filter-row .none { color: var(--text-dim); font-style: italic; }
+  /* .col is styled by app.css only under .label-columns; the filter rows use it standalone */
+  .filter-row .col { display: flex; flex-wrap: wrap; gap: 6px; row-gap: 7px; }
+  /* a head that names a long training set needs the room; these two own their own row */
+  .dropdown-head.wide { min-width: 0; max-width: none; width: 100%; }
+  /* the channel picker is eight short buttons - it fits on one line, and wrapping it into two
+     made a two-axis control look like two separate controls */
+  #train-channels { flex-wrap: nowrap; overflow-x: auto; }
+  #train-channels .col { flex-wrap: nowrap; }
+  .filter-row .divider { margin: 2px 4px; }
+  /* the cnn channel picker sits in a flex column beside the viewport - without this it is handed
+     a share of the height and squeezed to nothing instead of sitting above the image */
+  #train-channels { flex: 0 0 auto; align-items: center; }
+  /* a row of sliders, so more than one threshold can live side by side later */
+  .slider-row { display: flex; flex-wrap: wrap; gap: 22px; padding: 4px 14px 2px; flex: 0 0 auto; }
+  /* local modifier - the shared .toggle is unsized, label options are text pills, not squares */
+  .toggle.label-option { width: auto; padding: 0 14px; justify-content: flex-start; }
+  /* the target filename "promote" will actually write - half the height of the button row
+     above it, since it's a quiet detail to check/override, not a primary action */
+  #label-slug-row { margin-top: 6px; }
+  #label-slug-row input {
+    width: 100%; box-sizing: border-box; font: inherit; padding: 3px 8px;
+    height: 17px; background: var(--bg); color: var(--text-dim); border: 1px solid var(--grey-border);
+  }
+  #label-slug-row input:focus { color: var(--cream); border-color: var(--cream); outline: none; }
+
+
+  /* ---- train tab: facts and controls left, frames and a viewport right ---- */
+  /* train and vlm inherit the shared inset - their panes carry the inner gutter only */
+
+  /* two fifths for the controls, three for the frames and the rendered heatmap */
+  .tab-panel[data-panel="train"] .pane-split > .pane:first-child { flex: 0 0 40%; }
+  .tab-panel[data-panel="train"] .pane-split > .pane:last-child { flex: 1 1 auto; }
+  /* .pane is ui_base's now - it carries the gutter either side of the rule. only the scrolling
+     is this tab's business */
+  .split > .pane { overflow-y: auto; }
+  .train-facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; }
+  .train-facts .k { color: var(--text-dim); }
+  .train-facts .v { color: var(--cream); }
+  /* the bar full width with its status UNDER it, so the training and sweep bars are the same
+     width as each other rather than each sized by the length of its own status line */
+  .progress-row { display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
+  /* a control row may wrap and must then grow: the pane is a scrolling flex column, and ui_base's
+     explicit min-height let the row shrink to one line so its wrap spilled under the bar below */
+  .run-controls { flex-shrink: 0; }
+  /* NO BORDER. a track drawn round the fill reads as a second element at a different line
+     weight; the bar is just the fill on the panel */
+  .bar { flex: 1 1 auto; height: 8px; background: var(--panel-row); }
+  #train-bar-fill { height: 100%; width: 0; background: var(--cream); }
+  #train-loss { width: 100%; border: 1px solid var(--grey-border); background: var(--panel-row); }
+  /* the frame list takes about half the right column and scrolls; the viewport below gets the rest */
+  /* FOUR COLUMNS, not one. a single column of full-width buttons spent the whole right pane on a
+     list, leaving the rendered heatmap - the thing being judged - a strip at the bottom */
+  /* the picker takes whatever vertical space the 16:9 viewport below it does not */
+  #train-frames {
+    flex: 1 1 auto; overflow-y: auto; min-height: 0;
+    display: grid; gap: 4px; align-content: start;
+    /* RESPONSIVE, not a fixed count. five columns fit a wide window and crush a narrow one - a
+       frame row is a name plus a plate count, and below about 190px the count wraps under the
+       name. auto-fill takes as many as fit at that width and no more */
+    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  }
+  /* A FIXED 16:9 BOX, and the image scaled UNIFORMLY inside it. the captures are 1.54:1, so the
+     ratios do not match - but a stable box is worth more than the last few pixels, and stretching
+     would misreport whether a peak sits on a plate. contain scales without distorting; pan and
+     zoom are there for looking closer. */
+  .tab-panel[data-panel="train"] .viewport {
+    flex: 0 0 auto; width: 100%; aspect-ratio: 16 / 9; padding: 0; border: none;
+    position: relative; overflow: hidden; cursor: grab;
+  }
+  .tab-panel[data-panel="train"] .viewport:active { cursor: grabbing; }
+  #train-stage { position: absolute; inset: 0; transform-origin: 0 0; }
+  #train-stage img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  #train-view-head { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+  .train-frame { justify-content: space-between; width: auto; gap: 8px; }
+  .viewport { flex: 1 1 auto; min-height: 0; border: 1px solid var(--grey-border);
+    background: var(--panel-row); display: flex; align-items: center; justify-content: center;
+    overflow: hidden; }
+  .viewport img { max-width: 100%; max-height: 100%; display: block; }
+
+  /* TRAINING HOLDS THE MODEL, so every heatmap under this is the one from before the run started.
+     The stripes say "do not read this" at a glance, which a caption alone does not - and the
+     hazard pattern is the one convention everyone already knows for it. Scoped to the train
+     viewport because .viewport is shared with the vlm tab. */
+  .train-viewport { position: relative; }
+  /* THE ATTRIBUTE ONLY WORKS THROUGH THE UA STYLESHEET, and an author display rule outranks it -
+     so  here made hidden do nothing and the stripes sat over an idle tab from page
+     load. .help-tip[hidden] exists three files over for the same reason. */
+  #train-busy[hidden] { display: none; }
+  #train-busy {
+    position: absolute; inset: 0; z-index: 2;
+    display: flex; align-items: center; justify-content: center;
+    /* the project's own two: --grey-border for the ground, --stone-red for the warning. no new
+       hue, and the red is the muted sampled one rather than a signal red */
+    background: repeating-linear-gradient(
+      45deg,
+      var(--grey-border) 0 16px,
+      var(--stone-red) 16px 32px
+    );
+  }
+  /* FULLY OPAQUE, so the message never has stripes running through the letters */
+  #train-busy .busy-card {
+    background: var(--bg); color: var(--cream);
+    border: 2px solid var(--grey-border);
+    padding: 16px 26px; text-align: center;
+    font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase;
+    box-shadow: 0 2px 18px rgba(0, 0, 0, 0.55);
+  }
+
+  #vlm-bar-fill { height: 100%; width: 0; background: var(--cream); }
+  #vlm-list { flex: 0 0 45%; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+  .vlm-row { justify-content: space-between; width: 100%; }
+  /* a verdict a human still has to settle is marked, not hidden - the whole point of the triage
+     layer is that it says when it is unsure rather than guessing */
+  .vlm-row.flagged { border-color: #a08a52; }
+  /* ---- load tab ---- */
+  .load-row { width: 100%; justify-content: space-between; gap: 14px; }
+  .load-row .name { color: var(--cream); }
+  .load-row .stats { color: var(--text-dim); }
+  .load-row.on .name { color: var(--accent-on-text); }
+  .load-row.on .stats { color: #6a655c; }
+
+  /* ---- find tab ---- */
+  /* the one exception: a script row stacks a name over its summary, so it is two rows tall */
+  .script-row { justify-content: center; flex-direction: column; align-items: flex-start; gap: 2px;
+    height: calc(var(--row-height) * 2); }
+  .script-row .name { color: var(--cream); }
+  .script-row .stats { color: var(--text-dim); }
+  /* a command he never types himself - a tool or an agent runs it. the warn edge, no shadow */
+  .script-row.internal { border-color: var(--status-warn); }
+  /* a required argument is not a choice, so it does not read like one: cream border, always on,
+     and sorted to the front. the optional ones stay pickable toggles */
+  .arg-req { border-color: var(--cream); }
+  .script-row.on .name { color: var(--accent-on-text); }
+  .script-row.on .stats { color: #6a655c; }
+  #script-args { display: flex; flex-wrap: wrap; gap: 8px; padding: 6px 0; align-items: center; }
+  /* an argument and the value typed for it travel together, so a wrapped row never separates a
+     field from the flag it belongs to */
+  .arg-cell { display: flex; align-items: center; gap: 4px; }
+  .arg-value { font: inherit; padding: 0 8px; height: var(--row-height);
+    width: 11rem; background: var(--bg); color: var(--text);
+    border: 2px solid var(--grey-border); box-sizing: border-box; }
+  .arg-value:focus { outline: none; border-color: var(--cream); }
+  .arg-tip { white-space: pre-line; }
+  .arg-pos, .arg-opt, .arg-req { padding: 0 10px; width: auto; }
+  /* a required positional is not a choice - shown filled but not clickable */
+  .arg-pos, .arg-req { cursor: default; }
+  /* argparse's help, in our own panel language rather than the browser's native tooltip - same
+     cream border and mono type as everything else, and it wraps so a real sentence is readable */
+  .arg-opt, .arg-pos, .arg-req { position: relative; }
+  .arg-tip {
+    position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 40;
+    display: none; width: max-content; max-width: 32rem;
+    background: var(--panel-row); color: var(--text); border: 2px solid var(--cream);
+    padding: 6px 10px; line-height: 1.45; text-align: left;
+    white-space: normal; pointer-events: none;
+  }
+  .arg-opt:hover .arg-tip, .arg-pos:hover .arg-tip,
+  .arg-opt:focus-visible .arg-tip { display: block; }
+  /* NOTHING TOUCHES AN EDGE. the panel's own content sat flush against the window - the title was
+     clipped mid-word and read as part of the tab strip above it - and the right column sat hard
+     against the vertical rule. one padding rule on the head and on each column fixes both, and 14px
+     is what every other tab's rows already use */
+  .tab-panel[data-panel="map"] { display: flex; flex-direction: column; min-height: 0; }
+/* THE WRAP CLIPS, THE CANVAS DOES NOT FIT IT. the canvas is the zone at its own aspect and the
+   view transform moves it inside here, so this scrolls nothing and hides the overflow */
+#map-wrap { flex: 1; min-height: 240px; overflow: hidden; position: relative; cursor: grab; }
+#map-wrap:active { cursor: grabbing; }
+#map-canvas { display: block; transform-origin: 0 0; image-rendering: pixelated; }
+
+/* three columns, one row per layer: opacity, thickness, colour */
+.visual-grid { display: grid; grid-template-columns: auto auto auto; gap: var(--gap) 18px; align-items: center; }
+.visual-na { color: var(--text-dim); font-style: italic; }
+.visual-picker { width: 0; height: 0; padding: 0; border: 0; opacity: 0; position: absolute; }
+.visual-swatch { width: 46px; padding: 0; border: 2px solid var(--grey-border); }
+  /* NAVIGATION TAB, restored with its js - see the note in app.js. two halves of one shape: each
+     column owns its controls row, so both sit at the same height under the single horizontal rule.
+     #nav-body is a .split and .nav-col a .pane, so the gutter either side of the rule comes from
+     ui_base rather than from this file remembering to add one to both halves */
+  #nav-canvas-wrap { flex: 1; min-height: 240px; display: flex; }
+  /* the numbers are the tab; the table gets the room and scrolls in place rather than growing the
+     panel, which is the same rule every other list here follows */
+  #nav-table-wrap { flex: 1; min-height: 0; overflow-y: auto; }
+  #nav-table { width: 100%; border-collapse: collapse; font: inherit; }
+  #nav-table th {
+    text-align: left; padding: 4px 8px; color: var(--text-dim); font-weight: normal;
+    position: sticky; top: 0; background: var(--panel-row);
+  }
+  #nav-table td { padding: 3px 8px; }
+  .nav-row { cursor: pointer; }
+  .nav-row:hover { background: var(--panel-row); }
+  .nav-row.on { background: var(--panel-row); color: var(--cream); }
+  /* go and no-go are opposite verbs, so they take the accent pair rather than two invented hues */
+  .nav-kind { cursor: pointer; }
+  .nav-kind.go { color: var(--accent-on); }
+  .nav-kind.nogo { color: var(--stone-red-lift, #e8b4b4); }
+  .nav-empty { color: var(--text-dim); }
+  /* action, current combo, change - one row each, the combos lined up in one column */
+  #nav-keys {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr) max-content;
+    gap: 4px 12px;
+    align-items: center;
+  }
+  .nav-key-combo { color: var(--cream); }
+  .nav-key-combo.waiting { color: var(--accent-on); }
+  /* wraps: the dpi hint is the only place that says how to find the real button id */
+  #nav-keys-note { color: var(--text-dim); white-space: normal; overflow: visible; }
+  .nav-drop { cursor: pointer; color: var(--text-dim); }
+  .nav-drop:hover { color: var(--stone-red-lift, #e8b4b4); }
+  /* NO BOX AROUND EITHER MAP. sections here are separated by the inset rules, and a border is a
+     second way of saying the same thing - it also drew a frame around empty space, which reads as
+     a broken image rather than as nothing recorded yet */
+  #nav-canvas { flex: 1; display: block; }
+
+  /* both popups centre themselves rather than following a cursor - they are opened from a button,
+     not a right-click, so there is no meaningful anchor point */
+  #settings-popup {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 20;
+    display: flex; flex-direction: column; gap: 12px; max-height: 80vh;
+  }
+  .popup-title { color: var(--cream); }
+  .popup-buttons { display: flex; gap: 10px; justify-content: center; }
+  .pick-col { display: flex; flex-direction: column; gap: 4px; max-height: 46vh; overflow-y: auto; }
+  .pick-col .toggle { justify-content: flex-start; padding: 0 10px; }
+  .settings-field { display: flex; flex-direction: column; gap: 4px; padding: 0 15px; }
+  .settings-field input {
+    font: inherit; padding: 4px 8px; background: var(--bg);
+    color: var(--text); border: 1px solid var(--grey-border); min-width: 320px;
+  }
+  .settings-field input:focus { color: var(--cream); border-color: var(--cream); outline: none; }
+  /* READ ONLY LOOKS READ ONLY. A field that takes a caret but keeps every keystroke reads as
+     broken rather than as fixed, so while the bases are not editable the input drops its border
+     and sits at the same weight as the rows below it */
+  .settings-field input[readonly] {
+    border-color: transparent; background: none; color: var(--text); padding-left: 0;
+  }
+  .settings-field input[readonly]:focus { border-color: transparent; color: var(--text); }
+  /* the picked-path rows, while nothing is picked: a value, not a control */
+  .settings-field > .grow { color: var(--cream); padding: 2px 0; }
+  /* a base can hold several paths - one per line, so two pools read as two things */
+  .base-path { display: block; }
+  /* A HEAD THAT HOLDS SEVERAL PATHS LAYS THEM DOWN THE BOX, NOT ACROSS IT. ui_base's
+     .dropdown-head is a 190px single-line box whose ellipsis rule reaches only its FIRST child, so
+     two pool folders rendered as the first one clipped to nothing and the second one whole -
+     Balthazar Fitzpatrick: "no matter which one I select and then say add this one too, it is only
+     ever the last one shown". The add had always worked; the row was lying about it.
+     AND IT HAS TO GROW, which that pass missed: .toggle sets height:var(--row-height), a fixed
+     single row, so laying the paths out in a column left the box one row tall with the second
+     path hanging outside its own border. overflow:visible made it legible, never made it fit. */
+  #base-pool.dropdown-head {
+    flex-direction: column; align-items: flex-start; gap: 2px;
+    min-width: 190px; max-width: none; white-space: normal; overflow: visible;
+    height: auto; padding-top: 4px; padding-bottom: 4px; position: relative;
+  }
+  #base-pool.dropdown-head > span { overflow: visible; text-overflow: clip; }
+  /* the caret is furniture for the whole control, not a row of it - in column flow it lands
+     under the last path and reads as a third entry */
+  #base-pool.dropdown-head::after { position: absolute; top: 6px; right: 12px; }
+
+  .settings-note { padding: 0 15px; color: var(--text); opacity: 0.7; }
+  /* find's own fields, in the house language: a dim caption over a cream value, grouped by the
+     same .label-columns/.divider primitive the popup uses. numbers are stepped with the same
+     .toggle as every other control rather than a browser number input, which brought its own
+     spinner, focus ring and font and read as a different application */
+  .stepper { display: flex; align-items: center; gap: 8px; }
+  .stepper .toggle { padding: 0 10px; }
+  .stepper .field-value { min-width: 46px; text-align: center; }
+  #find-panel label { display: flex; flex-direction: column; gap: 4px; color: var(--text-dim); }
+  #find-panel input {
+    font: inherit; background: var(--bg); color: var(--text); border: 2px solid var(--grey-border);
+    padding: 6px 8px;
+  }
+  /* EMPTY MEANS GONE, not a reserved blank row. this sits between the panel's top and the control
+     bar, so while it has nothing to say it was still spending a row's height and a flex gap - which
+     is most of the time, and it is why find's first control sat lower than everything else */
+  #find-status { color: var(--text-dim); }
+  #find-status:empty { display: none; }
+  #draw-panel { display: flex; flex-direction: column; gap: var(--gap); min-height: 0; flex: 1 1 auto; }
+  #draw-bar { display: flex; align-items: center; gap: var(--gap); white-space: nowrap; }
+  /* overflow HIDDEN, not auto - same reasoning as #iface-canvas-wrap: panning is a transform on
+     the canvas itself now, not the container's scrollbars. the canvas IS the stage here (there is
+     no separate overlay layer to keep in sync, unlike the interface tab - one canvas already draws
+     both the frame and the boxes on it), so it gets the same absolute+transform-origin treatment
+     #iface-stage does. */
+  #draw-wrap { position: relative; overflow: hidden; min-height: 0; flex: 1 1 auto; }
+  /* THE SCRUBBER SITS BETWEEN PREV AND NEXT and carries its own numbers: the run's first and last
+     at the two ends, the frame being looked at underneath. it takes the row's spare width so a
+     long run stays scrubbable, and shrinks rather than pushing the buttons off the edge */
+  .draw-scrub { display: flex; flex-direction: column; align-items: center; gap: 2px;
+                flex: 1 1 auto; min-width: 120px; max-width: 420px; }
+  .draw-scrub-row { display: flex; align-items: center; gap: 8px; width: 100%; }
+  .draw-scrub-row input[type="range"] { flex: 1 1 auto; min-width: 0; }
+  .draw-end { color: var(--text-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  #draw-canvas {
+    position: absolute; left: 0; top: 0; transform-origin: 0 0; display: block; cursor: crosshair;
+  }
+
+/* ---------------------------------------------------------------- camera
+
+   the live strip is one row of cells, and it MAY NOT CHANGE HEIGHT as values come and go - the
+   same rule the control rows follow, for the same reason: a strip that grows when a warning
+   appears shoves the list below it down while you are reading it. */
+/* A READING IS A BOX, like the dropdowns above it and the step tiles below it. .strip gave one
+   full-bleed bar with internal rules, which reads as a status bar borrowed from somewhere else -
+   the page's own vocabulary is bordered boxes separated by --gap */
+.readout {
+  display: flex; align-items: center; gap: var(--gap);
+  height: var(--row-height); padding: 0 12px; box-sizing: border-box;
+  border: 2px solid var(--grey-border); background: var(--panel-row);
+  white-space: nowrap; flex: 0 1 auto; min-width: 0;
+}
+.readout .cam-v { overflow: hidden; text-overflow: ellipsis; }
+.cam-k { color: var(--text-dim); }
+.cam-v { color: var(--cream); font-variant-numeric: tabular-nums; }
+.cam-v.cam-ok { color: var(--text); }
+.cam-drift { color: var(--dim); }
+
+#cam-body { display: flex; gap: 0; min-height: 0; flex: 1 1 auto; }
+#cam-steps { flex: 4 1 0; min-width: 0; display: flex; flex-direction: column; gap: var(--gap);
+  overflow-y: auto; padding-right: 14px; }
+#cam-log-col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: var(--gap);
+  padding-left: 14px; min-height: 0; }
+
+/* FIVE COLUMNS, one per cycle, because the five are the same five steps at different settings -
+   side by side you read down a step and across a sitting. label-columns supplies the rules between
+   them and, since its .col shrinks, they always fit rather than clipping */
+#cam-cycles .col { gap: 4px; padding: 0 var(--inset-x); }
+#cam-cycles .divider { margin: 2px 0; }
+.cam-cycle { min-width: 0; }
+/* setup and closing are single full-width columns, so their steps line up with the cycles above */
+.cam-block { display: flex; flex-direction: column; gap: 4px; padding: 0 var(--inset-x); }
+.cam-cycle-t { color: var(--text-dim); letter-spacing: 0.07em; text-transform: uppercase; }
+.cam-cycle-s { color: var(--cream); margin-bottom: 4px; }
+
+/* A STEP IS A TILE, like everything else you can look at in this tool. It was bare text with a
+   coloured left edge, which read as a paragraph rather than as a list of things with states - and
+   nothing else in the app states itself that way. Same 2px border, same panel fill, same idiom.
+   Not a .toggle though: nothing here is clickable, and a control that cannot be pressed should not
+   look pressable. */
+.cam-step {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 6px 10px; line-height: 1.35;
+  color: var(--text-dim); min-width: 0;
+  background: var(--panel-row); border: 2px solid var(--grey-border);
+}
+.cam-step .cam-name { overflow-wrap: anywhere; }
+.cam-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; background: currentColor; opacity: 0.5; }
+.cam-step.todo { color: var(--text-dim); }
+.cam-step.current { color: var(--cream); border-color: var(--cream); }
+.cam-step.current .cam-dot { opacity: 1; }
+.cam-step.done { color: var(--lichen); border-color: var(--lichen-deep); }
+.cam-step.done .cam-dot { opacity: 1; }
+.cam-step.failed { color: var(--stone-red-lift); border-color: var(--stone-red); }
+.cam-step.failed .cam-dot { opacity: 1; }
+
+/* the log tails, so it scrolls in place rather than growing the panel */
+#cam-log { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; }
+.cam-ev { color: var(--text-dim); line-height: 1.4; }
+.cam-ev-t { color: var(--cream); margin-right: 8px; font-variant-numeric: tabular-nums; }
+
+
+/* the distance to stand at, under the setting it belongs to - read off the strip, not guessed */
+.cam-cycle-d { color: var(--lichen); }
+/* the distance the turn is taken from is the instruction; where the plate unclamps is the reason
+   for it, so it sits under and dimmer rather than competing */
+.cam-cycle-u { color: var(--text-dim); margin-bottom: 4px; }
+
+/* ---- housekeeping tab ---- */
+#hk-columns { flex: 1 1 auto; min-height: 0; }
+#hk-recordings { overflow-y: auto; min-height: 0; }
+#hk-assets-col { display: flex; flex-direction: column; min-height: 0; }
+#hk-assets { overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+/* one line, name left and its badge (or nothing) right - single-line by design so this row never
+   needs the height:auto override a stacked toggle would */
+.hk-recording-row { justify-content: space-between; gap: 10px; }
+.hk-recording-row .hk-rec-name {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hk-recording-row.on { border-color: var(--cream); color: var(--cream); }
+/* orphaned reads as a warning, not a choice - the same red every other destructive/attention
+   marker on this page wears */
+.hk-rec-badge { color: var(--stone-red-lift); flex: 0 0 auto; }
+.hk-asset-row {
+  justify-content: flex-start; gap: 10px; width: 100%; cursor: pointer;
+}
+.hk-asset-row .hk-check { flex: 0 0 auto; }
+.hk-asset-row .hk-asset-label {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  text-align: left;
+}
+.hk-asset-row .hk-asset-size { color: var(--text-dim); flex: 0 0 auto; }
+#hk-assets-bar { flex-wrap: wrap; row-gap: 6px; }
+
+/* ---- control tab: OverlayModel's keyboard/mouse/dial, ported from OverlayWindow ------------ */
+/* keyboard on the left, dials+mouse lamps on the right - same left-to-right reading OverlayWindow
+   chose, and for the same reason: this is read at a glance while both hands are on the real ones */
+#control-body { display: flex; gap: 20px; min-height: 0; flex: 1 1 auto; padding: 0 var(--inset-x); }
+#control-keys { position: relative; flex: 0 0 auto; }
+#control-dials { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+/* ONE LAMP CLASS FOR BOTH KEYS AND MOUSE BUTTONS - the tkinter panel drew them at the same size
+   deliberately (see OverlayWindow._draw_mouse_buttons) so the two read as one consistent grid */
+.control-key {
+  position: absolute; display: flex; align-items: center; justify-content: center;
+  border: 2px solid var(--grey-border); background: var(--panel-row); color: var(--text-dim);
+  font-size: 10px; font-weight: 600; letter-spacing: 0.02em;
+}
+.control-key.lit { border-color: var(--lichen); background: var(--lichen); color: var(--bg); }
+/* the mouse buttons are not positioned absolutely - they sit in their own small row below the
+   dials, same relative place OverlayWindow puts them (under, not beside, both dials) */
+#control-mouse-buttons { display: flex; gap: 4px; }
+#control-mouse-buttons .control-key { position: static; width: 26px; height: 26px; }
+#control-canvas { display: block; }

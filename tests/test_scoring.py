@@ -10,7 +10,9 @@ from smolsmort.detect.scoring import (
     MAX_FALSE_POSITIVE_RATE,
     TARGET_RECALL,
     ScoringError,
+    boxes_from_candidates,
     boxes_from_peaks,
+    iou_match,
     score,
 )
 
@@ -97,3 +99,60 @@ def test_peaks_become_boxes_of_the_known_plate_size():
 def test_the_report_says_pass_or_fail_in_words():
     result = score([[_box()], []], [[_box()], []])
     assert any("PASS" in line for line in result.lines())
+
+
+def test_iou_of_two_squares_20px_apart():
+    a = PlateBox(left=0, top=0, width=100, height=100)
+    b = PlateBox(left=20, top=0, width=100, height=100)
+    assert a.iou(b) == pytest.approx(0.6667, abs=1e-3)
+
+
+def test_iou_matched_boxes_count_as_a_hit():
+    a = PlateBox(left=0, top=0, width=100, height=100)
+    b = PlateBox(left=20, top=0, width=100, height=100)
+    result = score([[a]], [[b]], match=iou_match(0.5))
+    assert result.hits == 1
+
+
+def test_disjoint_boxes_have_zero_iou():
+    a = PlateBox(left=0, top=0, width=10, height=10)
+    b = PlateBox(left=100, top=100, width=10, height=10)
+    assert a.iou(b) == 0.0
+
+
+def test_identical_boxes_have_iou_one():
+    a = PlateBox(left=5, top=5, width=40, height=40)
+    assert a.iou(a) == 1.0
+
+
+def test_a_zero_area_box_has_zero_iou():
+    a = PlateBox(left=0, top=0, width=0, height=10)
+    b = PlateBox(left=0, top=0, width=10, height=10)
+    assert a.iou(b) == 0.0
+
+
+def test_a_box_inside_one_four_times_its_area():
+    outer = PlateBox(left=0, top=0, width=20, height=20)
+    inner = PlateBox(left=0, top=0, width=10, height=10)
+    assert outer.iou(inner) == pytest.approx(0.25)
+    assert not score([[inner]], [[outer]], match=iou_match(0.5)).hits
+    assert score([[inner]], [[outer]], match=iou_match(0.2)).hits == 1
+
+
+def test_the_thin_bar_near_miss_is_a_hit_by_default_and_a_miss_by_iou():
+    """this is the case that keeps overlaps the default - see box.Box.overlaps"""
+    predicted, truth = _box(left=810, top=406), _box(left=800, top=400)
+    assert score([[predicted]], [[truth]]).hits == 1
+    assert score([[predicted]], [[truth]], match=iou_match(0.5)).hits == 0
+
+
+def test_candidates_keep_their_own_size():
+    boxes = boxes_from_candidates(
+        [
+            {"left": 10, "top": 20, "width": 30, "height": 40},
+            {"left": 50, "top": 60, "width": 5, "height": 5},
+        ]
+    )
+    assert boxes[0].width == 30 and boxes[0].height == 40
+    assert boxes[1].width == 5 and boxes[1].height == 5
+    assert boxes[0].origin == "model"
