@@ -1,17 +1,16 @@
 """what a class IS, defined by the person judging rather than hardcoded in five places.
 
-WHAT THIS REPLACES. The fifteen nameplate classes were five primitives crossed with three states,
-written out as literals in `review/state.py` AND again in `review_ui/app.js`, with four regexes
-parsing the state back out of a label string. Nothing connected the two copies, so adding a class
-meant finding all of them. Worse, assignment did not take the class you picked: you ticked a
-SHORTLIST of plausible identities and the server chose between them by nearest measured RGB, which
-cannot mean anything for a dimension a person invents.
+WHAT THIS REPLACES. In the parent project, a fixed list of classes was cross-built from a handful of
+primitives and a handful of states, written out as literals in two separate places (the server and
+the browser), with regexes parsing the state back out of a label string. Nothing connected the two
+copies, so adding a class meant finding all of them. Worse, assignment did not take the class you
+picked: you ticked a shortlist of plausible identities and the server chose between them by nearest
+measured colour, which cannot mean anything for a dimension a person invents.
 
 THE SHAPE. A definition is up to three DIMENSIONS, each holding any number of MEMBERS. A class is
-one member from each - the full cross-product - so three primitives, three player classes and three
-states is twenty-seven classes. Nothing downstream cares how many: smolsmort derives its channel map
-from the labels actually present, sorted, so the head is sized by the data rather than by a
-constant.
+one member from each - the full cross-product - so three primitives, three states and three sizes is
+twenty-seven classes. Nothing downstream cares how many: the model derives its channel map from the
+labels actually present, sorted, so the head is sized by the data rather than by a constant.
 
 `not a class` IS NOT A MEMBER, and that is deliberate. It is already a boolean on the pool record,
 mutually exclusive with having a class - assigning one clears it and vice versa. Modelling it as a
@@ -31,11 +30,16 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from parent.config.profile import PROFILES_ROOT
+# ABSOLUTE, NOT RELATIVE, and rooted at the repo rather than the package - the same reasoning
+# review/paths.py documents for every other data directory: a relative default only works when the
+# tool is launched from the repo root, and silently finds nothing from anywhere else.
+_REPO = Path(__file__).resolve().parents[3]
+_ROOT = _REPO if (_REPO / "pyproject.toml").exists() else Path.cwd()
 
-# beside the screen and character profiles, because it is the same kind of thing: a named,
-# hand-made description of how this project sees the world
-DEFS_DIR = PROFILES_ROOT / "classes"
+# a plain, generic directory alongside the rest of what the loop produces (boxes, tiles, sets,
+# weights) - not rooted in any per-domain profile. a class scheme is judged from data, same as
+# everything else under training/
+DEFS_DIR = _ROOT / "training" / "classes"
 
 # three is what a person can hold in a right-click menu as columns, and the point at which the
 # cross-product stops being readable - four dimensions of three is eighty-one classes
@@ -44,15 +48,15 @@ MAX_DIMENSIONS = 3
 # what a tile is when it is not any class. never a member; see the module docstring
 NOT_A_CLASS = "not a class"
 
-# the separator between members in a written label. " / " rather than the old " (suffix)" form,
+# the separator between members in a written label. " / " rather than an older "(suffix)" form,
 # which could only ever express one extra dimension and needed a regex to read back
 JOIN = " / "
 
 # WHAT AN UNANSWERED DIMENSION WRITES. a dimension with no members yet, or one nobody picked from,
-# still occupies its position in the label - because `labelParts` splits the joined string
-# POSITIONALLY, so a skipped value would shift every later one into the wrong dimension and a
-# tile's size would read as its state. A placeholder keeps the form intact and says plainly that
-# the axis was not answered, which is a different claim from any of its members.
+# still occupies its position in the label - because the label is split back apart POSITIONALLY, so
+# a skipped value would shift every later one into the wrong dimension and one axis's value would
+# read as another's. A placeholder keeps the form intact and says plainly that the axis was not
+# answered, which is a different claim from any of its members.
 UNSET = "n/a"
 
 
@@ -106,8 +110,8 @@ class ClassDef:
         EVERY DIMENSION KEEPS ITS POSITION, answered or not. An unanswered one - no members yet, or
         none picked - writes `UNSET` rather than being skipped, which is what lets a definition be
         used while it is still being built. Skipping it instead was the old behaviour and it could
-        not survive contact with `labelParts`, which splits positionally: drop a middle value and
-        every later one lands in the wrong dimension.
+        not survive a positional split: drop a middle value and every later one lands in the wrong
+        dimension.
 
         STILL REFUSES A LABEL THAT ANSWERS NOTHING. All-unset is not a judgement, it is the absence
         of one, and writing it would put a class in the channel map that says only "a tile exists".
@@ -138,7 +142,7 @@ class ClassDef:
     def as_toml(self) -> str:
         lines = [
             "# a class definition: dimensions, and the members of each. a class is one member from",
-            "# every dimension - see snapshot/review/classdefs.py for why.",
+            "# every dimension - see smolsmort/review/classscheme/definitions.py for why.",
             f'name = "{self.name}"',
             "",
         ]
