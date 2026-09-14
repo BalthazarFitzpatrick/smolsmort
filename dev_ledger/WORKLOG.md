@@ -147,3 +147,58 @@ housekeeping's lease overlaps both others, so they run in sequence: housekeeping
   smolsmort as a git source, and ci-parity passed there (2386 passed).
 - Working mode from here: dev work goes through smortboard, one board per repo. A direct session
   in this repo is for small side projects only.
+
+## 2026-09-14T22:24Z - wowtomate-fixes-and-board-cleanup [76b838] - two of three overnight board cards landed
+
+Worked the board's three open cards from a direct session in a worktree (feature/smolsmort-cards),
+the operator having asked for the overnight run outside smortboard itself.
+
+- **5539ddfd (move the domain-free review modules) - DONE.** paths.py, naming.py, playback_state.py,
+  splits.py and housekeeping.py moved via `git cherry-pick`, not by hand: two abandoned board-run
+  branches (`card/313033b8...`, `card/2cd984d6...`, both off 93fd56c, an ancestor of development)
+  already had this work and train.py's port done and merge-clean. Cherry-picked f7d2f43, 1fe46a9,
+  d1f4488 onto development. snapshot/review/ no longer has these five files; routes.py and state.py
+  (not in this card's scope) still import them from `snapshot.review`, which is fine - snapshot/ is
+  reference material pytest never collects (see snapshot/README.md) so its stale imports don't run.
+  224 passed, 1 xfailed.
+- **f8e5e74f (xgboost tabular backend) - DONE.** smolsmort/tabular/backend.py implements the
+  ModelBackend seam over rows (one-row json feature files) instead of frames; registered as
+  "xgboost" in smolsmort/backends.py per docs/REVIEW_TOOL_DESIGN.md's package layout (the card's own
+  lease said smolsmort/detect/**, but the design doc is explicit that the tabular backend lives
+  beside detect/ and boxes/ in its own package, not inside detect/). tests/test_tabular_backend.py
+  drives train/predict/save/load through get_backend("xgboost") on a synthetic, linearly separable
+  set - a mechanics check, not an accuracy claim, per this repo's own rule for the sibling box
+  backend. `uv add xgboost` (pyproject.toml + uv.lock).
+  REAL LOCAL BLOCKER, THREE ROUNDS TO FIX: running the tabular test alongside the torch-based
+  detect/box tests in one pytest process crashed - first "OMP: Error #15" (torch's bundled openmp
+  vs. xgboost's homebrew libomp, both loaded in one interpreter on macos), then a segfault even with
+  `nthread=1` on the xgboost calls and `KMP_DUPLICATE_LIB_OK=TRUE` set inside the backend module
+  (too late - torch's openmp was already live from earlier tests in the same run). Fixed by
+  tests/conftest.py setting `KMP_DUPLICATE_LIB_OK=TRUE` and `OMP_NUM_THREADS=1` before any test
+  module imports either library - the only point early enough in a pytest session. 228 passed,
+  1 xfailed, but noticeably slower (about 138s vs. 160s for 224 before - single-threaded torch
+  training now runs on one core). Unverified hypothesis: this is a macos-only conflict from the
+  freshly-installed homebrew libomp meeting torch's bundled Intel openmp; the linux gate image may
+  not hit it at all, so the conftest fix may be pure local-machine insurance - has not been checked
+  against smolsmort-repo:latest.
+- **44dc7573 (train tab: backend picker, labelling modes, per-box sizes) - NOT DONE, stopped
+  deliberately.** Depends on 5539ddfd (done) but its own lease is snapshot/ui/**, snapshot/review/**,
+  tests/** - i.e. changes to the ~8,800-line pre-port app.js (5045 lines) and state.py/routes.py
+  (2704 + 1035 lines) that snapshot/README.md documents as reference material pytest never
+  collects and ruff never lints. The card's RULES ask for "the new toggles and verdict" to be
+  covered by tests and "the full test command must pass", but there is no established way to test
+  UI/state changes living in an excluded, uncollected package - covering them means either inventing
+  a test harness for snapshot/ that nothing else in the repo has, or making four real design calls
+  with no precedent to check against (how the backend picker persists per training set; whether
+  exhaustive/explicit is a per-frame flag on disk or a UI-only toggle; where "not an object" sits in
+  the existing keep/discard/rect schema; how box-backend per-box sizing interacts with the drawn-rect
+  save path). Per this repo's own rule (stop rather than guess on a real design question), left
+  untouched rather than shipped as a guess against 5000 lines of unfamiliar, untested JS. Needs the
+  operator to either move this card's target to smolsmort/review/ once the full port lands, or say
+  which of the four design calls above is already decided.
+
+Landed: b2d94e6 (5539ddfd, cherry-picked), 2be7117 (f8e5e74f). Both pushed straight to
+`development` (fast-forward, no conflicts against origin at push time).
+
+Source repo note: nothing here moved FROM wowtomate - card 5539ddfd's source was smolsmort's own
+`snapshot/`, not another repo. Nothing to drop elsewhere.
