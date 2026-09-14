@@ -24,6 +24,7 @@ from smolsmort.detect.dataset import Example
 _REGISTRY: dict[str, tuple[str, str]] = {
     "heatmap": ("smolsmort.detect.backend", "HeatmapBackend"),
     "box": ("smolsmort.boxes.backend", "BoxBackend"),
+    "xgboost": ("smolsmort.tabular.backend", "TabularBackend"),
 }
 # what a checkpoint with no sidecar is: every checkpoint predating named backends was a heatmap one
 LEGACY = "heatmap"
