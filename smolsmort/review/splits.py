@@ -1,9 +1,9 @@
 """train / val / test over a training set, assigned BY FRAME and never by row.
 
-WHY BY FRAME. `_crop_window` cuts a 256 input px window - 1024 CAPTURE px - out of a full frame,
-so one window routinely contains several boxes and their surroundings. Split row-wise and the same
-pixels land in train and in val: the plate next to the held-out one trained the model, and the
-holdout reports a number nobody can act on. A frame is the smallest unit that does not leak.
+WHY BY FRAME. a crop window cut out of a full frame routinely contains several boxes and their
+surroundings. Split row-wise and the same pixels land in train and in val: the object next to the
+held-out one trained the model, and the holdout reports a number nobody can act on. A frame is the
+smallest unit that does not leak.
 
 WHY IT IS WRITTEN INTO THE SET rather than decided at training time. The set on disk is what a
 checkpoint is judged against months later; a split re-drawn per run makes two runs incomparable
@@ -131,10 +131,10 @@ def write_into(set_path: Path, ratio: Sequence[int] = DEFAULT_RATIO, seed: int =
 
 
 def main(argv: list[str] | None = None) -> int:
-    """wt-split-set: give an existing training set a train/val/test split, by frame"""
+    """give an existing training set a train/val/test split, by frame"""
     import argparse
 
-    from snapshot.review import paths
+    from smolsmort.review import paths
 
     parser = argparse.ArgumentParser(description=main.__doc__)
     parser.add_argument("sets", nargs="+", help="set names under training/sets, without .jsonl")
