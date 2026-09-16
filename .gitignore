@@ -59,3 +59,8 @@ outputs/
 tiles/
 weights/
 predictions/
+
+# ledgers live in a private repo; these are local symlinks into it
+TASKS.jsonl
+WORKLOG.md
+dev_ledger/
