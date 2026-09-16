@@ -182,7 +182,7 @@ model and target need to agree on.
 
 ## In use
 
-[wowtomate](https://github.com/BalthazarFitzpatrick/wowtomate) finds nameplates with it: 10 classes,
+A private game-overlay project finds nameplates with it: 10 classes,
 100,210 parameters, about 44 ms per 3420x2224 frame on an Apple M4 including the JPEG decode. Its
 first honest evaluation on a hand-drawn holdout returned 24% precision, with the highest-scoring
 detections the wrong ones. That is what the loop exists to find out. Read a falling loss as "training
@@ -193,7 +193,7 @@ converged", never as "the model is right". Only a holdout tells you that.
 - **Here now:** the heatmap backend in `smolsmort/detect/` (box, model, dataset, train, scoring,
   track), the box backend in `smolsmort/boxes/`, and backends by name in `smolsmort/backends.py`.
 - **In progress:** the review web tool, where candidates are found, judged and promoted. It is being
-  ported from wowtomate in PR #2.
+  ported from that project in PR #2.
 - **Planned:** a train tab that picks the backend by name, and a tabular backend (xgboost) beside the
   vision ones.
 
