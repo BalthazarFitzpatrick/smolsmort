@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from smolsmort.detect.model import (
-    DOWNSCALE,
+    DEFAULT_DOWNSCALE,
     STRIDE,
     Peak,
     build_model,
@@ -91,7 +91,7 @@ def test_decode_returns_capture_coordinates_not_heatmap_ones():
     heat = np.zeros((20, 20), dtype=np.float32)
     heat[5, 7] = 0.9
     (peak,) = decode_peaks(heat)
-    scale = STRIDE * DOWNSCALE
+    scale = STRIDE * DEFAULT_DOWNSCALE
     assert peak.x == 7 * scale
     assert peak.y == 5 * scale
     assert peak.score == pytest.approx(0.9)
@@ -104,8 +104,8 @@ def test_decode_inverts_the_snap_the_training_target_applies():
     the half-cell was pure bias - measured at +7px in x and +9px in y against real plates, which
     cost more localisation than everything else in the detector put together.
     """
-    scale = STRIDE * DOWNSCALE
-    # cells, not capture pixels: fixed capture coordinates only fit the 20x20 heatmap at one DOWNSCALE
+    scale = STRIDE * DEFAULT_DOWNSCALE
+    # cells, not capture pixels: fixed capture coordinates only fit the 20x20 heatmap at one downscale factor
     for cell_x, cell_y in ((7, 5), (0, 0), (1, 19)):
         cx, cy = cell_x * scale, cell_y * scale
         heat = np.zeros((20, 20), dtype=np.float32)
@@ -162,9 +162,9 @@ def test_the_net_can_actually_learn_a_synthetic_plate():
     peaks = decode_peaks(heat, min_score=0.3)
     assert peaks, "the net learned nothing"
     best = peaks[0]
-    expected_x, expected_y = 40 * DOWNSCALE, 30 * DOWNSCALE
-    assert abs(best.x - expected_x) <= STRIDE * DOWNSCALE
-    assert abs(best.y - expected_y) <= STRIDE * DOWNSCALE
+    expected_x, expected_y = 40 * DEFAULT_DOWNSCALE, 30 * DEFAULT_DOWNSCALE
+    assert abs(best.x - expected_x) <= STRIDE * DEFAULT_DOWNSCALE
+    assert abs(best.y - expected_y) <= STRIDE * DEFAULT_DOWNSCALE
 
 
 def test_peak_is_hashable_so_detections_can_go_in_a_set():

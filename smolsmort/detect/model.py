@@ -39,9 +39,11 @@ from dataclasses import dataclass
 import numpy as np
 
 STRIDE = 4  # heatmap cell : input pixel
-# 2, not 4: callers hand the model 1440-wide frames, so a plate is ~47 px wide at input scale,
-# about what it was when 3420-wide captures went through at 4
-DOWNSCALE = 2  # capture pixel : input pixel
+# capture pixel : input pixel. 2, not 4: callers hand the model 1440-wide frames, so a plate is
+# ~47 px wide at input scale, about what it was when 3420-wide captures went through at 4
+DEFAULT_DOWNSCALE = 2
+# checkpoints saved before the factor was stored in them were all trained at 4
+LEGACY_DOWNSCALE = 4
 PEAK_MIN_SCORE = 0.35
 PEAK_MIN_SEPARATION = 3  # heatmap cells; two objects never overlap this closely
 
@@ -58,7 +60,7 @@ def _torch():
     return torch
 
 
-def build_model(channels: int = 24, classes: int = 1):
+def build_model(channels: int = 24, classes: int = 1, downscale: int = DEFAULT_DOWNSCALE):
     """a small fully-convolutional net: rgb in, one heatmap channel PER CLASS out.
 
     fully convolutional on purpose - it is trained on crops and run on whole frames, and anything
@@ -69,6 +71,11 @@ def build_model(channels: int = 24, classes: int = 1):
     WHICH, and a per-class heatmap answers both at once. Balthazar Fitzpatrick, 2026-09-01: "it will be able to
     draw a heatmap per 10 categories via 10 output channels, and that's all the x and y you need".
     classes=1 stays the default so every existing caller and checkpoint keeps working.
+
+    THE DOWNSCALE FACTOR LIVES IN THE MODEL. it is how the model's input was cut from a capture and
+    how its peaks map back to one, so a checkpoint trained at one factor and read at another does
+    not fail, it answers with every coordinate scaled wrong. it rides in the state dict as a
+    buffer, so save() writes it and load() restores it without anyone remembering to pass it.
     """
     torch = _torch()
     nn = torch.nn
@@ -80,7 +87,7 @@ def build_model(channels: int = 24, classes: int = 1):
             nn.ReLU(inplace=True),
         )
 
-    return nn.Sequential(
+    net = nn.Sequential(
         block(3, channels, stride=2),  # /2
         block(channels, channels),
         block(channels, channels * 2, stride=2),  # /4 = STRIDE
@@ -92,6 +99,13 @@ def build_model(channels: int = 24, classes: int = 1):
         nn.ReLU(inplace=True),
         nn.Conv2d(channels * 2, classes, 1),
     )
+    net.register_buffer("downscale", torch.tensor(int(downscale)))
+    return net
+
+
+def downscale_of(model) -> int:
+    """the capture:input factor this model was built and trained at"""
+    return int(model.downscale)
 
 
 def count_parameters(model) -> int:
@@ -178,6 +192,7 @@ def decode_peaks(
     min_score: float = PEAK_MIN_SCORE,
     min_separation: int = PEAK_MIN_SEPARATION,
     limit: int | None = None,
+    downscale: int = DEFAULT_DOWNSCALE,
 ) -> list[Peak]:
     """local maxima above a threshold, returned in capture-pixel coordinates, strongest first.
 
@@ -190,7 +205,7 @@ def decode_peaks(
     """
     if heatmap.ndim != 2:
         raise ModelError(f"expected a 2d heatmap, got shape {heatmap.shape}")
-    scale = STRIDE * DOWNSCALE
+    scale = STRIDE * downscale
     candidates = [
         (float(heatmap[y, x]), x, y) for y, x in zip(*np.where(heatmap >= min_score), strict=True)
     ]

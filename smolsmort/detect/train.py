@@ -28,16 +28,18 @@ import numpy as np
 
 from smolsmort.detect.dataset import Example
 from smolsmort.detect.model import (
-    DOWNSCALE,
+    DEFAULT_DOWNSCALE,
+    LEGACY_DOWNSCALE,
     STRIDE,
     _torch,
     build_model,
     class_target,
     decode_peaks,
+    downscale_of,
     gaussian_target,
 )
 
-CROP = 256  # input pixels, i.e. 512 capture pixels a side after DOWNSCALE
+CROP = 256  # input pixels, i.e. CROP * downscale capture pixels a side (512 at the default 2)
 
 # how far a training window may be offset from the object it is centred on, as a fraction of the
 # window. a module constant so the two settings can be A/B'd over the SAME seeds - the effect is
@@ -62,7 +64,12 @@ def snapped_window(window: int) -> int:
     return window + (STRIDE - window % STRIDE)
 
 
-def minimum_window(box_width: int, box_height: int, jitter: float = JITTER_FRACTION) -> int:
+def minimum_window(
+    box_width: int,
+    box_height: int,
+    jitter: float = JITTER_FRACTION,
+    downscale: int = DEFAULT_DOWNSCALE,
+) -> int:
     """the smallest training window that always contains a box of this size, whole.
 
     A WINDOW, A JITTER AND A BOX SIZE ARE THREE NUMBERS THAT MUST AGREE, and two of them silently
@@ -72,7 +79,7 @@ def minimum_window(box_width: int, box_height: int, jitter: float = JITTER_FRACT
     capture px = 28.2 half - so it was CLIPPED BY 2.7px at the extremes, teaching a half-object as a
     whole one, which is exactly what the jitter comment above says the margin was chosen to avoid.
     """
-    longest = max(box_width, box_height) / DOWNSCALE
+    longest = max(box_width, box_height) / downscale
     return int(math.ceil(longest / (1.0 - 2.0 * jitter)))
 
 
@@ -112,13 +119,13 @@ class Progress:
         return self.epoch / self.epochs if self.epochs else 0.0
 
 
-def _load_input(path: Path) -> np.ndarray:
+def _load_input(path: Path, downscale: int = DEFAULT_DOWNSCALE) -> np.ndarray:
     """a capture as the net sees it: downscaled, rgb, channels-first, 0..1"""
     from PIL import Image
 
     with Image.open(path) as handle:
         image = handle.convert("RGB")
-        image = image.resize((image.width // DOWNSCALE, image.height // DOWNSCALE), Image.BILINEAR)
+        image = image.resize((image.width // downscale, image.height // downscale), Image.BILINEAR)
     return np.asarray(image, dtype=np.float32).transpose(2, 0, 1) / 255.0
 
 
@@ -128,6 +135,7 @@ def _crop_window(
     rng: random.Random,
     classes=None,
     window: int = CROP,
+    downscale: int = DEFAULT_DOWNSCALE,
 ):
     """one training window, half the time centred on a real object.
 
@@ -139,7 +147,7 @@ def _crop_window(
     roll = rng.random()
     if example.centres and roll < 0.5:
         cx, cy = rng.choice(example.centres)
-        cx, cy = cx / DOWNSCALE, cy / DOWNSCALE
+        cx, cy = cx / downscale, cy / downscale
         # THE OBJECT MUST LAND ANYWHERE IN THE WINDOW, NOT NEAR THE MIDDLE. this used to jitter by
         # +/- size/6, which on a 256px window pins the object within ~42px of the centre - so the net
         # was taught "objects are near the middle" and then asked to sweep whole frames, where they
@@ -156,7 +164,7 @@ def _crop_window(
         # appending them to a list changes nothing on its own, since background is already the
         # default everywhere. this is what makes the mining actually train.
         cx, cy = rng.choice(example.negatives)
-        cx, cy = cx / DOWNSCALE, cy / DOWNSCALE
+        cx, cy = cx / downscale, cy / downscale
         left = int(cx - size / 2 + rng.uniform(-size / 6, size / 6))
         top = int(cy - size / 2 + rng.uniform(-size / 6, size / 6))
     else:
@@ -170,16 +178,16 @@ def _crop_window(
     # example built before labels existed has none, so pad rather than zip-strict
     example_labels = list(example.labels) + [None] * (len(example.centres) - len(example.labels))
     kept = [
-        (((cx / DOWNSCALE - left) / STRIDE, (cy / DOWNSCALE - top) / STRIDE), label)
+        (((cx / downscale - left) / STRIDE, (cy / downscale - top) / STRIDE), label)
         for (cx, cy), label in zip(example.centres, example_labels, strict=True)
-        if 0 <= cx / DOWNSCALE - left < size and 0 <= cy / DOWNSCALE - top < size
+        if 0 <= cx / downscale - left < size and 0 <= cy / downscale - top < size
     ]
     centres = [c for c, _ in kept]
     # SNAP TO CELL CENTRES. gaussian_target builds its blob from the coordinate given, so a
     # fractional centre peaks below 1.0 - measured: 0.9314 for a centre at (8.4, 8.6). The loss
     # counts positives with target >= 0.99, so fractional centres produced ZERO positive cells,
     # only the negative term trained, and the net learned to answer a flat 0.145 everywhere.
-    # Rounding costs at most half a cell of localisation (2 input pixels, so 4 capture pixels at STRIDE 4, DOWNSCALE 2)
+    # Rounding costs at most half a cell of localisation (2 input pixels at STRIDE 4)
     # and is what CentreNet does for the same reason.
     snapped = [(round(cx), round(cy)) for cx, cy in centres]
     if classes is None:
@@ -193,10 +201,10 @@ def _crop_window(
 
     mask = np.ones((cells, cells), dtype=np.float32)
     for x0, y0, x1, y1 in example.ignore:
-        a = int((x0 / DOWNSCALE - left) / STRIDE)
-        b = int((y0 / DOWNSCALE - top) / STRIDE)
-        c = int(math.ceil((x1 / DOWNSCALE - left) / STRIDE))
-        d = int(math.ceil((y1 / DOWNSCALE - top) / STRIDE))
+        a = int((x0 / downscale - left) / STRIDE)
+        b = int((y0 / downscale - top) / STRIDE)
+        c = int(math.ceil((x1 / downscale - left) / STRIDE))
+        d = int(math.ceil((y1 / downscale - top) / STRIDE))
         a, b = max(0, a), max(0, b)
         c, d = min(cells, c), min(cells, d)
         if a < c and b < d:
@@ -220,6 +228,7 @@ def train(
     on_progress=None,
     classes: dict[str, int] | None = None,
     crop: int | None = None,
+    downscale: int = DEFAULT_DOWNSCALE,
 ):
     """returns (model, history). on_progress is called once per epoch with a Progress.
 
@@ -227,6 +236,9 @@ def train(
     each object trains only its own - which is what makes a rare class survive a common one, and
     what a single softmax over the same labels would not do. Left None, this behaves exactly as it
     did: one channel, every object a positive, and every existing checkpoint still loads.
+
+    `downscale` is the capture:input factor the model is trained at. it is stored in the model, so
+    save() keeps it and load() restores it - callers decoding or sweeping read it off the model.
     """
     # the window every training sample is cut at. below minimum_window() for this set's boxes
     # an object is clipped at the jitter extremes, so a caller taking this from a human checks first
@@ -243,9 +255,9 @@ def train(
     rng = random.Random(seed)
     torch.manual_seed(seed)
 
-    model = build_model(classes=len(classes) if classes else 1).to(device)
+    model = build_model(classes=len(classes) if classes else 1, downscale=downscale).to(device)
     optimiser = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    cache = {e.path: _load_input(e.path) for e in usable}
+    cache = {e.path: _load_input(e.path, downscale) for e in usable}
 
     history = []
     seen = 0
@@ -256,7 +268,9 @@ def train(
             windows, targets, masks = [], [], []
             for _ in range(batch):
                 example = rng.choice(usable)
-                w, t, m = _crop_window(example, cache[example.path], rng, classes, window)
+                w, t, m = _crop_window(
+                    example, cache[example.path], rng, classes, window, downscale
+                )
                 windows.append(w)
                 targets.append(t)
                 masks.append(m)
@@ -288,7 +302,7 @@ def heatmap_for(model, path: Path, device: str | None = None) -> np.ndarray:
     torch = _torch()
     if device is None:
         device = next(model.parameters()).device
-    image = _load_input(path)
+    image = _load_input(path, downscale_of(model))
     with torch.no_grad():
         model.eval()
         x = torch.from_numpy(image).unsqueeze(0).to(device)
@@ -305,7 +319,7 @@ def heatmaps_for(model, path: Path, device: str | None = None) -> np.ndarray:
     torch = _torch()
     if device is None:
         device = next(model.parameters()).device
-    image = _load_input(path)
+    image = _load_input(path, downscale_of(model))
     with torch.no_grad():
         model.eval()
         x = torch.from_numpy(image).unsqueeze(0).to(device)
@@ -356,7 +370,8 @@ def sweep(
     if device is None:
         device = next(model.parameters()).device
     pool = ThreadPoolExecutor(max_workers=2)
-    pending = {i: pool.submit(_load_input, f) for i, f in enumerate(frames[:3])}
+    factor = downscale_of(model)
+    pending = {i: pool.submit(_load_input, f, factor) for i, f in enumerate(frames[:3])}
     try:
         out, highest, histogram = _sweep_frames(
             model,
@@ -365,6 +380,7 @@ def sweep(
             pool,
             device,
             by_channel,
+            factor,
             width=width,
             height=height,
             min_score=min_score,
@@ -383,6 +399,7 @@ def _sweep_frames(
     pool,
     device,
     by_channel,
+    downscale,
     *,
     width,
     height,
@@ -400,7 +417,7 @@ def _sweep_frames(
         index = position - 1
         ahead = index + 3
         if ahead < len(frames):
-            pending[ahead] = pool.submit(_load_input, frames[ahead])
+            pending[ahead] = pool.submit(_load_input, frames[ahead], downscale)
         maps = _heatmaps_of(model, pending.pop(index).result(), device)
         highest = max(highest, float(maps.max()))
         counts, _ = np.histogram(maps.max(axis=0), bins=SCORE_BUCKETS, range=(0.0, 1.0))
@@ -415,7 +432,9 @@ def _sweep_frames(
             # BOUNDED PER CHANNEL. only the best max_per_frame survive across all channels below,
             # so nothing beyond that many from any single channel can ever be kept - decoding more
             # is work thrown away, and at a low floor it is minutes of it
-            for peak in decode_peaks(maps[channel], min_score=min_score, limit=max_per_frame)
+            for peak in decode_peaks(
+                maps[channel], min_score=min_score, limit=max_per_frame, downscale=downscale
+            )
         ]
         found.sort(key=lambda pair: pair[0].score, reverse=True)
         for peak, channel in found[:max_per_frame]:
@@ -457,11 +476,13 @@ def load(path: Path, device: str | None = None, classes: int | None = None):
     if device is None:
         device = "mps" if torch.backends.mps.is_available() else "cpu"
     state = torch.load(path, map_location=device)
+    # a checkpoint older than the stored factor was trained at the one that was hard-coded then
+    state.setdefault("downscale", torch.tensor(LEGACY_DOWNSCALE))
     if classes is None:
         # the last conv's weight is (classes, channels, 1, 1)
         heads = [v for k, v in state.items() if k.endswith(".weight") and v.ndim == 4]
         classes = int(heads[-1].shape[0]) if heads else 1
-    model = build_model(classes=classes).to(device)
+    model = build_model(classes=classes, downscale=int(state["downscale"])).to(device)
     model.load_state_dict(state)
     model.eval()
     return model

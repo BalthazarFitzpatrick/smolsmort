@@ -170,7 +170,7 @@ different object.
 |---|---|---|
 | same object across frames | 40 px corner distance | `box.SAME_OBJECT_PX` |
 | same object within a frame | half the narrower width shared, within 1.5 box heights | `box.SAME_OBJECT_MIN_SHARE`, `SAME_OBJECT_MAX_ROWS_APART` |
-| input downscale / heatmap stride | 2 / 4 | `model.DOWNSCALE`, `model.STRIDE` |
+| input downscale / heatmap stride | 2 / 4 | `model.DEFAULT_DOWNSCALE` (a model stores its own), `model.STRIDE` |
 | peak threshold / separation | 0.35 / 3 cells | `model.PEAK_MIN_SCORE`, `PEAK_MIN_SEPARATION` |
 | training window / offset | 256 px / 40% | `train.CROP`, `train.JITTER_FRACTION` |
 | tracker step / lost after | 600 px / 5 frames | `track.MAX_STEP_PX`, `LOST_AFTER_FRAMES` |
