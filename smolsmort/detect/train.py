@@ -28,6 +28,7 @@ import numpy as np
 
 from smolsmort.detect.dataset import Example
 from smolsmort.detect.model import (
+    DEFAULT_CHANNELS,
     DEFAULT_DOWNSCALE,
     LEGACY_DOWNSCALE,
     STRIDE,
@@ -229,6 +230,7 @@ def train(
     classes: dict[str, int] | None = None,
     crop: int | None = None,
     downscale: int = DEFAULT_DOWNSCALE,
+    channels: int = DEFAULT_CHANNELS,
 ):
     """returns (model, history). on_progress is called once per epoch with a Progress.
 
@@ -239,6 +241,8 @@ def train(
 
     `downscale` is the capture:input factor the model is trained at. it is stored in the model, so
     save() keeps it and load() restores it - callers decoding or sweeping read it off the model.
+    `channels` is the network's base width; load() reads it back from the weights, so a wider net
+    trains and reloads with no other change.
     """
     # the window every training sample is cut at. below minimum_window() for this set's boxes
     # an object is clipped at the jitter extremes, so a caller taking this from a human checks first
@@ -255,7 +259,9 @@ def train(
     rng = random.Random(seed)
     torch.manual_seed(seed)
 
-    model = build_model(classes=len(classes) if classes else 1, downscale=downscale).to(device)
+    model = build_model(
+        classes=len(classes) if classes else 1, downscale=downscale, channels=channels
+    ).to(device)
     optimiser = torch.optim.Adam(model.parameters(), lr=learning_rate)
     cache = {e.path: _load_input(e.path, downscale) for e in usable}
 
@@ -478,11 +484,15 @@ def load(path: Path, device: str | None = None, classes: int | None = None):
     state = torch.load(path, map_location=device)
     # a checkpoint older than the stored factor was trained at the one that was hard-coded then
     state.setdefault("downscale", torch.tensor(LEGACY_DOWNSCALE))
+    convs = [v for k, v in state.items() if k.endswith(".weight") and v.ndim == 4]
     if classes is None:
         # the last conv's weight is (classes, channels, 1, 1)
-        heads = [v for k, v in state.items() if k.endswith(".weight") and v.ndim == 4]
-        classes = int(heads[-1].shape[0]) if heads else 1
-    model = build_model(classes=classes, downscale=int(state["downscale"])).to(device)
+        classes = int(convs[-1].shape[0]) if convs else 1
+    # the first conv's weight is (channels, 3, 3, 3): the width the net was trained at
+    channels = int(convs[0].shape[0]) if convs else DEFAULT_CHANNELS
+    model = build_model(classes=classes, downscale=int(state["downscale"]), channels=channels).to(
+        device
+    )
     model.load_state_dict(state)
     model.eval()
     return model

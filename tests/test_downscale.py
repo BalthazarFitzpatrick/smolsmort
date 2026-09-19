@@ -51,3 +51,30 @@ def test_a_capture_is_cut_down_by_the_factor_it_is_given(tmp_path):
 
 def test_the_window_that_holds_a_box_shrinks_with_a_larger_factor():
     assert minimum_window(226, 35, downscale=4) < minimum_window(226, 35, downscale=2)
+
+
+def test_a_wider_net_reloads_at_the_width_it_was_trained():
+    """the width is not stored, it is read back off the first conv - a 150k net must not come back
+    as the 100k default and fail with a shape mismatch"""
+    import tempfile
+    from pathlib import Path
+
+    from smolsmort.detect.model import DEFAULT_CHANNELS, count_parameters
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "wide.pt"
+        wide = build_model(channels=DEFAULT_CHANNELS + 5, classes=10)
+        save(wide, path)
+        back = load(path, device="cpu")
+    assert (
+        count_parameters(back) == count_parameters(wide) > count_parameters(build_model(classes=10))
+    )
+
+
+def test_the_default_width_is_unchanged():
+    from smolsmort.detect.model import DEFAULT_CHANNELS, count_parameters
+
+    assert DEFAULT_CHANNELS == 24
+    assert count_parameters(build_model(classes=10)) == count_parameters(
+        build_model(channels=24, classes=10)
+    )
