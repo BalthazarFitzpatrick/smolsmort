@@ -42,6 +42,9 @@ STRIDE = 4  # heatmap cell : input pixel
 # capture pixel : input pixel. 2, not 4: callers hand the model 1440-wide frames, so a plate is
 # ~47 px wide at input scale, about what it was when 3420-wide captures went through at 4
 DEFAULT_DOWNSCALE = 2
+# the network's base width: about 100k parameters at 10 classes. wider nets are legitimate - the
+# width is read back from a checkpoint, so nothing else needs to know it
+DEFAULT_CHANNELS = 24
 # checkpoints saved before the factor was stored in them were all trained at 4
 LEGACY_DOWNSCALE = 4
 PEAK_MIN_SCORE = 0.35
@@ -60,7 +63,9 @@ def _torch():
     return torch
 
 
-def build_model(channels: int = 24, classes: int = 1, downscale: int = DEFAULT_DOWNSCALE):
+def build_model(
+    channels: int = DEFAULT_CHANNELS, classes: int = 1, downscale: int = DEFAULT_DOWNSCALE
+):
     """a small fully-convolutional net: rgb in, one heatmap channel PER CLASS out.
 
     fully convolutional on purpose - it is trained on crops and run on whole frames, and anything
