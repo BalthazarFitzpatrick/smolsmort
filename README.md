@@ -125,7 +125,7 @@ cell a view of about 440 px, enough to size the largest object it is trained on,
 refuses an object bigger than that rather than sizing it wrong. Every frame is scaled to one working
 long side (768 px) first, which is why frames of different resolutions can train together.
 
-**Training.** Each batch is cut into 256 px windows (1024 capture pixels). Half the windows are
+**Training.** Each batch is cut into 256 px windows (512 capture pixels). Half the windows are
 centred on a real object, offset up to 40% of the window so the model learns objects anywhere, not
 just near the middle. A quarter are centred on hard negatives when a frame has them, the rest are
 random. Targets are small Gaussian blobs snapped to cell centres, trained with a CentreNet-style
@@ -170,7 +170,7 @@ different object.
 |---|---|---|
 | same object across frames | 40 px corner distance | `box.SAME_OBJECT_PX` |
 | same object within a frame | half the narrower width shared, within 1.5 box heights | `box.SAME_OBJECT_MIN_SHARE`, `SAME_OBJECT_MAX_ROWS_APART` |
-| input downscale / heatmap stride | 4 / 4 | `model.DOWNSCALE`, `model.STRIDE` |
+| input downscale / heatmap stride | 2 / 4 | `model.DEFAULT_DOWNSCALE` (a model stores its own), `model.STRIDE` |
 | peak threshold / separation | 0.35 / 3 cells | `model.PEAK_MIN_SCORE`, `PEAK_MIN_SEPARATION` |
 | training window / offset | 256 px / 40% | `train.CROP`, `train.JITTER_FRACTION` |
 | tracker step / lost after | 600 px / 5 frames | `track.MAX_STEP_PX`, `LOST_AFTER_FRAMES` |
