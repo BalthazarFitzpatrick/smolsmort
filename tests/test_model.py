@@ -30,7 +30,7 @@ def synthetic(height=96, width=160, centres=((40, 30), (110, 60)), rng=None):
     image = rng.integers(20, 60, size=(height, width, 3)).astype(np.float32)
     image[:, :, 1] += 25  # greenish ground, like the real captures
     for cx, cy in centres:
-        left, right = cx - 16, cx + 16  # 132px capture bar / DOWNSCALE ~= 33px at input scale
+        left, right = cx - 16, cx + 16  # a ~33px bar at input scale
         image[cy - 1 : cy + 2, left:right] = (170, 140, 60)
     target = gaussian_target(
         (height // STRIDE, width // STRIDE), [(cx / STRIDE, cy / STRIDE) for cx, cy in centres]
@@ -105,8 +105,9 @@ def test_decode_inverts_the_snap_the_training_target_applies():
     cost more localisation than everything else in the detector put together.
     """
     scale = STRIDE * DOWNSCALE
-    for cx, cy in ((112, 80), (0, 0), (16, 304)):
-        cell_x, cell_y = round(cx / DOWNSCALE / STRIDE), round(cy / DOWNSCALE / STRIDE)
+    # cells, not capture pixels: fixed capture coordinates only fit the 20x20 heatmap at one DOWNSCALE
+    for cell_x, cell_y in ((7, 5), (0, 0), (1, 19)):
+        cx, cy = cell_x * scale, cell_y * scale
         heat = np.zeros((20, 20), dtype=np.float32)
         heat[cell_y, cell_x] = 0.9
         (peak,) = decode_peaks(heat)

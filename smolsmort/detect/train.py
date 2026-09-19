@@ -37,7 +37,7 @@ from smolsmort.detect.model import (
     gaussian_target,
 )
 
-CROP = 256  # input pixels, i.e. 1024 capture pixels a side after DOWNSCALE
+CROP = 256  # input pixels, i.e. 512 capture pixels a side after DOWNSCALE
 
 # how far a training window may be offset from the object it is centred on, as a fraction of the
 # window. a module constant so the two settings can be A/B'd over the SAME seeds - the effect is
@@ -179,7 +179,7 @@ def _crop_window(
     # fractional centre peaks below 1.0 - measured: 0.9314 for a centre at (8.4, 8.6). The loss
     # counts positives with target >= 0.99, so fractional centres produced ZERO positive cells,
     # only the negative term trained, and the net learned to answer a flat 0.145 everywhere.
-    # Rounding costs at most half a cell of localisation (2 capture pixels at STRIDE 4, DOWNSCALE 4)
+    # Rounding costs at most half a cell of localisation (2 input pixels, so 4 capture pixels at STRIDE 4, DOWNSCALE 2)
     # and is what CentreNet does for the same reason.
     snapped = [(round(cx), round(cy)) for cx, cy in centres]
     if classes is None:

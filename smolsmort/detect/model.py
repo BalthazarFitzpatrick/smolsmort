@@ -39,7 +39,9 @@ from dataclasses import dataclass
 import numpy as np
 
 STRIDE = 4  # heatmap cell : input pixel
-DOWNSCALE = 4  # capture pixel : input pixel
+# 2, not 4: callers hand the model 1440-wide frames, so a plate is ~47 px wide at input scale,
+# about what it was when 3420-wide captures went through at 4
+DOWNSCALE = 2  # capture pixel : input pixel
 PEAK_MIN_SCORE = 0.35
 PEAK_MIN_SEPARATION = 3  # heatmap cells; two objects never overlap this closely
 
