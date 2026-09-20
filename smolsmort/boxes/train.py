@@ -203,6 +203,35 @@ def train(
     return model, history
 
 
+def evaluate(
+    model, examples: list[Example], *, classes=None, long_side: int = WORK_LONG_SIDE
+) -> float:
+    """mean box_loss of model over examples: eval mode, no gradient, and every example cut with
+    its own fixed-seed rng so two calls agree"""
+    torch = _torch()
+    device = next(model.parameters()).device
+    was_training = model.training
+    model.eval()
+    losses = []
+    with torch.no_grad():
+        for example in examples:
+            image, scale = load_input(example.path, long_side)
+            window, target = _window(example, image, scale, random.Random(0), classes, CROP)
+
+            def tensor(array):
+                return torch.from_numpy(np.ascontiguousarray(array[None])).to(device)
+
+            x = tensor(window)
+            heat, size, offset, centre, mask = (
+                tensor(getattr(target, name))
+                for name in ("heat", "size", "offset", "centre", "mask")
+            )
+            loss, _ = box_loss(model(x), heat, size, offset, centre, mask)
+            losses.append(float(loss.cpu()))
+    model.train(was_training)
+    return sum(losses) / len(losses) if losses else 0.0
+
+
 def _refuse_out_of_reach(usable: list[Example], cache: dict, reach: int) -> None:
     """an object bigger than what one cell can see cannot be sized, so say so before training.
 

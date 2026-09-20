@@ -82,6 +82,12 @@ class HeatmapBackend:
         )
         return HeatmapWeights(model=model, classes=dict(classes), box=fitted_box(converted))
 
+    def evaluate(self, weights, examples, *, classes) -> float:
+        """mean training loss of the weights over examples, no augmentation"""
+        return heatmap_train.evaluate(
+            weights.model, [example_from(e) for e in examples], classes=dict(classes) or None
+        )
+
     def predict(self, weights, frames, *, classes) -> list[dict]:
         if weights.box is None:
             raise HeatmapBackendError(

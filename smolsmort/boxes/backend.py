@@ -72,6 +72,15 @@ class BoxBackend:
         )
         return BoxWeights(model=model, classes=dict(classes), long_side=self.long_side)
 
+    def evaluate(self, weights, examples, *, classes) -> float:
+        """mean training loss of the weights over examples, no augmentation"""
+        return box_train.evaluate(
+            weights.model,
+            [example_from(e) for e in examples],
+            classes=dict(classes) or None,
+            long_side=weights.long_side,
+        )
+
     def predict(self, weights, frames, *, classes) -> list[dict]:
         return box_train.sweep(
             weights.model,
