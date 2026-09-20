@@ -89,3 +89,19 @@ def test_a_size_name_becomes_the_backends_own_setting(api):
     assert api._model_options({"size": "custom", "custom_channels": 40})["channels"] == 40
     with pytest.raises(hyperparams.HyperparamError):
         api._model_options({"size": "nonsense"})
+
+
+def test_the_window_reaches_the_run_and_a_too_small_one_is_refused(api):
+    pytest.importorskip("torch")
+    api.trainer.backend_name = "heatmap"
+    refused = api.start({"crop": 8})
+    assert "30x10" in refused["error"] and "8" in refused["error"], refused
+    assert not api.status()["running"]
+
+
+def test_the_window_is_passed_to_trainstate_start(api, monkeypatch):
+    calls = []
+    monkeypatch.setattr(api.trainer, "start", lambda **kw: calls.append(kw) or {"ok": True})
+    api.start({"crop": 256})
+    api.start({})
+    assert calls == [{"window": 256}, {"window": None}]
