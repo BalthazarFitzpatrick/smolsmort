@@ -72,11 +72,16 @@ def make_handler(train_state_for: Callable[[], object] | None = None):
                 self.wfile.write(body)
                 return
             if path.startswith("/ui/"):
+                name = path.removeprefix("/ui/")
                 try:
-                    body = read_asset(path.removeprefix("/ui/"))
+                    body = read_asset(name)
                 except UiBaseError as exc:
-                    self._json({"error": str(exc)}, status=404)
-                    return
+                    # not a shared file: this page's own scripts are addressed under /ui/ too
+                    own = _static_file("/" + name)
+                    if own is None:
+                        self._json({"error": str(exc)}, status=404)
+                        return
+                    body = own.read_bytes()
                 self.send_response(200)
                 self.send_header(
                     "Content-Type", "text/javascript" if path.endswith(".js") else "text/css"

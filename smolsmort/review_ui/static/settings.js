@@ -1,6 +1,6 @@
 // the base-path dialog: where each kind of data lives. the tile base may hold several folders
 
-const EDITABLE_BASES = new Set(['tiles', 'pool']);
+const EDITABLE_BASES = new Set(['pool']);
 const asList = value => (Array.isArray(value) ? value : value ? [value] : []);
 const baseChosen = {};
 let baseRoot = '';
@@ -19,7 +19,7 @@ function paintBases() {
   });
 }
 
-// one folder per request, walked in place; "add" takes the folder being stood in
+// one folder per request, walked in place from the base path (a new folder may be anywhere under it); "add" takes the folder being stood in
 async function pickDirectory(type, anchor) {
   let browsing = null;
   let menu = null;
@@ -43,7 +43,7 @@ async function pickDirectory(type, anchor) {
         })),
       }];
     }
-    const data = await api(`/api/dir-tree?root=${type === 'pool' ? 'tiles' : type}&under=${encodeURIComponent(browsing)}`);
+    const data = await api(`/api/dir-tree?under=${encodeURIComponent(browsing)}`);
     browsing = data.here;
     const items = data.parent ? [{id: data.parent, label: '..'}] : [];
     data.entries.forEach(e => items.push({id: e.path, label: e.name + (e.has_children ? '/' : '')}));

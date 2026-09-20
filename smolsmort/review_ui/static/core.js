@@ -6,7 +6,13 @@ async function api(path, body) {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
   };
   const res = await fetch(path, options);
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) {
+    // the server answers a bad request as {error: ...}; show that text, not the raw body
+    const text = await res.text();
+    let message = text;
+    try { message = JSON.parse(text).error || text; } catch (err) { /* not json */ }
+    throw new Error(message);
+  }
   return res.json();
 }
 

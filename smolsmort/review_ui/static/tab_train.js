@@ -77,22 +77,6 @@ function mountTrain(panel) {
   return {enter: () => tab.enter()};
 }
 
-const baseName = path => path.replace(/\/$/, '').split('/').pop();
-
-// adapts dir-tree to what dirMenu wants; a leaf entry (no children, or marked a file) is pickable
-function treeFetcher(root) {
-  return async path => {
-    const query = `root=${root}` + (path ? `&under=${encodeURIComponent(path)}` : '');
-    const data = await api(`/api/dir-tree?${query}`);
-    const isFile = entry => entry.is_file === true || entry.has_children === false;
-    return {
-      path: data.here, parent: data.parent,
-      dirs: data.entries.filter(e => !isFile(e)).map(e => e.name),
-      files: data.entries.filter(isFile).map(e => e.name),
-    };
-  };
-}
-
 class TrainTab {
   constructor() {
     this.values = Object.fromEntries(STEPPERS.map(row => [row.key, row.value]));
@@ -103,6 +87,8 @@ class TrainTab {
     this.sweepAbove = null;
     this.sweepRecording = null;
     this.sweepTimer = null;
+    this.hasWeights = false;
+    this.expectRun = false;
     this.wire();
   }
 
@@ -111,6 +97,9 @@ class TrainTab {
     await this.loadFloor();
     await this.refreshStatus();
   }
+
+  // save weights waits for weights to exist, and stays usable while a run continues
+  paintSave() { document.getElementById('train-save').classList.toggle('disabled', !this.hasWeights); }
 
   say(text) { setText('train-progress-text', text); }
 
@@ -128,10 +117,12 @@ class TrainTab {
   async loadInfo() {
     const info = await api('/api/train-info');
     if (info.backend) this.backend = info.backend;
+    this.hasWeights = !!info.model_exists;
+    this.paintSave();
     if (info.error) { this.facts('train-summary', [['problem', info.error]]); return; }
     this.facts('train-summary', [
       ['training on', info.set
-        ? `${info.frames} frames - ${info.boxes} boxes, ${info.negatives} negatives`
+        ? `${info.frames} frame${info.frames === 1 ? '' : 's'} - ${info.objects} objects, ${info.negatives} negatives`
         : 'nothing yet - load tiles or weights'],
       ['classes', info.thinnest
         ? `${info.classes}, thinnest is ${info.thinnest.label} with ${info.thinnest.count}`
@@ -166,23 +157,29 @@ class TrainTab {
 
   // ---- pickers ----
   wirePickers() {
-    document.getElementById('train-open').onclick = evt => {
-      dirMenu('tiles', treeFetcher('tiles'), async path => {
-        const res = await api('/api/train-bind', {path, name: baseName(path)});
-        if (res.error) { this.say(res.error); return; }
-        document.getElementById('train-open').innerHTML = `<span>${baseName(path)}</span>`;
-        await this.loadInfo();
-        await this.loadFloor();
-      }).openAt(evt.currentTarget);
+    // a training set is bound by name; the server lists what promotion has written
+    document.getElementById('train-open').onclick = async evt => {
+      const head = evt.currentTarget;
+      const data = await api('/api/training-sets');
+      listMenu('training set',
+        data.sets.map(set => ({id: set.name, label: set.name, stats: `${set.rows} rows`})),
+        async item => {
+          const res = await api('/api/train-bind', {name: item.id});
+          if (res.error) { this.say(res.error); return; }
+          head.innerHTML = `<span>${item.id}</span>`;
+          await this.loadInfo();
+          await this.loadFloor();
+        }, {empty: 'none yet - promote tiles in select'}).openAt(head);
     };
-    document.getElementById('train-load').onclick = evt => {
-      dirMenu('weights', treeFetcher('checkpoints'), async path => {
-        const res = await api('/api/load-checkpoint', {path, name: baseName(path)});
+    document.getElementById('train-load').onclick = async evt => {
+      const head = evt.currentTarget;
+      listMenu('weights', await this.checkpointItems(), async item => {
+        const res = await api('/api/load-checkpoint', {name: item.id});
         if (res.error) { this.say(res.error); return; }
-        document.getElementById('train-load').innerHTML = `<span>${baseName(path)}</span>`;
+        head.innerHTML = `<span>${item.id}</span>`;
         await this.loadInfo();
-        this.say(`loaded ${res.name || baseName(path)}`);
-      }).openAt(evt.currentTarget);
+        this.say(`loaded ${item.id}`);
+      }, {empty: 'no saved weights yet'}).openAt(head);
     };
   }
 
@@ -195,15 +192,24 @@ class TrainTab {
     }));
   }
 
-  // opens while a run goes on: it only reads the list and never touches the job
+  // opens while a run goes on: it reads the list, and saving snapshots the weights as they are now
   async openSaveMenu() {
     const head = document.getElementById('train-save');
     if (head.classList.contains('disabled')) return;
     const items = await this.checkpointItems();
-    listMenu('save weights', items, async item => {
-      const res = await api('/api/save-checkpoint', {name: item.id});
-      this.say(res.error ? res.error : `saved ${res.name || item.id}`);
-    }, {empty: 'no checkpoints yet'}).openAt(head);
+    new Menu({
+      title: 'save weights', persistent: true,
+      sections: [
+        {kind: 'list', label: 'saved so far', empty: 'no checkpoints yet', items, onPick: () => {}},
+        {kind: 'add', placeholder: 'a name for these weights', button: 'save',
+          onAdd: async (value, menu) => {
+            const name = (value || '').trim();
+            const res = await api('/api/save-checkpoint', name ? {name} : {});
+            this.say(res.error ? res.error : `saved ${res.name}`);
+            if (!res.error) menu.close();
+          }},
+      ],
+    }).openAt(head);
   }
 
   // ---- run ----
@@ -218,6 +224,8 @@ class TrainTab {
       batch: this.values.batches, crop: this.values.windows,
     });
     if (res.error) { this.say(res.error); return; }
+    // a short run can end before the first poll sees it running; info is reloaded either way
+    this.expectRun = true;
     this.refreshStatus();
   }
 
@@ -247,41 +255,59 @@ class TrainTab {
     const job = await api('/api/train-status');
     document.getElementById('train-bar-fill').style.width =
       job.epochs ? `${(job.epoch / job.epochs) * 100}%` : '0';
-    const loss = this.fmt(job.train_loss);
+    // a run reports its latest epoch loss as `loss`; train_loss is only set once it finishes
+    const loss = this.fmt(job.train_loss ?? job.loss);
     if (job.error) this.say(job.error);
     else if (job.running) this.say(`epoch ${job.epoch} / ${job.epochs}  loss ${loss}`);
     else if (job.finished) this.say(`done - ${job.epochs} epochs, final loss ${loss}`);
     else if (job.aborted) this.say(`aborted at epoch ${job.aborted} of ${job.epochs}`);
     else this.say('idle');
-    setText('loss-train', this.fmt(job.train_loss));
+    setText('loss-train', this.fmt(job.train_loss ?? job.loss));
     setText('loss-val', this.fmt(job.val_loss));
     setText('loss-test', this.fmt(job.test_loss));
     document.getElementById('train-abort').classList.toggle('disabled', !job.running);
     // save weights waits for a first checkpoint, and stays usable while the run continues
-    document.getElementById('train-save').classList.toggle('disabled', !((job.checkpoint_count || 0) >= 1));
+    this.hasWeights = this.hasWeights || job.finished || (job.checkpoint_count || 0) >= 1;
+    this.paintSave();
     this.drawLoss(job.history || []);
-    if (job.separation) {
-      const s = job.separation;
-      this.facts('train-accuracy', [
-        ['on a box', s.on_box.toFixed(3)], ['background (99th pct)', s.background.toFixed(3)],
-        ['ratio', s.ratio ? `${s.ratio.toFixed(2)}x brighter` : '-'], ['sampled', `${s.samples} boxes`],
-      ]);
-    } else if (!job.running) {
-      this.facts('train-accuracy', [['not measured yet', 'train a model to see this']]);
-    }
-    if (job.holdout) {
-      const h = job.holdout;
-      const pct = x => `${Math.round(x * 100)}%`;
-      this.facts('train-holdout', [
-        ['recall', `${pct(h.recall)} of ${h.with_box} frames with a box`],
-        ['false positives', `${pct(h.false_positive_rate)} of ${h.without_box} empty frames`],
-        ['spurious boxes', `${h.spurious}`],
-      ]);
-    } else if (!job.running) {
-      this.facts('train-holdout', [['not measured', 'needs a set with a val split']]);
-    }
+    if (!job.running) await this.showSeparation(job);
     if (job.running && !this.poll) this.poll = setInterval(() => this.refreshStatus(), 700);
-    if (!job.running && this.poll) { clearInterval(this.poll); this.poll = null; this.loadInfo(); }
+    if (!job.running && (this.poll || this.expectRun)) {
+      clearInterval(this.poll);
+      this.poll = null;
+      this.expectRun = false;
+      this.loadInfo();
+    }
+  }
+
+  // the histogram's value at a share of its samples, as the centre of the bin it falls in
+  quantile(bins, share) {
+    const total = bins.reduce((sum, n) => sum + n, 0);
+    let seen = 0;
+    for (let i = 0; i < bins.length; i++) {
+      seen += bins[i];
+      if (total && seen >= share * total) return (i + 0.5) / bins.length;
+    }
+    return 0;
+  }
+
+  // separation comes from the peak distribution: response on a confirmed object against background
+  async showSeparation(job) {
+    if (!(job.finished || job.weights)) {
+      this.facts('train-accuracy', [['not measured yet', 'train a model to see this']]);
+      this.facts('train-holdout', [['val and test loss', 'shown above once a run finishes']]);
+      return;
+    }
+    this.facts('train-holdout', [['val and test loss', 'shown above']]);
+    const dist = await api('/api/peak-distribution');
+    if (dist.error) { this.facts('train-accuracy', [['not measured', dist.error]]); return; }
+    const onObject = this.quantile(dist.on_object, 0.5);
+    const background = this.quantile(dist.elsewhere, 0.99);
+    this.facts('train-accuracy', [
+      ['on an object (median)', onObject.toFixed(3)], ['background (99th pct)', background.toFixed(3)],
+      ['ratio', background ? `${(onObject / background).toFixed(2)}x brighter` : '-'],
+      ['sampled', `${dist.counts.on_object} objects in ${dist.frames} frames`],
+    ]);
   }
 
   // ---- sweep ----

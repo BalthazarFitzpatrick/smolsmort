@@ -3,7 +3,7 @@
 smolsmortTabs.register({id: 'housekeeping', label: 'housekeeping', mount: mountHousekeeping});
 
 const HK_KINDS = {
-  boxes: 'boxes', tiles: 'tiles', sets: 'sets', checkpoints: 'checkpoints',
+  boxes: 'boxes', tiles: 'tiles', tiles_synth: 'generated tiles', sets: 'sets', checkpoints: 'checkpoints',
 };
 
 function mountHousekeeping(panel) {

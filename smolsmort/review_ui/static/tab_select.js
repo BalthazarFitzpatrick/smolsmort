@@ -67,8 +67,9 @@ class SelectTab {
     const data = await api('/api/clusters');
     this.items = data.clusters.flatMap(cluster =>
       cluster.items.map(item => ({...item, clusterLabel: cluster.label})));
-    setText('boxes-loaded', `${data.boxes_loaded ?? this.items.length} boxes loaded`);
-    setText('classes-assigned', `${data.classes_assigned ?? 0} classes assigned`);
+    const counts = data.counts || {};
+    setText('boxes-loaded', `${counts.boxes_loaded ?? this.items.length} boxes loaded`);
+    setText('classes-assigned', `${counts.classes_assigned ?? 0} classes assigned`);
     await this.refreshPending();
     this.renderFilter();
     this.renderGrid();
@@ -229,14 +230,24 @@ class SelectTab {
   // buffers only: the server answers with how many assignments now wait for save
   async assign(names, picked, excluded, menu) {
     try {
+      if (excluded) {
+        // "not a class" is declared, not buffered: it lands on disk at once and drops any unsaved class
+        const done = await api('/api/exclude', {names, excluded: true});
+        names.forEach(name => this.pendingNames.delete(name));
+        await this.refreshPending();
+        await this.load();
+        this.status(`${done.done.length} marked not a class`);
+        return;
+      }
       const res = await api('/api/manual-label', {
-        names, definition: this.classDef ? this.classDef.name : null, picked, excluded,
+        names, definition: this.classDef ? this.classDef.name : null, picked,
       });
-      if (res.error) { this.status(res.error); return; }
-      const given = excluded ? 'not a class' : Object.values(picked).join(DIM_SEP);
+      const given = Object.values(picked).join(DIM_SEP);
       names.forEach(name => this.pendingNames.set(name, given));
       this.setPending(res.pending);
       this.status(`${names.length} buffered - press save to write them`);
+    } catch (err) {
+      this.status(err.message);
     } finally {
       menu.close();
       this.renderGrid();
@@ -277,10 +288,11 @@ class SelectTab {
       const openTags = new Set(pool.sources.map(src => src.tag));
       const live = pool.sources.map(src => ({
         id: src.tag, label: src.tag, stats: `${src.tiles} tiles`, close: !src.closed,
-        reopen: src.closed, state: src.closed ? {} : {opened: true}, source: src.source || 'drawn',
+        reopen: src.closed, state: src.closed ? {} : {opened: true},
+        source: src.tag.includes('_cnn-') ? 'proposed' : 'drawn',
       }));
       const shut = openable.datasets.filter(d => !openTags.has(d.tag)).map(d => ({
-        id: d.file, label: d.tag, stats: `${d.boxes} boxes`, source: d.source || 'drawn',
+        id: d.file, label: d.tag, stats: `${d.boxes} boxes`, source: d.source === 'sweep' ? 'proposed' : 'drawn',
       }));
       const column = (label, source) => ({
         label, empty: 'none', multi: true,
@@ -297,10 +309,7 @@ class SelectTab {
       });
       const sources = new Set([...live, ...shut].map(i => i.source));
       const columns = [column('drawn', 'drawn')];
-      if ([...sources].some(s => s !== 'drawn')) {
-        const other = [...sources].find(s => s !== 'drawn');
-        columns.push(column('proposed', other));
-      }
+      if (sources.has('proposed')) columns.push(column('proposed', 'proposed'));
       return [
         {kind: 'columns', columns},
         {kind: 'buttons', buttons: [
@@ -431,7 +440,9 @@ class SelectTab {
       return this.promote(name, answer);
     }
     if (res.error) { this.status(res.error); return; }
-    this.status(`${res.name}: ${res.rows} rows ${res.mode === 'merge' ? 'merged' : 'promoted'}`);
+    // promote reads disk only, so a buffered assignment is not in it until saved
+    const unsaved = res.pending ? ` - ${res.pending} unsaved assignments not included` : '';
+    this.status(`${res.name}: ${res.rows} rows ${res.mode === 'merge' ? 'merged' : 'promoted'}${unsaved}`);
   }
 
   async openPromote() {

@@ -68,12 +68,7 @@ function sections() {
     },
     ...custom,
     fieldSection('seed', 'seed', '0'),
-    {
-      kind: 'buttons',
-      buttons: [
-        { label: 'close', onClick: m => m.close() },
-      ],
-    },
+    // the menu adds its own close button
   ];
 }
 
