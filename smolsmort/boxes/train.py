@@ -30,6 +30,7 @@ from smolsmort.boxes.model import (
 from smolsmort.detect.dataset import Example
 from smolsmort.detect.model import _torch
 from smolsmort.detect.train import Progress
+from smolsmort.optim import build_optimizer
 
 CROP = 256  # training window side, input px; a multiple of the net's 32
 # how far a window may sit off the object it is centred on, as a fraction of the window
@@ -119,11 +120,21 @@ def train(
     crop: int = CROP,
     long_side: int = WORK_LONG_SIDE,
     steps_per_epoch: int | None = None,
+    widths: tuple[int, int, int, int, int] | None = None,
+    optimizer: str = "adamw",
+    momentum: float = 0.9,
+    weight_decay: float = 1e-4,
 ):
     """returns (model, history). on_progress is called once per epoch with a detect Progress.
 
     an epoch is one pass over the confirmed OBJECTS in batches, not over frames - a set of a few
     crowded frames and one of many sparse ones then train for comparable time
+
+    optimizer/momentum/weight_decay go through smolsmort.optim.build_optimizer - the old hardcoded
+    AdamW(wd=1e-4) is exactly "adamw" at momentum 0.9 (AdamW's own beta1 default) and weight_decay
+    1e-4, so every default and existing checkpoint is unaffected. widths is build_model's own
+    per-stage channel counts (16,32,64,96,128 by default); a smaller/larger tuple trades capacity
+    for parameter count the same way `channels` does on the heatmap backend.
     """
     torch = _torch()
     usable = [e for e in examples if e.object_count or e.exhaustive]
@@ -134,11 +145,20 @@ def train(
     rng = random.Random(seed)
     torch.manual_seed(seed)
 
-    model = build_model(classes=len(classes) if classes else 1)
+    model_kwargs = {"classes": len(classes) if classes else 1}
+    if widths is not None:
+        model_kwargs["widths"] = widths
+    model = build_model(**model_kwargs)
     cache = {e.path: load_input(e.path, long_side) for e in usable}
     _refuse_out_of_reach(usable, cache, receptive_field(model))
     model = model.to(device)
-    optimiser = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
+    optimiser = build_optimizer(
+        model.parameters(),
+        optimizer=optimizer,
+        learning_rate=learning_rate,
+        momentum=momentum,
+        weight_decay=weight_decay,
+    )
     objects = sum(e.object_count for e in usable)
     steps = steps_per_epoch or max(1, math.ceil(objects / batch))
 

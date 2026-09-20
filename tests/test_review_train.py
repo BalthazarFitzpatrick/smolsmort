@@ -414,3 +414,33 @@ def test_channel_inspection_refuses_a_box_backend():
     trainer.weights = object()  # inspection checks the backend name before touching weights
     with pytest.raises(TrainStateError, match="does not expose one heatmap per class"):
         trainer.channel_heatmap("f.jpg")
+
+
+def test_heatmap_backend_trains_with_a_custom_optimizer_and_size(tmp_path):
+    """the hyperparams menu's options (optimizer, momentum, weight_decay, channels) reach the real
+    trainer through backend_options - proven with sgd/nesterov and a smaller model, not just the
+    adamw default the other end-to-end test above already covers"""
+    from smolsmort.detect.model import build_model, count_parameters
+
+    frames, examples = _synthetic_examples(tmp_path)
+    classes = {"friendly": 0, "hostile": 1}
+
+    trainer = TrainState(
+        "heatmap",
+        epochs=1,
+        device="cpu",
+        optimizer="sgd",
+        momentum=0.9,
+        weight_decay=1e-4,
+        channels=16,
+        learning_rate=1e-2,
+    )
+    trainer.bind(examples, classes, training_set="synthetic")
+    trainer.train()
+
+    assert count_parameters(trainer.weights.model) == count_parameters(
+        build_model(channels=16, classes=2)
+    )
+    # one sgd epoch on synthetic noise proves nothing about detection quality - the point here is
+    # that sweep() still runs end to end against a model built with the custom options
+    trainer.sweep([str(frames[0])])
