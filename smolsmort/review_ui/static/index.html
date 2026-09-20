@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>hyperparameters</title>
+  <link rel="stylesheet" href="/ui/base.css">
+  <script src="/ui/menu.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; padding: 2rem; }
+    #train-config { display: inline-block; }
+  </style>
+</head>
+<body>
+  <h1>train tab (hyperparams demo)</h1>
+  <p>backend:
+    <select id="backend-pick">
+      <option value="heatmap">heatmap (fixed size)</option>
+      <option value="box">box (variable size)</option>
+    </select>
+  </p>
+  <div id="train-config" class="toggle">hyperparameters</div>
+  <pre id="result"></pre>
+
+  <script src="/app.js"></script>
+</body>
+</html>
