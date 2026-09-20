@@ -26,6 +26,15 @@ from ui_base import UiBaseError, read_asset
 from smolsmort.review_ui.logic import RequestError, menu_options, resolve_hyperparams
 
 STATIC = Path(__file__).resolve().parent / "static"
+_CONTENT_TYPES = {".html": "text/html", ".js": "text/javascript", ".css": "text/css"}
+
+
+def _static_file(path: str) -> Path | None:
+    """the page or one of its scripts and styles, by url path - None for anything else"""
+    name = "index.html" if path == "/" else path.removeprefix("/")
+    target = (STATIC / name).resolve()
+    inside = target.parent == STATIC
+    return target if inside and target.suffix in _CONTENT_TYPES and target.is_file() else None
 
 
 def make_handler(train_state_for: Callable[[], object] | None = None):
@@ -52,28 +61,27 @@ def make_handler(train_state_for: Callable[[], object] | None = None):
 
         def do_GET(self) -> None:  # noqa: N802 - http.server's own naming
             path = self.path.split("?", 1)[0]
-            if path == "/":
-                body = (STATIC / "index.html").read_bytes()
+            static = _static_file(path)
+            if static is not None:
+                body = static.read_bytes()
                 self.send_response(200)
-                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Type", _CONTENT_TYPES[static.suffix])
                 self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-                return
-            if path == "/app.js":
-                body = (STATIC / "app.js").read_bytes()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/javascript")
-                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(body)
                 return
             if path.startswith("/ui/"):
+                name = path.removeprefix("/ui/")
                 try:
-                    body = read_asset(path.removeprefix("/ui/"))
+                    body = read_asset(name)
                 except UiBaseError as exc:
-                    self._json({"error": str(exc)}, status=404)
-                    return
+                    # not a shared file: this page's own scripts are addressed under /ui/ too
+                    own = _static_file("/" + name)
+                    if own is None:
+                        self._json({"error": str(exc)}, status=404)
+                        return
+                    body = own.read_bytes()
                 self.send_response(200)
                 self.send_header(
                     "Content-Type", "text/javascript" if path.endswith(".js") else "text/css"

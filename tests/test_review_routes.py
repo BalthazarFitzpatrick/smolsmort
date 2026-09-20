@@ -725,3 +725,11 @@ def test_the_whole_loop_over_http_find_judge_promote_train_predict(server, world
     # a saved checkpoint loads back with its class map
     loaded = jpost(url, "/api/load-checkpoint", {"name": "run1.pt"})
     assert loaded["classes"] == ["alpha", "beta"] and loaded["weights"] == "run1.pt"
+
+
+def test_binding_takes_a_set_path_inside_the_sets_folder_and_refuses_an_escape(server, world):
+    _, url = server
+    out = jpost(url, "/api/train-bind", {"name": "../outside"})
+    assert "outside the sets folder" in out["error"]
+    assert "error" in jpost(url, "/api/train-bind", {"name": "nested/ghost"})
+    assert "error" in jpost(url, "/api/load-checkpoint", {"name": "../../x.pt"})

@@ -64,3 +64,7 @@ predictions/
 TASKS.jsonl
 WORKLOG.md
 dev_ledger/
+
+# the review tool's remembered settings
+review_bases.json
+review_crop.json

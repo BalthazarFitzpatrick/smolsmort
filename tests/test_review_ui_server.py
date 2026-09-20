@@ -60,13 +60,25 @@ def _post(server, path, payload):
 
 def test_the_page_and_its_assets_serve(running_server):
     status, body = _get(running_server, "/")
-    assert status == 200 and b"hyperparameters" in body
+    assert status == 200 and b"smolsmort review" in body
 
-    status, body = _get(running_server, "/app.js")
+    status, body = _get(running_server, "/hyperparams.js")
     assert status == 200 and b"applyPreset" in body
+
+    for name in ("core.js", "tab_find.js", "tab_select.js", "tab_train.js", "review.css"):
+        status, body = _get(running_server, f"/{name}")
+        assert status == 200 and body, name
 
     status, body = _get(running_server, "/ui/menu.js")
     assert status == 200 and b"class Menu" in body
+
+
+def test_static_serving_stays_inside_the_static_folder(running_server):
+    import http.client
+
+    conn = http.client.HTTPConnection("127.0.0.1", running_server.server_port)
+    conn.request("GET", "/../server.py")
+    assert conn.getresponse().status == 404
 
 
 def test_hyperparams_menu_options_over_http(running_server):

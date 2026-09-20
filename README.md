@@ -90,6 +90,23 @@ from that run:
 - `score` reports FAIL when the truth has no empty frames, even at 100% recall. False positives can
   only be counted on frames with nothing in them, so include some.
 
+## Adding a tab to the review UI
+
+`uv run smolsmort` serves the review page: find, select, train and housekeeping tabs on the shared
+`ui_base` kit. The tab bar is built from a list, so a host page adds its own tab by loading a
+script after `boot.js` that calls:
+
+```js
+window.smolsmortTabs.register({
+  id: 'mytab',          // unique, used as the panel's data-panel
+  label: 'my tab',      // shown in the tab bar
+  mount(panelEl) {      // runs once; fill panelEl with your markup
+    panelEl.textContent = 'hello';
+    return {enter() {}};  // optional: called each time the tab is shown
+  },
+});
+```
+
 ## Swapping the model
 
 Every backend has the same four methods: train, predict, save and load. The loop drives whichever
