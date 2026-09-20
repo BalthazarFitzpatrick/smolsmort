@@ -36,6 +36,7 @@ from smolsmort.detect.model import (
     decode_peaks,
     gaussian_target,
 )
+from smolsmort.optim import build_optimizer
 
 CROP = 256  # input pixels, i.e. 1024 capture pixels a side after DOWNSCALE
 
@@ -220,6 +221,10 @@ def train(
     on_progress=None,
     classes: dict[str, int] | None = None,
     crop: int | None = None,
+    channels: int = 24,
+    optimizer: str = "adamw",
+    momentum: float = 0.9,
+    weight_decay: float = 0.0,
 ):
     """returns (model, history). on_progress is called once per epoch with a Progress.
 
@@ -227,6 +232,10 @@ def train(
     each object trains only its own - which is what makes a rare class survive a common one, and
     what a single softmax over the same labels would not do. Left None, this behaves exactly as it
     did: one channel, every object a positive, and every existing checkpoint still loads.
+
+    optimizer/momentum/weight_decay go through smolsmort.optim.build_optimizer - "adamw" at
+    momentum 0.9 and weight_decay 0 behaves exactly as the old hardcoded Adam(lr) did, so every
+    default and existing checkpoint is unaffected.
     """
     # the window every training sample is cut at. below minimum_window() for this set's boxes
     # an object is clipped at the jitter extremes, so a caller taking this from a human checks first
@@ -243,8 +252,14 @@ def train(
     rng = random.Random(seed)
     torch.manual_seed(seed)
 
-    model = build_model(classes=len(classes) if classes else 1).to(device)
-    optimiser = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    model = build_model(channels=channels, classes=len(classes) if classes else 1).to(device)
+    optimiser = build_optimizer(
+        model.parameters(),
+        optimizer=optimizer,
+        learning_rate=learning_rate,
+        momentum=momentum,
+        weight_decay=weight_decay,
+    )
     cache = {e.path: _load_input(e.path) for e in usable}
 
     history = []
