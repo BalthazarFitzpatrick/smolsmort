@@ -46,7 +46,7 @@ class OptionBackend:
             "channels": channels,
         }
 
-    def train(self, examples, *, classes, on_progress=None):
+    def train(self, examples, *, classes, on_progress=None, window=None):
         if on_progress:
             on_progress(1, 1)
         return object()
@@ -97,6 +97,14 @@ def test_the_window_reaches_the_run_and_a_too_small_one_is_refused(api):
     refused = api.start({"crop": 8})
     assert "30x10" in refused["error"] and "8" in refused["error"], refused
     assert not api.status()["running"]
+
+
+def test_a_backend_without_a_window_knob_is_not_handed_one(api, monkeypatch):
+    calls = []
+    monkeypatch.setattr(api.trainer, "start", lambda **kw: calls.append(kw) or {"ok": True})
+    monkeypatch.setattr(OptionBackend, "train", lambda self, examples, *, classes: None)
+    api.start({"crop": 256})
+    assert calls == [{"window": None}]
 
 
 def test_the_window_is_passed_to_trainstate_start(api, monkeypatch):

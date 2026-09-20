@@ -259,8 +259,12 @@ class TrainApi:
         self.trainer._backend = backends.get_backend(
             self.trainer.backend_name, **self.trainer.backend_options
         )
-        # the window goes to the run itself, which refuses one smaller than the box can fit
-        started = self.trainer.start(window=None if crop is None else int(crop))
+        # the window goes to the run, which refuses one the box would not fit inside. a backend
+        # whose train() has no window knob is not handed one
+        takes_window = "window" in inspect.signature(self.trainer._backend.train).parameters
+        started = self.trainer.start(
+            window=int(crop) if takes_window and crop is not None else None
+        )
         if name and "error" not in started:
             threading.Thread(target=self._save_when_done, args=(name,), daemon=True).start()
         return started
