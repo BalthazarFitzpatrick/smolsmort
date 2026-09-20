@@ -17,7 +17,7 @@ the same change, so what is left is always what is still to do.
 | folder | files | becomes |
 |---|---|---|
 | `review/` | `paths`, `naming`, `playback_state`, `splits`, `housekeeping`, `train` | carried across nearly as-is - none of them depends on the parent project |
-| `review/` | `state`, `routes`, `classdefs` | split: the generic half moves behind the plugin seams, the domain half stays behind |
+| `review/` | `classdefs` | split: the generic half moves behind the plugin seams, the domain half stays behind (`state` and `routes` are ported to `smolsmort/review/` and removed from here) |
 | `tools/` | `playback` | the frame playback the find tab reads through |
 | `vision/` | `plate_templates`, `recentre` | template matching: the first *example source* behind its seam |
 | `ui/` | `app.js`, `index.html`, `tabs.css` | the find, select, train, load, settings and housekeeping tabs |
