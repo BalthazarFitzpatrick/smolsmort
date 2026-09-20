@@ -80,7 +80,15 @@ class TrainApi:
 
     @staticmethod
     def _set_path(name: str) -> Path:
-        return paths.DATASETS_DIR / f"{set_filename(name)}.jsonl"
+        """a set's file: a plain name, or a path relative to the sets folder. a path that would
+        leave the folder raises ValueError, so a picker cannot bind something outside it"""
+        if "/" not in name:
+            return paths.DATASETS_DIR / f"{set_filename(name)}.jsonl"
+        root = paths.DATASETS_DIR.resolve()
+        target = (root / name).resolve()
+        if root not in target.parents:
+            raise ValueError(f"{name!r} is outside the sets folder")
+        return target if target.suffix == ".jsonl" else target.with_name(target.name + ".jsonl")
 
     @staticmethod
     def _rows(path: Path) -> list[dict]:

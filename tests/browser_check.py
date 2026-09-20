@@ -75,21 +75,42 @@ def check_tabs_and_extension(page: Page) -> None:
     assert "hello from a host tab" in page.locator('.tab-panel[data-panel="extra"]').inner_text()
 
 
-def check_train(page: Page, base: str, log: list) -> None:
+def check_train(page: Page, base: str, log: list, urls: list) -> None:
     show_tab(page, "train")
-    # the set picker lists what promotion wrote; binding it fills the summary
+    # both loaders are directory browsers rooted at their own base: they drill in and out via '..'
+    for head, root, folder, inner in [
+        ("#train-open", "tiles", "a/", "/a"),
+        ("#train-load", "checkpoints", "runs/", "/runs"),
+    ]:
+        page.click(head)
+        page.wait_for_selector(".menu-panel .menu-heading, .menu-panel .field-label")
+        assert ".." not in menu_labels(page)
+        page.click(f'.menu-item:has-text("{folder}")')
+        page.wait_for_function(
+            f'document.querySelector(".menu-panel").innerText.includes("{inner}")'
+        )
+        assert ".." in menu_labels(page)
+        snap(page, f"train-dir-{root}")
+        page.click('.menu-item:has-text("..")')
+        page.wait_for_function(
+            f'!document.querySelector(".menu-panel").innerText.includes("{inner}")'
+        )
+        assert any(f"root={root}" in u for u in urls)
+        dismiss(page)
+
+    # picking a set sends its name and fills the summary
     page.click("#train-open")
     page.wait_for_selector(".menu-panel .menu-item")
-    assert menu_labels(page) == ["world_set"], menu_labels(page)
+    assert "world_set" in menu_labels(page), menu_labels(page)
     snap(page, "train-set-picker")
     page.click('.menu-item:has-text("world_set")')
     page.wait_for_function('document.getElementById("train-summary").innerText.includes("objects")')
     assert "2 objects" in page.inner_text("#train-summary")
     assert posts(log, "train-bind")[-1] == {"name": "world_set"}
-    dismiss(page)
     page.click("#train-load")
     page.wait_for_selector(".menu-panel")
-    assert "no saved weights yet" in page.locator(".menu-panel").inner_text()
+    page.wait_for_selector('.menu-item:has-text("runs/")')
+    assert "ck1.pt" not in menu_labels(page), menu_labels(page)
     dismiss(page)
     # the side-by-side loaders share a row
     tiles, weights = box(page, "#train-open"), box(page, "#train-load")
@@ -152,10 +173,18 @@ def check_train(page: Page, base: str, log: list) -> None:
         'document.getElementById("train-progress-text").innerText.includes("saved")'
     )
     assert posts(log, "save-checkpoint")[-1] == {"name": "ck1"}
+    call(base, "/api/save-checkpoint", {"name": "r1", "folder": "runs"})
     page.click("#train-load")
     page.wait_for_selector(".menu-panel .menu-item")
-    assert menu_labels(page) == ["ck1.pt"], menu_labels(page)
+    assert "ck1.pt" in menu_labels(page), menu_labels(page)
+    page.click('.menu-item:has-text("runs/")')
+    page.wait_for_selector('.menu-item:has-text("r1.pt")')
     snap(page, "train-load-list")
+    page.click('.menu-item:has-text("r1.pt")')
+    page.wait_for_function(
+        'document.getElementById("train-progress-text").innerText.includes("loaded")'
+    )
+    assert posts(log, "load-checkpoint")[-1] == {"name": "runs/r1.pt"}
     dismiss(page)
     snap(page, "train-after-run")
 
@@ -370,6 +399,7 @@ def seed(base: str) -> None:
 def run(shots: Path | None = None) -> None:
     errors: list[str] = []
     log: list = []
+    urls: list[str] = []
     review_world.register_world_backend()
     with (
         tempfile.TemporaryDirectory() as tmp,
@@ -377,6 +407,8 @@ def run(shots: Path | None = None) -> None:
     ):
         world = make_world(Path(tmp), patch, recordings=("rec_a",), frames=3)
         save_definition()
+        (world.tiles / "a").mkdir()
+        (world.checkpoints / "runs").mkdir()
         app = build_app(
             backend="world",
             ui_dir=STATIC,
@@ -406,6 +438,7 @@ def run(shots: Path | None = None) -> None:
                             )
                         )
 
+                page.on("request", lambda r: urls.append(r.url))
                 page.on("request", record)
                 page.goto(base + "/")
                 page.wait_for_timeout(400)
@@ -415,7 +448,7 @@ def run(shots: Path | None = None) -> None:
                     ("select", check_select),
                     ("train", check_train),
                 ):
-                    check(page, base, log)
+                    check(page, base, log, *([urls] if name == "train" else []))
                     show_tab(page, name)
                     page.wait_for_timeout(300)
                     if shots:

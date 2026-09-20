@@ -77,6 +77,8 @@ function mountTrain(panel) {
   return {enter: () => tab.enter()};
 }
 
+const baseName = path => path.replace(/\/$/, '').split('/').pop();
+
 class TrainTab {
   constructor() {
     this.values = Object.fromEntries(STEPPERS.map(row => [row.key, row.value]));
@@ -87,6 +89,7 @@ class TrainTab {
     this.sweepAbove = null;
     this.sweepRecording = null;
     this.sweepTimer = null;
+    this.roots = {};
     this.hasWeights = false;
     this.expectRun = false;
     this.wire();
@@ -157,30 +160,62 @@ class TrainTab {
 
   // ---- pickers ----
   wirePickers() {
-    // a training set is bound by name; the server lists what promotion has written
-    document.getElementById('train-open').onclick = async evt => {
+    // two directory browsers, each rooted at its own base. a pick is sent as a name relative to
+    // that root, which is what train-bind and load-checkpoint resolve
+    document.getElementById('train-open').onclick = evt => {
       const head = evt.currentTarget;
-      const data = await api('/api/training-sets');
-      listMenu('training set',
-        data.sets.map(set => ({id: set.name, label: set.name, stats: `${set.rows} rows`})),
-        async item => {
-          const res = await api('/api/train-bind', {name: item.id});
-          if (res.error) { this.say(res.error); return; }
-          head.innerHTML = `<span>${item.id}</span>`;
-          await this.loadInfo();
-          await this.loadFloor();
-        }, {empty: 'none yet - promote tiles in select'}).openAt(head);
-    };
-    document.getElementById('train-load').onclick = async evt => {
-      const head = evt.currentTarget;
-      listMenu('weights', await this.checkpointItems(), async item => {
-        const res = await api('/api/load-checkpoint', {name: item.id});
+      dirMenu('tiles', this.treeFetcher('tiles', () => this.setNames()), async path => {
+        const name = this.relative('tiles', path);
+        const res = await api('/api/train-bind', {name});
         if (res.error) { this.say(res.error); return; }
-        head.innerHTML = `<span>${item.id}</span>`;
+        head.innerHTML = `<span>${baseName(name)}</span>`;
         await this.loadInfo();
-        this.say(`loaded ${item.id}`);
-      }, {empty: 'no saved weights yet'}).openAt(head);
+        await this.loadFloor();
+      }).openAt(head);
     };
+    document.getElementById('train-load').onclick = evt => {
+      const head = evt.currentTarget;
+      dirMenu('weights', this.treeFetcher('checkpoints', () => this.weightNames()), async path => {
+        const name = this.relative('checkpoints', path);
+        const res = await api('/api/load-checkpoint', {name});
+        if (res.error) { this.say(res.error); return; }
+        head.innerHTML = `<span>${baseName(name)}</span>`;
+        await this.loadInfo();
+        this.say(`loaded ${name}`);
+      }).openAt(head);
+    };
+  }
+
+  // dir-tree lists folders only, so the files a folder holds come from the server's own lists
+  async setNames() {
+    return (await api('/api/training-sets')).sets.map(set => set.name);
+  }
+
+  async weightNames() {
+    return (await api('/api/saved-checkpoints')).weights.map(w => w.name);
+  }
+
+  // adapts dir-tree to what dirMenu wants: {path, parent, dirs, files}. `filesOf` names every
+  // pickable entry as a path relative to the root; the ones directly under this folder are shown
+  treeFetcher(root, filesOf) {
+    return async path => {
+      const query = `root=${root}` + (path ? `&under=${encodeURIComponent(path)}` : '');
+      const data = await api(`/api/dir-tree?${query}`);
+      this.roots[root] = data.root;
+      const here = this.relative(root, data.here);
+      const parentOf = name => (name.includes('/') ? name.slice(0, name.lastIndexOf('/')) : '');
+      const files = (await filesOf()).filter(name => parentOf(name) === here).map(baseName);
+      return {
+        path: data.here, parent: data.parent,
+        dirs: data.entries.map(e => e.name), files,
+      };
+    };
+  }
+
+  // an absolute path under a root, as the name relative to it
+  relative(root, path) {
+    const base = (this.roots[root] || '').replace(/\/$/, '');
+    return path.startsWith(base) ? path.slice(base.length).replace(/^\//, '') : path;
   }
 
   // newest first as the server sends them, except a finished run's final entry leads
