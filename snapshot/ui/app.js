@@ -82,6 +82,7 @@ function enterTab(name) {
   }
   else if (name === 'camera') camEnter();
   else if (name === 'control') controlEnter();
+  else if (name === 'sessions') sessionsEnter();
   else if (name === 'housekeeping') hkLoad();
 }
 
@@ -164,9 +165,10 @@ function ifaceRenderOwner() {
     el.className = 'field-label iface-unattached';
     return;
   }
+  // the path the server really writes: one folder per realm, character and screen
   el.textContent =
     `${marked} marks, ${examples} examples -> profiles/characters/`
-    + `${realm.toLowerCase()}-${character.toLowerCase()}.toml on ${profile}`;
+    + `${realm}-${character}-${profile}`.toLowerCase() + '/character.toml';
   el.className = 'field-label';
 }
 
@@ -245,11 +247,6 @@ async function ifaceChoose(id, name) {
   const spec = IFACE_PICKERS[id];
   const value = (name || '').trim();
   if (!value) return;
-  // a screen profile we just invented is ours to write; one picked from the existing list may
-  // carry a [readout] block this tab cannot reproduce
-  if (id === 'iface-profile') {
-    ifaceOwnsProfile = !((ifaceState && ifaceState.known.profiles) || []).includes(value);
-  }
   ifaceClosePicker();
   await ifaceSaveNames({[spec.field]: value});
   // naming is creating: once all three are known the pair is written
@@ -617,6 +614,20 @@ document.getElementById('iface-add').onclick = async () => {
   ifaceRefresh(result);
 };
 
+document.getElementById('iface-add-probe').onclick = async () => {
+  // a range probe is its own action rather than a third confirm() branch on iface-add: the
+  // operator names it after the spell on the macro ("#showtooltip <spell>"), not after what it
+  // shows, so the name IS the spell name the character profile's [range_probes] keys off
+  const name = prompt('spell name on the #showtooltip macro (e.g. "Sinister Strike")');
+  if (!name) return;
+  const result = await api('/api/interface/add', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name, mode: ifaceMode, probe: true}),
+  });
+  if (result && result.error) { ifaceStatus(result.error); return; }
+  ifaceRefresh(result);
+};
+
 // KEYBINDS DRAW FROM THE LEFT LIST, matched by name, and only the bindable ones - a health bar, a
 // combo dot and a cast bar are readouts, and an entry no key can ever press is noise here.
 function ifaceRenderKeybinds() {
@@ -700,10 +711,9 @@ document.getElementById('iface-file').onchange = async evt => {
 };
 
 // NO GENERATE BUTTON. naming a screen profile in the dropdown IS the act of creating one, so the
-// button was a second way to do the same thing. the file is written when the name is created and
-// rewritten on every later mark - but only for a profile this tab made, never an existing one,
-// which would clobber a hand-measured [readout] block.
-let ifaceOwnsProfile = false;
+// button was a second way to do the same thing. the character file is written when the names are
+// set and rewritten on every later mark. an existing screen profile is safe: the server leaves it
+// exactly alone (its [readout] costs a calibration run), so an existing one is no reason to stop
 
 async function ifaceSaveNames(changes) {
   // send the whole set, with whatever just changed applied on top - the server is the only place
@@ -725,10 +735,6 @@ async function ifaceSaveNames(changes) {
 async function ifaceSave(quiet) {
   const profile = ifacePicked('iface-profile');
   if (!profile) return;
-  if (!ifaceOwnsProfile) {
-    if (!quiet) ifaceStatus(`${profile} already exists - pick "+ screen profile" to make a new one`);
-    return;
-  }
   const result = await api('/api/interface/generate', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
@@ -740,8 +746,13 @@ async function ifaceSave(quiet) {
     }),
   });
   // a quiet save right after naming the profile has nothing marked and maybe no screenshot yet -
-  // that is expected, not an error worth showing. the first real mark saves properly.
-  if (result.error) { if (!quiet) ifaceStatus(result.error); return; }
+  // the server marks THAT as benign, and only that is swallowed on a quiet save. every other
+  // failure - a screenshot the character folder does not have, a save that could not write -
+  // must reach the status line even from the quiet save after a mark, or it fails silently again
+  if (result.error) {
+    if (!quiet || !result.benign) ifaceStatus(`save failed - ${result.error}`);
+    return;
+  }
   document.getElementById('iface-saved').textContent = result.message;
 }
 
@@ -903,16 +914,17 @@ function renderClusterGrid() {
 // is honest at this data size is separation: how much brighter the heatmap is on a confirmed plate
 // than over the frame generally.
 let trainEpochs = 200, trainBatch = 8, trainPoll = null, trainFrames = [];
-// the training window, in INPUT pixels - the frame is downscaled 4x first, so 256 here is 1024
-// capture px. seeded from the server's floor for the bound set, not from a fixed number
-let trainCrop = 256, trainCropFloor = 0, trainCropBox = null;
+// the training window, in INPUT pixels - the frame is downscaled first (by the factor the server
+// reports, 2 by default), so 256 here is 512 capture px. seeded from the server's floor for the
+// BOUND set, not from a fixed number, and re-seeded whenever the set's box size changes
+let trainCrop = 256, trainCropFloor = 0, trainCropBox = null, trainCropDownscale = 2;
 
 // A WINDOW BELOW THE FLOOR CLIPS A PLATE at the jitter extremes and teaches a half-plate as a
 // whole one. say so before the run rather than refusing after the click
 function showCropNote() {
   const note = document.getElementById('train-crop-note');
   if (!note) return;
-  const capture = trainCrop * 4;
+  const capture = trainCrop * trainCropDownscale;
   if (trainCropFloor && trainCrop < trainCropFloor) {
     const box = trainCropBox ? `${trainCropBox[0]}x${trainCropBox[1]} box` : 'this box size';
     note.textContent = `too small - a ${box} needs ${trainCropFloor}+`;
@@ -926,9 +938,13 @@ function showCropNote() {
 async function loadCropFloor() {
   const data = await api('/api/window-floor');
   if (data.error) return;
+  const newBox = !trainCropBox || trainCropBox[0] !== data.box[0] || trainCropBox[1] !== data.box[1];
   trainCropFloor = data.floor;
   trainCropBox = data.box;
-  trainCrop = Math.max(trainCrop, data.default || trainCrop);
+  trainCropDownscale = data.downscale || trainCropDownscale;
+  // A NEW SET IS A NEW BOX, and the old window belongs to the old box. this used to be a max(), so
+  // a window seeded from the library's ~343 px fallback box (860) outlived binding a 95 px set
+  trainCrop = newBox ? (data.default || trainCrop) : Math.max(trainCrop, data.default || trainCrop);
   document.getElementById('train-crop').textContent = trainCrop;
   showCropNote();
 }
@@ -1019,7 +1035,8 @@ async function refreshTrainStatus() {
   fill.style.width = job.epochs ? `${(job.epoch / job.epochs) * 100}%` : '0';
   if (job.error) text.textContent = job.error;
   else if (job.running) text.textContent = `epoch ${job.epoch} / ${job.epochs}  loss ${(job.loss ?? 0).toFixed(2)}`;
-  else if (job.finished) text.textContent = `done - ${job.epochs} epochs, final loss ${(job.loss ?? 0).toFixed(2)}`;
+  else if (job.finished) text.textContent = `done - ${job.epochs} epochs, final loss ${(job.loss ?? 0).toFixed(2)}` +
+    (job.weights ? `, saved as ${job.weights}` : '');
   else if (job.aborted) text.textContent = `aborted at epoch ${job.aborted} of ${job.epochs} - nothing saved`;
   else text.textContent = 'idle';
   // only a running job can be stopped
@@ -1105,6 +1122,7 @@ document.getElementById('train-start').onclick = async () => {
   }
   const rate = document.getElementById('train-rate').value.trim();
   const seed = document.getElementById('train-seed').value.trim();
+  const weightsName = document.getElementById('train-name').value.trim();
   const res = await api('/api/train-start', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
@@ -1113,6 +1131,7 @@ document.getElementById('train-start').onclick = async () => {
       crop: trainCrop,
       learning_rate: rate === '' ? null : Number(rate),
       seed: seed === '' ? null : Number(seed),
+      name: weightsName === '' ? null : weightsName,
     }),
   });
   if (res.error) { note.textContent = res.error; return; }
@@ -1130,7 +1149,7 @@ async function loadVlm() {
   const info = await api('/api/vlm-info');
   facts(document.getElementById('vlm-summary'), [
     ['model', info.model],
-    ['fallback', info.fallback],
+    ['backend', info.backend],
     ['weights on disk', info.weights_cached ? 'yes' : 'not yet - first run downloads them'],
     ['device', info.device],
     ['trained cnn', info.model_trained ? 'yes' : 'none - train one first'],
@@ -2170,7 +2189,7 @@ function mapTinted(img, colour, w, h) {
 // the order they stack in, bottom first. corridors sit UNDER nogo because they are a routing hint
 // and nogo is an obstacle - where the two overlap, the thing that stops you wins the pixel
 const MAP_LAYER_ORDER = ['art', 'overlays', 'height', 'normal', 'slope', 'water', 'area',
-                         'corridors', 'buildings', 'nogo'];
+                         'corridors', 'stringy-nav', 'buildings', 'nogo'];
 
 // A LAYER THIS LIST HAS NEVER HEARD OF STILL DRAWS. the exporter grows layers on its own schedule -
 // corridors arrived after this was written - and iterating only the known names would have left a
@@ -2180,16 +2199,98 @@ function mapRasterOrder(manifest) {
   return [...MAP_LAYER_ORDER.filter(l => known.includes(l)),
           ...known.filter(l => !MAP_LAYER_ORDER.includes(l))];
 }
-const MAP_DRAWN = ['fences', 'routes', 'recordings'];   // drawn by us, not fetched as an image
+const MAP_DRAWN = ['fences', 'routes', 'recordings', 'npcs'];   // drawn by us, not fetched as an image
 // what each mask is baked as, so its picker opens on the colour already on screen rather than
 // jumping to an unrelated default the moment it is touched
 const MAP_MASK_TINT = {nogo: '#dc462d', water: '#3c82c8', buildings: '#966e46', corridors: '#ebb950'};
 const MAP_LABELS = {nogo: 'navmesh no go', fences: 'user fences', routes: 'user routes',
                     art: 'wow art', normal: 'normal map', area: 'named areas', buildings: 'buildings', corridors: 'corridors',
+                    'stringy-nav': 'stringy nav',
                     overlays: 'place names'};
 const mapLabel = id => MAP_LABELS[id] || id;
 
 function mapStatus(text) { document.getElementById('map-status').textContent = text; }
+
+// ---- the npc layer ---------------------------------------------------------------------------
+// GROUPING COLOURS, FILTERING REMOVES. the layer draws whatever the filter keeps, in the colour the
+// grouping gives it, as the style says - so the two dropdowns never mean the same thing twice
+let mapNpcs = null;           // {map, npcs, points} from /api/map-npcs, or null before it is asked
+const npcVis = {group: 'level', style: 'dot'};
+const npcFilter = {lo: 1, hi: 70, reactions: new Set(['hostile', 'neutral', 'friendly']), names: null};
+// the character's own side: questie stores which faction an npc is friendly TO, so the same row is
+// a quest giver to one player and a kill to the other
+const NPC_SIDE = 'H';
+const NPC_LEVEL_BANDS = [[1, 10], [11, 20], [21, 30], [31, 40], [41, 50], [51, 70]];
+const NPC_BAND_COLOUR = ['#6fa8c9', '#5f9e5a', '#c9b83e', '#d9883e', '#c8483c', '#8f5fbf'];
+const NPC_REACTION_COLOUR = {hostile: '#c8483c', neutral: '#d9a441', friendly: '#5f9e5a'};
+const NPC_NAME_COLOUR = ['#c8483c', '#4f8fd9', '#5f9e5a', '#d9a441', '#9b5fbf', '#3fa9a0', '#d96f9e', '#8a6a2a'];
+// two spawns of one kind closer than this (in zone percent) stand in the same camp
+const NPC_CAMP_SPREAD = 3.2;
+
+function npcReaction(npc) {
+  const friendly = npc.friendly_to || '';
+  if (friendly.includes('A') && friendly.includes('H')) return 'neutral';
+  return friendly.includes(NPC_SIDE) ? 'friendly' : 'hostile';
+}
+
+function npcGroup(npc) {
+  if (npcVis.group === 'reaction') {
+    const reaction = npcReaction(npc);
+    return {key: reaction, label: reaction, colour: NPC_REACTION_COLOUR[reaction]};
+  }
+  if (npcVis.group === 'name') {
+    return {key: `n${npc.npc_id}`, label: npc.name, colour: NPC_NAME_COLOUR[npc.npc_id % NPC_NAME_COLOUR.length]};
+  }
+  const level = Math.round((npc.min_level + npc.max_level) / 2);
+  const band = Math.max(0, NPC_LEVEL_BANDS.findIndex(([lo, hi]) => level >= lo && level <= hi));
+  return {key: `lv${band}`, label: `${NPC_LEVEL_BANDS[band][0]}-${NPC_LEVEL_BANDS[band][1]}`, colour: NPC_BAND_COLOUR[band]};
+}
+
+// a null name set means "every name": a filter nobody has touched should not have to list 267 ids
+const npcNamed = npc => !npcFilter.names || npcFilter.names.has(npc.npc_id);
+
+function npcKept() {
+  if (!mapNpcs || !mapNpcs.npcs) return [];
+  return mapNpcs.npcs.filter(npc =>
+    npcNamed(npc)
+    && npcFilter.reactions.has(npcReaction(npc))
+    && npc.max_level >= npcFilter.lo && npc.min_level <= npcFilter.hi);
+}
+
+async function mapLoadNpcs() {
+  if (!mapName) return;
+  try {
+    mapNpcs = await api('/api/map-npcs?map=' + encodeURIComponent(mapName));
+    if (mapNpcs.error) mapStatus(mapNpcs.error);
+  } catch (err) {
+    mapNpcs = {npcs: [], error: String(err)};
+  }
+}
+
+// spawns of ONE kind that stand together are one camp, which is what a grind route walks to
+function npcCamps(list) {
+  const camps = [];
+  for (const npc of list) {
+    const taken = new Set();
+    (npc.points || []).forEach((point, i) => {
+      if (taken.has(i)) return;
+      const group = [point];
+      taken.add(i);
+      npc.points.forEach((other, j) => {
+        if (taken.has(j)) return;
+        if (Math.hypot(other[0] - point[0], other[1] - point[1]) < NPC_CAMP_SPREAD) {
+          group.push(other);
+          taken.add(j);
+        }
+      });
+      const x = group.reduce((sum, p) => sum + p[0], 0) / group.length;
+      const y = group.reduce((sum, p) => sum + p[1], 0) / group.length;
+      camps.push({npc, x, y, count: group.length,
+                  spread: Math.max(...group.map(p => Math.hypot(p[0] - x, p[1] - y)))});
+    });
+  }
+  return camps;
+}
 
 // LOADED ONCE PER URL, and a redraw is queued for when it arrives - an image that decodes after
 // the draw that asked for it would otherwise leave a blank layer until something else moved
@@ -2209,6 +2310,12 @@ async function mapOpen(name) {
   mapManifest = manifest;
   mapImages.clear();
   mapMarkers = null;
+  // a line in progress belongs to the map it was drawn on, not the one just opened
+  fenceDrawing = null;
+  fenceArmed = false;
+  // so does a pinned yard - its numbers describe the zone that was open
+  mapTipHide();
+  fenceSelected = null;
   // ONLY ONE LAYER STARTS SHOWN. eight rasters stacked over each other is not a map of anything -
   // the normals alone bury the art - so the stack starts at the one layer that reads as a place and
   // every other is one click away.
@@ -2224,9 +2331,15 @@ async function mapOpen(name) {
     if (mapAlpha[layer] === undefined) mapAlpha[layer] = layer === 'art' ? 1 : 0.6;
   });
   document.getElementById('map-pick').innerHTML = `<span>${manifest.zone_name || name}</span>`;
-  mapStatus(`${manifest.zone_name || name} · ${Object.keys(manifest.layers || {}).length} layers`);
+  // the zone is on the map dropdown and the layers on theirs, so the status only carries problems
+  mapStatus('');
   mapFit();
   await mapLoadMarkers();
+  // a zone's npcs belong to that zone, so the old ones go the moment another map opens
+  mapNpcs = null;
+  npcFilter.names = null;
+  if (mapShown.has('npcs')) await mapLoadNpcs();
+  fenceRenderList();
   mapDraw();
 }
 
@@ -2240,6 +2353,311 @@ async function mapLoadMarkers() {
     mapMarkers = {points: [], lines: []};
   }
 }
+
+// ---- fence drawer: "create zones" slide-in, drawing go/no-go lines on the map --------------
+// card ad408d22. one line is drawn at a time (fenceDrawing); finishing or cancelling clears it.
+// points are zone percent, the same space mapMarkers already uses, so no conversion is needed
+// to render a saved line and an in-progress one with the same code.
+let fenceKind = 'go';       // go | nogo - which kind the NEXT started line gets
+let fenceDrawing = null;    // {line_id, line_type, points: [[x,y],...]} or null
+let fenceArmed = false;     // while true, a map click appends a point to fenceDrawing
+let fenceSelected = null;   // line_id highlighted/edited in the list
+
+function fenceStatus(text) { document.getElementById('fence-active-status').textContent = text; }
+
+function fenceSetKind(kind) {
+  fenceKind = kind;
+  if (fenceDrawing) fenceDrawing.line_type = kind;
+  document.getElementById('fence-kind-go').classList.toggle('active', kind === 'go');
+  document.getElementById('fence-kind-nogo').classList.toggle('active', kind === 'nogo');
+}
+
+function fenceNewLine() {
+  if (!mapMarkers) mapMarkers = {points: [], lines: []};
+  const used = (mapMarkers.lines || []).map(l => l.line_id);
+  const nextId = used.length ? Math.max(...used) + 1 : 1;
+  fenceDrawing = {line_id: nextId, line_type: fenceKind, points: []};
+  fenceArmed = true;
+  // drawing owns the cursor from here, pinned box included
+  mapTipHide();
+  document.getElementById('fence-mark').classList.add('active');
+  fenceStatus(`line ${nextId} (${fenceKind}) - click the map to drop points`);
+  mapDraw();
+}
+
+function fenceToggleArm() {
+  if (!fenceDrawing) { fenceNewLine(); return; }
+  fenceArmed = !fenceArmed;
+  if (fenceArmed) mapTipHide();
+  document.getElementById('fence-mark').classList.toggle('active', fenceArmed);
+  fenceStatus(fenceArmed
+    ? `line ${fenceDrawing.line_id} (${fenceDrawing.line_type}) - marking armed`
+    : `line ${fenceDrawing.line_id} (${fenceDrawing.line_type}) - marking paused`);
+}
+
+function fenceUndo() {
+  if (!fenceDrawing || !fenceDrawing.points.length) return;
+  fenceDrawing.points.pop();
+  mapDraw();
+}
+
+function fenceCancel() {
+  fenceDrawing = null;
+  fenceArmed = false;
+  document.getElementById('fence-mark').classList.remove('active');
+  fenceStatus('no line in progress');
+  mapDraw();
+}
+
+async function fenceFinish() {
+  if (!fenceDrawing || fenceDrawing.points.length < 2 || !mapName) return;
+  const min = document.getElementById('fence-level-min').value;
+  const max = document.getElementById('fence-level-max').value;
+  mapMarkers = await api('/api/map-fence-line', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      map: mapName,
+      line_id: fenceDrawing.line_id,
+      line_type: fenceDrawing.line_type,
+      points: fenceDrawing.points,
+      level_min: min === '' ? null : Number(min),
+      level_max: max === '' ? null : Number(max),
+    }),
+  });
+  fenceDrawing = null;
+  fenceArmed = false;
+  document.getElementById('fence-mark').classList.remove('active');
+  fenceStatus('no line in progress');
+  fenceRenderList();
+  mapDraw();
+}
+
+async function fenceDeleteLine(lineId) {
+  if (!mapName) return;
+  mapMarkers = await api('/api/map-fence-delete', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({map: mapName, line_id: lineId}),
+  });
+  if (fenceSelected === lineId) fenceSelected = null;
+  fenceRenderList();
+  mapDraw();
+}
+
+async function fenceSaveLevelRange(lineId, minEl, maxEl) {
+  if (!mapName || minEl.value === '' || maxEl.value === '') return;
+  mapMarkers = await api('/api/map-marker-level-range', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      map: mapName, line_id: lineId, level_min: Number(minEl.value), level_max: Number(maxEl.value),
+    }),
+  });
+  fenceRenderList();
+  mapDraw();
+}
+
+function fenceRenderList() {
+  const host = document.getElementById('fence-list');
+  const lines = (mapMarkers && mapMarkers.lines) || [];
+  const yards = mapManifest && mapManifest.yards;
+  // same axes fence_area.py scales by: percent-x spans east-west, percent-y spans north-south
+  const rect = yards ? {yards_per_pct_x: yards.east_west / 100, yards_per_pct_y: yards.north_south / 100} : null;
+  host.innerHTML = '';
+  for (const line of lines) {
+    const row = document.createElement('div');
+    row.className = 'fence-item' + (line.line_id === fenceSelected ? ' selected' : '');
+    const area = line.is_area && rect ? fenceAreaYd2(line.points, rect) : null;
+    const head = document.createElement('div');
+    head.className = 'fence-item-row';
+    head.innerHTML = `<b>#${line.line_id} ${line.line_type}</b><span>${line.points.length} pts`
+      + (area !== null ? ` · ${Math.round(area)} yd²` : '') + `</span>`;
+    row.appendChild(head);
+
+    const controls = document.createElement('div');
+    controls.className = 'fence-item-row';
+    const minEl = document.createElement('input');
+    minEl.type = 'number'; minEl.style.width = '52px'; minEl.value = line.level_min ?? '';
+    const maxEl = document.createElement('input');
+    maxEl.type = 'number'; maxEl.style.width = '52px'; maxEl.value = line.level_max ?? '';
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'toggle'; saveBtn.textContent = 'save range';
+    saveBtn.onclick = () => fenceSaveLevelRange(line.line_id, minEl, maxEl);
+    const selectBtn = document.createElement('button');
+    selectBtn.className = 'toggle'; selectBtn.textContent = 'select';
+    selectBtn.onclick = () => { fenceSelected = line.line_id; fenceRenderList(); mapDraw(); };
+    const delBtn = document.createElement('button');
+    delBtn.className = 'toggle'; delBtn.textContent = 'delete';
+    delBtn.onclick = () => fenceDeleteLine(line.line_id);
+    controls.append(minEl, maxEl, saveBtn, selectBtn, delBtn);
+    row.appendChild(controls);
+    host.appendChild(row);
+  }
+}
+
+// same shoelace-on-zone-percent math as parent/nav/fence_area.py, kept here only so the list
+// can show area without a round trip - the server-saved value is the one that ever persists
+function fenceAreaYd2(pointsPct, rect) {
+  if (pointsPct.length < 3) return 0;
+  const yards = pointsPct.map(([x, y]) => [x * rect.yards_per_pct_x, y * rect.yards_per_pct_y]);
+  let total = 0;
+  for (let i = 0; i < yards.length; i++) {
+    const [x0, y0] = yards[i];
+    const [x1, y1] = yards[(i + 1) % yards.length];
+    total += x0 * y1 - x1 * y0;
+  }
+  return Math.abs(total) / 2;
+}
+
+function fenceCanvasXY(evt) {
+  const canvas = document.getElementById('map-canvas');
+  const r = canvas.getBoundingClientRect();
+  return [(evt.clientX - r.left) / r.width * 100, (evt.clientY - r.top) / r.height * 100];
+}
+
+(function wireFence() {
+  const openBtn = document.getElementById('fence-open');
+  const panel = document.getElementById('fence-panel');
+  openBtn.onclick = () => {
+    panel.classList.toggle('open');
+    if (panel.classList.contains('open')) fenceRenderList();
+  };
+  document.getElementById('fence-close').onclick = () => panel.classList.remove('open');
+  document.getElementById('fence-keyhelp').onclick = () =>
+    document.getElementById('fence-keyhelp-overlay').classList.toggle('hidden');
+  document.getElementById('fence-kind-go').onclick = () => fenceSetKind('go');
+  document.getElementById('fence-kind-nogo').onclick = () => fenceSetKind('nogo');
+  document.getElementById('fence-new').onclick = fenceNewLine;
+  document.getElementById('fence-mark').onclick = fenceToggleArm;
+  document.getElementById('fence-undo').onclick = fenceUndo;
+  document.getElementById('fence-finish').onclick = fenceFinish;
+  document.getElementById('fence-cancel').onclick = fenceCancel;
+  fenceSetKind('go');
+
+  document.getElementById('map-canvas').addEventListener('click', evt => {
+    if (!fenceArmed || !fenceDrawing) return;
+    const [x, y] = fenceCanvasXY(evt);
+    fenceDrawing.points.push([x, y]);
+    fenceStatus(`line ${fenceDrawing.line_id} (${fenceDrawing.line_type}) - ${fenceDrawing.points.length} points`);
+    mapDraw();
+  });
+
+  document.addEventListener('keydown', evt => {
+    if (!panel.classList.contains('open')) return;
+    if (evt.key === 'Backspace' && fenceDrawing) { evt.preventDefault(); fenceUndo(); }
+    else if (evt.key === 'Enter' && fenceDrawing) { evt.preventDefault(); fenceFinish(); }
+    else if (evt.key === 'Escape' && fenceDrawing) { evt.preventDefault(); fenceCancel(); }
+  });
+})();
+
+// ---- the yard under the cursor -------------------------------------------------------------
+// the page draws the layers but cannot read them: a mask is a tinted pixel, height is 16-bit
+// scalar, an area is a colour standing in for an id. So the facts come from /api/map-point and
+// this only renders them. A click pins the box so the numbers can be read and copied.
+//
+// WHILE THE FENCE DRAWER IS DRAWING, THERE IS NO TOOLTIP AT ALL. Drawing owns the cursor - every
+// move is aiming a point and every click drops one - and a box following the aim is in the way.
+const MAP_TIP_DELAY = 80;       // ms of stillness before asking; the cursor moves far more often
+const MAP_MASK_WORDS = {nogo: 'no-go', water: 'water', buildings: 'buildings / indoors',
+                        corridors: 'corridor'};
+let mapTipPinned = false;
+let mapTipBusy = false;         // one request in flight at a time - the rest are simply skipped
+let mapTipTimer = null;
+let mapTipAt = null;            // [clientX, clientY] of the last move, for placing the box
+
+// drawing mode is a line in progress OR marking armed: both mean the next click belongs to the
+// fence drawer, so neither may also be a pin
+function mapTipSuppressed() { return !!fenceDrawing || fenceArmed; }
+
+function mapTipHide() {
+  mapTipPinned = false;
+  const tip = document.getElementById('map-tip');
+  tip.classList.add('hidden');
+  tip.classList.remove('pinned');
+  if (mapTipTimer) { clearTimeout(mapTipTimer); mapTipTimer = null; }
+}
+
+// beside the cursor, never under it, and flipped to the other side near a window edge so the box
+// is never half off screen
+function mapTipPlace(clientX, clientY) {
+  const tip = document.getElementById('map-tip');
+  const gap = 18;
+  const box = tip.getBoundingClientRect();
+  let left = clientX + gap;
+  let top = clientY + gap;
+  if (left + box.width > window.innerWidth - 8) left = clientX - gap - box.width;
+  if (top + box.height > window.innerHeight - 8) top = clientY - gap - box.height;
+  tip.style.left = `${Math.max(8, left)}px`;
+  tip.style.top = `${Math.max(8, top)}px`;
+}
+
+function mapTipRows(facts) {
+  const rows = [];
+  const row = (key, value) => rows.push(`<div><span class="tip-key">${key}</span> ${value}</div>`);
+  row('at', `${facts.x_pct.toFixed(3)} , ${facts.y_pct.toFixed(3)} %`);
+  if (facts.yards) row('yards', `${facts.yards.east_west} E , ${facts.yards.north_south} S`);
+  if (facts.height) row('ground', `${facts.height.yards} yd <span class="tip-key">(${facts.height.source})</span>`);
+  if (facts.slope_degrees !== undefined) row('slope', `${facts.slope_degrees}&deg;`);
+  if (facts.masks) {
+    const on = Object.keys(MAP_MASK_WORDS).filter(k => facts.masks[k]).map(k => MAP_MASK_WORDS[k]);
+    row('ground is', on.length ? on.join(', ') : 'clear');
+  }
+  if (facts.area) row('area', facts.area);
+  (facts.inside || []).forEach(line => {
+    const levels = (line.level_min !== null && line.level_min !== undefined)
+      ? ` <span class="tip-key">lvl ${line.level_min}-${line.level_max}</span>` : '';
+    row('inside', `${line.line_type} line ${line.line_id}${levels}`);
+  });
+  return rows.join('');
+}
+
+async function mapTipShow(clientX, clientY) {
+  if (!mapName || mapTipBusy || mapTipSuppressed()) return;
+  const [x, y] = fenceCanvasXY({clientX, clientY});
+  if (x < 0 || x > 100 || y < 0 || y > 100) { mapTipHide(); return; }
+  mapTipBusy = true;
+  let facts;
+  try {
+    facts = await api(`/api/map-point?map=${encodeURIComponent(mapName)}&x=${x}&y=${y}`);
+  } catch (err) {
+    mapTipBusy = false;
+    return;
+  }
+  mapTipBusy = false;
+  // the drawer may have armed while this was in flight, and then the answer is no longer wanted
+  if (facts.error || mapTipSuppressed()) return;
+  const tip = document.getElementById('map-tip');
+  tip.innerHTML = mapTipRows(facts) +
+    `<div class="tip-note">${mapTipPinned ? 'esc or click to unpin' : 'click to pin'}</div>`;
+  tip.classList.remove('hidden');
+  mapTipPlace(clientX, clientY);
+}
+
+(function wireMapTip() {
+  const wrap = document.getElementById('map-wrap');
+  const canvas = document.getElementById('map-canvas');
+
+  canvas.addEventListener('mousemove', evt => {
+    if (mapTipSuppressed()) { mapTipHide(); return; }
+    mapTipAt = [evt.clientX, evt.clientY];
+    if (mapTipPinned) return;
+    if (mapTipTimer) clearTimeout(mapTipTimer);
+    mapTipTimer = setTimeout(() => mapTipShow(...mapTipAt), MAP_TIP_DELAY);
+  });
+
+  // a click while drawing belongs to the fence drawer, so the pin never competes for it
+  canvas.addEventListener('click', evt => {
+    if (mapTipSuppressed()) return;
+    mapTipPinned = !mapTipPinned;
+    document.getElementById('map-tip').classList.toggle('pinned', mapTipPinned);
+    mapTipAt = [evt.clientX, evt.clientY];
+    if (mapTipPinned) mapTipShow(evt.clientX, evt.clientY);
+    else mapTipHide();
+  });
+
+  wrap.addEventListener('mouseleave', () => { if (!mapTipPinned) mapTipHide(); });
+  document.addEventListener('keydown', evt => {
+    if (evt.key === 'Escape' && mapTipPinned) mapTipHide();
+  });
+})();
 
 // THE CANVAS IS THE ZONE. its aspect is the zone's real rectangle, read from the manifest, so a
 // square metre of ground is square on screen - which a container-shaped canvas cannot promise
@@ -2316,11 +2734,36 @@ function mapDraw() {
     }
   };
 
+  // UNDER THE DRAWN LINES: a fence or a route is what the operator is working on, and a rash of
+  // spawn points must never sit on top of it
+  if (mapShown.has('npcs') && mapAlpha.npcs) {
+    mapDrawNpcs(ctx, at, pen, w, h);
+  }
+
   if (mapShown.has('fences') && mapAlpha.fences) {
     drawLines('fences', line => (line.line_type === 'nogo' ? red : lichen));
   }
   if (mapShown.has('routes') && mapAlpha.routes) {
     drawLines('routes', () => lichen);
+  }
+
+  // THE LINE IN PROGRESS, drawn in a colour neither go nor nogo uses so it never reads as saved -
+  // it auto-closes back to the first point the same way a finished line does, since that preview
+  // is the whole point of drawing it this way (google-maps-distance style)
+  if (fenceDrawing && fenceDrawing.points.length) {
+    ctx.strokeStyle = ctx.fillStyle = '#f2c14e';
+    ctx.lineWidth = 2 * pen;
+    const pts = fenceDrawing.points;
+    ctx.beginPath();
+    pts.forEach(([x, y], i) => { const [px, py] = at(x, y); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
+    if (pts.length >= 3) ctx.closePath();
+    ctx.stroke();
+    pts.forEach(([x, y]) => {
+      const [px, py] = at(x, y);
+      ctx.beginPath();
+      ctx.arc(px, py, 3 * pen, 0, Math.PI * 2);
+      ctx.fill();
+    });
   }
 
   if (mapShown.has('recordings') && mapAlpha.recordings) {
@@ -2335,6 +2778,106 @@ function mapDraw() {
         ctx.beginPath();
         path.forEach(([x, y], i) => { const [px, py] = at(x, y); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
         ctx.stroke();
+      }
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ONE STYLE PER DRAW, the grouping deciding every colour. dots are the truth, circles are the
+// camps a route would walk to, and the density map answers "is there anything here at all" without
+// drawing two thousand of anything
+function mapDrawNpcs(ctx, at, pen, w, h) {
+  const list = npcKept();
+  if (!list.length) return;
+  ctx.globalAlpha = mapAlpha.npcs;
+
+  if (npcVis.style === 'dot') {
+    const radius = (mapWidth.npcs ?? 2) * pen * 1.6;
+    for (const npc of list) {
+      ctx.fillStyle = npcGroup(npc).colour;
+      for (const [x, y] of npc.points || []) {
+        const [px, py] = at(x, y);
+        ctx.beginPath();
+        ctx.arc(px, py, radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // an elite is a different fight, not a different colour - the ring says so without spending
+      // the grouping's own palette on it
+      if (npc.rank > 0) {
+        ctx.strokeStyle = '#f0e6d2';
+        ctx.lineWidth = pen;
+        for (const [x, y] of npc.points || []) {
+          const [px, py] = at(x, y);
+          ctx.beginPath();
+          ctx.arc(px, py, radius + 2 * pen, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+    }
+  } else if (npcVis.style === 'circle') {
+    for (const camp of npcCamps(list)) {
+      const [px, py] = at(camp.x, camp.y);
+      const colour = npcGroup(camp.npc).colour;
+      const radius = Math.max(6 * pen, (camp.spread / 100) * w + 5 * pen + camp.count * pen);
+      ctx.fillStyle = colour;
+      ctx.globalAlpha = mapAlpha.npcs * 0.2;
+      ctx.beginPath();
+      ctx.arc(px, py, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = mapAlpha.npcs;
+      ctx.strokeStyle = colour;
+      ctx.lineWidth = (mapWidth.npcs ?? 1.5) * pen;
+      ctx.beginPath();
+      ctx.arc(px, py, radius, 0, Math.PI * 2);
+      ctx.stroke();
+      if (camp.count > 1) {
+        ctx.fillStyle = '#f0e6d2';
+        ctx.font = `${Math.round(11 * pen)}px "IBM Plex Mono", monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(String(camp.count), px, py);
+      }
+    }
+  } else {
+    // ONE FIELD PER GROUP so the grouping still decides the colour, all scaled against the busiest
+    // cell in the zone - a shared scale is what makes two groups comparable by eye
+    const cell = 18;
+    const cols = Math.ceil(w / cell), rows = Math.ceil(h / cell);
+    const fields = new Map();
+    for (const npc of list) {
+      const group = npcGroup(npc);
+      if (!fields.has(group.key)) fields.set(group.key, {group, grid: new Float32Array(cols * rows)});
+      const {grid} = fields.get(group.key);
+      for (const [x, y] of npc.points || []) {
+        const cx = Math.floor((x / 100) * cols), cy = Math.floor((y / 100) * rows);
+        for (let dy = -2; dy <= 2; dy++) {
+          for (let dx = -2; dx <= 2; dx++) {
+            const gx = cx + dx, gy = cy + dy;
+            if (gx < 0 || gy < 0 || gx >= cols || gy >= rows) continue;
+            grid[gy * cols + gx] += Math.exp(-(dx * dx + dy * dy) / 2.2);
+          }
+        }
+      }
+    }
+    // SCALED AGAINST A BUSY CELL, NOT THE BUSIEST. one town square with forty spawns used to set
+    // the scale for a whole zone and left the open ground barely tinted; the 90th percentile of the
+    // cells that carry anything sets it instead, and everything above that is simply full strength
+    const carrying = [];
+    for (const {grid} of fields.values()) for (const value of grid) if (value > 0.02) carrying.push(value);
+    carrying.sort((a, b) => a - b);
+    const peak = carrying.length ? carrying[Math.floor(carrying.length * 0.9)] : 1;
+    for (const {group, grid} of fields.values()) {
+      ctx.fillStyle = group.colour;
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const value = Math.min(1, grid[r * cols + c] / (peak || 1));
+          if (value < 0.02) continue;
+          // the square root lifts the thin ground off the floor: a cell with one spawn in it has to
+          // be visible, since "there is something here at all" is what this style answers
+          ctx.globalAlpha = mapAlpha.npcs * Math.min(0.95, 0.22 + Math.sqrt(value) * 0.78);
+          ctx.fillRect(c * cell, r * cell, cell, cell);
+        }
       }
     }
   }
@@ -2491,6 +3034,7 @@ document.getElementById('map-layers').onclick = async () => {
           chosen.forEach(layer => mapShown.add(layer));
           chosen.clear();
           if (mapShown.has('fences') || mapShown.has('routes')) await mapLoadMarkers();
+          if (mapShown.has('npcs') && !mapNpcs) await mapLoadNpcs();
           mapDraw();
           m.refresh(await build());
         }},
@@ -2533,8 +3077,11 @@ document.getElementById('map-opacity').onclick = () => {
   }
 
   shown.forEach(layer => {
-    const drawn = MAP_DRAWN.includes(layer);
-    const tintable = mapCanTint(layer);
+    // THE NPC LAYER TAKES ONLY OPACITY HERE. its marks and its colours come from the grouping and
+    // the style in its own dropdown, so a line width and a tint would be two controls fighting one
+    const ownControl = layer === 'npcs';
+    const drawn = MAP_DRAWN.includes(layer) && !ownControl;
+    const tintable = mapCanTint(layer) && !ownControl;
 
     const opacity = document.createElement('div');
     wrap.appendChild(opacity);
@@ -2556,15 +3103,16 @@ document.getElementById('map-opacity').onclick = () => {
       });
     } else {
       thickness.className = 'visual-na';
-      thickness.textContent = 'image';
+      thickness.textContent = ownControl ? 'npc visualisation' : 'image';
     }
 
     const colour = document.createElement('div');
     wrap.appendChild(colour);
     if (!tintable) {
       colour.className = 'visual-na';
-      // a scalar, an index or the client art: the pixels ARE the data and a tint would erase it
-      colour.textContent = 'has colour';
+      // a scalar, an index or the client art: the pixels ARE the data and a tint would erase it.
+      // the npc layer is neither - its colours ARE the grouping, so it says where they come from
+      colour.textContent = ownControl ? 'grouped' : 'has colour';
       return;
     }
     // the OS colour wheel, reached through a styled button - an unstyled <input type=color> is a
@@ -2590,6 +3138,163 @@ document.getElementById('map-opacity').onclick = () => {
   // never refreshed: a rebuild would detach every slider makeSlider just returned
   new Menu({title: 'layer visualisation', persistent: true, sections: [{kind: 'node', node: wrap}]})
     .openAt(document.getElementById('map-opacity'));
+};
+
+// TWO COLUMNS, ONE PICK IN EACH. the grouping decides every colour, the style decides the marks,
+// and neither is useful without the other - which is why they are one menu and not two
+document.getElementById('map-npc-vis').onclick = () => {
+  const wrap = document.createElement('div');
+  wrap.className = 'menu-section npc-cols';
+
+  const column = (title, key, options) => {
+    const box = document.createElement('div');
+    const head = document.createElement('div');
+    head.className = 'field-label';
+    head.textContent = title;
+    box.appendChild(head);
+    options.forEach(([id, label]) => {
+      const row = document.createElement('label');
+      row.className = 'npc-opt';
+      const input = document.createElement('input');
+      input.type = 'radio';
+      input.name = `npc-${key}`;
+      input.checked = npcVis[key] === id;
+      input.onchange = () => { npcVis[key] = id; mapDraw(); };
+      row.appendChild(input);
+      row.appendChild(document.createTextNode(label));
+      box.appendChild(row);
+    });
+    wrap.appendChild(box);
+  };
+
+  column('group by', 'group', [['level', 'level range'], ['reaction', 'reaction'], ['name', 'name']]);
+  column('draw as', 'style', [['dot', 'dot'], ['circle', 'spawn circle'], ['density', 'density map']]);
+
+  new Menu({title: 'npc visualisation', persistent: true, sections: [{kind: 'node', node: wrap}]})
+    .openAt(document.getElementById('map-npc-vis'));
+};
+
+// WHAT IS ON THE MAP AT ALL, unlike the grouping, which only colours what is already there
+document.getElementById('map-npc-filter').onclick = () => {
+  const wrap = document.createElement('div');
+  wrap.className = 'menu-section npc-cols';
+  const left = document.createElement('div');
+  const right = document.createElement('div');
+  wrap.appendChild(left);
+  wrap.appendChild(right);
+
+  const heading = (box, text) => {
+    const head = document.createElement('div');
+    head.className = 'field-label';
+    head.textContent = text;
+    box.appendChild(head);
+  };
+
+  heading(left, 'level range');
+  const range = document.createElement('div');
+  range.className = 'npc-range';
+  [['lo', 'from'], ['hi', 'to']].forEach(([key, label]) => {
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.min = 1;
+    input.max = 70;
+    input.value = npcFilter[key];
+    input.title = label;
+    input.oninput = () => { npcFilter[key] = Number(input.value); mapDraw(); };
+    range.appendChild(input);
+  });
+  left.appendChild(range);
+
+  heading(left, 'reaction');
+  ['hostile', 'neutral', 'friendly'].forEach(reaction => {
+    const row = document.createElement('label');
+    row.className = 'npc-opt';
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.checked = npcFilter.reactions.has(reaction);
+    input.onchange = () => {
+      if (input.checked) npcFilter.reactions.add(reaction); else npcFilter.reactions.delete(reaction);
+      mapDraw();
+    };
+    row.appendChild(input);
+    row.appendChild(document.createTextNode(reaction));
+    left.appendChild(row);
+  });
+
+  heading(right, `name${mapNpcs && mapNpcs.npcs ? ` (${mapNpcs.npcs.length})` : ''}`);
+  const search = document.createElement('input');
+  search.type = 'search';
+  search.placeholder = 'search';
+  right.appendChild(search);
+  const list = document.createElement('div');
+  list.className = 'npc-list';
+  right.appendChild(list);
+
+  const drawList = () => {
+    const query = search.value.trim().toLowerCase();
+    list.innerHTML = '';
+    const rows = (mapNpcs && mapNpcs.npcs ? mapNpcs.npcs : []).filter(n => !query || n.name.toLowerCase().includes(query));
+    if (!rows.length) {
+      const none = document.createElement('span');
+      none.className = 'none';
+      none.textContent = mapNpcs ? 'no npc matches' : 'open the npc layer first';
+      list.appendChild(none);
+      return;
+    }
+    rows.slice(0, 400).forEach(npc => {
+      const row = document.createElement('label');
+      row.className = 'npc-opt';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = npcNamed(npc);
+      input.onchange = () => {
+        // the set starts as null meaning "all", so the first tick has to write out today's answer
+        if (!npcFilter.names) npcFilter.names = new Set(mapNpcs.npcs.map(n => n.npc_id));
+        if (input.checked) npcFilter.names.add(npc.npc_id); else npcFilter.names.delete(npc.npc_id);
+        mapDraw();
+      };
+      const level = document.createElement('span');
+      level.className = 'npc-level';
+      level.textContent = npc.min_level === npc.max_level ? `${npc.min_level}` : `${npc.min_level}-${npc.max_level}`;
+      row.appendChild(input);
+      row.appendChild(document.createTextNode(npc.name));
+      row.appendChild(level);
+      list.appendChild(row);
+    });
+  };
+  search.oninput = drawList;
+  drawList();
+
+  const buttons = document.createElement('div');
+  buttons.className = 'npc-buttons';
+  [['all', () => { npcFilter.names = null; }], ['none', () => { npcFilter.names = new Set(); }],
+   ['reset', () => {
+     npcFilter.lo = 1;
+     npcFilter.hi = 70;
+     npcFilter.names = null;
+     npcFilter.reactions = new Set(['hostile', 'neutral', 'friendly']);
+   }]].forEach(([label, apply]) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'toggle';
+    button.textContent = label;
+    button.onclick = () => {
+      apply();
+      wrap.querySelectorAll('input[type="checkbox"]').forEach(box => { box.checked = true; });
+      if (npcFilter.names && !npcFilter.names.size) {
+        list.querySelectorAll('input[type="checkbox"]').forEach(box => { box.checked = false; });
+      }
+      range.children[0].value = npcFilter.lo;
+      range.children[1].value = npcFilter.hi;
+      drawList();
+      mapDraw();
+    };
+    buttons.appendChild(button);
+  });
+  right.appendChild(buttons);
+
+  new Menu({title: 'npc filter', persistent: true, sections: [{kind: 'node', node: wrap}]})
+    .openAt(document.getElementById('map-npc-filter'));
 };
 
 function mapEnter() {
@@ -2950,6 +3655,8 @@ document.getElementById('train-open').onclick = async () => {
     // own name sat in the head right above
     await loadTrain();
     await loadTrainClasses();
+    // THE WINDOW FLOOR COMES FROM THE SET'S BOXES, so it is stale until asked again
+    await loadCropFloor();
   }, {empty: 'none promoted'})
     .openAt(document.getElementById('train-open'));
 };
@@ -3931,8 +4638,59 @@ byId('cam-open').onclick = async () => {
   menu = await openPicker('cam-open', build, {title: 'recordings', status: 'cam-status'});
 };
 
+// LIVE MODE follows wt-camera-live instead of a recording: pitch and zoom counted from the
+// operator's own wheel and drag since the fully-in, fully-down anchor, and the views saved so far
+let camMode = 'recording';
+// the readout is watched while the wheel turns, so it polls faster than a recording
+const CAM_LIVE_POLL_MS = 250;
+
+function camApplyMode() {
+  const live = camMode === 'live';
+  byId('cam-mode').textContent = live ? 'live' : 'recording';
+  byId('cam-mode').classList.toggle('active', live);
+  byId('cam-open').classList.toggle('hidden', live);
+  byId('cam-body').classList.toggle('hidden', live);
+  byId('cam-views-body').classList.toggle('hidden', !live);
+  // the readout knows pitch and zoom only; the boxes about the mob and the player sit it out
+  for (const id of ['cam-dist', 'cam-bearing', 'cam-facing', 'cam-pos']) {
+    byId(id).textContent = '-';
+    byId(id).parentElement.classList.toggle('hidden', live);
+  }
+}
+
+async function camLiveLoad() {
+  const data = await api('/api/camera-live');
+  const known = data.pitch_degrees !== null && data.pitch_degrees !== undefined;
+  const exact = data.exact ? '' : ' <span class="cam-drift">not exact</span>';
+  byId('cam-pitch').innerHTML = known ? `${data.pitch_degrees.toFixed(1)} deg${exact}` : '-';
+  byId('cam-zoom').innerHTML = known ? `${data.zoom_ticks.toFixed(0)} notches${exact}` : '-';
+  const steady = byId('cam-steady');
+  steady.textContent = !data.live ? 'no feed' : known ? (data.exact ? 'counting' : 're-anchor') : 'press f9 at the stop';
+  steady.className = 'cam-v' + (data.live && data.exact ? ' cam-ok' : '');
+  byId('cam-live-note').textContent = data.note || '';
+  const views = Object.entries(data.views || {}).sort(([a], [b]) => a.localeCompare(b));
+  byId('cam-views').innerHTML = views.length
+    ? views.map(([key, v]) =>
+        `<div class="cam-ev"><span class="cam-ev-t">${key}</span>` +
+        `pitch ${v.pitch_degrees.toFixed(1)} deg, zoom ${v.zoom_ticks.toFixed(0)} notches` +
+        `${v.source ? ` <span class="cam-drift">${v.source}</span>` : ''}</div>`).join('')
+    : '<div class="cam-ev cam-drift">none saved yet</div>';
+}
+
+byId('cam-mode').onclick = () => {
+  camMode = camMode === 'live' ? 'recording' : 'live';
+  camApplyMode();
+  camEnter();
+};
+
 function camEnter() {
   if (camTimer) clearInterval(camTimer);
+  camApplyMode();
+  if (camMode === 'live') {
+    camTimer = setInterval(() => camLiveLoad().catch(() => {}), CAM_LIVE_POLL_MS);
+    camLiveLoad().catch(() => {});
+    return;
+  }
   camSize = -1;
   if (camSession === null) {
     byId('cam-open').innerHTML = '<span>live recording</span>';
@@ -4216,7 +4974,7 @@ function hkStatus(msg) {
 // renamed data-tab="navigation" to data-tab="map" and rewrote 698 lines of this file,
 // and the walk drawing and the pop-out went with it. The SERVER never stopped serving them
 // - /api/nav, /api/nav-latest and /api/nav-heat are all still live routes, and
-// nav/walk.py is untouched - so this is the client half being reconnected
+// parent/nav/walk.py is untouched - so this is the client half being reconnected
 // beside the map tab rather than anything new. Balthazar Fitzpatrick: "do the navigation
 // tab, the map tab already exists".
 // ================================================================================
@@ -4353,6 +5111,35 @@ function navMarkSelected(ctx, at) {
   ctx.restore();
 }
 
+// guide mode's planned route - a dashed sky-blue line, distinct from the walked path (dim) and the
+// go/no-go lines (lichen/stone) - plus the waypoint it is heading for. prev_plan draws faded so a
+// replan reads as a fade, not a pop.
+const PLAN_COLOUR = '#5fb3ff';
+
+function navDrawPlan(ctx, plan, at, alpha) {
+  if (!plan || !plan.path || plan.path.length < 2) return;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = PLAN_COLOUR;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([6, 4]);
+  ctx.beginPath();
+  plan.path.forEach(([x, y], i) => {
+    const [px, py] = at(x, y);
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  });
+  ctx.stroke();
+  ctx.setLineDash([]);
+  if (plan.wp) {
+    const [px, py] = at(plan.wp[0], plan.wp[1]);
+    ctx.fillStyle = PLAN_COLOUR;
+    ctx.beginPath();
+    ctx.arc(px, py, 5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
 // SHARED BY BOTH PROJECTIONS - fitted-to-bounds (no zone image known) and 0-100-over-the-zone
 // (one is). Same path, same lines, same colours either way; only `at(x, y) -> [px, py]` differs.
 function navDrawWalk(ctx, map, at) {
@@ -4360,6 +5147,9 @@ function navDrawWalk(ctx, map, at) {
   const lichen = css.getPropertyValue('--lichen').trim() || '#c7ed5f';
   const stone = css.getPropertyValue('--stone-red').trim() || '#996b62';
   const dim = css.getPropertyValue('--muted').trim() || '#8a8a8a';
+
+  navDrawPlan(ctx, map.prev_plan, at, 0.3);
+  navDrawPlan(ctx, map.plan, at, 0.9);
 
   if (map.path.length > 1) {
     ctx.strokeStyle = dim;
@@ -4416,6 +5206,7 @@ function navSetStatus(status, map) {
   const head = byId('nav-map');
   head.innerHTML = `<span>${map.zone_name || `map ${map.map_id}`}</span>`;
   head.dataset.value = String(map.map_id);
+  byId('nav-legend').hidden = !map.plan;
 }
 
 function navDrawOnZone(ctx, rect, map) {
@@ -4626,16 +5417,19 @@ popOutPanel('control', 'control-popout', 'control-status', () => controlLoad().c
 // file wt-overlay-shadow writes, never this server capturing anything itself.
 const CONTROL_POLL_MS = 100;  // ~10 Hz - the same rate OverlayModel.tick() is driven at
 let controlTimer = null;
-let controlKeysBuilt = false;
 
 function controlToken(name, fallback) {
   const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   return value || fallback;
 }
 
-function controlBuildKeys(keys) {
+// ONE RENDERER, THREE PANELS. the control tab draws the live sink, and the sessions tab draws a
+// recording's and the humaniser's; each panel's elements share a prefix (control-, srec-, ssim-)
+const sinkBuilt = new Set();
+
+function sinkBuildKeys(prefix, keys) {
   const size = 26, gap = 4, rowH = 32, unit = size + gap;
-  const el = byId('control-keys');
+  const el = byId(prefix + '-keys');
   if (!el || !keys.length) return;
   const maxRow = Math.max(...keys.map(k => k.row));
   // #control-keys holds only absolutely-positioned children, so it has zero intrinsic size - an
@@ -4650,11 +5444,11 @@ function controlBuildKeys(keys) {
     return `<div class="control-key" data-key="${k.key}" `
       + `style="left:${x}px;top:${y}px;width:${w}px;height:${size}px">${k.key.toUpperCase()}</div>`;
   }).join('');
-  controlKeysBuilt = true;
+  sinkBuilt.add(prefix);
 }
 
-function controlUpdateKeys(keys) {
-  const el = byId('control-keys');
+function sinkUpdateKeys(prefix, keys) {
+  const el = byId(prefix + '-keys');
   if (!el) return;
   for (const k of keys) {
     const lamp = el.querySelector(`[data-key="${k.key}"]`);
@@ -4664,15 +5458,15 @@ function controlUpdateKeys(keys) {
 
 const CONTROL_MOUSE_LABELS = {left: 'L', right: 'R', scroll_up: '▲', scroll_down: '▼'};
 
-function controlBuildMouseButtons() {
-  const el = byId('control-mouse-buttons');
+function sinkBuildMouseButtons(prefix) {
+  const el = byId(prefix + '-mouse-buttons');
   if (!el) return;
   el.innerHTML = Object.entries(CONTROL_MOUSE_LABELS).map(([name, label]) =>
     `<div class="control-key" data-mouse="${name}">${label}</div>`).join('');
 }
 
-function controlUpdateMouseButtons(buttons) {
-  const el = byId('control-mouse-buttons');
+function sinkUpdateMouseButtons(prefix, buttons) {
+  const el = byId(prefix + '-mouse-buttons');
   if (!el || !buttons) return;
   for (const [name, lit] of Object.entries(buttons)) {
     const lamp = el.querySelector(`[data-mouse="${name}"]`);
@@ -4685,8 +5479,8 @@ function controlUpdateMouseButtons(buttons) {
 // a separate label; the dial's dot-on-the-rim convention is ported straight from
 // OverlayWindow._draw_dial (a dot's position reads as a bearing at a glance, a centre line takes
 // a moment longer to parse).
-function controlDrawCanvas(snap) {
-  const canvas = byId('control-canvas');
+function sinkDrawCanvas(prefix, snap) {
+  const canvas = byId(prefix + '-canvas');
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -4748,15 +5542,19 @@ function controlDrawCanvas(snap) {
   }
 }
 
+function sinkDraw(prefix, snap) {
+  if (!sinkBuilt.has(prefix)) {
+    sinkBuildKeys(prefix, snap.keys || []);
+    sinkBuildMouseButtons(prefix);
+  }
+  sinkUpdateKeys(prefix, snap.keys || []);
+  sinkUpdateMouseButtons(prefix, snap.mouse_buttons);
+  sinkDrawCanvas(prefix, snap);
+}
+
 async function controlLoad() {
   const snap = await api('/api/control');
-  if (!controlKeysBuilt) {
-    controlBuildKeys(snap.keys || []);
-    controlBuildMouseButtons();
-  }
-  controlUpdateKeys(snap.keys || []);
-  controlUpdateMouseButtons(snap.mouse_buttons);
-  controlDrawCanvas(snap);
+  sinkDraw('control', snap);
   byId('control-run').textContent = snap.run_state || '-';
   byId('control-mode').textContent = snap.mode || '';
   byId('control-note').textContent = snap.note || '';
@@ -4769,6 +5567,241 @@ function controlEnter() {
   controlTimer = setInterval(() => controlLoad().catch(() => {}), CONTROL_POLL_MS);
   controlLoad().catch(() => {});
 }
+
+// ---- sessions tab: a recording played back beside the output sink ---------------------------
+// THE PAGE OWNS THE CLOCK. elapsed advances by real time times the chosen speed, and every
+// moment is asked of /api/playback-frame, which is stateless - so a scrub and a tick can never
+// disagree about where playback is. frames change at the recording's own rate (2 Hz by default);
+// state, keys and the sink are asked for every SESSION_POLL_MS
+const SESSION_SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+const SESSION_POLL_MS = 100;
+const SESSION_MODE_COLOURS = {
+  ROAM: ['--text-dim', '#8b8b90'], ACQUIRE: ['--cream', '#e9e1cf'], TRAVEL: ['--lichen', '#c7ed5f'],
+  ENGAGE: ['--stone-red-lift', '#ad796f'], LOOT: [null, '#d9b35b'], REST: [null, '#6f8fbf'],
+  FLEE: [null, '#c0504d'],
+};
+let sessionOpen = null;       // what /api/playback-open said about the recording
+let sessionMoment = null;     // the last /api/playback-frame answer
+let sessionElapsed = 0;
+let sessionSpeed = 1;
+let sessionPlaying = false;
+let sessionLastTick = null;
+let sessionFetchedAt = 0;
+let sessionFrameName = null;
+let sessionInFlight = false;
+
+function sessionFmt(seconds) {
+  const s = Math.max(0, Math.floor(seconds));
+  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+}
+
+function sessionModeColour(mode) {
+  const [token, fallback] = SESSION_MODE_COLOURS[mode] || [null, '#777'];
+  return token ? controlToken(token, fallback) : fallback;
+}
+
+function sessionClock() {
+  const total = sessionOpen ? sessionOpen.duration : 0;
+  byId('session-clock').textContent = `${sessionFmt(sessionElapsed)} / ${sessionFmt(total)}`;
+  byId('session-slider').value = sessionElapsed;
+}
+
+function sessionDrawStrip() {
+  const canvas = byId('session-strip');
+  if (!canvas || !sessionOpen) return;
+  canvas.width = canvas.clientWidth || 600;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const total = sessionOpen.duration || 1;
+  const seen = [];
+  for (const run of sessionOpen.timeline || []) {
+    const x0 = run.start / total * canvas.width;
+    const x1 = Math.max(x0 + 1, run.end / total * canvas.width);
+    ctx.fillStyle = sessionModeColour(run.mode);
+    ctx.fillRect(x0, 0, x1 - x0, canvas.height);
+    if (!seen.includes(run.mode)) seen.push(run.mode);
+  }
+  byId('session-legend').innerHTML = seen.map(mode =>
+    `<span style="color:${sessionModeColour(mode)}">&#9632;</span> ${mode}`).join('&nbsp;&nbsp;');
+}
+
+function sessionFacts(moment) {
+  const s = moment.state || {};
+  const num = (v, digits = 1) => (v === null || v === undefined) ? '-' : Number(v).toFixed(digits);
+  const heading = s.facing === null || s.facing === undefined ? '-'
+    : (s.facing * 180 / Math.PI).toFixed(1) + ' deg';
+  const facts = [
+    ['x, y', `${num(s.x, 3)}, ${num(s.y, 3)}`], ['facing', heading], ['zone', s.map_id ?? '-'],
+    ['health', num(s.health, 0)], ['resource', num(s.resource, 0)],
+    ['target', s.target ? `${s.target_hostility || 'yes'} ${num(s.target_health, 0)}` : 'none'],
+    ['combat', s.in_combat ? 'yes' : 'no'], ['cast', s.cast || '-'],
+    ['mode machine', moment.machine_mode || '-'], ['labelled', moment.mode || 'unlabelled'],
+    ['plates', moment.frame ? moment.frame.plates.length : '-'],
+  ];
+  byId('session-facts').innerHTML = facts.map(([k, v]) =>
+    `<span class="k">${k}</span><span class="v">${v}</span>`).join('');
+}
+
+// the plate rows' boxes are in the saved frame's own pixels; the arrow starts at the character,
+// projected through the fitted camera, and stops short of the plate like wt-bearing-overlay's
+function sessionDrawOverlay() {
+  const img = byId('session-image');
+  const canvas = byId('session-overlay');
+  if (!img || !canvas || !img.naturalWidth) return;
+  canvas.width = img.clientWidth;
+  canvas.height = img.clientHeight;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const frame = sessionMoment && sessionMoment.frame;
+  if (!frame || !frame.plates.length) return;
+  const k = canvas.width / (frame.width || img.naturalWidth);
+  const lit = controlToken('--lichen', '#c7ed5f');
+  const ink = controlToken('--cream', '#e9e1cf');
+  ctx.lineWidth = 2;
+  ctx.font = '11px monospace';
+  for (const p of frame.plates) {
+    const [l, t, w, h] = p.box.map(v => v * k);
+    ctx.strokeStyle = lit;
+    ctx.strokeRect(l, t, w, h);
+    if (frame.start) {
+      const sx = frame.start[0] * k, sy = frame.start[1] * k;
+      const cx = l + w / 2, cy = t + h / 2;
+      const len = Math.hypot(cx - sx, cy - sy) || 1;
+      const ux = (cx - sx) / len, uy = (cy - sy) / len;
+      const edge = Math.min(w / 2 / Math.max(Math.abs(ux), 1e-6), h / 2 / Math.max(Math.abs(uy), 1e-6));
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(cx - ux * (edge + 4), cy - uy * (edge + 4));
+      ctx.stroke();
+    }
+    ctx.fillStyle = ink;
+    const card = [`${p.d.toFixed(1)} yd`, `r ${p.r >= 0 ? '+' : ''}${p.r.toFixed(0)}`,
+      `b ${p.b.toFixed(0)}`, `f ${p.f.toFixed(0)}`];
+    card.forEach((line, i) => ctx.fillText(line, l, t + h + 12 + i * 12));
+  }
+}
+
+// the humaniser's panel stays dark until a policy can say what it would press
+function sessionDrawSimulated(sink) {
+  sinkDraw('ssim', {
+    ...sink,
+    keys: (sink.keys || []).map(key => ({...key, lit: false})),
+    mouse_buttons: Object.fromEntries(Object.keys(sink.mouse_buttons || {}).map(b => [b, false])),
+    facing_degrees: null, turn_delta_degrees: null, mouse_dx: 0, mouse_dy: 0,
+  });
+}
+
+async function sessionShow() {
+  if (!sessionOpen || sessionInFlight) return;
+  sessionInFlight = true;
+  try {
+    const moment = await api('/api/playback-frame?t=' + sessionElapsed.toFixed(3));
+    if (moment.error) return;
+    sessionMoment = moment;
+    const frame = moment.frame;
+    const img = byId('session-image');
+    if (frame && frame.path !== sessionFrameName) {
+      sessionFrameName = frame.path;
+      img.onload = () => sessionDrawOverlay();
+      img.src = '/session-frame/' + encodeURIComponent(frame.path);
+    } else {
+      sessionDrawOverlay();
+    }
+    sessionFacts(moment);
+    sinkDraw('srec', moment.sink);
+    sessionDrawSimulated(moment.sink);
+    byId('srec-mode').textContent = moment.machine_mode || '';
+    byId('srec-note').textContent = moment.sink.note || '';
+  } finally {
+    sessionInFlight = false;
+  }
+}
+
+function sessionTick(now) {
+  if (!sessionPlaying || !sessionOpen) return;
+  if (sessionLastTick !== null) sessionElapsed += (now - sessionLastTick) / 1000 * sessionSpeed;
+  sessionLastTick = now;
+  if (sessionElapsed >= sessionOpen.duration) {
+    sessionElapsed = sessionOpen.duration;
+    sessionPause();
+  }
+  sessionClock();
+  if (now - sessionFetchedAt >= SESSION_POLL_MS) {
+    sessionFetchedAt = now;
+    sessionShow().catch(() => {});
+  }
+  if (sessionPlaying) requestAnimationFrame(sessionTick);
+}
+
+function sessionPlay() {
+  if (!sessionOpen) return;
+  if (sessionElapsed >= sessionOpen.duration) sessionElapsed = 0;
+  sessionPlaying = true;
+  sessionLastTick = null;
+  byId('session-play').textContent = 'pause';
+  requestAnimationFrame(sessionTick);
+}
+
+function sessionPause() {
+  sessionPlaying = false;
+  byId('session-play').textContent = 'play';
+}
+
+async function sessionLoad(name) {
+  sessionPause();
+  byId('session-status').textContent = `opening ${name}...`;
+  const data = await api('/api/playback-open', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name}),
+  });
+  if (data.error) {
+    byId('session-status').textContent = data.error;
+    return;
+  }
+  sessionOpen = data;
+  sessionElapsed = 0;
+  sessionFrameName = null;
+  byId('session-open').innerHTML = `<span>${data.name}</span>`;
+  byId('session-slider').max = data.duration;
+  byId('session-status').textContent =
+    `${data.frames} frames, ${data.plate_frames} with plates, ${data.arrow_frames} with arrows, ` +
+    `${data.labelled}/${data.windows} windows labelled`;
+  sessionDrawStrip();
+  sessionClock();
+  await sessionShow();
+}
+
+function sessionsEnter() {
+  if (!sessionOpen) byId('session-status').textContent = 'pick a recording';
+  else sessionDrawStrip();
+}
+
+byId('session-open').onclick = async evt => {
+  const head = evt.currentTarget;
+  const data = await api('/api/playback-sessions');
+  const items = (data.sessions || []).map(s => ({id: s.name, label: s.name}));
+  listMenu('recordings', items, item => sessionLoad(item.id).catch(err => {
+    byId('session-status').textContent = String(err);
+  })).openAt(head);
+};
+
+byId('session-play').onclick = () => (sessionPlaying ? sessionPause() : sessionPlay());
+
+byId('session-speed').onclick = evt => {
+  const items = SESSION_SPEEDS.map(s => ({id: String(s), label: `${s}x`}));
+  listMenu('speed', items, item => {
+    sessionSpeed = Number(item.id);
+    byId('session-speed').innerHTML = `<span>${item.label}</span>`;
+  }).openAt(evt.currentTarget);
+};
+
+byId('session-slider').oninput = () => {
+  sessionPause();
+  sessionElapsed = Number(byId('session-slider').value);
+  sessionClock();
+  sessionShow().catch(() => {});
+};
+
+window.addEventListener('resize', () => { sessionDrawStrip(); sessionDrawOverlay(); });
 
 // ---- nav lines: read live, corrected after ---------------------------------------------------
 // A LINE IS DERIVED, WHICH IS WHY SAVING IS A SIDECAR. walked_maps() builds the lines out of the
@@ -4881,7 +5914,7 @@ const NAV_MOD_LABELS = {ctrl: 'Ctrl', alt: 'Alt', shift: 'Shift', cmd: 'Cmd'};
 let navKeyCapturing = null;
 let navKeyCaptureId = 0;
 let navKeys = {};
-let navDpiButton = 'button6';
+let navDpiButton = 'mouse_button6';
 
 function navKeyName(evt) {
   // the physical key rather than the character shift produces - shift+2 is "2", not "@"
@@ -4899,15 +5932,17 @@ function navHeldMods(evt) {
 }
 
 function navButtonName(button) {
-  return ({0: 'left', 1: 'middle', 2: 'right'})[button] || `button${button + 1}`;
+  // explicit, like the recorder's triggers: 'left' alone is the arrow key
+  return 'mouse_' + (({0: 'left', 1: 'middle', 2: 'right'})[button] || `button${button + 1}`);
 }
 
 function navTriggerLabel(trigger) {
   if (trigger === navDpiButton) return 'DPI button';
   if (trigger === 'scroll_up') return 'scroll up';
   if (trigger === 'scroll_down') return 'scroll down';
-  if (['left', 'right', 'middle'].includes(trigger)) return `${trigger} click`;
-  const extra = /^button(\d+)$/.exec(trigger);
+  if (['mouse_left', 'mouse_right', 'mouse_middle'].includes(trigger)) return `${trigger.slice(6)} click`;
+  if (['left', 'right', 'up', 'down'].includes(trigger)) return `${trigger} arrow`;
+  const extra = /^mouse_button(\d+)$/.exec(trigger);
   if (extra) return ({4: 'back button', 5: 'forward button'})[extra[1]] || `mouse button ${extra[1]}`;
   return /^f\d+$/.test(trigger) || trigger.length === 1 ? trigger.toUpperCase() : trigger;
 }

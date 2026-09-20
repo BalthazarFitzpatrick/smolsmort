@@ -8,15 +8,15 @@ it is testable directly, which is why fifty of this tool's tests need no server 
 from __future__ import annotations
 
 import json
-import shutil
 import tomllib
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from parent.config.profile import PROFILES_DIR
+from parent.config.profile import PROFILES_DIR, _screen_toml_path
 from parent.imitation.record import resolve_session_paths
-from snapshot.review import classdefs, housekeeping, maps, nav, paths
+from snapshot.tools.interface_state import InterfaceError
+from snapshot.review import classdefs, housekeeping, maps, nav, paths, serverlog
 from snapshot.review.camera import CameraState
 from snapshot.review.control import ControlState
 from snapshot.review.naming import _flat
@@ -55,6 +55,24 @@ def index_html() -> str:
     means a markup edit shows up on the next refresh, the same as the css and js beside it.
     """
     return (paths.REVIEW_UI_DIR / "index.html").read_text(encoding="utf-8")
+
+
+def _interface_require_bound(interface) -> None:
+    """refuse an upload or a mark before the marks have somewhere real to live.
+
+    a rect or a screenshot drawn before the server, character and screen are all picked has no
+    character folder to join - one used to fall back to the screen's scratch tree, which is
+    exactly the split this tab exists to end. the page already shows a label naming what is
+    missing (ifaceRenderOwner); this is the same check, enforced server-side.
+    """
+    if interface.character_dir is None:
+        need = [
+            not interface.realm and "server",
+            not interface.character and "character",
+            not interface.profile_name and "screen profile",
+        ]
+        missing = ", ".join(n for n in need if n)
+        raise InterfaceError(f"pick a {missing} first - marks need somewhere to be saved")
 
 
 def _interface_names(interface, payload: dict) -> None:
@@ -121,19 +139,27 @@ def _interface_generate(interface, payload: dict) -> dict:
 
     marked = [e for e in interface.elements if e.marked]
     if not marked:
-        return {"error": "nothing marked yet"}
+        # EXPECTED, not a failure: a quiet save right after naming the profile has nothing marked
+        # yet. `benign` tells the page this is not worth interrupting anyone over - every other
+        # error here is a real save failure and must surface even on a quiet save
+        return {"error": "nothing marked yet", "benign": True}
 
     shot = payload.get("screenshot") or marked[0].screenshot
     if not shot:
-        return {"error": "no screenshot to take the resolution from"}
-    path = interface.shots_dir / Path(shot).name
+        return {"error": "no screenshot to take the resolution from", "benign": True}
+    # THE SAME FOLDER MARKS ARE SAVED INTO. this used to read shots_dir - the screen's scratch
+    # tree - while an upload had already landed in the character folder, so a save failed with "no
+    # screenshot named X" for every character whose shots only ever existed there
+    path = interface.shots_home / Path(shot).name
     if not path.is_file():
         return {"error": f"no screenshot named {shot!r}"}
     with Image.open(path) as handle:
         resolution = handle.size
 
     written = []
-    screen_path = PROFILES_DIR / f"{interface.profile_name}.toml"
+    # a genuinely new screen gets its own folder (profiles/screens/<name>/<name>.toml); an
+    # existing screen - flat legacy or already folder-form - is found as-is and left alone below
+    screen_path = _screen_toml_path(interface.profile_name, PROFILES_DIR)
     if screen_path.exists():
         # THE GUARD THAT WAS MISSING, and its absence cost a whole profile. nothing checked that
         # the screen picked matches the capture marked on, so a session with the picker left on
@@ -154,43 +180,28 @@ def _interface_generate(interface, payload: dict) -> dict:
         # LEFT ALONE. it carries the readout, which this tab cannot reproduce from a screenshot
         written.append(f"{screen_path.name} (existing, untouched)")
     else:
+        screen_path.parent.mkdir(parents=True, exist_ok=True)
         screen_path.write_text(interface.profile_toml(resolution))
         written.append(screen_path.name)
 
-    # A CHARACTER IS A FOLDER, holding its toml and the screenshots its rects were measured on.
-    # every rect was drawn on a particular frame, and a rect whose frame is gone can be re-checked
-    # by nobody - which matters most exactly when something reads wrong months later.
-    chars_dir = PROFILES_DIR.parent / "characters"
+    # A CHARACTER IS A FOLDER, holding its toml, its screenshots AND the marks that produced it -
+    # ONE FOLDER, not the character.toml plus a copy of shots living a tree over. every rect was
+    # drawn on a particular frame, and a rect whose frame is gone can be re-checked by nobody -
+    # which matters most exactly when something reads wrong months later.
+    #
     # THE SCREEN IS PART OF THE KEY. every rect, and every ability's brightness cut, was measured
     # against one screen - and Balthazar Fitzpatrick arranges the ui differently on different screen estate, so
     # they do not even scale between screens linearly. keying on realm-character alone gave one
     # slot for all of them, so marking a second screen would have overwritten the first. Balthazar Fitzpatrick:
     # "I am totally fine with maintaining two profiles for two screens INCLUDING all the abilities
     # and spells and interface items"
-    key = f"{interface.realm}-{interface.character}-{interface.profile_name}".lower()
-    char_dir = chars_dir / key
+    char_dir = interface.character_dir
+    key = char_dir.name
     (char_dir / "screenshots").mkdir(parents=True, exist_ok=True)
     char_path = char_dir / "character.toml"
     char_path.write_text(interface.character_toml())
     written.append(f"{key}/character.toml")
-
-    # copy ONLY the screenshots something actually references. the tab's upload area is a working
-    # space and usually holds more than the finished profile depends on
-    referenced = set()
-    for element in interface.elements:
-        if element.screenshot:
-            referenced.add(element.screenshot)
-        for example in element.examples.values():
-            if example.get("screenshot"):
-                referenced.add(example["screenshot"])
-    copied = 0
-    for shot in sorted(referenced):
-        source = interface.shots_dir / Path(shot).name
-        if source.is_file():
-            shutil.copy2(source, char_dir / "screenshots" / source.name)
-            copied += 1
-    if copied:
-        written.append(f"{copied} screenshots")
+    hand_field_warning = interface.hand_fields_warning
 
     # a partial profile is a legitimate intermediate, so this reports rather than refuses - but it
     # must never be silent about which core rects are absent
@@ -205,7 +216,7 @@ def _interface_generate(interface, payload: dict) -> dict:
     return {
         "message": (
             f"wrote {', '.join(written)} from {len(marked)} marked elements at "
-            f"{resolution[0]}x{resolution[1]}.{warning}{readout}"
+            f"{resolution[0]}x{resolution[1]}.{warning}{readout}{hand_field_warning}"
         )
     }
 
@@ -224,14 +235,39 @@ def make_handler(
     nav_state = nav_state or NavState()
     camera_state = camera_state or CameraState()
     control_state = control_state or ControlState()
-    from snapshot.tools.interface_state import InterfaceError, InterfaceState
+    # the camera tab's live mode: wt-camera-live's feed, read the same way as the control sink
+    camera_live = ControlState(
+        sink_path=paths.CAMERA_LIVE_SINK,
+        idle={"note": "no live feed - run: uv run wt-camera-live --character <name>"},
+    )
+    from snapshot.tools.interface_state import InterfaceState
 
     if interface is None:
+        # ONE-TIME, IDEMPOTENT: move any pre-existing interface_shots marks into the character
+        # folder they belong to before anything reads from either tree. a failure here must never
+        # block the server from starting - the tab still works from whatever state it finds
+        try:
+            from parent.tools import interface_state as interface_state_module
+            from snapshot.tools.interface_migration import migrate
+
+            # READ paths.INTERFACE_SHOTS AND interface_state.CHARACTERS_DIR AS ATTRIBUTES, not by
+            # value - a test redirects both by patching the module, and a bound default here would
+            # read past that patch straight into the real tree (see paths.py's own warning)
+            report = migrate(paths.INTERFACE_SHOTS, interface_state_module.CHARACTERS_DIR)
+            if report.moved or report.conflicts:
+                serverlog.LOG.info(
+                    "interface migration: %d moved, %d conflicts",
+                    len(report.moved),
+                    len(report.conflicts),
+                )
+        except OSError:
+            serverlog.LOG.exception("interface migration failed - starting anyway")
         interface = InterfaceState(shots_dir=paths.INTERFACE_SHOTS / _startup_screen())
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
-            pass
+            # one line per request, to the review log instead of the terminal [task 156]
+            serverlog.LOG.info("%s %s", self.address_string(), fmt % args)
 
         def _interface_post(self):
             """the Interface tab's four writes, all under /api/interface/.
@@ -246,6 +282,7 @@ def make_handler(
 
             try:
                 if action == "shot":
+                    _interface_require_bound(interface)
                     name = unquote(parse_qs(urlparse(self.path).query).get("name", ["shot"])[0])
                     # normalise whatever was uploaded to png so the browser can always show it
                     from io import BytesIO
@@ -266,10 +303,12 @@ def make_handler(
                             payload.get("mode", "rect"),
                             payload.get("keybind", ""),
                             bool(payload.get("ability")),
+                            bool(payload.get("probe")),
                         )
                     elif action == "remove":
                         interface.remove(payload.get("name", ""))
                     elif action == "mark":
+                        _interface_require_bound(interface)
                         interface.mark(
                             payload.get("name", ""),
                             payload.get("shape") or {},
@@ -347,6 +386,7 @@ def make_handler(
             "/guide/": (lambda name: state.guide_bytes(name), "image/png"),
             "/zone-map/": (lambda name: nav.zone_map_bytes(name), "image/jpeg"),
             "/map-layer/": (lambda name: maps.layer_bytes(name), "image/png"),
+            "/session-frame/": (lambda name: playback_state.frame_bytes(name), "image/jpeg"),
         }
 
         def _post_pool_decisions(self) -> bool:
@@ -553,6 +593,8 @@ def make_handler(
                 rate = None if rate in (None, "") else max(1e-6, min(1e-1, float(rate)))
                 seed = payload.get("seed")
                 seed = None if seed in (None, "") else int(seed)
+                # a name saves the run's weights under it and leaves plate_model.pt alone
+                name = payload.get("name")
                 self._json(
                     trainer.start(
                         epochs,
@@ -560,6 +602,7 @@ def make_handler(
                         None if crop is None else int(crop),
                         learning_rate=rate,
                         seed=seed,
+                        name=None if name in (None, "") else str(name),
                     )
                 )
             return False
@@ -759,6 +802,19 @@ def make_handler(
             elif parsed.path == "/api/map-manifest":
                 # one manifest places every layer, so the page asks once and then only for images
                 self._json(maps.manifest_json(parse_qs(parsed.query).get("map", [""])[0]))
+            elif parsed.path == "/api/map-npcs":
+                # one zone's npcs and their spawn points, from the addon export under derived/
+                self._json(maps.npcs_json(parse_qs(parsed.query).get("map", [""])[0]))
+            elif parsed.path == "/api/map-point":
+                # one yard's facts, read off the layers the browser can draw but cannot decode
+                query = parse_qs(parsed.query)
+                self._json(
+                    maps.point_json(
+                        query.get("map", [""])[0],
+                        query.get("x", [""])[0],
+                        query.get("y", [""])[0],
+                    )
+                )
             elif parsed.path == "/api/map-markers":
                 self._json(maps.markers_json(parse_qs(parsed.query).get("map", [""])[0]))
             elif parsed.path == "/api/maps":
@@ -811,6 +867,8 @@ def make_handler(
                 # the sitting is being recorded, so that is the case worth defaulting to
                 wanted = parse_qs(parsed.query).get("session", [""])[0] or camera_state.latest()
                 self._json(camera_state.sitting(wanted) if wanted else {"cycles": [], "size": 0})
+            elif parsed.path == "/api/camera-live":
+                self._json(camera_live.snapshot())
             elif parsed.path == "/api/control":
                 # nothing to name: one sink file, written by whichever wt-overlay-shadow process
                 # is running - see tools/review/control.py for why the server never captures this
@@ -906,6 +964,36 @@ def make_handler(
         def _dispatch_post(self):
             if self.path.startswith("/api/interface/"):
                 self._interface_post()
+                return
+            if self.path == "/api/map-marker-level-range":
+                payload = self._payload()
+                self._json(
+                    maps.set_line_level_range(
+                        payload.get("map", ""),
+                        int(payload["line_id"]),
+                        float(payload["level_min"]),
+                        float(payload["level_max"]),
+                    )
+                )
+                return
+            if self.path == "/api/map-fence-line":
+                payload = self._payload()
+                level_min = payload.get("level_min")
+                level_max = payload.get("level_max")
+                self._json(
+                    maps.save_fence_line(
+                        payload.get("map", ""),
+                        int(payload["line_id"]),
+                        str(payload["line_type"]),
+                        [(float(x), float(y)) for x, y in payload.get("points", [])],
+                        None if level_min is None else float(level_min),
+                        None if level_max is None else float(level_max),
+                    )
+                )
+                return
+            if self.path == "/api/map-fence-delete":
+                payload = self._payload()
+                self._json(maps.delete_fence_line(payload.get("map", ""), int(payload["line_id"])))
                 return
             if self.path == "/api/vlm-start":
                 payload = self._payload()

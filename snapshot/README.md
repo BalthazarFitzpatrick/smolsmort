@@ -39,3 +39,12 @@ and control tabs in `app.js`.
 - **No new runtime dependencies**, and `uv.lock` unchanged: the offline test gate runs in an image
   built from the lock. The server is the standard library's `http.server`.
 - **Torch stays optional**, and every measured default keeps its provenance.
+
+## Refreshed 2026-09-20
+
+`review/{state,routes,train}.py`, `ui/*`, `tools/playback.py` and `tests/*` were refreshed from the
+parent project's current files, because they had drifted from the 2026-09-11 copy (tab renames, named
+weights, training-window work, about 1000 more lines of `app.js`). Same rewrite rules as above.
+`review/train.py` is back in this folder on purpose: it is the NEWER driver, and the port card
+diffs it against `smolsmort/review/train.py` and ports only the delta (named weights, training
+window, downscale). Delete it in the change that ports that delta.

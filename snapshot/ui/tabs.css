@@ -540,11 +540,28 @@
 #map-wrap:active { cursor: grabbing; }
 #map-canvas { display: block; transform-origin: 0 0; image-rendering: pixelated; }
 
+/* THE FACTS OF ONE YARD. It IS a .help-tip - same fixed panel, border and pinned-cream as the ?
+   tips everywhere else - so only what differs lives here: it must never eat the click meant for
+   the map, and pinned it becomes selectable so the numbers can be copied */
+.map-tip { pointer-events: none; width: max-content; max-width: 24rem; color: var(--text); }
+.map-tip.pinned { pointer-events: auto; user-select: text; }
+.map-tip .tip-key { color: var(--text-dim); }
+.map-tip .tip-note { color: var(--text-dim); margin-top: 4px; }
+
 /* three columns, one row per layer: opacity, thickness, colour */
 .visual-grid { display: grid; grid-template-columns: auto auto auto; gap: var(--gap) 18px; align-items: center; }
 .visual-na { color: var(--text-dim); font-style: italic; }
 .visual-picker { width: 0; height: 0; padding: 0; border: 0; opacity: 0; position: absolute; }
 .visual-swatch { width: 46px; padding: 0; border: 2px solid var(--grey-border); }
+
+/* the npc layer's two menus: a pair of columns, one pick or one set in each */
+.npc-cols { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(190px, 1fr); gap: var(--gap) 18px; align-items: start; }
+.npc-opt { display: flex; gap: 7px; align-items: center; font-size: 12px; padding: 2px 0; cursor: pointer; }
+.npc-opt input { margin: 0; }
+.npc-level { margin-left: auto; color: var(--text-dim); font-size: 11px; }
+.npc-range { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.npc-list { max-height: 220px; overflow: auto; border: 1px solid var(--border, #3a3a40); padding: 4px 6px; margin-top: 4px; }
+.npc-buttons { display: flex; gap: 6px; margin-top: 6px; }
   /* NAVIGATION TAB, restored with its js - see the note in app.js. two halves of one shape: each
      column owns its controls row, so both sit at the same height under the single horizontal rule.
      #nav-body is a .split and .nav-col a .pane, so the gutter either side of the rule comes from
@@ -769,8 +786,10 @@
 /* keyboard on the left, dials+mouse lamps on the right - same left-to-right reading OverlayWindow
    chose, and for the same reason: this is read at a glance while both hands are on the real ones */
 #control-body { display: flex; gap: 20px; min-height: 0; flex: 1 1 auto; padding: 0 var(--inset-x); }
-#control-keys { position: relative; flex: 0 0 auto; }
-#control-dials { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+/* the sessions tab draws the same panel twice, recorded and simulated, through the same renderer */
+.sink-body { display: flex; gap: 20px; min-height: 0; }
+#control-keys, #srec-keys, #ssim-keys { position: relative; flex: 0 0 auto; }
+#control-dials, .sink-dials { display: flex; flex-direction: column; align-items: center; gap: 10px; }
 /* ONE LAMP CLASS FOR BOTH KEYS AND MOUSE BUTTONS - the tkinter panel drew them at the same size
    deliberately (see OverlayWindow._draw_mouse_buttons) so the two read as one consistent grid */
 .control-key {
@@ -781,6 +800,46 @@
 .control-key.lit { border-color: var(--lichen); background: var(--lichen); color: var(--bg); }
 /* the mouse buttons are not positioned absolutely - they sit in their own small row below the
    dials, same relative place OverlayWindow puts them (under, not beside, both dials) */
-#control-mouse-buttons { display: flex; gap: 4px; }
-#control-mouse-buttons .control-key { position: static; width: 26px; height: 26px; }
-#control-canvas { display: block; }
+#control-mouse-buttons, .sink-mouse { display: flex; gap: 4px; }
+#control-mouse-buttons .control-key, .sink-mouse .control-key {
+  position: static; width: 26px; height: 26px;
+}
+#control-canvas, .sink-dials canvas { display: block; }
+
+/* ---- sessions tab: frames on the left, the recorded and the simulated sink on the right ---- */
+#session-slider { width: 100%; margin: 0; }
+#session-strip { display: block; width: 100%; height: 10px; }
+#session-body > .pane { flex: 1 1 50%; }
+#session-body > .pane:last-child { display: flex; flex-direction: column; gap: 6px; }
+#session-stage { position: relative; }
+#session-image { display: block; width: 100%; height: auto; }
+/* no recording picked yet - hide the broken-image icon */
+#session-image:not([src]) { display: none; }
+#session-overlay { position: absolute; left: 0; top: 0; pointer-events: none; }
+.sink-section { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+.sink-section.muted { opacity: 0.55; }
+
+/* ---- map tab: fence drawer, a panel that slides in from the right over the canvas ------------
+   ui_base has no slide-in primitive today (only a centred modal and a floating popup), so this is
+   a bespoke transform-based drawer built from the same panel-floating look, not a new visual
+   language - background/border/font follow the tokens every other panel already uses */
+#map-wrap { position: relative; overflow: hidden; }
+.panel-slide {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 260px;
+  background: var(--bg-panel, #1c1c20); border-left: 1px solid var(--border, #3a3a40);
+  padding: 10px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;
+  transform: translateX(100%); transition: transform 160ms ease;
+  z-index: 5;
+}
+/* .hidden is display:none!important elsewhere in this codebase, which would skip the transition -
+   this panel uses its own .open class instead, so closing it is a slide, not a disappearance */
+.panel-slide.open { transform: translateX(0); }
+.fence-head { display: flex; align-items: center; gap: 6px; justify-content: space-between; }
+.fence-kind-row, .fence-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.fence-kind-row .toggle.active, .fence-row .toggle.active { background: var(--lichen, #c7ed5f); color: #111; }
+.fence-row label { display: flex; flex-direction: column; font-size: 11px; gap: 2px; flex: 1 1 auto; }
+.fence-row input[type=number] { width: 100%; }
+#fence-keyhelp-overlay { font-size: 11px; line-height: 1.5; padding: 6px; border: 1px solid var(--border, #3a3a40); }
+#fence-list .fence-item { display: flex; flex-direction: column; gap: 4px; padding: 6px 0; border-bottom: 1px solid var(--border, #3a3a40); font-size: 12px; }
+#fence-list .fence-item.selected { background: rgba(199, 237, 95, 0.08); }
+#fence-list .fence-item-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }

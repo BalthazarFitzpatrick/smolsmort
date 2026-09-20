@@ -24,6 +24,7 @@
     <div class="nav-tab" data-tab="navigation" role="tab" tabindex="-1">navigation</div>
     <div class="nav-tab" data-tab="camera" role="tab" tabindex="-1">camera</div>
     <div class="nav-tab" data-tab="control" role="tab" tabindex="-1">control</div>
+    <div class="nav-tab" data-tab="sessions" role="tab" tabindex="-1">sessions</div>
     <div class="nav-tab" data-tab="housekeeping" role="tab" tabindex="-1">housekeeping</div>
   </div>
   <span id="top-bar-actions">
@@ -201,6 +202,9 @@
     <div class="divider"></div>
     <div class="pane nav-col">
       <div id="nav-canvas-wrap"><canvas id="nav-canvas"></canvas></div>
+      <div id="nav-legend" class="stat" hidden>
+        <span style="color:#5fb3ff">&#9473;&#9473;</span> planned route
+      </div>
       <div id="nav-hint" class="stat">the selected point, on the zone</div>
     </div>
   </div>
@@ -212,14 +216,57 @@
     <div class="toggle dropdown-head grow" id="map-recordings"><span>recordings</span></div>
     <div class="toggle dropdown-head grow" id="map-layers"><span>layers</span></div>
     <div class="toggle dropdown-head grow" id="map-opacity"><span>layer visualisation</span></div>
+    <div class="toggle dropdown-head grow" id="map-npc-vis"><span>npc visualisation</span></div>
+    <div class="toggle dropdown-head grow" id="map-npc-filter"><span>npc filter</span></div>
+    <div id="map-status" class="stat"></div>
     <span class="spacer"></span>
-    <div id="map-status" class="stat">nothing opened</div>
+    <button id="fence-open" class="toggle" type="button">create zones</button>
   </div>
   <div class="h-divider"></div>
   <!-- THE CANVAS IS THE ZONE, sized to its own rectangle rather than to this box, so a point in
        canvas pixels is x/100 of the width and pan/zoom is a transform on top that nothing else
        has to know about -->
   <div id="map-wrap"><canvas id="map-canvas"></canvas></div>
+
+  <!-- the facts of the yard under the cursor. OUTSIDE #map-wrap on purpose: that box clips its
+       overflow, and a tooltip near the map's edge has to be able to hang past it -->
+  <div id="map-tip" class="help-tip map-tip hidden"></div>
+
+  <!-- fence drawer: slides in from the right over the map when "create zones" is pressed. drawing
+       state lives entirely in app.js; this panel is just the controls and the saved-line list -->
+  <div id="fence-panel" class="panel-slide">
+    <div class="fence-head">
+      <span>fence drawer</span>
+      <button id="fence-keyhelp" class="toggle" type="button" title="keybind help">?</button>
+      <button id="fence-close" class="toggle" type="button">close</button>
+    </div>
+    <div id="fence-keyhelp-overlay" class="hidden">
+      <div>click - drop a point while marking is armed</div>
+      <div>backspace - undo the last point</div>
+      <div>enter - finish the line</div>
+      <div>esc - cancel the line in progress</div>
+    </div>
+    <div class="fence-kind-row">
+      <button id="fence-kind-go" class="toggle" type="button">go</button>
+      <button id="fence-kind-nogo" class="toggle" type="button">no-go</button>
+    </div>
+    <div class="fence-row">
+      <button id="fence-new" class="toggle" type="button">new line</button>
+      <button id="fence-mark" class="toggle" type="button">mark line</button>
+    </div>
+    <div class="fence-row">
+      <label>level min <input id="fence-level-min" type="number" min="1" max="80" step="1"></label>
+      <label>level max <input id="fence-level-max" type="number" min="1" max="80" step="1"></label>
+    </div>
+    <div class="fence-row">
+      <button id="fence-undo" class="toggle" type="button">undo point</button>
+      <button id="fence-finish" class="toggle" type="button">finish</button>
+      <button id="fence-cancel" class="toggle" type="button">cancel</button>
+    </div>
+    <div id="fence-active-status" class="stat">no line in progress</div>
+    <div class="h-divider"></div>
+    <div id="fence-list"></div>
+  </div>
 </div>
 
 
@@ -386,6 +433,7 @@
         <span class="field-label">elements</span>
         <span class="spacer"></span>
         <div class="toggle" id="iface-add">+</div>
+        <div class="toggle" id="iface-add-probe">+ range probe</div>
         <div class="toggle removes" id="iface-remove">&minus;</div>
       </div>
       <div id="iface-list"></div>
@@ -448,6 +496,9 @@
        start it. the browser does not launch anything that records input or drives the game, which
        is the same rule the scripts tab follows -->
   <div class="run-controls sweep-row">
+    <!-- recording follows a wt-record sitting; live follows wt-camera-live while views are set by
+         hand. either way the page only reads a file another process writes -->
+    <div class="toggle" id="cam-mode" title="switch between a recorded sitting and the live readout">recording</div>
     <div class="toggle dropdown-head grow" id="cam-open"><span>recordings</span></div>
     <div class="toggle" id="cam-popout">pop out</div>
     <div class="toggle help" id="cam-help">?</div>
@@ -467,6 +518,20 @@
   </div>
 
   <div class="h-divider"></div>
+
+  <div id="cam-views-body" class="hidden">
+    <div class="field-label">setting a view</div>
+    <div class="cam-block">
+      <div class="cam-ev">run <code>uv run wt-camera-live --character &lt;name&gt;</code></div>
+      <div class="cam-ev">zoom fully in, pitch fully down, press f9</div>
+      <div class="cam-ev">set the view with the wheel and a right-drag</div>
+      <div class="cam-ev">cmd-f1 .. cmd-f4 saves it in the game and here</div>
+    </div>
+    <div id="cam-live-note" class="stat"></div>
+    <div class="h-divider"></div>
+    <div class="field-label">saved views</div>
+    <div id="cam-views" class="cam-block"></div>
+  </div>
 
   <div id="cam-body">
     <!-- FOUR TO ONE. the steps are what you are following; the log is what the recording was
@@ -520,6 +585,68 @@
   <div id="control-status" class="stat"></div>
 </div>
 
+<div class="tab-panel hidden" data-panel="sessions">
+  <!-- a recording played back the way the bot will see one: its saved frames with the plate
+       arrows on the left, and on the right the same moment in the output sink, above the slot
+       where the humaniser's simulated presses go once a policy exists. the page owns the clock;
+       tools/playback.py answers what was true at each moment -->
+  <div class="run-controls sweep-row">
+    <div class="toggle dropdown-head grow" id="session-open"><span>recordings</span></div>
+    <div class="toggle" id="session-play">play</div>
+    <div class="toggle dropdown-head" id="session-speed"><span>1x</span></div>
+    <span id="session-clock" class="cam-v">00:00 / 00:00</span>
+    <span class="spacer"></span>
+    <span id="session-status" class="stat"></span>
+  </div>
+  <input type="range" id="session-slider" min="0" max="0" step="0.05" value="0"
+         aria-label="position in the recording">
+  <canvas id="session-strip" height="10" aria-label="the mode machine's mode over time"></canvas>
+  <div id="session-legend" class="stat"></div>
+  <div class="h-divider"></div>
+
+  <div id="session-body" class="split">
+    <div class="pane">
+      <div class="field-label">frames</div>
+      <div id="session-stage">
+        <img id="session-image" alt="the recording's saved frame at this moment">
+        <canvas id="session-overlay"></canvas>
+      </div>
+      <div id="session-facts" class="train-facts"></div>
+    </div>
+    <div class="pane">
+      <div class="sink-section">
+        <div class="field-label">recorded, played into the output sink</div>
+        <div class="run-controls sweep-row">
+          <span id="srec-mode" class="cam-v"></span>
+          <span class="spacer"></span>
+          <span id="srec-note" class="stat"></span>
+        </div>
+        <div id="srec-body" class="sink-body">
+          <div id="srec-keys"></div>
+          <div class="sink-dials">
+            <canvas id="srec-canvas" width="300" height="170"></canvas>
+            <div id="srec-mouse-buttons" class="sink-mouse"></div>
+          </div>
+        </div>
+      </div>
+      <div class="h-divider"></div>
+      <div class="sink-section muted">
+        <div class="field-label">simulated, what the humaniser would press</div>
+        <div class="run-controls sweep-row">
+          <span class="stat">no policy yet - this fills in once one is trained</span>
+        </div>
+        <div id="ssim-body" class="sink-body">
+          <div id="ssim-keys"></div>
+          <div class="sink-dials">
+            <canvas id="ssim-canvas" width="300" height="170"></canvas>
+            <div id="ssim-mouse-buttons" class="sink-mouse"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="tab-panel hidden" data-panel="housekeeping">
   <!-- recordings get deleted by hand and nothing downstream ever finds out - this is where the
        boxes, tiles, sets and checkpoints they left behind get found and cleared. an orphan
@@ -560,9 +687,15 @@
       <span class="field-label">seed</span>
       <input id="train-seed" type="text" spellcheck="false" placeholder="0">
     </div>
+    <div class="settings-field">
+      <span class="field-label">weights name</span>
+      <input id="train-name" type="text" spellcheck="false" placeholder="plate_model">
+    </div>
     <div class="h-divider"></div>
     <div class="stat" id="train-config-note">blank uses the default. the rate is clamped to
-      1e-6..1e-1 - a rate above that diverges in the first epochs and wastes the whole run.</div>
+      1e-6..1e-1 - a rate above that diverges in the first epochs and wastes the whole run. a
+      weights name saves the run under checkpoints/ with its class map and leaves plate_model.pt
+      alone; blank overwrites plate_model.pt.</div>
     <div class="h-divider"></div>
     <div class="toggle" id="train-config-close">close</div>
 </div>

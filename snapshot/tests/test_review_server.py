@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-import snapshot.tools.review_templates as rt
+import snapshot.review_templates as rt
 from snapshot.review import paths, routes
 
 # the routes moved out of review_templates.py into review/routes.py; this reads them from wherever

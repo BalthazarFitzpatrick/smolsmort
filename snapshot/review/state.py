@@ -53,6 +53,7 @@ SCRIPT_GROUPS = {
     "wt-calibrate": ("calibrate", "display"),
     "wt-calibrate-addon-readout": ("calibrate", "display"),
     "wt-calibrate-compass": ("calibrate", "display"),
+    "wt-rxp-guides": ("execute", "nav"),
     "wt-calibrate-interface": ("calibrate", "display"),
     "wt-icon-states": ("calibrate", "interface"),
     "wt-example-stats": ("calibrate", "interface"),
@@ -78,6 +79,7 @@ SCRIPT_GROUPS = {
     "wt-overlay": ("execute", "overlay"),
     "wt-overlay-live": ("execute", "overlay"),
     "wt-overlay-shadow": ("execute", "overlay"),
+    "wt-drive": ("execute", "overlay"),
     "wt-bearing-overlay": ("execute", "overlay"),
     "wt-annotate-plates": ("camera", "fit"),
     "wt-humaniser-demo": ("execute", "humaniser"),
@@ -711,15 +713,14 @@ class ReviewState:
         fails on a name that differs by a hyphen, so the builder offers what is actually there.
         """
         from parent.config.character import CHARACTERS_DIR
-        from parent.config.profile import PROFILES_DIR
+        from parent.config.profile import available_profiles
 
         name = argument.lstrip("-")
         if name == "character":
             root = CHARACTERS_DIR
             return sorted(p.name for p in root.iterdir() if p.is_dir()) if root.is_dir() else []
         if name == "profile":
-            root = PROFILES_DIR
-            return sorted(p.stem for p in root.glob("*.toml")) if root.is_dir() else []
+            return available_profiles()
         return []
 
     def script_list(self) -> dict:

@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from snapshot.tools import playback
+from parent.tools import playback
 
 
 def _session(root, name, states, events=(), mouse=()):
@@ -135,6 +135,79 @@ def test_the_frame_carries_the_fields_that_used_to_be_dropped(tmp_path):
     assert frame["state"]["stealthed"] is True
     assert frame["state"]["target"] is True
     assert frame["state"]["target_health"] == 61.0
+
+
+def test_a_moment_shows_the_newest_saved_frame_and_its_plates(tmp_path):
+    """what the left half draws: the frame at or before t, and its plate rows if it has any"""
+    rows = [
+        {"kind": "frame", "t": 0.5, "path": "0000001.jpg"},
+        {"kind": "frame", "t": 1.5, "path": "0000002.jpg"},
+        {
+            "kind": "plates",
+            "t": 1.5,
+            "frame": "0000002.jpg",
+            "width": 1440,
+            "plates": [{"box": [10, 20, 100, 12], "d": 8.0, "r": -12.0, "b": 348.0, "f": 90.0}],
+        },
+    ]
+    _session(tmp_path, "rec", _walk(count=30), mouse=rows)
+    loaded = playback.load(tmp_path, "rec")
+    assert playback.frame_at(loaded, loaded.start + 0.2)["frame"] is None
+    early = playback.frame_at(loaded, loaded.start + 1.0)["frame"]
+    assert early["path"] == "0000001.jpg" and early["plates"] == []
+    late = playback.frame_at(loaded, loaded.start + 2.0)["frame"]
+    assert late["path"] == "0000002.jpg" and late["width"] == 1440
+    assert late["plates"][0]["d"] == 8.0
+
+
+def test_the_mode_machine_runs_over_the_recording(tmp_path):
+    """the strip under the slider: the bot's own mode machine fed the recorded states"""
+    states = _walk(count=30)
+    for state in states[10:20]:
+        state["ph"] = 10.0  # under the flee threshold
+    _session(tmp_path, "rec", states)
+    loaded = playback.load(tmp_path, "rec")
+    assert playback.frame_at(loaded, loaded.start + 1.5)["machine_mode"] == "FLEE"
+    runs = playback.timeline(loaded)
+    assert "FLEE" in {run["mode"] for run in runs}
+    assert runs[0]["start"] == 0.0 and runs[-1]["end"] == pytest.approx(loaded.duration)
+
+
+def test_the_sink_lights_a_held_key_as_the_output_sink_would(tmp_path):
+    """the right half's top panel: OverlayModel's own snapshot, so a key flashes past its release"""
+    events = [{"t": 1.0, "key": "w", "down": True}, {"t": 2.0, "key": "w", "down": False}]
+    _session(tmp_path, "rec", _walk(count=40), events=events)
+    loaded = playback.load(tmp_path, "rec")
+
+    def lit(at):
+        sink = playback.frame_at(loaded, loaded.start + at)["sink"]
+        return {key["key"] for key in sink["keys"] if key["lit"]}
+
+    assert "w" in lit(1.5)
+    assert "w" in lit(2.1)  # within the linger after release
+    assert "w" not in lit(2.6)
+    sink = playback.frame_at(loaded, loaded.start + 1.5)["sink"]
+    # f is recorded clockwise, 1.0 rad; the dial shows the compass heading
+    assert sink["facing_degrees"] == pytest.approx(57.2958, abs=0.01)
+    assert sink["mode"]
+
+
+def test_a_frame_name_reaching_outside_the_recording_is_refused(tmp_path, monkeypatch):
+    from snapshot.review import paths
+    from snapshot.review.playback_state import PlaybackState
+
+    rows = [{"kind": "frame", "t": 0.5, "path": "0000001.jpg"}]
+    folder = _session(tmp_path, "rec", _walk(count=10), mouse=rows)
+    (folder / "frames").mkdir()
+    (folder / "frames" / "0000001.jpg").write_bytes(b"jpeg")
+    (folder / "secret.txt").write_text("no")
+    monkeypatch.setattr(paths, "SESSIONS_DIR", tmp_path)
+    state = PlaybackState()
+    opened = state.open("rec")
+    assert opened["frames"] == 1 and opened["timeline"]
+    assert state.frame_bytes("0000001.jpg") == b"jpeg"
+    assert state.frame_bytes("../secret.txt") is None
+    assert state.frame_bytes("../rec.jsonl") is None
 
 
 def test_elapsed_is_measured_from_the_first_state(tmp_path):
