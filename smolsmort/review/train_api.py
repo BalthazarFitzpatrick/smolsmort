@@ -26,7 +26,7 @@ from PIL import Image
 
 from smolsmort import backends
 from smolsmort.detect.dataset import DatasetError, Example, build_training_set
-from smolsmort.review import paths, splits
+from smolsmort.review import hyperparams, paths, splits
 from smolsmort.review.promote import set_filename
 from smolsmort.review.recordings import flat_recording, frame_files, frames_dir_of
 from smolsmort.review.train import TrainState, TrainStateError, saved_checkpoints
@@ -239,6 +239,10 @@ class TrainApi:
         name = payload.get("name")
         name = None if name in (None, "") else str(name)
 
+        try:
+            model_options = self._model_options(payload)
+        except (hyperparams.HyperparamError, ValueError) as exc:
+            return {"error": str(exc)}
         options = self._accepted(
             {
                 "epochs": epochs,
@@ -246,6 +250,7 @@ class TrainApi:
                 "crop": None if crop is None else int(crop),
                 "learning_rate": rate,
                 "seed": seed,
+                **model_options,
             }
         )
         # TrainState builds its backend once at construction, so options chosen at start time
@@ -258,6 +263,29 @@ class TrainApi:
         if name and "error" not in started:
             threading.Thread(target=self._save_when_done, args=(name,), daemon=True).start()
         return started
+
+    def _model_options(self, payload: dict) -> dict:
+        """the config menu's choices as constructor options: optimiser settings as they are, and
+        a size name turned into what this backend's model is built from (channels or widths)"""
+        found: dict = {}
+        if payload.get("optimizer"):
+            found["optimizer"] = str(payload["optimizer"])
+        for key in ("momentum", "weight_decay"):
+            if payload.get(key) not in (None, ""):
+                found[key] = float(payload[key])
+        size = payload.get("size")
+        if size:
+            if self.trainer.backend_name == "heatmap":
+                custom = payload.get("custom_channels")
+                found["channels"] = hyperparams.heatmap_channels_for(
+                    str(size), custom_channels=None if custom in (None, "") else int(custom)
+                )
+            elif self.trainer.backend_name == "box":
+                scale = payload.get("custom_scale")
+                found["widths"] = hyperparams.box_widths_for(
+                    str(size), custom_scale=None if scale in (None, "") else float(scale)
+                )
+        return found
 
     def _save_when_done(self, name: str) -> None:
         """wait for the run to end, and save it under `name` only if it finished cleanly"""
