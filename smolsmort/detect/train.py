@@ -298,6 +298,29 @@ def train(
     return model, history
 
 
+def evaluate(model, examples: list[Example], *, classes=None, window: int | None = None) -> float:
+    """mean masked focal loss of model over examples: eval mode, no gradient, and every example
+    cut with its own fixed-seed rng so two calls agree"""
+    torch = _torch()
+    size = snapped_window(CROP if window is None else int(window))
+    device = next(model.parameters()).device
+    was_training = model.training
+    model.eval()
+    losses = []
+    with torch.no_grad():
+        for example in examples:
+            image = _load_input(example.path)
+            w, t, m = _crop_window(example, image, random.Random(0), classes, size)
+            x = torch.from_numpy(np.ascontiguousarray(w[None])).to(device)
+            y = torch.from_numpy(np.ascontiguousarray(t[None])).to(device)
+            if y.dim() == 3:
+                y = y.unsqueeze(1)
+            mask = torch.from_numpy(np.ascontiguousarray(m[None])).unsqueeze(1).to(device)
+            losses.append(float(masked_focal_loss(model(x), y, mask).cpu()))
+    model.train(was_training)
+    return sum(losses) / len(losses) if losses else 0.0
+
+
 def heatmap_for(model, path: Path, device: str | None = None) -> np.ndarray:
     """run the net over a whole capture and return its raw heatmap"""
     torch = _torch()
