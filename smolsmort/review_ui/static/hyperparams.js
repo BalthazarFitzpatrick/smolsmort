@@ -9,9 +9,8 @@ let state = {
 let menu = null;
 let options = null; // last /api/hyperparams response
 
-function backend() {
-  return document.getElementById('backend-pick').value;
-}
+let backendName = 'heatmap';
+function backend() { return backendName; }
 
 function applyPreset(preset) {
   state = {
@@ -72,7 +71,6 @@ function sections() {
     {
       kind: 'buttons',
       buttons: [
-        { label: 'start training', tone: 'adds', onClick: startTraining },
         { label: 'close', onClick: m => m.close() },
       ],
     },
@@ -88,21 +86,15 @@ async function loadOptions() {
   options = await res.json();
 }
 
-async function openMenu() {
-  await loadOptions();
+// opens the menu on `anchor` for one backend; the values stay in `state` until the train tab
+// reads them through hyperparamState()
+async function openHyperparams(anchor, backendPicked) {
+  if (backendPicked !== backendName) { backendName = backendPicked; options = null; }
+  if (!options) await loadOptions();
   menu = new Menu({ title: 'training hyperparameters', persistent: true, sections: sections() });
-  menu.openAt(document.getElementById('train-config'));
+  menu.openAt(anchor);
 }
 
-async function startTraining() {
-  const res = await fetch('/api/train-start', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ backend: backend(), ...state }),
-  });
-  const body = await res.json();
-  document.getElementById('result').textContent = JSON.stringify(body, null, 2);
-}
+function hyperparamState() { return { ...state }; }
 
-document.getElementById('train-config').onclick = openMenu;
-document.getElementById('backend-pick').onchange = () => { menu = null; };
+window.hyperparams = { open: openHyperparams, state: hyperparamState };
