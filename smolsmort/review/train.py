@@ -20,13 +20,14 @@ methods below take the checkpoints folder as an argument for the same reason, ra
 from __future__ import annotations
 
 import json
+import math
 import threading
 from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from smolsmort.backends import get_backend, sidecar
+from smolsmort.backends import example_from, get_backend, sidecar
 from smolsmort.review.backends import load_provenance, save_named
 
 # the heatmap backend's own default learning rate (smolsmort/detect/train.py's `train`) - the backend
@@ -39,6 +40,45 @@ DEFAULT_SEED = 0
 
 class TrainStateError(Exception):
     pass
+
+
+def _idle_job() -> dict[str, Any]:
+    """the job dict of a run that has not started. every key `status` promises exists from the
+    first poll, so a poller never has to guess whether a missing key means "not yet" or "never"."""
+    return {
+        "running": False,
+        "state": "idle",
+        "epoch": 0,
+        "epochs": 0,
+        "error": None,
+        "finished": False,
+        "aborted": None,
+        "loss": None,
+        "history": [],
+        "train_loss": None,
+        "val_loss": None,
+        "test_loss": None,
+        "checkpoint_count": 0,
+        "weights": None,
+        "window": None,
+        "learning_rate": None,
+        "seed": None,
+    }
+
+
+def window_floor(box_width: int, box_height: int, *, downscale: int | None = None) -> int:
+    """the smallest training window (input px) that holds a box of this size whole, snapped up to a
+    whole number of network cells. heatmap-shaped: it needs that backend's downscale, stride and
+    jitter, imported lazily so this module still loads without torch.
+
+    REPORTED, NOT JUST ENFORCED: a bare "283" means nothing without the box that produced it.
+    """
+    from smolsmort.detect.model import DOWNSCALE
+    from smolsmort.detect.train import JITTER_FRACTION, snapped_window
+
+    scale = DOWNSCALE if downscale is None else downscale
+    longest = max(box_width, box_height) / scale
+    return snapped_window(int(math.ceil(longest / (1.0 - 2.0 * JITTER_FRACTION))))
 
 
 class TrainingAborted(Exception):
@@ -65,6 +105,10 @@ class TrainState:
         self.backend_options = dict(backend_options)
         self._backend = get_backend(backend_name, **self.backend_options)
         self.examples: list = []
+        # held-out frames, never trained on: `val_examples` is judged for tuning, `test_examples`
+        # once at the end of a run. build both with `smolsmort.review.splits.partition`
+        self.val_examples: list = []
+        self.test_examples: list = []
         self.classes: dict[str, int] = {}
         self.training_set: str | None = None
         self.weights: Any = None
@@ -77,17 +121,18 @@ class TrainState:
         self._worker: threading.Thread | None = None
         # set by `abort`, read from the wrapped progress callback, cleared by every `start`
         self._abort = threading.Event()
-        self.job: dict[str, Any] = {
-            "running": False,
-            "epoch": 0,
-            "epochs": 0,
-            "error": None,
-            "finished": False,
-            "aborted": None,
-        }
+        self.job: dict[str, Any] = _idle_job()
 
     # ---- binding ------------------------------------------------------------------------
-    def bind(self, examples: list, classes: Mapping[str, int], *, training_set: str | None = None):
+    def bind(
+        self,
+        examples: list,
+        classes: Mapping[str, int],
+        *,
+        training_set: str | None = None,
+        val_examples: list | None = None,
+        test_examples: list | None = None,
+    ):
         """which examples the next run trains on.
 
         BINDING DROPS ANY LOADED WEIGHTS. a checkpoint carries the channel map it was trained under;
@@ -95,6 +140,8 @@ class TrainState:
         data they were never trained on, which is silently wrong rather than loudly so.
         """
         self.examples = list(examples)
+        self.val_examples = list(val_examples or [])
+        self.test_examples = list(test_examples or [])
         self.classes = dict(classes)
         self.training_set = training_set
         self.weights = None
@@ -115,6 +162,8 @@ class TrainState:
         self.classes = dict(getattr(self.weights, "classes", None) or meta.get("classes") or {})
         self.training_set = meta.get("training_set")
         self.examples = []
+        self.val_examples = []
+        self.test_examples = []
         self.loaded_weights = path
         return self.class_names()
 
@@ -129,75 +178,182 @@ class TrainState:
         }
 
     # ---- training -----------------------------------------------------------------------
-    def train(self, *, on_progress: Callable[[int, int], None] | None = None) -> dict:
+    def train(
+        self,
+        *,
+        on_progress: Callable[..., None] | None = None,
+        window: int | None = None,
+        detailed: bool = False,
+    ) -> dict:
         """learn from the bound examples, entirely through `ModelBackend.train` - this never imports
         a backend's own training module, which is what makes it work identically against the heatmap
-        cnn, the box cnn, or a fake registered for a test."""
+        cnn, the box cnn, or a fake registered for a test.
+
+        `on_progress` gets (epoch, epochs); `start` passes `detailed=True` to also receive the
+        optional (loss, weights) a backend may add."""
+        if on_progress is not None and not detailed:
+            plain = on_progress
+
+            def on_progress(epoch: int, epochs: int, *_extra: Any) -> None:  # noqa: F811
+                plain(epoch, epochs)
+
         if not self.examples:
             raise TrainStateError("nothing bound to train on - bind a training set first")
+        # `window` only reaches a backend that was asked for one, so a backend without the knob
+        # never sees an unknown keyword
+        extra = {} if window is None else {"window": window}
         self.weights = self._backend.train(
-            self.examples, classes=self.classes, on_progress=on_progress
+            self.examples, classes=self.classes, on_progress=on_progress, **extra
         )
         self.loaded_weights = None
         return self.class_names()
 
     # ---- background training + abort -----------------------------------------------------
-    def start(self, *, on_progress: Callable[[int, int], None] | None = None) -> dict:
+    def start(
+        self,
+        *,
+        on_progress: Callable[[int, int], None] | None = None,
+        name: str | None = None,
+        root: Path | None = None,
+        folder: str = "",
+        window: int | None = None,
+        checkpoint_every: int | None = None,
+    ) -> dict:
         """train on a BACKGROUND THREAD, so a caller (the http server this eventually sits behind)
-        stays responsive - the exact reason the parent project's own `start` gave for the same move.
+        stays responsive.
 
-        This drives the same `train` above, from a worker, wrapping `on_progress` to also update
-        `job` and to raise `TrainingAborted` once `abort` has been called - a backend calls back once
-        per epoch, so that is the only boundary an abort can land on without reaching into a
-        backend's own loop. Precondition failures (nothing bound, a stale checkpoint on
-        `training_set`) surface through `job['error']` after the thread runs, exactly as any other
-        training failure does - `train` itself is unchanged and still raises when called directly.
+        This drives the same `train` above from a worker, wrapping `on_progress` to update `job` and
+        to raise `TrainingAborted` once `abort` has been called - a backend calls back once per
+        epoch, so that is the only boundary an abort can land on. Precondition failures surface
+        through `job['error']` after the thread runs, like any other training failure.
+
+        A NAMED RUN (`name` plus `root`, the checkpoints folder) writes its own weights when it
+        finishes, marked `final`, and is refused up front when the name is taken - a long run is
+        never wasted on a name it cannot be saved under. `checkpoint_every=n` also saves
+        `<name>-e<epoch>` every n epochs, but only for a backend that hands its weights to the
+        progress callback as a fourth argument: `on_progress(epoch, epochs, loss, weights)`. `loss`
+        and `weights` are optional, so a two-argument backend works unchanged.
+
+        A `window` (training crop, input px) below `window_floor` is refused, naming both numbers.
         """
+        if window is not None and self.backend_name == "heatmap":
+            box = self._fitted_box()
+            if box is not None:
+                floor = window_floor(*box)
+                if int(window) < floor:
+                    return {
+                        "error": (
+                            f"a {box[0]}x{box[1]} box needs a window of at least {floor}; "
+                            f"{int(window)} would clip it at the jitter extremes"
+                        )
+                    }
+        target: tuple[Path, str] | None = None
+        if name is not None and name.strip():
+            if root is None:
+                return {"error": "a named run needs the checkpoints folder to save into"}
+            picked = self.checkpoint_target(Path(root), name, folder)
+            if isinstance(picked, dict):
+                return picked
+            target = picked
         with self._job_lock:
             if self._worker is not None and self._worker.is_alive():
                 return {"error": "a training run is already going"}
             self._abort.clear()
-            self.job = {
-                "running": True,
-                "epoch": 0,
-                "epochs": 0,
-                "error": None,
-                "finished": False,
-                "aborted": None,
-            }
+            self.job = _idle_job()
+            options = {"learning_rate": DEFAULT_LEARNING_RATE, "seed": DEFAULT_SEED}
+            options.update(self.backend_options)
+            self.job.update(
+                running=True,
+                state="running",
+                weights=target[1] if target else None,
+                window=window,
+                learning_rate=options["learning_rate"],
+                seed=options["seed"],
+            )
 
-        def progress(epoch: int, epochs: int) -> None:
+        def progress(epoch: int, epochs: int, loss: float | None = None, weights: Any = None):
             with self._job_lock:
                 self.job["epoch"] = epoch
                 self.job["epochs"] = epochs
+                if loss is not None:
+                    self.job["loss"] = loss
+                    self.job["history"].append(loss)
             if self._abort.is_set():
                 raise TrainingAborted(epoch)
+            interim = checkpoint_every and epoch % checkpoint_every == 0 and epoch < epochs
+            if target and weights is not None and interim:
+                stem = target[0].with_suffix("")
+                self._write_checkpoint(weights, stem.with_name(f"{stem.name}-e{epoch}.pt"))
             if on_progress:
                 on_progress(epoch, epochs)
 
         def run() -> None:
             try:
-                self.train(on_progress=progress)
+                self.train(on_progress=progress, window=window, detailed=True)
+                losses = self._evaluate_losses()
+                if target:
+                    self._write_checkpoint(self.weights, target[0], final=True, **losses)
+                    self.loaded_weights = target[0]
                 with self._job_lock:
-                    self.job["running"] = False
-                    self.job["finished"] = True
+                    self.job.update(running=False, finished=True, state="finished", **losses)
             except TrainingAborted as stop:
-                # NOTHING IS SAVED. `train` only assigns `self.weights` after the backend's own
-                # `train` returns, and it raised before that - so whatever was trained or loaded
-                # before this run stays exactly as it was.
+                # NOTHING FINAL IS SAVED. `train` only assigns `self.weights` after the backend's own
+                # `train` returns, so whatever was trained or loaded before stays as it was.
                 with self._job_lock:
-                    self.job["running"] = False
-                    self.job["aborted"] = stop.epoch
+                    self.job.update(running=False, aborted=stop.epoch, state="aborted")
             except Exception as exc:  # noqa: BLE001
                 # deliberately broad: this runs on a worker thread, so anything not caught here
                 # leaves `job` pinned at running=True and a poller reading a dead run forever
                 with self._job_lock:
-                    self.job["running"] = False
-                    self.job["error"] = f"{type(exc).__name__}: {exc}"
+                    self.job.update(
+                        running=False, state="error", error=f"{type(exc).__name__}: {exc}"
+                    )
 
         self._worker = threading.Thread(target=run, daemon=True)
         self._worker.start()
         return {"ok": True}
+
+    def _fitted_box(self) -> tuple[int, int] | None:
+        """the median drawn box of the bound examples, or None when none carries a size"""
+        sizes = [size for e in map(example_from, self.examples) for size in e.sizes]
+        if not sizes:
+            return None
+        widths = sorted(int(w) for w, _ in sizes)
+        heights = sorted(int(h) for _, h in sizes)
+        return widths[len(widths) // 2], heights[len(heights) // 2]
+
+    def window_floor(self) -> dict | None:
+        """the floor for the bound set's own box, with the box and downscale that produced it"""
+        from smolsmort.detect.model import DOWNSCALE
+
+        box = self._fitted_box()
+        if box is None:
+            return None
+        return {"floor": window_floor(*box), "box": list(box), "downscale": DOWNSCALE}
+
+    def _evaluate_losses(self) -> dict[str, float | None]:
+        """train, val and test loss of the freshly trained weights, through an optional backend
+        method `evaluate(weights, examples, *, classes) -> float`.
+
+        TEST LOSS IS COMPUTED ONCE, HERE AT THE END OF A RUN, never per epoch or per checkpoint:
+        a number read while tuning stops being held out. A split with no examples, or a backend with
+        no `evaluate`, gives None. `train_loss` is the last loss the backend reported, else the
+        loss on the train examples.
+        """
+        evaluate = getattr(self._backend, "evaluate", None)
+
+        def loss_on(examples: list) -> float | None:
+            if evaluate is None or not examples:
+                return None
+            return float(evaluate(self.weights, examples, classes=self.classes))
+
+        with self._job_lock:
+            reported = self.job["loss"]
+        return {
+            "train_loss": reported if reported is not None else loss_on(self.examples),
+            "val_loss": loss_on(self.val_examples),
+            "test_loss": loss_on(self.test_examples),
+        }
 
     def abort(self) -> dict:
         """stop the running background training at its next epoch boundary. nothing is saved, so
@@ -210,9 +366,17 @@ class TrainState:
         return {"ok": True}
 
     def status(self) -> dict:
-        """a snapshot of the background run - safe to poll from another thread while `start` runs"""
+        """a snapshot of the background run - safe to poll from another thread while `start` runs.
+
+        keys: running, state (idle/running/finished/aborted/error), epoch, epochs, error, finished,
+        aborted, loss, history, train_loss, val_loss, test_loss (float or None until computed; the
+        last two only at the end of a run), checkpoint_count (checkpoints this run has saved so
+        far), weights (the run's checkpoint name or None), window, learning_rate, seed.
+        """
         with self._job_lock:
-            return dict(self.job)
+            snapshot = dict(self.job)
+            snapshot["history"] = list(self.job["history"])
+            return snapshot
 
     # ---- sweeping (predict) ---------------------------------------------------------------
     def sweep(self, frames: list) -> list[dict]:
@@ -254,7 +418,7 @@ class TrainState:
         return stack.max(axis=0)
 
     # ---- saving -------------------------------------------------------------------------
-    def save(self, path: Path) -> dict:
+    def save(self, path: Path, *, final: bool = False) -> dict:
         """snapshot the current weights under a name, with provenance beside them.
 
         `backend.save` writes the seam's own sidecar (backend name, classes, box size - see
@@ -265,20 +429,53 @@ class TrainState:
         """
         if self.weights is None:
             raise TrainStateError("nothing trained or loaded yet - train a model first")
+        return self._write_checkpoint(self.weights, Path(path), final=final, count=False)
+
+    def _write_checkpoint(
+        self, weights: Any, path: Path, *, final: bool = False, count=True, **extra
+    ):
+        """one checkpoint through `save_named`; a run's own writes also bump `checkpoint_count`"""
         options = {
             "learning_rate": DEFAULT_LEARNING_RATE,
             "seed": DEFAULT_SEED,
             **self.backend_options,
         }
-        return save_named(
+        saved = save_named(
             self._backend,
-            self.weights,
-            Path(path),
+            weights,
+            path,
             backend_name=self.backend_name,
             training_set=self.training_set,
             classes=[name for name, _ in sorted(self.classes.items(), key=lambda kv: kv[1])],
             options=options,
+            final=final,
+            **extra,
         )
+        if count:
+            with self._job_lock:
+                self.job["checkpoint_count"] += 1
+        return saved
+
+    def checkpoint_target(self, root: Path, name: str, folder: str = "") -> tuple[Path, str] | dict:
+        """(weights path, its name under `root`) for a typed name, or an error dict.
+
+        shared by a named run and a manual save so both refuse the same things: a folder outside
+        `root`, and a name already taken. the name is rebuilt from an allowlist so it cannot carry a
+        path or a dot that would confuse the provenance file beside it.
+        """
+        here = _confine(Path(root), folder or "")
+        if here is None:
+            return {"error": "that folder is outside the checkpoints folder"}
+        raw = name.strip().removesuffix(".pt")
+        typed = "".join(c for c in raw if c.isalnum() or c in "-_")
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        stem = typed or f"{self.training_set or 'unbound'}-{stamp}"
+        weights = here / f"{stem}.pt"
+        relative = weights.relative_to(Path(root).resolve()).as_posix()
+        if weights.exists():
+            return {"error": f"{relative} already exists - pick another name"}
+        weights.parent.mkdir(parents=True, exist_ok=True)
+        return weights, relative
 
     # ---- checkpoint-folder browsing ---------------------------------------------------------
     # `root` IS THE CHECKPOINTS FOLDER, taken as an argument everywhere below rather than read off a
@@ -320,7 +517,8 @@ class TrainState:
 
 
 def saved_checkpoints(root: Path) -> dict:
-    """the named checkpoints under `root`, newest first, each with the classes it carries.
+    """the named checkpoints under `root`, newest first, each with the classes it carries and a `final`
+    flag (True for the weights a finished run wrote, False for interim and manual saves).
 
     the classes come from the review-level provenance `save_named` writes beside a checkpoint first;
     a checkpoint saved by a bare `backend.save()` (no review-level provenance at all) falls back to
@@ -329,11 +527,7 @@ def saved_checkpoints(root: Path) -> dict:
     """
     root = Path(root)
     found = []
-    saved = (
-        sorted(root.rglob("*.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
-        if root.is_dir()
-        else []
-    )
+    saved = sorted(root.rglob("*.pt"), key=_recency, reverse=True) if root.is_dir() else []
     for path in saved:
         meta = load_provenance(path)
         classes = meta.get("classes")
@@ -354,9 +548,15 @@ def saved_checkpoints(root: Path) -> dict:
                 "training_set": meta.get("training_set"),
                 "classes": classes or [],
                 "kb": round(path.stat().st_size / 1024),
+                "final": bool(meta.get("final", False)),
             }
         )
     return {"weights": found}
+
+
+def _recency(path: Path) -> tuple[int, bool]:
+    """sort key for newest first: modified time, and on a tie a run's final weights come first"""
+    return path.stat().st_mtime_ns, bool(load_provenance(path).get("final", False))
 
 
 def _confine(root: Path, relative: str) -> Path | None:

@@ -123,3 +123,39 @@ def test_a_set_that_already_has_a_split_is_never_redrawn(tmp_path):
     with pytest.raises(ValueError):
         splits.write_into(path, seed=9)
     assert path.read_text() == before
+
+
+# ---------------------------------------------------------------- partition into train/val/test
+
+
+def _items(n=100):
+    return [{"frame": f"rec/f{i:03d}", "row": i} for i in range(n)] * 2  # two rows per frame
+
+
+def test_partition_sizes_follow_the_ratio_and_default_has_a_test_split():
+    from smolsmort.review import splits
+
+    out = splits.partition(_items(), key=lambda r: r["frame"])
+    frames = {s: len({r["frame"] for r in rows}) for s, rows in out.items()}
+    assert frames == {"train": 70, "val": 20, "test": 10}
+    custom = splits.partition(_items(), lambda r: r["frame"], ratio=(50, 25, 25))
+    assert {len({r["frame"] for r in v}) for v in custom.values()} == {50, 25}
+
+
+def test_partition_never_leaks_a_frame_between_splits_and_keeps_every_row():
+    from smolsmort.review import splits
+
+    out = splits.partition(_items(), key=lambda r: r["frame"])
+    seen = [{r["frame"] for r in rows} for rows in out.values()]
+    assert not (seen[0] & seen[1] or seen[0] & seen[2] or seen[1] & seen[2])
+    assert sum(len(v) for v in out.values()) == 200
+
+
+def test_partition_is_deterministic_by_seed_and_can_skip_test():
+    from smolsmort.review import splits
+
+    key = lambda r: r["frame"]  # noqa: E731
+    first = splits.partition(_items(), key, seed=3)
+    assert first == splits.partition(_items(), key, seed=3)
+    assert first != splits.partition(_items(), key, seed=4)
+    assert splits.partition(_items(), key, ratio=(80, 20, 0))["test"] == []
