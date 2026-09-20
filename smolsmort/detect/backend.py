@@ -64,20 +64,21 @@ class HeatmapBackend:
         self.momentum = momentum
         self.weight_decay = weight_decay
 
-    def train(self, examples, *, classes, on_progress=None) -> HeatmapWeights:
+    def train(self, examples, *, classes, on_progress=None, window=None) -> HeatmapWeights:
         converted = [example_from(e) for e in examples]
         model, _ = heatmap_train.train(
             converted,
             epochs=self.epochs,
             learning_rate=self.learning_rate,
             seed=self.seed,
+            crop=window,
             device=self.device,
             classes=dict(classes) or None,
             channels=self.channels,
             optimizer=self.optimizer,
             momentum=self.momentum,
             weight_decay=self.weight_decay,
-            on_progress=(lambda p: on_progress(p.epoch, p.epochs)) if on_progress else None,
+            on_progress=(lambda p: on_progress(p.epoch, p.epochs, p.loss)) if on_progress else None,
         )
         return HeatmapWeights(model=model, classes=dict(classes), box=fitted_box(converted))
 

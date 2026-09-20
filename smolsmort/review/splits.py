@@ -17,8 +17,9 @@ any worker count.
 from __future__ import annotations
 
 import zlib
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
+from typing import Any
 
 SPLITS = ("train", "val", "test")
 DEFAULT_RATIO = (70, 20, 10)
@@ -77,6 +78,26 @@ def assign(frames: Iterable[str], ratio: Sequence[int] = DEFAULT_RATIO, seed: in
         for name in ordered[at : at + take]:
             out[name] = split
         at += take
+    return out
+
+
+def partition(
+    items: Iterable,
+    key: Callable[[Any], str],
+    ratio: Sequence[int] = DEFAULT_RATIO,
+    seed: int = 0,
+) -> dict[str, list]:
+    """split any items into train / val / test lists, by the frame name `key` gives each one.
+
+    items sharing a key stay together, so nothing leaks between splits; the assignment is `assign`'s
+    (deterministic in key and seed), and `ratio` sets the sizes - `(80, 20, 0)` asks for no test
+    split at all. the default ratio is the same one `assign` and `write_into` use.
+    """
+    items = list(items)
+    by_name = assign((key(item) for item in items), ratio, seed)
+    out: dict[str, list] = {split: [] for split in SPLITS}
+    for item in items:
+        out[by_name[key(item)]].append(item)
     return out
 
 
