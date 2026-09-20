@@ -244,7 +244,7 @@ Common leases for this repo:
 | the heatmap backend | `smolsmort/detect/**`, `tests/**` |
 | the box backend | `smolsmort/boxes/**`, `tests/test_boxes.py`, `tests/test_variable_boxes.py` |
 | backends by name | `smolsmort/backends.py`, `tests/**` |
-| the review tool | `smolsmort/review/**`, `snapshot/**` |
+| the review tool | `smolsmort/review/**`, `smolsmort/review_ui/**`, `tests/**` |
 | docs | `README.md`, `docs/**` |
 
 ## Licence
