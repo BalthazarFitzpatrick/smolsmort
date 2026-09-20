@@ -2,25 +2,29 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>hyperparameters</title>
+  <title>smolsmort review</title>
   <link rel="stylesheet" href="/ui/base.css">
+  <link rel="stylesheet" href="/review.css">
   <script src="/ui/menu.js"></script>
-  <style>
-    body { font-family: system-ui, sans-serif; padding: 2rem; }
-    #train-config { display: inline-block; }
-  </style>
+  <script src="/ui/select.js"></script>
+  <script src="/ui/shell.js"></script>
 </head>
 <body>
-  <h1>train tab (hyperparams demo)</h1>
-  <p>backend:
-    <select id="backend-pick">
-      <option value="heatmap">heatmap (fixed size)</option>
-      <option value="box">box (variable size)</option>
-    </select>
-  </p>
-  <div id="train-config" class="toggle">hyperparameters</div>
-  <pre id="result"></pre>
+  <div id="top-bar">
+    <div id="nav-bar" role="tablist"></div>
+    <span id="top-bar-actions">
+      <div class="toggle" id="open-settings">settings</div>
+    </span>
+  </div>
+  <div id="tab-panels"></div>
 
-  <script src="/app.js"></script>
+  <script src="/core.js"></script>
+  <script src="/hyperparams.js"></script>
+  <script src="/tab_find.js"></script>
+  <script src="/tab_select.js"></script>
+  <script src="/tab_train.js"></script>
+  <script src="/tab_housekeeping.js"></script>
+  <script src="/settings.js"></script>
+  <script src="/boot.js"></script>
 </body>
 </html>
