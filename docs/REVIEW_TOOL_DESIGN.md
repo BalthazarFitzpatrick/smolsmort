@@ -58,6 +58,8 @@ Known implementations at port time:
         def frame(self, name: str) -> bytes: ...          # a whole frame, to draw on
         def crop(self, candidate: Candidate) -> bytes: ... # one candidate, framed for judging
 
+Both methods take an optional `frames_dir` keyword, because one pool can span several recordings.
+
 **Responsibilities.** Read a source frame and produce the pixels the browser shows: a whole frame for
 the drawing surface, and a padded crop for one candidate on the judge tab. The pad around a crop is
 the renderer's concern (a bare box stops at the object and leaves nothing to lock onto), and it is
