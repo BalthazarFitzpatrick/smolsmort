@@ -1,4 +1,4 @@
-"""the find, select and train tabs in headless chromium against the stub server. skipped unless
+"""the find, select and train tabs in headless chromium against the real review server. skipped unless
 playwright is importable: uv run --with playwright pytest tests/test_review_ui_browser.py"""
 
 from __future__ import annotations
