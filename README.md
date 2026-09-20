@@ -250,3 +250,10 @@ Common leases for this repo:
 ## Licence
 
 MIT, see [LICENSE](LICENSE).
+
+## Extra tabs
+
+A host adds tabs without editing the loop: build a `smolsmort.review.routes.Tab` with its own
+`get` and `post` route tables (full paths, json in and out) and optional `images`, and pass it in
+`build_app(tabs=[...])`. A path that collides with a core route is refused when the server is
+built. `GET /api/tabs` lists the registered names so a page can offer them.
