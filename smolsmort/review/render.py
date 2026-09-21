@@ -71,30 +71,35 @@ def padded_canvas(frame: np.ndarray, candidate: dict) -> np.ndarray:
     return canvas
 
 
+def frame_file(frames_dir: Path | None, name: str) -> Path:
+    """a frame by its bare file name, confined to `frames_dir`: a name carrying a directory part
+    is cut to its last component, and anything that still lands outside is not found"""
+    if frames_dir is None:
+        raise FileNotFoundError(name)
+    target = (frames_dir / Path(name).name).resolve()
+    if frames_dir.resolve() not in target.parents or not target.is_file():
+        raise FileNotFoundError(name)
+    return target
+
+
 class ImageRenderer:
-    """renders from frame files on disk. every method takes the recording's frames directory."""
+    """renders from frame files on disk. every method takes the recording's frames directory,
+    and every frame read goes through `frame_file`, so no method trusts a stored path"""
 
     def frame(self, name: str, *, frames_dir: Path | None = None) -> bytes:
-        """one whole frame file, for drawing on. confined to `frames_dir`."""
-        if frames_dir is None:
-            raise FileNotFoundError(name)
-        target = (frames_dir / Path(name).name).resolve()
-        if frames_dir.resolve() not in target.parents or not target.is_file():
-            raise FileNotFoundError(name)
-        return target.read_bytes()
+        """one whole frame file, for drawing on"""
+        return frame_file(frames_dir, name).read_bytes()
 
     def crop(self, candidate: dict, *, frames_dir: Path | None = None) -> bytes:
         """the padded crop around a candidate, as png"""
-        if frames_dir is None:
-            raise FileNotFoundError(candidate.get("path", ""))
-        frame = read_frame(frames_dir / candidate["path"])
+        frame = read_frame(frame_file(frames_dir, candidate.get("path", "")))
         return png_bytes(Image.fromarray(padded_canvas(frame, candidate)))
 
     def thumb(self, box: dict, *, frames_dir: Path) -> bytes:
         """the box with real frame around it, kept centred vertically however little room a frame
         has: the margin above and below is the SAME amount, capped by the smaller side, so a box
         near an edge degrades to a tight crop instead of a lopsided one."""
-        frame = read_frame(frames_dir / box["path"])
+        frame = read_frame(frame_file(frames_dir, box["path"]))
         frame_h, frame_w = frame.shape[:2]
         top, left, height, width = box["top"], box["left"], box["height"], box["width"]
         margin = max(0, min(height // 2, top, frame_h - (top + height)))

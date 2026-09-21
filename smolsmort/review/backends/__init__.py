@@ -33,10 +33,18 @@ def save_named(backend, weights, path: Path, **provenance) -> dict:
     run actually used, when it happened - stamped with the wall-clock time unless a caller passes
     its own (tests do, so a run is reproducible in its assertions rather than racing the clock).
     """
-    backend.save(weights, path)
     stamp = provenance.pop("saved", None) or datetime.now().strftime("%Y%m%d-%H%M%S")
     meta = {"saved": stamp, **provenance}
+    # PROVENANCE FIRST. a lister finds checkpoints by their .pt, so writing the weights first left
+    # a window where the .pt was listed with no provenance beside it (training set read as None)
+    # the backend used to create the folder on its own save; provenance goes first now
+    path.parent.mkdir(parents=True, exist_ok=True)
     provenance_path(path).write_text(json.dumps(meta, indent=2))
+    try:
+        backend.save(weights, path)
+    except BaseException:
+        provenance_path(path).unlink(missing_ok=True)
+        raise
     return {"name": path.name, "bytes": path.stat().st_size, **meta}
 
 

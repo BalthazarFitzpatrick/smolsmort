@@ -209,7 +209,7 @@ def test_every_image_route_answers_404_rather_than_dropping_the_connection(serve
 def test_every_response_forbids_caching(server):
     """a tile is re-cut in place under an unchanged url, so a cached copy shows the OLD crop"""
     _, url = server
-    for path in ("/", "/api/tile-size", "/tile/nope"):
+    for path in ("/", "/api/train-info", "/tile/nope"):
         try:
             with urllib.request.urlopen(url + path, timeout=20) as response:
                 headers = response.headers
@@ -319,13 +319,11 @@ def test_binding_something_that_is_not_there_is_a_404_and_a_bad_kind_a_400(serve
     assert post(url, "/api/bind-recording", {"kind": "banana", "name": "x"})[0] == 400
 
 
-def test_tile_size_and_height_delta(server):
+def test_height_delta(server):
     _, url = server
-    assert jpost(url, "/api/tile-size", {"height_delta": 3})["height"] == 17
-    assert jget(url, "/api/tile-size")["height"] == 17
     _bind_and_draw(url)
     out = jpost(url, "/api/height-delta", {"index": 0, "delta": 2})
-    assert out["height_delta"] == 2 and out["effective_height"] == 19
+    assert out["height_delta"] == 2 and out["effective_height"] == 16
     assert jpost(url, "/api/reviewed", {"index": 0})["ok"]
     assert jget(url, "/api/page")["total"] == 5
 
@@ -701,6 +699,7 @@ def test_the_whole_loop_over_http_find_judge_promote_train_predict(server, world
 
     # the named run is saved once it finishes, and is listed with its set
     saved = _wait(url, "/api/saved-checkpoints", lambda s: bool(s["weights"]))
+    # the provenance lands before the weights, so the first listing already names the set
     assert (
         saved["weights"][0]["name"] == "run1.pt" and saved["weights"][0]["training_set"] == "loop"
     )

@@ -125,18 +125,6 @@ def _set_crop_settings(app: App, p: dict):
         raise RequestError(str(exc)) from exc
 
 
-@get("/api/tile-size")
-def _tile_size(app: App, q: dict):
-    return {"width": app.state.uniform_width, "height": app.state.uniform_height}
-
-
-@post("/api/tile-size")
-def _set_tile_size(app: App, p: dict):
-    state = app.state
-    state.uniform_height = max(4, state.uniform_height + int(p.get("height_delta", 0)))
-    return {"width": state.uniform_width, "height": state.uniform_height}
-
-
 @post("/api/height-delta")
 def _height_delta(app: App, p: dict):
     delta = app.state.set_height_delta(p["index"], int(p.get("delta", 0)))
@@ -254,6 +242,8 @@ def _realign(app: App, p: dict):
     )
 
 
+# no caller in this repo's own tabs: the downstream host's review page calls it (its app.js
+# recut button), so it stays with the same shape
 @post("/api/recut-pool")
 def _recut(app: App, p: dict):
     return app.state.recut_pool()
@@ -417,6 +407,8 @@ def _saved_checkpoints(app: App, q: dict):
     return app.trainer.saved_checkpoints()
 
 
+# no caller in this repo's own tabs (the train tab browses through dir-tree): the downstream
+# host's train tab calls it, with and without ?under=, so it stays with the same shape
 @get("/api/checkpoint-folders")
 def _checkpoint_folders(app: App, q: dict):
     return app.trainer.checkpoint_folders(q.get("under", ""))
