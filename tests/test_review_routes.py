@@ -865,6 +865,8 @@ def test_train_info_and_window_floor_follow_the_sets_capture_size(server, world)
     info = jget(url, "/api/train-info")
     assert (info["capture_width"], info["downscale"], info["input_width"]) == (200, 2, 100)
     assert "resampled_from" not in info
+    # no override yet, so the width the picker shows is the frames' own
+    assert info["capture_override"] is None and info["observed_width"] == 200
     floor_default = jget(url, "/api/window-floor")
     assert floor_default["downscale"] == 2
     jpost(
@@ -874,6 +876,7 @@ def test_train_info_and_window_floor_follow_the_sets_capture_size(server, world)
     )
     info = jget(url, "/api/train-info")
     assert (info["capture_width"], info["downscale"], info["input_width"]) == (100, 1, 100)
+    assert info["capture_override"] == 100 and info["observed_width"] == 200
     floor = jget(url, "/api/window-floor")
     # the box halves with the capture width, and the window is cut at downscale 1
     assert floor["downscale"] == 1
@@ -887,6 +890,7 @@ def test_train_info_reports_a_capture_mismatch_with_the_loaded_model(server, wor
     app.trainer.trainer.weights = SimpleNamespace(capture_width=400, downscale=2)
     info = jget(url, "/api/train-info")
     assert info["resampled_from"] == 200 and info["capture_width"] == 200
+    assert info["weights_capture_width"] == 400
 
 
 def test_the_box_backend_reports_its_working_size_and_no_capture_settings(server, world):

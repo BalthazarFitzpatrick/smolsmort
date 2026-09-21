@@ -12,6 +12,8 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .grow { flex: 1 1 0; min-width: 0; }
 .dropdown-head.grow > span, .toggle.grow > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stat.warn { color: var(--stone-red-lift); }
+/* the resample warning is a sentence, not a stat: .stat clips to one ellipsed line */
+#sweep-warning { white-space: normal; overflow: visible; }
 .placeholder { color: var(--text-dim); }
 .select-status { min-height: var(--row-height); }
 
