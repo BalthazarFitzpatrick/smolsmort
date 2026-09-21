@@ -39,7 +39,7 @@ from dataclasses import dataclass
 import numpy as np
 
 STRIDE = 4  # heatmap cell : input pixel
-# capture pixel : input pixel. 2, not 4: callers hand the model 1440-wide frames, so a plate is
+# capture pixel : input pixel. 2, not 4: callers hand the model 1440-wide frames, so an object is
 # ~47 px wide at input scale, about what it was when 3420-wide captures went through at 4
 DEFAULT_DOWNSCALE = 2
 # the network's base width: about 100k parameters at 10 classes. wider nets are legitimate - the

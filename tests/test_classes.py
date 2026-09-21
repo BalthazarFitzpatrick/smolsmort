@@ -2,7 +2,7 @@
 
 Balthazar Fitzpatrick, 2026-09-01, proposing it: "if you can look at all my crops through the eyes of a cnn, it
 will be able to draw a heatmap per 10 categories via 10 output channels, and that's all the x and y
-you need". he is right, and it is what lets the cnn replace the template matcher: a plate is a
+you need". he is right, and it is what lets the cnn replace the template matcher: an object is a
 FIXED KNOWN SIZE, so there is nothing to regress - the only unknowns are where and which.
 
 the five primitives are friendly green, neutral yellow, hostile red, player blue and tagged grey,
@@ -34,7 +34,7 @@ def test_ten_classes_costs_almost_nothing():
 
 
 def test_a_plate_marks_only_its_own_channel():
-    """a red plate is not a negative example for green - it simply leaves that channel empty"""
+    """a red object is not a negative example for green - it simply leaves that channel empty"""
     target = class_target((20, 30), [(5.0, 5.0)], [2], classes=10)
     assert target.shape == (10, 20, 30)
     assert target[2].max() == pytest.approx(1.0)
@@ -45,7 +45,7 @@ def test_two_primitives_in_one_frame_land_in_two_channels():
     target = class_target((20, 30), [(5.0, 5.0), (15.0, 10.0)], [0, 7], classes=10)
     assert target[0].max() == pytest.approx(1.0)
     assert target[7].max() == pytest.approx(1.0)
-    assert target[0][10, 15] == 0.0, "one plate must not blob into the other's position"
+    assert target[0][10, 15] == 0.0, "one object must not blob into the other's position"
 
 
 def test_two_of_the_same_primitive_share_a_channel():
@@ -228,7 +228,7 @@ def test_a_promoted_set_loads_back_and_trains(tmp_path):
             "source": "two",
         },
     ]
-    path = tmp_path / "plates.jsonl"
+    path = tmp_path / "objects.jsonl"
     path.write_text("".join(json.dumps(r) + "\n" for r in rows))
 
     examples, classes = build_training_set(path, sessions)
@@ -242,7 +242,7 @@ def test_a_promoted_set_loads_back_and_trains(tmp_path):
 def test_an_empty_training_set_says_so(tmp_path):
     from smolsmort.detect.dataset import DatasetError, build_training_set
 
-    path = tmp_path / "plates.jsonl"
+    path = tmp_path / "objects.jsonl"
     path.write_text("")
     with pytest.raises(DatasetError, match="promote"):
         build_training_set(path, tmp_path)
@@ -287,12 +287,12 @@ def test_an_excluded_candidate_becomes_a_hard_negative(tmp_path):
             "source": "one",
         },
     ]
-    path = tmp_path / "plates.jsonl"
+    path = tmp_path / "objects.jsonl"
     path.write_text("".join(json.dumps(r) + "\n" for r in rows))
 
     examples, classes = build_training_set(path, sessions)
     example = examples[0]
-    assert len(example.centres) == 1, "a negative is not a plate"
+    assert len(example.centres) == 1, "a negative is not an object"
     assert len(example.negatives) == 1
     assert classes == {"hostile npc": 1 - 1}, "a negative contributes no class"
 
@@ -343,7 +343,7 @@ def test_negatives_do_not_break_multi_class_training(tmp_path):
             "source": "one",
         },
     ]
-    path = tmp_path / "plates.jsonl"
+    path = tmp_path / "objects.jsonl"
     path.write_text("".join(json.dumps(r) + "\n" for r in rows))
     examples, classes = build_training_set(path, sessions)
     model, history = train(examples, epochs=1, batch=2, classes=classes)

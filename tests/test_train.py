@@ -44,7 +44,7 @@ def test_masked_loss_falls_back_when_there_is_no_positive():
 
 
 def test_masked_loss_takes_logits_not_probabilities():
-    """the shared plates.focal_loss applies its own sigmoid; passing it probabilities double-applies
+    """model.focal_loss applies its own sigmoid; passing it probabilities double-applies
     one. this takes logits, so a confident correct logit must score better than a neutral zero."""
     target = torch.zeros(1, 1, 4, 4)
     target[0, 0, 2, 2] = 1.0
@@ -67,7 +67,7 @@ def test_crop_window_shapes_line_up():
 
 
 def test_an_ignore_region_never_blanks_a_confirmed_plate():
-    """a plate can sit inside an ignore box; the mask must not erase it from the loss"""
+    """an object can sit inside an ignore box; the mask must not erase it from the loss"""
     import random
 
     image = np.zeros((3, 360, 640), dtype=np.float32)
