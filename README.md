@@ -207,6 +207,24 @@ copied into the `<weights>.json` sidecar; an old checkpoint loads as capture unk
   `downscale` (absent: the default). The box backend keeps its own `long_side`, shown as
   `working_size`.
 
+### Predicting on a frame you already hold
+
+A caller with pixels in hand (a live capture) does not have to write a file. Three entry points in
+`smolsmort.detect.train` walk the same steps a sweep walks per file, so the two cannot drift:
+
+```python
+from smolsmort.detect.train import frame_input, heatmaps_for_frame, load, predict_frame
+
+model = load(path)                                   # capture width and downscale come with it
+inputs, original_width = frame_input(model, frame)   # frame: (h, w, 3) rgb uint8, frame px
+maps, ratio = heatmaps_for_frame(model, frame)       # decode peaks yourself; x, y * ratio -> frame px
+found = predict_frame(model, frame, classes=classes, width=64, height=14)  # sweep's dicts minus path
+```
+
+`width` and `height` are the box in capture px, as `sweep` takes them. A frame narrower or wider
+than the recorded capture width is resampled first, and every returned box carries
+`resampled_from`.
+
 ## Defaults and where they came from
 
 Every tuned number was measured on the first consumer, a game-screen detector for long, thin bars
