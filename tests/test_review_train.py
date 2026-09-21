@@ -599,9 +599,10 @@ def test_an_aborted_named_run_writes_no_final_weights(_pausable, tmp_path):
 
 def test_window_floor_needs_the_box_and_snaps_to_cells():
     pytest.importorskip("torch")
-    from smolsmort.detect.model import STRIDE
+    from smolsmort.detect.model import DEFAULT_DOWNSCALE, LEGACY_DOWNSCALE, STRIDE
     from smolsmort.review.train import window_floor
 
     floor = window_floor(226, 100)
-    assert floor % STRIDE == 0 and floor >= 226 / 4 / 0.2
-    assert window_floor(226, 100, downscale=2) > floor
+    assert floor % STRIDE == 0 and floor >= 226 / DEFAULT_DOWNSCALE / 0.2
+    # a coarser downscale shrinks the box in the input, so its floor is smaller
+    assert window_floor(226, 100, downscale=LEGACY_DOWNSCALE) < floor
