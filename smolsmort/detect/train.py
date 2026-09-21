@@ -43,6 +43,8 @@ from smolsmort.detect.model import (
     gaussian_target,
     set_capture_width,
 )
+from smolsmort.detect.prefetch import decode_ahead
+from smolsmort.detect.windows import carve_ignore, window_origin
 from smolsmort.optim import build_optimizer
 
 CROP = 256  # input pixels, i.e. CROP * downscale capture pixels a side (512 at the default 2)
@@ -268,33 +270,26 @@ def _crop_window(
     """
     _, height, width = image.shape
     size = min(window, height, width)
-    roll = rng.random()
-    if example.centres and roll < 0.5:
-        cx, cy = rng.choice(example.centres)
-        cx, cy = cx / downscale, cy / downscale
-        # THE OBJECT MUST LAND ANYWHERE IN THE WINDOW, NOT NEAR THE MIDDLE. this used to jitter by
-        # +/- size/6, which on a 256px window pins the object within ~42px of the centre - so the net
-        # was taught "objects are near the middle" and then asked to sweep whole frames, where they
-        # are anywhere. Balthazar Fitzpatrick spotted the same gap from the data side, asking whether the object
-        # could be off-centre in the training crops. 0.40 keeps a margin so the object stays fully
-        # inside rather than clipped at the edge, which would teach a half-object as a whole one.
-        jitter = size * JITTER_FRACTION
-        left = int(cx - size / 2 + rng.uniform(-jitter, jitter))
-        top = int(cy - size / 2 + rng.uniform(-jitter, jitter))
-    elif example.negatives and roll < 0.75:
-        # HARD NEGATIVES. these are places the model ITSELF fired on and a different signal (the
-        # template matcher) says are not objects. a uniformly random window almost never contains
-        # one, so without deliberately sampling them the model never revisits its own mistakes -
-        # appending them to a list changes nothing on its own, since background is already the
-        # default everywhere. this is what makes the mining actually train.
-        cx, cy = rng.choice(example.negatives)
-        cx, cy = cx / downscale, cy / downscale
-        left = int(cx - size / 2 + rng.uniform(-size / 6, size / 6))
-        top = int(cy - size / 2 + rng.uniform(-size / 6, size / 6))
-    else:
-        left, top = rng.randrange(0, max(1, width - size)), rng.randrange(0, max(1, height - size))
-    left = max(0, min(left, width - size))
-    top = max(0, min(top, height - size))
+    # THE OBJECT MUST LAND ANYWHERE IN THE WINDOW, NOT NEAR THE MIDDLE. this used to jitter by
+    # +/- size/6, which on a 256px window pins the object within ~42px of the centre - so the net
+    # was taught "objects are near the middle" and then asked to sweep whole frames, where they
+    # are anywhere. Balthazar Fitzpatrick spotted the same gap from the data side, asking whether the object
+    # could be off-centre in the training crops. 0.40 keeps a margin so the object stays fully
+    # inside rather than clipped at the edge, which would teach a half-object as a whole one.
+    # HARD NEGATIVES (the second roll) are places the model ITSELF fired on and a different signal
+    # says are not objects; a uniformly random window almost never contains one, so without
+    # deliberately sampling them the model never revisits its own mistakes.
+    left, top = window_origin(
+        rng,
+        size,
+        width,
+        height,
+        centres=[(cx / downscale, cy / downscale) for cx, cy in example.centres],
+        negatives=[(cx / downscale, cy / downscale) for cx, cy in example.negatives],
+        jitter_fraction=JITTER_FRACTION,
+        object_share=0.5,
+        negative_share=0.75,
+    )
 
     window = image[:, top : top + size, left : left + size]
     cells = size // STRIDE
@@ -324,15 +319,7 @@ def _crop_window(
         target = class_target((cells, cells), snapped, indices, len(classes) or 1)
 
     mask = np.ones((cells, cells), dtype=np.float32)
-    for x0, y0, x1, y1 in example.ignore:
-        a = int((x0 / downscale - left) / STRIDE)
-        b = int((y0 / downscale - top) / STRIDE)
-        c = int(math.ceil((x1 / downscale - left) / STRIDE))
-        d = int(math.ceil((y1 / downscale - top) / STRIDE))
-        a, b = max(0, a), max(0, b)
-        c, d = min(cells, c), min(cells, d)
-        if a < c and b < d:
-            mask[b:d, a:c] = 0.0
+    carve_ignore(mask, example.ignore, left, top, STRIDE, lambda v: v / downscale)
     # an ignore region must never blank out a confirmed object sitting inside it. the mask is
     # per-CELL while a multi-class target is per-cell-per-class, so collapse across channels: a
     # cell holding any object of any class is a cell the loss must still see
@@ -565,44 +552,33 @@ def sweep(
     pixels; those from a resampled frame carry `resampled_from`, the frame's width.
     """
     by_channel = {index: label for label, index in classes.items()}
-    # DECODE AHEAD OF THE MODEL. measured per frame at 3420x2224: 51 ms to decode and downscale the
-    # jpeg against 39 ms for the forward pass, so more than half the sweep was the cpu waiting on
-    # pillow with the gpu idle. two workers keep one frame ready while the current one runs; the
-    # window is bounded so a long sweep never holds every decoded frame in memory at once.
-    from concurrent.futures import ThreadPoolExecutor
-
     if device is None:
         device = next(model.parameters()).device
-    pool = ThreadPoolExecutor(max_workers=2)
     factor = downscale_of(model)
     capture = capture_width_of(model)
-    pending = {i: pool.submit(_load_frame, f, factor, capture) for i, f in enumerate(frames[:3])}
-    try:
-        out, highest, histogram = _sweep_frames(
-            model,
-            frames,
-            pending,
-            pool,
-            device,
-            by_channel,
-            factor,
-            capture,
-            width=width,
-            height=height,
-            min_score=min_score,
-            max_per_frame=max_per_frame,
-            on_progress=on_progress,
-        )
-    finally:
-        pool.shutdown(wait=False)
+    # decoded ahead of the model on two workers, see detect/prefetch.py for the measurement
+    decoded = decode_ahead(frames, lambda f: _load_frame(f, factor, capture), ahead=3, workers=2)
+    out, highest, histogram = _sweep_frames(
+        model,
+        decoded,
+        len(frames),
+        device,
+        by_channel,
+        factor,
+        capture,
+        width=width,
+        height=height,
+        min_score=min_score,
+        max_per_frame=max_per_frame,
+        on_progress=on_progress,
+    )
     return out
 
 
 def _sweep_frames(
     model,
-    frames,
-    pending,
-    pool,
+    decoded,
+    total,
     device,
     by_channel,
     downscale,
@@ -614,18 +590,14 @@ def _sweep_frames(
     max_per_frame,
     on_progress,
 ):
+    """`decoded` yields (path, (input, original width)) in order; `total` is how many"""
     out: list[dict] = []
     highest = 0.0
     # WHAT THE MODEL ANSWERED, over the frames actually swept - 2.5% buckets across 0..1. free,
     # because the heatmaps are already computed here, and it is the honest thing to choose a
     # threshold against: the response on THIS recording rather than on the training frames
     histogram = np.zeros(SCORE_BUCKETS, dtype=np.int64)
-    for position, path in enumerate(frames, start=1):
-        index = position - 1
-        ahead = index + 3
-        if ahead < len(frames):
-            pending[ahead] = pool.submit(_load_frame, frames[ahead], downscale, capture)
-        image, original = pending.pop(index).result()
+    for position, (path, (image, original)) in enumerate(decoded, start=1):
         maps = _heatmaps_of(model, image, device)
         resampled = bool(capture) and original != capture
         highest = max(highest, float(maps.max()))
@@ -647,7 +619,7 @@ def _sweep_frames(
                 candidate["resampled_from"] = original
             out.append(candidate)
         if on_progress:
-            on_progress(position, len(frames), len(out), highest, histogram)
+            on_progress(position, total, len(out), highest, histogram)
     return out, highest, histogram
 
 

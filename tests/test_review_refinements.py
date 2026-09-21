@@ -198,7 +198,10 @@ def test_native_keeps_drawn_sizes_through_save_recut_and_promote(state, world):
         (44, 16),
         (32, 12),
     }
-    assert json.loads((world.sets / "nat.meta.json").read_text())["size_mode"] == "native"
+    # backend/size_mode live only in the _backend.json sidecar, not in meta.json - see setconfig
+    meta = json.loads((world.sets / "nat.meta.json").read_text())
+    assert "size_mode" not in meta and "backend" not in meta
+    assert json.loads((world.sets / "nat._backend.json").read_text())["size_mode"] == "native"
 
 
 def test_uniform_still_fits_one_size_to_the_set(state, world):

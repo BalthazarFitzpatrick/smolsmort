@@ -269,7 +269,6 @@ class PromoteMixin:
             labels_root,
             mode if existing else "new",
             {r.get("source") for r in rows},
-            setconfig.read_set_config(set_filename(name)),
         )
         counts: dict[str, int] = {}
         for row in merged:
@@ -385,7 +384,6 @@ class PromoteMixin:
         labels_root: Path,
         mode: str,
         written_sources: set[str],
-        config: dict | None = None,
     ) -> dict:
         """the sidecar that says where each row in the set came from.
 
@@ -417,7 +415,10 @@ class PromoteMixin:
             found = self._candidates_for_tag(labels_root, source)
             was = previous.get(source, {})
             # a source this promote did not write keeps the file and timestamp it came in with
-            entry["candidates"] = str(found) if found else was.get("candidates")
+            # human aid only, nothing reads it back - relative so moving labels_root can't stale it
+            entry["candidates"] = (
+                str(found.relative_to(labels_root)) if found else was.get("candidates")
+            )
             entry["promoted"] = stamp if source in written_sources else was.get("promoted", stamp)
 
         meta = {
@@ -427,8 +428,5 @@ class PromoteMixin:
             "rows": len(rows),
             "sources": sorted(by_source.values(), key=lambda e: e["source"]),
         }
-        # the backend the set names, recorded only for a set that has one
-        if config:
-            meta.update(backend=config["backend"], size_mode=config["size_mode"])
         write_json_atomic(meta_path, meta, indent=2)
         return meta

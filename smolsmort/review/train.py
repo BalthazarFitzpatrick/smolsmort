@@ -29,7 +29,7 @@ from typing import Any
 
 from smolsmort.backends import example_from, get_backend, sidecar
 from smolsmort.detect.dataset import frame_width
-from smolsmort.review.backends import load_provenance, save_named
+from smolsmort.review.backends import class_map, class_names, load_provenance, save_named
 
 # the heatmap backend's own default learning rate (smolsmort/detect/train.py's `train`) - the backend
 # adapter does not expose it as an option, so every run uses it silently. named here so a saved run's
@@ -160,7 +160,9 @@ class TrainState:
         meta = load_provenance(path)
         # the backend's own weights carry their classes (read from `smolsmort.backends`' sidecar);
         # the provenance file beside a named save is only consulted when that is somehow empty
-        self.classes = dict(getattr(self.weights, "classes", None) or meta.get("classes") or {})
+        self.classes = dict(getattr(self.weights, "classes", None) or {}) or class_map(
+            meta.get("classes")
+        )
         self.training_set = meta.get("training_set")
         self.examples = []
         self.val_examples = []
@@ -462,7 +464,9 @@ class TrainState:
             path,
             backend_name=self.backend_name,
             training_set=self.training_set,
-            classes=[name for name, _ in sorted(self.classes.items(), key=lambda kv: kv[1])],
+            # the same {label: index} dict the backend sidecar carries; an index is what a
+            # channel means, and a name list threw it away
+            classes=dict(sorted(self.classes.items(), key=lambda kv: kv[1])),
             options=options,
             final=final,
             **extra,
@@ -546,18 +550,14 @@ def saved_checkpoints(root: Path) -> dict:
     saved = sorted(root.rglob("*.pt"), key=_recency, reverse=True) if root.is_dir() else []
     for path in saved:
         meta = load_provenance(path)
-        classes = meta.get("classes")
+        classes = class_names(meta.get("classes"))
         if not classes:
             backend_meta = sidecar(path)
             if backend_meta.is_file():
                 try:
-                    raw_classes = json.loads(backend_meta.read_text()).get("classes")
+                    classes = class_names(json.loads(backend_meta.read_text()).get("classes"))
                 except json.JSONDecodeError:
-                    raw_classes = None
-                if isinstance(raw_classes, dict):
-                    classes = sorted(raw_classes, key=raw_classes.get)
-                elif raw_classes:
-                    classes = list(raw_classes)
+                    classes = []
         found.append(
             {
                 "name": path.relative_to(root).as_posix(),

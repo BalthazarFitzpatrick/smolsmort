@@ -39,9 +39,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # the review tool pads each candidate crop by this much before the user aligns a rect inside it;
-# rect coordinates are relative to that padded crop, so undoing it recovers frame coordinates
+# rect coordinates are relative to that padded crop, so undoing it recovers frame coordinates.
+# A DELIBERATE COPY of review.paths.MARGIN_X/Y: this package is the library layer and must not
+# import the review tool, so the value is a parameter (`margin=`) with the tool's numbers as
+# default, and tests/test_dataset.py pins the two pairs equal
 MARGIN_X = 30
 MARGIN_Y = 12
+MARGIN = (MARGIN_X, MARGIN_Y)
 
 
 class DatasetError(Exception):
@@ -79,7 +83,14 @@ class Example:
         return len(self.centres)
 
 
-def centre_of(candidate: dict, decision: dict | None, uniform_width: int, uniform_height: int):
+def centre_of(
+    candidate: dict,
+    decision: dict | None,
+    uniform_width: int,
+    uniform_height: int,
+    *,
+    margin: tuple[int, int] = MARGIN,
+):
     """where the object actually sits in FRAME coordinates.
 
     the candidate's own box is the detector's guess; if the reviewer dragged an alignment rect the
@@ -88,8 +99,8 @@ def centre_of(candidate: dict, decision: dict | None, uniform_width: int, unifor
     """
     rect = (decision or {}).get("rect")
     if rect:
-        origin_left = candidate["left"] - MARGIN_X
-        origin_top = candidate["top"] - MARGIN_Y
+        origin_left = candidate["left"] - margin[0]
+        origin_top = candidate["top"] - margin[1]
         height = max(4, uniform_height + (decision or {}).get("height_delta", 0))
         left = origin_left + float(rect["left"])
         top = origin_top + float(rect["top"])
@@ -106,6 +117,7 @@ def build(
     *,
     uniform_width: int = 64,
     uniform_height: int = 14,
+    margin: tuple[int, int] = MARGIN,
 ) -> list[Example]:
     """group one dataset's reviewed candidates into per-frame examples, reading from disk"""
     if not candidates_path.is_file():
@@ -121,12 +133,48 @@ def build(
         frames_dir,
         uniform_width=uniform_width,
         uniform_height=uniform_height,
+        margin=margin,
     )
+
+
+_REQUIRED_ROW_KEYS = ("recording", "frame", "left", "top", "width", "height")
+_NUMERIC_ROW_KEYS = ("left", "top", "width", "height")
+
+
+class ClassMap(dict):
+    """the label->channel map build_training_set returns - still a plain dict, so every
+    existing caller (bind(), dict(classes), len(classes)) keeps working unchanged.
+
+    `skipped` rides along on the same object: reason string -> row count, for whichever rows
+    build_training_set had to drop. it lives here rather than a third return value or a module
+    global because it is only ever meaningful alongside the map it was computed with.
+    """
+
+    skipped: dict[str, int]
+
+
+def _row_skip_reason(row: dict) -> str | None:
+    """why this row can't become an Example, or None if it's usable.
+
+    fail-loud on provenance, but per-row rather than per-file: one bad row should not refuse
+    a whole promoted set, so the caller counts and skips instead of raising.
+    """
+    for key in _REQUIRED_ROW_KEYS:
+        if key not in row:
+            return key
+    for key in _NUMERIC_ROW_KEYS:
+        try:
+            float(row[key])
+        except (TypeError, ValueError):
+            return f"{key}: non-numeric"
+    if not row.get("negative") and "label" not in row:
+        return "label"
+    return None
 
 
 def build_training_set(
     path: Path, sessions_dir: Path, *, refuse_mixed_resolutions: bool = True
-) -> tuple[list[Example], dict[str, int]]:
+) -> tuple[list[Example], ClassMap]:
     """the promoted training set on disk -> examples, plus the class->channel map to train with.
 
     ONE FILE, MANY RECORDINGS. each row names its own recording, so a set assembled from several
@@ -144,12 +192,22 @@ def build_training_set(
     """
     if not path.is_file():
         raise DatasetError(f"no training set at {path}")
-    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-    if not rows:
+    raw_rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    if not raw_rows:
         raise DatasetError(f"{path} is empty - promote some labelled kernels first")
 
+    skipped: dict[str, int] = {}
+    rows = []
+    for row in raw_rows:
+        reason = _row_skip_reason(row)
+        if reason:
+            skipped[reason] = skipped.get(reason, 0) + 1
+        else:
+            rows.append(row)
+
     labels = sorted({r["label"] for r in rows if r.get("label")})
-    classes = {label: index for index, label in enumerate(labels)}
+    classes = ClassMap((label, index) for index, label in enumerate(labels))
+    classes.skipped = skipped
     by_frame: dict[tuple[str, str], Example] = {}
     for row in rows:
         key = (row["recording"], row["frame"])
@@ -157,7 +215,10 @@ def build_training_set(
         example = by_frame.setdefault(key, Example(path=image))
         if row.get("exhaustive"):
             example.exhaustive = True
-        centre = (row["left"] + row["width"] / 2.0, row["top"] + row["height"] / 2.0)
+        # values keep the type the row carries: a size travels on into tile cutting as an int,
+        # and _row_skip_reason has already refused anything that is not a number
+        left, top, width, height = row["left"], row["top"], row["width"], row["height"]
+        centre = (left + width / 2.0, top + height / 2.0)
         if row.get("negative"):
             # A HARD NEGATIVE: somewhere the model fired and was told no. sampled deliberately
             # during training because a random window almost never contains one, so without them
@@ -166,7 +227,7 @@ def build_training_set(
         else:
             example.centres.append(centre)
             example.labels.append(row["label"])
-            example.sizes.append((row["width"], row["height"]))
+            example.sizes.append((width, height))
     examples = [e for e in by_frame.values() if e.path.is_file()]
     if refuse_mixed_resolutions:
         _refuse_mixed_resolutions(examples, path)
@@ -224,6 +285,7 @@ def build_from(
     uniform_height: int = 14,
     labels: dict[int, str] | None = None,
     exhaustive_frames: set[str] | None = None,
+    margin: tuple[int, int] = MARGIN,
 ) -> list[Example]:
     """same, from lists already in memory - the review server holds live decisions that the file
     on disk may not have caught up with yet.
@@ -247,7 +309,7 @@ def build_from(
         example = by_frame.setdefault(candidate["path"], Example(path=image))
         if candidate["path"] in exhaustive_frames:
             example.exhaustive = True
-        centre = centre_of(candidate, decision, uniform_width, uniform_height)
+        centre = centre_of(candidate, decision, uniform_width, uniform_height, margin=margin)
 
         if decision and decision.get("keep"):
             example.centres.append(centre)
