@@ -166,7 +166,7 @@ def test_assets_for_finds_a_checkpoint_via_its_training_sets_meta(bases):
     weights.write_bytes(b"weights")
     weights.with_name(weights.name + ".json").write_text(json.dumps({"classes": {"x": 0}}))
     provenance = weights.with_name(weights.name + ".provenance.json")
-    provenance.write_text(json.dumps({"training_set": "combo", "classes": ["x"]}))
+    provenance.write_text(json.dumps({"training_set": "combo", "classes": {"x": 0}}))
 
     (found,) = hk.assets_for("rec_a")["checkpoints"]
     assert found["label"] == "combo-20260901-000000"

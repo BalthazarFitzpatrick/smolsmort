@@ -48,6 +48,22 @@ def save_named(backend, weights, path: Path, **provenance) -> dict:
     return {"name": path.name, "bytes": path.stat().st_size, **meta}
 
 
+def class_map(classes) -> dict[str, int]:
+    """classes as {label: index}, from either stored shape: the dict a checkpoint sidecar and a
+    provenance file carry now, or the name list older provenance files carried (index = position)"""
+    if isinstance(classes, dict):
+        return {str(label): int(index) for label, index in classes.items()}
+    if classes:
+        return {str(label): index for index, label in enumerate(classes)}
+    return {}
+
+
+def class_names(classes) -> list[str]:
+    """the labels in channel order, from either stored shape"""
+    found = class_map(classes)
+    return sorted(found, key=found.get)
+
+
 def load_provenance(path: Path) -> dict:
     """the provenance beside a named checkpoint, or empty when it predates this - the same
     "no sidecar is not an error" stance `smolsmort.backends.backend_of` takes for LEGACY checkpoints"""
