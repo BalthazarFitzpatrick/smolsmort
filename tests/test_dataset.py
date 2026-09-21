@@ -161,7 +161,7 @@ def _training_row(recording="rec", frame="f.jpg", left=500, top=300, width=132, 
         "top": top,
         "width": width,
         "height": height,
-        "label": "plate",
+        "label": "object",
         **extra,
     }
 
