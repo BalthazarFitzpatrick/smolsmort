@@ -189,6 +189,24 @@ because that is the only place a false positive can be counted cleanly. The buil
 - `chrome_cells` finds detections that stay put while the camera turns. Those are part of the
   interface, not the world.
 
+## Capture size and downscale
+
+The heatmap model records the frame width it was trained at (`capture_width`, px) and its
+`downscale` factor (an integer, 1 to 8, default 2). Both live in the checkpoint as buffers and are
+copied into the `<weights>.json` sidecar; an old checkpoint loads as capture unknown, downscale 4.
+
+- Training: `capture_width` left out is read from the frames and recorded. A smaller or larger value
+  resamples each frame to that width (aspect kept) before the downscale.
+- Inference: a frame whose width differs from the recorded capture width is resampled to it, run at
+  the weights' own downscale, and decoded boxes are mapped back to the frame's own pixels. Each such
+  candidate carries `resampled_from` (the frame width) and a sweep reports a `warning`. Unknown
+  capture: frames are used as given.
+- Fine-tuning: continuing from weights at a different downscale is refused (the architecture depends
+  on it); the weights' capture width wins over a different requested one.
+- Per set: `<set>._backend.json` may hold `capture_width` (absent: follow the frames) and
+  `downscale` (absent: the default). The box backend keeps its own `long_side`, shown as
+  `working_size`.
+
 ## Defaults and where they came from
 
 Every tuned number was measured on the first consumer, a game-screen detector for long, thin bars

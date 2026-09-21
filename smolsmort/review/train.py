@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from smolsmort.backends import example_from, get_backend, sidecar
+from smolsmort.detect.dataset import frame_width
 from smolsmort.review.backends import load_provenance, save_named
 
 # the heatmap backend's own default learning rate (smolsmort/detect/train.py's `train`) - the backend
@@ -239,7 +240,7 @@ class TrainState:
         if window is not None and self.backend_name == "heatmap":
             box = self._fitted_box()
             if box is not None:
-                floor = window_floor(*box)
+                floor = window_floor(*box, downscale=self.backend_options.get("downscale"))
                 if int(window) < floor:
                     return {
                         "error": (
@@ -314,22 +315,37 @@ class TrainState:
         return {"ok": True}
 
     def _fitted_box(self) -> tuple[int, int] | None:
-        """the median drawn box of the bound examples, or None when none carries a size"""
-        sizes = [size for e in map(example_from, self.examples) for size in e.sizes]
+        """the median drawn box of the bound examples, or None when none carries a size. drawn in
+        frame px; scaled to the run's `capture_width` option when that differs from the frames"""
+        examples = list(map(example_from, self.examples))
+        sizes = [size for e in examples for size in e.sizes]
         if not sizes:
             return None
         widths = sorted(int(w) for w, _ in sizes)
         heights = sorted(int(h) for _, h in sizes)
-        return widths[len(widths) // 2], heights[len(heights) // 2]
+        box = widths[len(widths) // 2], heights[len(heights) // 2]
+        capture = self.backend_options.get("capture_width")
+        if capture and examples:
+            try:
+                ratio = capture / frame_width(examples[0].path)
+            except OSError:
+                return box
+            return round(box[0] * ratio), round(box[1] * ratio)
+        return box
 
     def window_floor(self) -> dict | None:
         """the floor for the bound set's own box, with the box and downscale that produced it"""
-        from smolsmort.detect.model import DEFAULT_DOWNSCALE as DOWNSCALE
+        from smolsmort.detect.model import DEFAULT_DOWNSCALE
 
         box = self._fitted_box()
         if box is None:
             return None
-        return {"floor": window_floor(*box), "box": list(box), "downscale": DOWNSCALE}
+        downscale = self.backend_options.get("downscale") or DEFAULT_DOWNSCALE
+        return {
+            "floor": window_floor(*box, downscale=downscale),
+            "box": list(box),
+            "downscale": downscale,
+        }
 
     def _evaluate_losses(self) -> dict[str, float | None]:
         """train, val and test loss of the freshly trained weights, through an optional backend
