@@ -193,6 +193,8 @@ The settings popup browses folders rather than taking typed paths, and remembers
   background (99th percentile), on a sample of frames - the number a sweep threshold is chosen
   against. **val split** / test loss need a backend with `evaluate()`; heatmap and box have one, and
   it scores one fixed window per frame, so read it as a trend.
+![The sweep controls: recording, share, min score, the proposals found, and the send button](images/train-sweep.jpg)
+
 - **sweep**: pick a recording and how much of it, set the min score, sweep. A frame narrower or
   wider than the weights' capture width is resampled and the warning says so. **send above
   threshold to select** cuts the proposals above the slider into the pool and switches tabs.
