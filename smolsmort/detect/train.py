@@ -21,12 +21,13 @@ from __future__ import annotations
 
 import math
 import random
-from dataclasses import dataclass
+import warnings
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
 
-from smolsmort.detect.dataset import Example
+from smolsmort.detect.dataset import Example, frame_width
 from smolsmort.detect.model import (
     DEFAULT_CHANNELS,
     DEFAULT_DOWNSCALE,
@@ -34,10 +35,12 @@ from smolsmort.detect.model import (
     STRIDE,
     _torch,
     build_model,
+    capture_width_of,
     class_target,
     decode_peaks,
     downscale_of,
     gaussian_target,
+    set_capture_width,
 )
 from smolsmort.optim import build_optimizer
 
@@ -121,14 +124,68 @@ class Progress:
         return self.epoch / self.epochs if self.epochs else 0.0
 
 
-def _load_input(path: Path, downscale: int = DEFAULT_DOWNSCALE) -> np.ndarray:
-    """a capture as the net sees it: downscaled, rgb, channels-first, 0..1"""
+def _load_frame(
+    path: Path, downscale: int = DEFAULT_DOWNSCALE, capture_width: int | None = None
+) -> tuple[np.ndarray, int]:
+    """(the net's input, the frame's own width in px).
+
+    a frame wider or narrower than `capture_width` is first resampled to it, aspect kept, so the
+    downscale then lands the object at the size the net was trained on.
+    """
     from PIL import Image
 
     with Image.open(path) as handle:
         image = handle.convert("RGB")
+        original = image.width
+        if capture_width and original != capture_width:
+            height = max(1, round(image.height * capture_width / original))
+            image = image.resize((capture_width, height), Image.BILINEAR)
         image = image.resize((image.width // downscale, image.height // downscale), Image.BILINEAR)
-    return np.asarray(image, dtype=np.float32).transpose(2, 0, 1) / 255.0
+    return np.asarray(image, dtype=np.float32).transpose(2, 0, 1) / 255.0, original
+
+
+def _load_input(
+    path: Path, downscale: int = DEFAULT_DOWNSCALE, capture_width: int | None = None
+) -> np.ndarray:
+    """a capture as the net sees it: downscaled, rgb, channels-first, 0..1"""
+    return _load_frame(path, downscale, capture_width)[0]
+
+
+def frame_ratio(model, original_width: int) -> float:
+    """frame px per capture px: what a decoded position is multiplied by to land on the original
+    frame. 1.0 when the capture is unknown or already the frame's width."""
+    capture = capture_width_of(model)
+    return original_width / capture if capture else 1.0
+
+
+def scale_example(example: Example, factor: float) -> Example:
+    """an example with every coordinate multiplied by factor - a frame resampled by that much"""
+
+    def point(p):
+        return (p[0] * factor, p[1] * factor)
+
+    return replace(
+        example,
+        centres=[point(c) for c in example.centres],
+        sizes=[point(s) for s in example.sizes],
+        negatives=[point(n) for n in example.negatives],
+        ignore=[
+            (r[0] * factor, r[1] * factor, r[2] * factor, r[3] * factor) for r in example.ignore
+        ],
+    )
+
+
+def capture_examples(examples: list[Example], capture_width: int | None) -> list[Example]:
+    """examples expressed in capture pixels: each frame not already that wide is scaled to it"""
+    if not capture_width:
+        return list(examples)
+    out = []
+    for example in examples:
+        width = frame_width(example.path)
+        out.append(
+            example if width == capture_width else scale_example(example, capture_width / width)
+        )
+    return out
 
 
 def _crop_window(
@@ -235,6 +292,8 @@ def train(
     optimizer: str = "adamw",
     momentum: float = 0.9,
     weight_decay: float = 0.0,
+    capture_width: int | None = None,
+    init_model=None,
 ):
     """returns (model, history). on_progress is called once per epoch with a Progress.
 
@@ -251,6 +310,13 @@ def train(
     save() keeps it and load() restores it - callers decoding or sweeping read it off the model.
     `channels` is the network's base width; load() reads it back from the weights, so a wider net
     trains and reloads with no other change.
+
+    `capture_width` (px) is the frame width the model is trained at and records. None reads it off
+    the examples' frames (recorded only when they all share one width); a given width different
+    from a frame's resamples that frame to it, aspect kept, BEFORE the downscale.
+
+    `init_model` continues training that model. its downscale is architecture, so a different
+    `downscale` is refused; its recorded capture width wins over `capture_width`, with a warning.
     """
     # the window every training sample is cut at. below minimum_window() for this set's boxes
     # an object is clipped at the jitter extremes, so a caller taking this from a human checks first
@@ -267,9 +333,33 @@ def train(
     rng = random.Random(seed)
     torch.manual_seed(seed)
 
-    model = build_model(
-        classes=len(classes) if classes else 1, downscale=downscale, channels=channels
-    ).to(device)
+    if init_model is not None and downscale_of(init_model) != int(downscale):
+        raise TrainError(
+            f"cannot fine-tune: the weights were trained at downscale {downscale_of(init_model)} "
+            f"but this run asks for {int(downscale)}; the architecture depends on it"
+        )
+    widths = {frame_width(e.path) for e in usable}
+    kept_capture = capture_width_of(init_model) if init_model is not None else None
+    if kept_capture:
+        if capture_width and int(capture_width) != kept_capture:
+            warnings.warn(
+                f"fine-tuning keeps the weights' capture width {kept_capture}, not {capture_width}",
+                stacklevel=2,
+            )
+        capture = kept_capture
+    elif capture_width:
+        capture = int(capture_width)
+    else:
+        capture = widths.pop() if len(widths) == 1 else None
+    usable = capture_examples(usable, capture)
+
+    if init_model is not None:
+        model = init_model.to(device)
+    else:
+        model = build_model(
+            classes=len(classes) if classes else 1, downscale=downscale, channels=channels
+        ).to(device)
+    set_capture_width(model, capture)
     optimiser = build_optimizer(
         model.parameters(),
         optimizer=optimizer,
@@ -277,7 +367,7 @@ def train(
         momentum=momentum,
         weight_decay=weight_decay,
     )
-    cache = {e.path: _load_input(e.path, downscale) for e in usable}
+    cache = {e.path: _load_input(e.path, downscale, capture) for e in usable}
 
     history = []
     seen = 0
@@ -326,10 +416,12 @@ def evaluate(model, examples: list[Example], *, classes=None, window: int | None
     was_training = model.training
     model.eval()
     losses = []
+    capture = capture_width_of(model)
+    factor = downscale_of(model)
     with torch.no_grad():
-        for example in examples:
-            image = _load_input(example.path, downscale_of(model))
-            w, t, m = _crop_window(example, image, random.Random(0), classes, size)
+        for example in capture_examples(examples, capture):
+            image = _load_input(example.path, factor, capture)
+            w, t, m = _crop_window(example, image, random.Random(0), classes, size, factor)
             x = torch.from_numpy(np.ascontiguousarray(w[None])).to(device)
             y = torch.from_numpy(np.ascontiguousarray(t[None])).to(device)
             if y.dim() == 3:
@@ -345,7 +437,7 @@ def heatmap_for(model, path: Path, device: str | None = None) -> np.ndarray:
     torch = _torch()
     if device is None:
         device = next(model.parameters()).device
-    image = _load_input(path, downscale_of(model))
+    image = _load_input(path, downscale_of(model), capture_width_of(model))
     with torch.no_grad():
         model.eval()
         x = torch.from_numpy(image).unsqueeze(0).to(device)
@@ -362,7 +454,7 @@ def heatmaps_for(model, path: Path, device: str | None = None) -> np.ndarray:
     torch = _torch()
     if device is None:
         device = next(model.parameters()).device
-    image = _load_input(path, downscale_of(model))
+    image = _load_input(path, downscale_of(model), capture_width_of(model))
     with torch.no_grad():
         model.eval()
         x = torch.from_numpy(image).unsqueeze(0).to(device)
@@ -402,6 +494,10 @@ def sweep(
     drawn on; those proposals are judged and promoted; the next model is better. each candidate
     carries the class its channel names and the peak height as its score, so the judging is a
     confirm rather than a fresh labelling.
+
+    width and height are the box in CAPTURE px (the model's recorded capture width). a frame of a
+    different width is resampled to it, and every candidate is mapped back to that frame's own
+    pixels; those from a resampled frame carry `resampled_from`, the frame's width.
     """
     by_channel = {index: label for label, index in classes.items()}
     # DECODE AHEAD OF THE MODEL. measured per frame at 3420x2224: 51 ms to decode and downscale the
@@ -414,7 +510,8 @@ def sweep(
         device = next(model.parameters()).device
     pool = ThreadPoolExecutor(max_workers=2)
     factor = downscale_of(model)
-    pending = {i: pool.submit(_load_input, f, factor) for i, f in enumerate(frames[:3])}
+    capture = capture_width_of(model)
+    pending = {i: pool.submit(_load_frame, f, factor, capture) for i, f in enumerate(frames[:3])}
     try:
         out, highest, histogram = _sweep_frames(
             model,
@@ -424,6 +521,7 @@ def sweep(
             device,
             by_channel,
             factor,
+            capture,
             width=width,
             height=height,
             min_score=min_score,
@@ -443,6 +541,7 @@ def _sweep_frames(
     device,
     by_channel,
     downscale,
+    capture,
     *,
     width,
     height,
@@ -460,8 +559,12 @@ def _sweep_frames(
         index = position - 1
         ahead = index + 3
         if ahead < len(frames):
-            pending[ahead] = pool.submit(_load_input, frames[ahead], downscale)
-        maps = _heatmaps_of(model, pending.pop(index).result(), device)
+            pending[ahead] = pool.submit(_load_frame, frames[ahead], downscale, capture)
+        image, original = pending.pop(index).result()
+        maps = _heatmaps_of(model, image, device)
+        # frame px per capture px; boxes and peaks are decoded in capture px and mapped back
+        ratio = original / capture if capture else 1.0
+        resampled = bool(capture) and original != capture
         highest = max(highest, float(maps.max()))
         counts, _ = np.histogram(maps.max(axis=0), bins=SCORE_BUCKETS, range=(0.0, 1.0))
         histogram += counts
@@ -480,19 +583,21 @@ def _sweep_frames(
             )
         ]
         found.sort(key=lambda pair: pair[0].score, reverse=True)
+        box_w, box_h = round(width * ratio), round(height * ratio)
         for peak, channel in found[:max_per_frame]:
-            out.append(
-                {
-                    "path": path.name,
-                    # decode_peaks gives a CENTRE; a candidate box is its top-left corner
-                    "left": max(0, peak.x - width // 2),
-                    "top": max(0, peak.y - height // 2),
-                    "width": width,
-                    "height": height,
-                    "matched_template": by_channel.get(channel, f"channel {channel}"),
-                    "score": round(peak.score, 4),
-                }
-            )
+            candidate = {
+                "path": path.name,
+                # decode_peaks gives a CENTRE; a candidate box is its top-left corner
+                "left": max(0, round(peak.x * ratio) - box_w // 2),
+                "top": max(0, round(peak.y * ratio) - box_h // 2),
+                "width": box_w,
+                "height": box_h,
+                "matched_template": by_channel.get(channel, f"channel {channel}"),
+                "score": round(peak.score, 4),
+            }
+            if resampled:
+                candidate["resampled_from"] = original
+            out.append(candidate)
         if on_progress:
             on_progress(position, len(frames), len(out), highest, histogram)
     return out, highest, histogram
@@ -521,15 +626,19 @@ def load(path: Path, device: str | None = None, classes: int | None = None):
     state = torch.load(path, map_location=device)
     # a checkpoint older than the stored factor was trained at the one that was hard-coded then
     state.setdefault("downscale", torch.tensor(LEGACY_DOWNSCALE))
+    state.setdefault("capture_width", torch.tensor(0))  # 0: capture never recorded
     convs = [v for k, v in state.items() if k.endswith(".weight") and v.ndim == 4]
     if classes is None:
         # the last conv's weight is (classes, channels, 1, 1)
         classes = int(convs[-1].shape[0]) if convs else 1
     # the first conv's weight is (channels, 3, 3, 3): the width the net was trained at
     channels = int(convs[0].shape[0]) if convs else DEFAULT_CHANNELS
-    model = build_model(classes=classes, downscale=int(state["downscale"]), channels=channels).to(
-        device
-    )
+    model = build_model(
+        classes=classes,
+        downscale=int(state["downscale"]),
+        channels=channels,
+        capture_width=int(state["capture_width"]),
+    ).to(device)
     model.load_state_dict(state)
     model.eval()
     return model

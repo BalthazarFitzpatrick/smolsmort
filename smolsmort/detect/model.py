@@ -64,7 +64,10 @@ def _torch():
 
 
 def build_model(
-    channels: int = DEFAULT_CHANNELS, classes: int = 1, downscale: int = DEFAULT_DOWNSCALE
+    channels: int = DEFAULT_CHANNELS,
+    classes: int = 1,
+    downscale: int = DEFAULT_DOWNSCALE,
+    capture_width: int = 0,
 ):
     """a small fully-convolutional net: rgb in, one heatmap channel PER CLASS out.
 
@@ -81,6 +84,10 @@ def build_model(
     how its peaks map back to one, so a checkpoint trained at one factor and read at another does
     not fail, it answers with every coordinate scaled wrong. it rides in the state dict as a
     buffer, so save() writes it and load() restores it without anyone remembering to pass it.
+
+    THE CAPTURE WIDTH RIDES THE SAME WAY (px, 0 = unknown). it is the frame width the model was
+    trained at; a frame of another width is resampled to it before the downscale, so the object
+    keeps the size the net learned. an old checkpoint has none and reads as unknown.
     """
     torch = _torch()
     nn = torch.nn
@@ -105,12 +112,24 @@ def build_model(
         nn.Conv2d(channels * 2, classes, 1),
     )
     net.register_buffer("downscale", torch.tensor(int(downscale)))
+    net.register_buffer("capture_width", torch.tensor(int(capture_width)))
     return net
 
 
 def downscale_of(model) -> int:
     """the capture:input factor this model was built and trained at"""
     return int(model.downscale)
+
+
+def capture_width_of(model) -> int | None:
+    """the frame width (px) this model was trained at, or None when it never recorded one"""
+    buffer = getattr(model, "capture_width", None)
+    width = int(buffer) if buffer is not None else 0
+    return width or None
+
+
+def set_capture_width(model, width: int | None) -> None:
+    model.capture_width.fill_(int(width or 0))
 
 
 def count_parameters(model) -> int:

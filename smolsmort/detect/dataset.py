@@ -48,6 +48,14 @@ class DatasetError(Exception):
     pass
 
 
+def frame_width(path: Path) -> int:
+    """a frame's width in px, read from its header without decoding it"""
+    from PIL import Image
+
+    with Image.open(path) as handle:
+        return handle.width
+
+
 @dataclass
 class Example:
     """one frame, everything known about where the objects in it are"""

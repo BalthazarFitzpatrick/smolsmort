@@ -434,9 +434,12 @@ def _sweep_status(app: App, q: dict):
 
 @post("/api/train-set-backend")
 def _train_set_backend(app: App, p: dict):
-    # body: {name, backend, size_mode?}. size_mode defaults to native for box, uniform otherwise
+    # body: {name, backend, size_mode?, capture_width?, downscale?}. size_mode defaults to native
+    # for box, uniform otherwise; capture_width/downscale keep their stored value when left out
+    # and clear it when null
+    extra = {key: p[key] for key in ("capture_width", "downscale") if key in p}
     return app.trainer.set_backend(
-        str(p.get("name", "")), str(p.get("backend", "")), p.get("size_mode")
+        str(p.get("name", "")), str(p.get("backend", "")), p.get("size_mode"), **extra
     )
 
 
