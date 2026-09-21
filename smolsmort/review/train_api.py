@@ -13,6 +13,7 @@ reports (progress, losses, a `final` flag) reach the page without this layer kno
 from __future__ import annotations
 
 import inspect
+import itertools
 import json
 import statistics
 import threading
@@ -32,6 +33,15 @@ from smolsmort.review.recordings import flat_recording, frame_files, frames_dir_
 from smolsmort.review.train import TrainState, TrainStateError, saved_checkpoints
 
 CHECKPOINT_SUFFIX = ".pt"
+
+
+def _free_name(target: Path) -> Path:
+    """`target`, or the first `<stem>-2`, `-3` ... beside it that nothing holds yet"""
+    for nth in itertools.count(2):
+        candidate = target.with_name(f"{target.stem}-{nth}{target.suffix}")
+        if not candidate.exists():
+            return candidate
+    raise AssertionError("unreachable")  # pragma: no cover - itertools.count never ends
 
 
 def counts_above(candidates: list[dict]) -> list[int]:
@@ -419,7 +429,8 @@ class TrainApi:
         while self.trainer.status().get("running"):
             time.sleep(0.05)
         if self.trainer.status().get("finished"):
-            self.save_checkpoint(name, "")
+            # nobody is at the dialog to pick another name, so a taken one is numbered
+            self.save_checkpoint(name, "", number_taken=True)
 
     def abort(self) -> dict:
         return self.trainer.abort()
@@ -435,21 +446,40 @@ class TrainApi:
     def saved_checkpoints(self) -> dict:
         return saved_checkpoints(paths.CHECKPOINTS_DIR)
 
-    def save_checkpoint(self, name: str | None = None, folder: str = "") -> dict:
-        """snapshot the current weights under a name, in a folder under the checkpoints root"""
+    def save_checkpoint(
+        self, name: str | None = None, folder: str = "", *, number_taken: bool = False
+    ) -> dict:
+        """snapshot the current weights under a name, in a folder under the checkpoints root.
+
+        A TYPED NAME IS REFUSED WHEN IT IS TAKEN, the way `checkpoint_target` refuses one: the
+        caller chose that name and silently writing over the earlier snapshot is the worse answer.
+        The suggested name is only stamped to the second, so two saves inside one second would
+        collide through no choice of the caller's - that one is numbered instead.
+
+        `number_taken` numbers a typed name too. It is for a save nobody is watching (a run's own
+        save when it finishes), where refusing would end with no weights written at all.
+        """
         root = paths.CHECKPOINTS_DIR
         if self.trainer.weights is None:
             return {"error": "nothing trained or loaded yet - train a model first"}
+        typed = bool(name)
         stem = set_filename(name or self.checkpoint_folders(folder)["name"])
         target = (root / folder / stem).with_suffix(CHECKPOINT_SUFFIX).resolve()
         if root.resolve() not in target.parents:
             return {"error": "that folder is outside the checkpoints directory"}
+        relative = target.relative_to(root.resolve()).as_posix()
+        if target.exists():
+            if typed and not number_taken:
+                return {"error": f"{relative} already exists - pick another name"}
+            target = _free_name(target)
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
             saved = self.trainer.save(target)
         except TrainStateError as exc:
             return {"error": str(exc)}
-        return {"name": target.relative_to(root.resolve()).as_posix(), **saved}
+        # the relative path goes LAST: `save_named` carries the bare filename under the same key,
+        # and a reply of "r1.pt" for runs/r1.pt cannot be handed back to load-checkpoint
+        return {**saved, "name": target.relative_to(root.resolve()).as_posix()}
 
     def load_checkpoint(self, name: str) -> dict:
         path = self.trainer.resolve_checkpoint(paths.CHECKPOINTS_DIR, name)
