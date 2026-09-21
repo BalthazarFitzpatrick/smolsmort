@@ -145,7 +145,7 @@ class TrainApi:
         self.state.active_set = name
         if self.trainer.training_set == name:
             self.bind(name)
-        return {"name": name, "capture_width": None, "downscale": None, **saved}
+        return {"name": name, **saved}
 
     def bind(self, name: str) -> dict:
         """which promoted set the next run trains on. binding drops any loaded weights: a

@@ -113,3 +113,28 @@ def test_the_window_is_passed_to_trainstate_start(api, monkeypatch):
     api.start({"crop": 256})
     api.start({})
     assert calls == [{"window": 256}, {"window": None}]
+
+
+class SizedBackend(OptionBackend):
+    def __init__(self, *, downscale: int = 2, capture_width: int | None = None):
+        type(self).seen = {"downscale": downscale, "capture_width": capture_width}
+
+
+def test_the_sets_capture_size_reaches_the_backend(tmp_path, monkeypatch):
+    from smolsmort.review import paths, setconfig
+
+    monkeypatch.setattr(paths, "DATASETS_DIR", tmp_path)
+    backends.register("sized", "test_review_train_options", "SizedBackend")
+    try:
+        setconfig.write_set_config("s", "sized", capture_width=1280, downscale=3)
+        trainer = TrainState("sized")
+        trainer.bind([EXAMPLE], {"x": 0}, training_set="s")
+        api = TrainApi(SimpleNamespace(), trainer)
+        monkeypatch.setattr(trainer, "start", lambda **kw: {"ok": True})
+        api.start({})
+        assert SizedBackend.seen == {"downscale": 3, "capture_width": 1280}
+        setconfig.write_set_config("s", "sized", capture_width=None, downscale=None)
+        api.start({})
+        assert SizedBackend.seen == {"downscale": 2, "capture_width": None}
+    finally:
+        backends._REGISTRY.pop("sized", None)
