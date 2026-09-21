@@ -202,8 +202,9 @@ def build_training_set(
         example = by_frame.setdefault(key, Example(path=image))
         if row.get("exhaustive"):
             example.exhaustive = True
-        left, top = float(row["left"]), float(row["top"])
-        width, height = float(row["width"]), float(row["height"])
+        # values keep the type the row carries: a size travels on into tile cutting as an int,
+        # and _row_skip_reason has already refused anything that is not a number
+        left, top, width, height = row["left"], row["top"], row["width"], row["height"]
         centre = (left + width / 2.0, top + height / 2.0)
         if row.get("negative"):
             # A HARD NEGATIVE: somewhere the model fired and was told no. sampled deliberately
