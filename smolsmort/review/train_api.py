@@ -127,6 +127,20 @@ class TrainApi:
         if config:
             self._use_backend(config["backend"])
 
+    def _sweeping(self) -> dict | None:
+        """the refusal a state change gets while a sweep is reading that state.
+
+        the sweep worker reads `trainer._backend`, `.weights` and `.classes` per chunk of frames,
+        so binding a set (drops the weights), loading a checkpoint (swaps them and the classes),
+        switching the backend or starting a run would change the model under it mid-recording:
+        proposals from two models in one candidates file, or predict(None) killing the sweep.
+        """
+        with self.lock:
+            running = bool(self.sweep_job.get("running"))
+        if running:
+            return {"error": "a sweep is running - wait for it to finish, then try again"}
+        return None
+
     def set_backend(
         self,
         name: str,
@@ -144,6 +158,8 @@ class TrainApi:
         """
         if not name:
             return {"error": "no set name given"}
+        if busy := self._sweeping():
+            return busy
         try:
             saved = setconfig.write_set_config(
                 name, backend, size_mode, capture_width=capture_width, downscale=downscale
@@ -161,6 +177,8 @@ class TrainApi:
         """which promoted set the next run trains on. binding drops any loaded weights: a
         checkpoint carries its own channel map, and keeping one against a new set would offer
         that model's classes for this set's data."""
+        if busy := self._sweeping():
+            return busy
         if not name:
             self._examples = []
             self.trainer.bind([], {}, training_set=None)
@@ -348,6 +366,8 @@ class TrainApi:
         long run outright, so a value outside the range that ever makes sense is corrected rather
         than trusted. a `name` saves the run's weights under it once it finishes.
         """
+        if busy := self._sweeping():
+            return busy
         if not self.trainer.examples:
             return {"error": "nothing bound to train on - bind a training set first"}
         # the set names its backend: build that one, whatever the trainer was started with
@@ -482,6 +502,8 @@ class TrainApi:
         return {**saved, "name": target.relative_to(root.resolve()).as_posix()}
 
     def load_checkpoint(self, name: str) -> dict:
+        if busy := self._sweeping():
+            return busy
         path = self.trainer.resolve_checkpoint(paths.CHECKPOINTS_DIR, name)
         if path is None:
             return {"error": f"no checkpoint called {name!r}"}
