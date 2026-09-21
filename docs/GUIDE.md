@@ -5,7 +5,7 @@ from the review web tool or from python. Every path, route and number here exist
 the version this guide ships with; where something is a known limit it says so.
 
 Shorter reads: the [README](../README.md) for the pitch, install and API quickstart;
-[FISH.md](FISH.md) for a worked setup on one object class;
+[WORKED_EXAMPLE.md](WORKED_EXAMPLE.md) for a worked setup on one object class;
 [REVIEW_TOOL_DESIGN.md](REVIEW_TOOL_DESIGN.md) for the four plugin seams and why they are cut
 where they are.
 
@@ -19,21 +19,25 @@ result, the model proposes boxes on frames nobody has drawn on, and those propos
 you to judge. A proposal you reject is not thrown away: it becomes a labelled hard negative, and
 that is what makes the next model better rather than merely retrained.
 
-```
-  frames ──find──▶ candidates ──cut──▶ tiles ──judge──▶ classes
-                                                          │
-                                                       promote
-                                                          ▼
-  proposals ◀──sweep── weights ◀──────train─────── training set
-      │
-      └──────────▶ judge again   (the loop closes here)
+```mermaid
+flowchart LR
+    F[frames] -->|find: draw boxes| C[candidates]
+    C -->|cut| T[tiles]
+    T -->|judge: assign a class<br/>or mark not a class| K[classes]
+    K -->|promote| S[training set]
+    S -->|train| W[weights]
+    W -->|sweep| P[proposals]
+    P -.->|judge again:<br/>a rejected proposal is a hard negative| T
+    style W fill:#fbebdd,stroke:#e8842f
+    style P fill:#fbebdd,stroke:#e8842f
+    style K fill:#ddf0ef,stroke:#2a8c8a
 ```
 
 Three model backends drive the same loop and never learn which one they are:
 
 | backend | for | size |
 |---|---|---|
-| `heatmap` | objects of one known pixel size on a fixed camera | ~100k parameters |
+| `heatmap` | objects of one known pixel size on a fixed camera or screen capture | ~100k parameters |
 | `box` | objects that vary 4x and more in size, frames of different resolutions | ~844k parameters |
 | `xgboost` | rows of features instead of frames (a forecast task; the seam holds, real data is still to come) | - |
 
@@ -183,6 +187,43 @@ updated in the same operation, so it never points at a tile that is gone.
 The stage files are the contract. Names and meanings do not change between versions; new fields
 are optional and old files keep loading.
 
+```mermaid
+flowchart TB
+    subgraph sessions/
+        FR[recording/frames/*.png]
+    end
+    subgraph training/boxes/
+        CA[recording.drawn-stamp.candidates.jsonl]
+        DE[....decisions.json]
+        FM[recording._frames.json]
+    end
+    subgraph training/tiles/
+        TI[tag_kN.npz]
+        LB[_labels.json]
+    end
+    subgraph training/sets/
+        SE[name.jsonl]
+        BK[name._backend.json]
+        ME[name.meta.json]
+    end
+    subgraph training/weights/checkpoints/
+        PT[name.pt]
+        SC[name.pt.json]
+        PR[name.pt.provenance.json]
+    end
+    FR -->|find| CA
+    CA --- DE
+    CA -->|cut| TI
+    TI --- LB
+    LB -->|promote| SE
+    SE --- BK
+    SE --- ME
+    SE -->|train| PT
+    PT --- SC
+    PT --- PR
+    PT -->|sweep| CA
+```
+
 | stage | file | shape |
 |---|---|---|
 | frames | `sessions/<recording>/frames/<name>` | images; a record only ever stores the bare file name plus the recording |
@@ -316,4 +357,4 @@ sets openmp variables on macOS only, where torch's and xgboost's runtimes clash.
 - A typed checkpoint name that is already taken is refused; a suggested name is numbered.
 - Loading weights unbinds the set, so the train tab's capture facts are empty until a set is bound;
   the sweep line still reports a resample.
-- Every default was measured on one consumer (long, thin bars ~132x12 px at 2560 wide). Pass your own.
+- Every default was measured on one consumer (long, thin objects ~132x12 px on a 2560-wide capture). Pass your own.

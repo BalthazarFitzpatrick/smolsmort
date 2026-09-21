@@ -5,14 +5,18 @@ classes, train, and the model proposes boxes on frames nobody has labelled. Thos
 back to you to judge, and a wrong one becomes a labelled hard negative rather than being thrown
 away. Every round of judging makes the next model better, not just retrained.
 
-```
-  frames ──find──▶ candidates ──cut──▶ tiles ──judge──▶ classes
-                                                          │
-                                                       promote
-                                                          ▼
-  proposals ◀──sweep── weights ◀──────train─────── training set
-      │
-      └──────────▶ judge again   (the loop closes here)
+```mermaid
+flowchart LR
+    F[frames] -->|find: draw boxes| C[candidates]
+    C -->|cut| T[tiles]
+    T -->|judge: assign a class<br/>or mark not a class| K[classes]
+    K -->|promote| S[training set]
+    S -->|train| W[weights]
+    W -->|sweep| P[proposals]
+    P -.->|judge again:<br/>a rejected proposal is a hard negative| T
+    style W fill:#fbebdd,stroke:#e8842f
+    style P fill:#fbebdd,stroke:#e8842f
+    style K fill:#ddf0ef,stroke:#2a8c8a
 ```
 
 Two ways in: a web tool that runs the whole loop (`uv run smolsmort`), and a python library for
@@ -22,7 +26,7 @@ plugs in by name.
 
 The long version - every tab, every file on disk, every route - is
 [docs/GUIDE.md](docs/GUIDE.md). A worked setup on one object class is
-[docs/FISH.md](docs/FISH.md). The plugin seams and the reasoning behind them are
+[docs/WORKED_EXAMPLE.md](docs/WORKED_EXAMPLE.md). The plugin seams and the reasoning behind them are
 [docs/REVIEW_TOOL_DESIGN.md](docs/REVIEW_TOOL_DESIGN.md).
 
 ## Principles
@@ -53,8 +57,8 @@ One question picks the backend: **is the object a fixed, known size in pixels?**
 
 | your setup | backend |
 |---|---|
-| Fixed camera, objects at one distance: a tank, a conveyor, a counting window, a game's UI | `heatmap` |
-| Top-down camera at a fixed height | `heatmap` |
+| A fixed camera or screen capture, objects at one distance or one on-screen size | `heatmap` |
+| A top-down camera at a fixed height | `heatmap` |
 | Objects at different distances, or classes of very different sizes | `box` |
 | Objects that crowd and overlap a lot | `box`, but overlap is its measured weak spot |
 | A moving camera | untested with either |
@@ -231,9 +235,9 @@ that never move while the camera turns - interface, not world.
 
 ## Defaults and where they came from
 
-Every tuned number was measured on the first consumer, a game-screen detector for long, thin bars
-about 132x12 px at 2560 wide. They are parameters with a stated origin; pass your own for a
-different object.
+Every tuned number was measured on the first consumer, a screen-capture detector for long, thin
+objects about 132x12 px on a 2560-wide capture. They are parameters with a stated origin; pass your
+own for a different object.
 
 | setting | default | where it lives |
 |---|---|---|
@@ -251,8 +255,8 @@ offset extremes; `train.snapped_window` rounds a window up to a whole number of 
 
 ## In use
 
-A private game-overlay project finds nameplates with it: 10 classes, 100,210 parameters, about 44
-ms per 3420x2224 frame on an Apple M4 including the JPEG decode. Its first honest evaluation on a
+The first consumer runs it live on screen captures: 10 classes, 100,210 parameters, about 44 ms
+per 3420x2224 frame on an Apple M4 including the JPEG decode. Its first honest evaluation on a
 hand-drawn holdout returned 24% precision, with the highest-scoring detections the wrong ones. That
 is what the loop exists to find out.
 
