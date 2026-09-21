@@ -93,6 +93,14 @@ function mountTrain(panel) {
 
 const baseName = path => path.replace(/\/$/, '').split('/').pop();
 
+// a dropdown head shows one line of text. as text: a set, recording or checkpoint name comes
+// from a folder on disk, and a name is never markup
+function setHead(el, text) {
+  const span = document.createElement('span');
+  span.textContent = text;
+  el.replaceChildren(span);
+}
+
 class TrainTab {
   constructor() {
     this.values = Object.fromEntries(STEPPERS.map(row => [row.key, row.value]));
@@ -168,7 +176,7 @@ class TrainTab {
     const head = document.getElementById('train-backend');
     head.classList.toggle('disabled', !info.set);
     head.title = info.set ? 'the backend this set trains with' : 'bind a set of tiles first';
-    head.innerHTML = `<span>${info.set ? info.backend : '-'}</span>`;
+    setHead(head, info.set ? info.backend : '-');
   }
 
   isBox(info) { return (info.backend || this.backend) === 'box'; }
@@ -181,11 +189,11 @@ class TrainTab {
     head.classList.toggle('disabled', !info.set || box);
     if (box) {
       head.title = 'the box backend works at its own long side';
-      head.innerHTML = `<span>${info.working_size ? `${info.working_size}px long side` : '-'}</span>`;
+      setHead(head, info.working_size ? `${info.working_size}px long side` : '-');
       return;
     }
     head.title = info.set ? 'capture width and downscale for this set' : 'bind a set of tiles first';
-    head.innerHTML = `<span>${info.set && info.input_width ? this.inputLabel(info) : '-'}</span>`;
+    setHead(head, info.set && info.input_width ? this.inputLabel(info) : '-');
   }
 
   inputLabel(info) { return `${info.capture_width} / ${info.downscale} = ${info.input_width}px`; }
@@ -310,7 +318,7 @@ class TrainTab {
         const name = this.relative('tiles', path);
         const res = await api('/api/train-bind', {name});
         if (res.error) { this.say(res.error); return; }
-        head.innerHTML = `<span>${baseName(name)}</span>`;
+        setHead(head, baseName(name));
         await this.loadInfo();
         await this.loadFloor();
       }).openAt(head);
@@ -321,7 +329,7 @@ class TrainTab {
         const name = this.relative('checkpoints', path);
         const res = await api('/api/load-checkpoint', {name});
         if (res.error) { this.say(res.error); return; }
-        head.innerHTML = `<span>${baseName(name)}</span>`;
+        setHead(head, baseName(name));
         await this.loadInfo();
         this.say(`loaded ${name}`);
       }).openAt(head);
@@ -532,14 +540,14 @@ class TrainTab {
           id: rec.name, label: rec.name, on: rec.name === this.sweepRecording, stats: `${rec.frames} frames`})),
         item => {
           this.sweepRecording = item.id;
-          document.getElementById('sweep-open').innerHTML = `<span>${item.id}</span>`;
+          setHead(document.getElementById('sweep-open'), item.id);
         }, {empty: 'no recordings with frames'}).openAt(head);
     };
     document.getElementById('sweep-percent').onclick = evt => {
       const el = evt.currentTarget;
       listMenu('how much of it to sweep',
         [10, 25, 50, 100].map(n => ({id: String(n), label: `${n}%`, on: el.dataset.value === String(n)})),
-        item => { el.dataset.value = item.id; el.innerHTML = `<span>${item.id}%</span>`; }
+        item => { el.dataset.value = item.id; setHead(el, `${item.id}%`); }
       ).openAt(el);
     };
     document.getElementById('sweep-score').oninput = () => this.showSweepCount();
