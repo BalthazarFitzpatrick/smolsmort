@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 250" width="820" height="250" role="img" aria-label="frames go through find, cut, judge and promote into a training set; train produces weights; sweep produces proposals that return to judging">
+<style>
+.lbl{font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;font-size:14px;font-weight:600;fill:#16202A}
+.sub{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;fill:#5B6B7A}
+.box{fill:#FFFFFF;stroke:#D6DCE2;stroke-width:1.2}
+.heat{stroke:#E8842F;fill:#FBEBDD}
+.judge{stroke:#2A8C8A;fill:#DDF0EF}
+.arrow{stroke:#5B6B7A;stroke-width:1.6;fill:none}
+.back{stroke:#E8842F;stroke-dasharray:5 4}
+</style>
+<rect width="820" height="250" fill="#F4F6F8"/>
+<defs>
+<marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5 0 10z" fill="#5B6B7A"/></marker>
+<marker id="mh" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5 0 10z" fill="#E8842F"/></marker>
+</defs>
+<rect class="box" x="10" y="30" width="110" height="46" rx="5"/><text class="lbl" x="65" y="50" text-anchor="middle">frames</text><text class="sub" x="65" y="66" text-anchor="middle">sessions/</text>
+<rect class="box" x="175" y="30" width="120" height="46" rx="5"/><text class="lbl" x="235" y="50" text-anchor="middle">candidates</text><text class="sub" x="235" y="66" text-anchor="middle">find</text>
+<rect class="box" x="350" y="30" width="100" height="46" rx="5"/><text class="lbl" x="400" y="50" text-anchor="middle">tiles</text><text class="sub" x="400" y="66" text-anchor="middle">cut</text>
+<rect class="box judge" x="505" y="30" width="110" height="46" rx="5"/><text class="lbl" x="560" y="50" text-anchor="middle">classes</text><text class="sub" x="560" y="66" text-anchor="middle">judge</text>
+<rect class="box" x="670" y="30" width="140" height="46" rx="5"/><text class="lbl" x="740" y="50" text-anchor="middle">training set</text><text class="sub" x="740" y="66" text-anchor="middle">promote</text>
+<path class="arrow" d="M120 53H173" marker-end="url(#m)"/><path class="arrow" d="M295 53H348" marker-end="url(#m)"/><path class="arrow" d="M450 53H503" marker-end="url(#m)"/><path class="arrow" d="M615 53H668" marker-end="url(#m)"/>
+<path class="arrow" d="M740 76V118" marker-end="url(#m)"/><text class="sub" x="752" y="102">train</text>
+<rect class="box heat" x="670" y="120" width="140" height="46" rx="5"/><text class="lbl" x="740" y="140" text-anchor="middle">weights</text><text class="sub" x="740" y="156" text-anchor="middle">checkpoints/</text>
+<rect class="box heat" x="350" y="120" width="120" height="46" rx="5"/><text class="lbl" x="410" y="140" text-anchor="middle">proposals</text><text class="sub" x="410" y="156" text-anchor="middle">sweep</text>
+<path class="arrow" d="M668 143H472" marker-end="url(#m)"/>
+<path class="arrow back" d="M410 166V205H560V78" marker-end="url(#mh)"/>
+<text class="sub" x="485" y="222" text-anchor="middle">judge again - a rejected proposal is a hard negative</text>
+</svg>

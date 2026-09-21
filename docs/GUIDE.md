@@ -1,13 +1,31 @@
 # smolsmort user guide
 
-What smolsmort does, the principles it is built on, what it writes to disk, and how to drive it -
-from the review web tool or from python. Every path, route and number here exists in the code at
-the version this guide ships with; where something is a known limit it says so.
+**Everything the README leaves out.** What smolsmort does and does not do, the principles it is
+built on, each tab control by control, every file it writes and the shape of each, every route, and
+how to extend it. Every path, route and number here exists in the code at the version this guide
+ships with; where something is a known limit it says so.
 
-Shorter reads: the [README](../README.md) for the pitch, install and API quickstart;
-[WORKED_EXAMPLE.md](WORKED_EXAMPLE.md) for a worked setup on one object class;
+Shorter reads: the [README](../README.md) for the pitch, the concepts and the library;
+[WORKED_EXAMPLE.md](WORKED_EXAMPLE.md) for a setup on one object class;
 [REVIEW_TOOL_DESIGN.md](REVIEW_TOOL_DESIGN.md) for the four plugin seams and why they are cut
 where they are.
+
+**Contents** ·
+[What it is](#1-what-it-is) ·
+[Principles](#2-principles) ·
+[The loop](#3-the-loop-stage-by-stage) ·
+[Running the tool](#4-running-the-review-tool) ·
+[Find](#5-the-find-tab) ·
+[Select](#6-the-select-tab) ·
+[Train](#7-the-train-tab) ·
+[Housekeeping](#8-the-housekeeping-tab) ·
+[On disk](#9-what-lands-on-disk) ·
+[Backends](#10-backends) ·
+[Library](#11-using-the-library-directly) ·
+[Routes](#12-routes) ·
+[Extending](#13-extending) ·
+[Development](#14-development) ·
+[Limits](#15-known-limits)
 
 ---
 
@@ -122,6 +140,8 @@ The settings popup browses folders rather than taking typed paths, and remembers
 
 ## 5. The find tab
 
+![The find tab: a bound recording, the crop rule sliders, and boxes drawn on the first frame](images/find.jpg)
+
 - **recordings** opens a picker over the sessions folder; binding one loads its frames. A percent
   control decides how many of the frames you draw on (evenly spaced), so a long recording is
   labelled on a sample.
@@ -138,6 +158,8 @@ The settings popup browses folders rather than taking typed paths, and remembers
 
 ## 6. The select tab
 
+![The select tab: ten tiles cut from the frames, class buttons, and the not-a-class verdict](images/select.jpg)
+
 - **boxes** opens sources into the pool: a drawn pass or a sweep (proposed). Several can be open at
   once; closing one drops its tiles from the grid (and, if you choose discard, its saved judgements).
 - **groups**: tiles arrive clustered. Filter by dimension or by judged/unjudged; select all or a
@@ -150,6 +172,8 @@ The settings popup browses folders rather than taking typed paths, and remembers
 - **promote** writes the training set named in the prompt, merging into an existing one when asked.
 
 ## 7. The train tab
+
+![The train tab after a run: the bound set, backend and input rows, the loss curve and the separation readout](images/train.jpg)
 
 - **tiles** binds a promoted set (a directory browser over the sets folder). **weights** loads a
   saved checkpoint instead; loading drops the bound set, since the weights carry their own class
@@ -176,6 +200,8 @@ The settings popup browses folders rather than taking typed paths, and remembers
   a run are refused with a message - the worker reads the model as it goes.
 
 ## 8. The housekeeping tab
+
+![The housekeeping tab: recordings and the assets each one owns](images/housekeeping.jpg)
 
 Recordings get deleted by hand from `sessions/`, but nothing downstream (boxes, tiles, sets,
 checkpoints) knows. The tab lists every recording, live or gone, with the assets it owns, and
