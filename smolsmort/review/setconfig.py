@@ -21,6 +21,10 @@ from smolsmort.review.naming import _flat, set_filename
 SIZE_MODES = ("uniform", "native")
 DEFAULT_BACKEND = backends.LEGACY
 DEFAULT_SIZE_MODE = "uniform"
+DOWNSCALE_RANGE = (1, 8)
+CAPTURE_WIDTH_RANGE = (64, 16384)
+# "not passed", distinct from None which clears a stored value
+UNSET = object()
 
 
 class SetConfigError(Exception):
@@ -55,10 +59,20 @@ def read_set_config(name: str | None) -> dict | None:
     if not isinstance(found, dict):
         return None
     size_mode = found.get("size_mode")
-    return {
+    config = {
         "backend": str(found.get("backend") or DEFAULT_BACKEND),
         "size_mode": size_mode if size_mode in SIZE_MODES else DEFAULT_SIZE_MODE,
     }
+    # optional keys, present only when stored: absent capture_width follows the frames, absent
+    # downscale is the model default
+    for key, (low, high) in (
+        ("capture_width", CAPTURE_WIDTH_RANGE),
+        ("downscale", DOWNSCALE_RANGE),
+    ):
+        value = found.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and low <= value <= high:
+            config[key] = value
+    return config
 
 
 def set_config(name: str | None) -> dict:
@@ -73,8 +87,23 @@ def default_size_mode(backend: str) -> str:
     return "native" if backend == "box" else "uniform"
 
 
-def write_set_config(name: str, backend: str, size_mode: str | None = None) -> dict:
-    """persist a set's backend. an unknown backend or size mode raises SetConfigError"""
+def _checked_int(key: str, value, low: int, high: int) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
+        raise SetConfigError(f"{key} must be an integer from {low} to {high}, got {value!r}")
+    return value
+
+
+def write_set_config(
+    name: str,
+    backend: str,
+    size_mode: str | None = None,
+    capture_width=UNSET,
+    downscale=UNSET,
+) -> dict:
+    """persist a set's backend. an unknown backend or size mode raises SetConfigError.
+
+    capture_width and downscale are optional overrides: left out they keep what the file already
+    holds, None removes the override, an integer sets it (out of range raises SetConfigError)."""
     known = backends.names()
     if backend not in known:
         raise SetConfigError(f"no backend called {backend!r} - known: {', '.join(known)}")
@@ -82,6 +111,17 @@ def write_set_config(name: str, backend: str, size_mode: str | None = None) -> d
     if mode not in SIZE_MODES:
         raise SetConfigError(f"size_mode must be one of {', '.join(SIZE_MODES)}, got {mode!r}")
     value = {"backend": backend, "size_mode": mode}
+    stored = read_set_config(name) or {}
+    for key, given, (low, high) in (
+        ("capture_width", capture_width, CAPTURE_WIDTH_RANGE),
+        ("downscale", downscale, DOWNSCALE_RANGE),
+    ):
+        if given is UNSET:
+            given = stored.get(key)
+        elif given is not None:
+            given = _checked_int(key, given, low, high)
+        if given is not None:
+            value[key] = given
     write_json_atomic(backend_file(name), value, indent=1)
     return value
 

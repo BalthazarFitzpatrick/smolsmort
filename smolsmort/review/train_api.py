@@ -25,7 +25,7 @@ import numpy as np
 from PIL import Image
 
 from smolsmort import backends
-from smolsmort.detect.dataset import DatasetError, Example, build_training_set
+from smolsmort.detect.dataset import DatasetError, Example, build_training_set, frame_width
 from smolsmort.review import hyperparams, paths, setconfig, splits
 from smolsmort.review.naming import set_filename
 from smolsmort.review.recordings import flat_recording, frame_files, frames_dir_of
@@ -117,8 +117,17 @@ class TrainApi:
         if config:
             self._use_backend(config["backend"])
 
-    def set_backend(self, name: str, backend: str, size_mode: str | None = None) -> dict:
+    def set_backend(
+        self,
+        name: str,
+        backend: str,
+        size_mode: str | None = None,
+        capture_width=setconfig.UNSET,
+        downscale=setconfig.UNSET,
+    ) -> dict:
         """name the backend (and box size mode) a training set trains with, and remember it.
+
+        `capture_width` and `downscale` are optional heatmap overrides, validated in setconfig.
 
         an unknown backend is refused with the known names. the set need not exist yet: the mode
         matters while boxes are still being drawn for it.
@@ -126,7 +135,9 @@ class TrainApi:
         if not name:
             return {"error": "no set name given"}
         try:
-            saved = setconfig.write_set_config(name, backend, size_mode)
+            saved = setconfig.write_set_config(
+                name, backend, size_mode, capture_width=capture_width, downscale=downscale
+            )
         except setconfig.SetConfigError as exc:
             return {"error": str(exc), "backends": backends.names()}
         except (OSError, ValueError) as exc:
@@ -172,9 +183,13 @@ class TrainApi:
         """
         name = self.trainer.training_set
         base = {"device": self._device(), "model_exists": self.trainer.weights is not None}
+        if self.trainer.backend_name == "box":
+            base["working_size"] = self._working_size()
         if not name:
             return {"set": None, **base}
         base.update(setconfig.set_config(name))
+        if self.trainer.backend_name != "box":
+            base.update(self._capture_info())
         try:
             path = self._set_path(name)
             counts = dict.fromkeys(splits.SPLITS, 0)
@@ -198,6 +213,56 @@ class TrainApi:
             "thinnest": {"label": thinnest[0], "count": thinnest[1]} if thinnest else None,
             **base,
         }
+
+    def _working_size(self) -> int | None:
+        """the long side (px) a box model works at: the loaded weights', else the backend's"""
+        weights = self.trainer.weights
+        found = getattr(weights, "long_side", None) or getattr(
+            self.trainer._backend, "long_side", None
+        )
+        return int(found) if found else None
+
+    def observed_width(self) -> int | None:
+        """the width of the bound set's frames (the first one; a set shares one width)"""
+        for example in self._examples:
+            try:
+                return frame_width(example.path)
+            except OSError:
+                continue
+        return None
+
+    def set_downscale(self) -> int:
+        """the factor a run or a check uses: the loaded weights', else the set's, else default"""
+        from smolsmort.detect.model import DEFAULT_DOWNSCALE
+
+        kept = getattr(self.trainer.weights, "downscale", None)
+        if kept:
+            return int(kept)
+        config = setconfig.read_set_config(self.trainer.training_set) or {}
+        return int(config.get("downscale") or DEFAULT_DOWNSCALE)
+
+    def _capture_info(self) -> dict:
+        """capture_width (the override, else what the frames are), downscale, input_width, and
+        resampled_from when loaded weights were trained at another width than the set's frames.
+
+        capture_override and observed_width are reported apart so a picker can show an override
+        as an override rather than as the frames' own width."""
+        config = setconfig.read_set_config(self.trainer.training_set) or {}
+        observed = self.observed_width()
+        capture = config.get("capture_width") or observed
+        downscale = self.set_downscale()
+        info = {
+            "capture_width": capture,
+            "capture_override": config.get("capture_width"),
+            "observed_width": observed,
+            "downscale": downscale,
+            "input_width": capture // downscale if capture else None,
+        }
+        kept = getattr(self.trainer.weights, "capture_width", None)
+        if kept and observed and kept != observed:
+            info["resampled_from"] = observed
+            info["weights_capture_width"] = int(kept)
+        return info
 
     @staticmethod
     def _device() -> str:
@@ -240,16 +305,22 @@ class TrainApi:
     def window_floor(self) -> dict:
         """the smallest training window this set's boxes fit inside, whole. reported, not just
         enforced: a number that looks reasonable and quietly clips a box is the failure mode."""
-        from smolsmort.detect.model import DEFAULT_DOWNSCALE as DOWNSCALE
         from smolsmort.detect.train import CROP, minimum_window, snapped_window
 
         width, height = self.trained_box_size()
-        floor = snapped_window(minimum_window(width, height))
+        downscale = self.set_downscale()
+        # the box is drawn in frame px; the net sees it at the capture width
+        config = setconfig.read_set_config(self.trainer.training_set) or {}
+        observed = self.observed_width()
+        if config.get("capture_width") and observed:
+            ratio = config["capture_width"] / observed
+            width, height = round(width * ratio), round(height * ratio)
+        floor = snapped_window(minimum_window(width, height, downscale=downscale))
         return {
             "floor": floor,
             "box": [width, height],
             "default": max(CROP, floor),
-            "downscale": DOWNSCALE,
+            "downscale": downscale,
         }
 
     # ---------------------------------------------------------------- training
@@ -288,8 +359,14 @@ class TrainApi:
             model_options = self._model_options(payload)
         except (hyperparams.HyperparamError, ValueError) as exc:
             return {"error": str(exc)}
+        # the set's heatmap overrides; dropped first so a removed override does not linger
+        for stale in ("downscale", "capture_width"):
+            self.trainer.backend_options.pop(stale, None)
+        config = setconfig.read_set_config(self.trainer.training_set) or {}
         options = self._accepted(
             {
+                "downscale": config.get("downscale"),
+                "capture_width": config.get("capture_width"),
                 "epochs": epochs,
                 "batch": batch,
                 "crop": None if crop is None else int(crop),
@@ -396,7 +473,6 @@ class TrainApi:
         NOT A HOLDOUT: these are frames the model was fitted on, the optimistic case.
         """
         try:
-            from smolsmort.detect.model import DEFAULT_DOWNSCALE as DOWNSCALE
             from smolsmort.detect.model import STRIDE
             from smolsmort.detect.train import SCORE_BUCKETS
         except ImportError as exc:
@@ -407,8 +483,9 @@ class TrainApi:
         if not examples:
             return {"error": "no frames with confirmed objects"}
 
-        scale = STRIDE * DOWNSCALE
+        scale = STRIDE * self.set_downscale()
         width, height = self.trained_box_size()
+        kept = getattr(self.trainer.weights, "capture_width", None)
         on_object: list[float] = []
         elsewhere: list[float] = []
         try:
@@ -416,16 +493,19 @@ class TrainApi:
                 hot = self.trainer.channel_heatmap(example.path, -1)
                 rows, cols = hot.shape
                 mask = np.zeros(hot.shape, dtype=bool)
+                # centres and box are in frame px; the heatmap is at the weights' capture width
+                ratio = kept / frame_width(example.path) if kept else 1.0
                 for cx, cy in example.centres:
-                    r, c = int(cy / scale), int(cx / scale)
-                    dr, dc = max(1, int(height / scale / 2)), max(1, int(width / scale / 2))
+                    r, c = int(cy * ratio / scale), int(cx * ratio / scale)
+                    dr = max(1, int(height * ratio / scale / 2))
+                    dc = max(1, int(width * ratio / scale / 2))
                     lo_r, hi_r = max(0, r - dr), min(rows, r + dr + 1)
                     lo_c, hi_c = max(0, c - dc), min(cols, c + dc + 1)
                     if hi_r > lo_r and hi_c > lo_c:
                         on_object.append(float(hot[lo_r:hi_r, lo_c:hi_c].max()))
                         mask[lo_r:hi_r, lo_c:hi_c] = True
                 elsewhere.extend(hot[~mask].ravel().tolist())
-        except (TrainStateError, ImportError) as exc:
+        except (TrainStateError, ImportError, OSError) as exc:
             return {"error": str(exc)}
 
         def histogram(values: list[float]) -> list[int]:
@@ -469,6 +549,9 @@ class TrainApi:
             "finished": False,
             "min_score": 0.5,
             "highest": 0.0,
+            "resampled_from": None,
+            "resampled_frames": 0,
+            "warning": None,
         }
 
     # held on the job for send_sweep, never sent to the page: `proposals` is the whole candidate
@@ -511,10 +594,38 @@ class TrainApi:
         if share < len(found):
             step = len(found) / share
             found = [found[int(i * step)] for i in range(share)]
+        self._note_resample(found)
         threading.Thread(
             target=self._run_sweep, args=(recording, frames_dir, found, min_score), daemon=True
         ).start()
         return {"ok": True}
+
+    def _note_resample(self, frames: list[Path]) -> None:
+        """when the weights' capture width differs from these frames', say so on the job: the
+        most common frame width as `resampled_from`, how many frames, and a `warning` string"""
+        kept = getattr(self.trainer.weights, "capture_width", None)
+        if not kept:
+            return
+        widths = []
+        for frame in frames:
+            try:
+                widths.append(frame_width(frame))
+            except OSError:
+                continue
+        odd = [w for w in widths if w != kept]
+        if not odd:
+            return
+        common = max(set(odd), key=odd.count)
+        with self.lock:
+            self.sweep_job.update(
+                resampled_from=common,
+                resampled_frames=len(odd),
+                warning=(
+                    f"the weights were trained at capture width {kept}; {len(odd)} of "
+                    f"{len(widths)} frames are not that wide (e.g. {common}) and were resampled, "
+                    "boxes are mapped back to each frame's own pixels"
+                ),
+            )
 
     def _run_sweep(
         self, recording: str, frames_dir: Path, found: list[Path], min_score: float

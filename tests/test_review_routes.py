@@ -11,6 +11,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from types import SimpleNamespace
 
 import pytest
 import review_world
@@ -810,3 +811,110 @@ def test_frame_modes_over_http(server, world):
     assert jget(url, "/api/frame-modes?recording=rec_a") == {"frames": {}}
     assert get(url, "/api/frame-modes?recording=ghost")[0] == 404
     assert post(url, "/api/frame-mode", {"recording": "rec_a", "frame": "f01.png"})[0] == 400
+
+
+def _bind_frames(app, world, name="cap", width=200):
+    """bind a set whose one example is a real frame of this width, without promoting anything"""
+    from smolsmort.detect.dataset import Example
+
+    frame = world.sessions / "rec_a" / "frames" / "f00.png"
+    review_world.write_frame(frame)
+    (world.sets / f"{name}.jsonl").write_text("")
+    example = Example(path=frame, centres=[(60.0, 50.0)], labels=["x"], sizes=[(30, 10)])
+    app.trainer._examples = [example]
+    app.trainer.trainer.bind([], {"x": 0}, training_set=name)
+
+
+def test_train_set_backend_takes_and_validates_capture_size_over_http(server, world):
+    _, url = server
+    saved = jpost(
+        url,
+        "/api/train-set-backend",
+        {"name": "c1", "backend": "heatmap", "capture_width": 1280, "downscale": 3},
+    )
+    assert saved == {
+        "name": "c1",
+        "backend": "heatmap",
+        "size_mode": "uniform",
+        "capture_width": 1280,
+        "downscale": 3,
+    }
+    assert json.loads((world.sets / "c1._backend.json").read_text())["capture_width"] == 1280
+    # left out keeps, null clears
+    kept = jpost(url, "/api/train-set-backend", {"name": "c1", "backend": "heatmap"})
+    assert kept["capture_width"] == 1280 and kept["downscale"] == 3
+    cleared = jpost(
+        url, "/api/train-set-backend", {"name": "c1", "backend": "heatmap", "capture_width": None}
+    )
+    assert "capture_width" not in cleared and cleared["downscale"] == 3
+    for bad in (
+        {"downscale": 9},
+        {"downscale": "2"},
+        {"capture_width": 10},
+        {"capture_width": 1.5},
+    ):
+        refused = jpost(url, "/api/train-set-backend", {"name": "c2", "backend": "heatmap", **bad})
+        assert "error" in refused
+    assert not (world.sets / "c2._backend.json").exists()
+
+
+def test_train_info_and_window_floor_follow_the_sets_capture_size(server, world):
+    app, url = server
+    _bind_frames(app, world)
+    jpost(url, "/api/train-set-backend", {"name": "cap", "backend": "heatmap"})
+    info = jget(url, "/api/train-info")
+    assert (info["capture_width"], info["downscale"], info["input_width"]) == (200, 2, 100)
+    assert "resampled_from" not in info
+    # no override yet, so the width the picker shows is the frames' own
+    assert info["capture_override"] is None and info["observed_width"] == 200
+    floor_default = jget(url, "/api/window-floor")
+    assert floor_default["downscale"] == 2
+    jpost(
+        url,
+        "/api/train-set-backend",
+        {"name": "cap", "backend": "heatmap", "capture_width": 100, "downscale": 1},
+    )
+    info = jget(url, "/api/train-info")
+    assert (info["capture_width"], info["downscale"], info["input_width"]) == (100, 1, 100)
+    assert info["capture_override"] == 100 and info["observed_width"] == 200
+    floor = jget(url, "/api/window-floor")
+    # the box halves with the capture width, and the window is cut at downscale 1
+    assert floor["downscale"] == 1
+    assert floor["box"] == [round(v / 2) for v in floor_default["box"]]
+    assert floor["floor"] == floor_default["floor"]
+
+
+def test_train_info_reports_a_capture_mismatch_with_the_loaded_model(server, world):
+    app, url = server
+    _bind_frames(app, world)
+    app.trainer.trainer.weights = SimpleNamespace(capture_width=400, downscale=2)
+    info = jget(url, "/api/train-info")
+    assert info["resampled_from"] == 200 and info["capture_width"] == 200
+    assert info["weights_capture_width"] == 400
+
+
+def test_the_box_backend_reports_its_working_size_and_no_capture_settings(server, world):
+    _, url = server
+    jpost(url, "/api/train-set-backend", {"name": "bx", "backend": "box"})
+    jpost(url, "/api/train-bind", {"name": "bx"})
+    info = jget(url, "/api/train-info")
+    assert info["working_size"] == 768
+    assert "downscale" not in info and "capture_width" not in info
+
+
+def test_a_sweep_over_frames_of_another_width_warns(server, world):
+    app, url = server
+
+    class Weights:
+        capture_width = 400
+
+    class Fake:
+        def predict(self, weights, frames, *, classes):
+            return []
+
+    app.trainer.trainer.weights = Weights()
+    app.trainer.trainer._backend = Fake()
+    assert jpost(url, "/api/sweep-start", {"recording": "rec_a", "min_score": 0.5}) == {"ok": True}
+    status = _wait(url, "/api/sweep-status", lambda s: s["finished"] or s["error"])
+    assert status["resampled_from"] == 200 and status["resampled_frames"] == 3
+    assert "400" in status["warning"]

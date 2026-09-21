@@ -9,6 +9,9 @@ const STEPPERS = [
   {key: 'windows', label: 'windows', step: 32, min: 64, max: 1024, value: 256},
 ];
 
+// the factors worth offering out of the server's 1..8 range - odd ones buy nothing here
+const DOWNSCALES = [1, 2, 3, 4, 6, 8];
+
 function stepperRow(row) {
   return `<div class="run-controls stepper-row" data-stepper="${row.key}">
     <span class="field-label">${row.label}</span>
@@ -29,6 +32,11 @@ function mountTrain(panel) {
       <div class="run-controls" id="train-backend-row">
         <span class="field-label">backend</span>
         <div class="toggle dropdown-head grow disabled" id="train-backend"
+             title="bind a set of tiles first"><span>-</span></div>
+      </div>
+      <div class="run-controls" id="train-capture-row">
+        <span class="field-label">input</span>
+        <div class="toggle dropdown-head grow disabled" id="train-capture"
              title="bind a set of tiles first"><span>-</span></div>
       </div>
       <div id="train-summary" class="train-facts"></div>
@@ -76,6 +84,7 @@ function mountTrain(panel) {
         <div class="bar"><div class="bar-fill" id="sweep-bar-fill"></div></div>
         <span class="stat" id="sweep-progress-text">idle</span>
       </div>
+      <span class="stat warn hidden" id="sweep-warning"></span>
       <div class="toggle adds disabled" id="sweep-send">send above threshold to select</div>
     </div>`;
   const tab = new TrainTab();
@@ -90,6 +99,8 @@ class TrainTab {
     this.floor = 0;
     this.downscale = 2;
     this.backend = 'heatmap';
+    this.sizeMode = null;
+    this.capture = {width: null, override: null, observed: null, downscale: 2, input: null};
     this.poll = null;
     this.sweepAbove = null;
     this.sweepRecording = null;
@@ -127,7 +138,14 @@ class TrainTab {
     if (info.backend) this.backend = info.backend;
     this.setName = info.set || null;
     window.smolsmortActiveSet = this.setName;
+    this.sizeMode = info.size_mode || null;
+    this.capture = {
+      width: info.capture_width ?? null, override: info.capture_override ?? null,
+      observed: info.observed_width ?? null, downscale: info.downscale || this.capture.downscale,
+      input: info.input_width ?? null,
+    };
     this.paintBackend(info);
+    this.paintCapture(info);
     this.hasWeights = !!info.model_exists;
     this.paintSave();
     if (info.error) { this.facts('train-summary', [['problem', info.error]]); return; }
@@ -139,6 +157,7 @@ class TrainTab {
         ? `${info.classes}, thinnest is ${info.thinnest.label} with ${info.thinnest.count}`
         : (info.set ? 'none labelled' : '-')],
       ...(info.set ? [['backend', `${info.backend} - sizes ${info.size_mode}`]] : []),
+      ...this.captureFacts(info),
       ['device', info.device],
       ['model', info.model_exists ? 'trained, ready to sweep' : 'none yet - train or load weights'],
     ]);
@@ -150,6 +169,89 @@ class TrainTab {
     head.classList.toggle('disabled', !info.set);
     head.title = info.set ? 'the backend this set trains with' : 'bind a set of tiles first';
     head.innerHTML = `<span>${info.set ? info.backend : '-'}</span>`;
+  }
+
+  isBox(info) { return (info.backend || this.backend) === 'box'; }
+
+  // what the net actually sees: capture width over downscale. a box model works at its own long
+  // side instead, so the head reports that and the picker stays shut
+  paintCapture(info) {
+    const head = document.getElementById('train-capture');
+    const box = this.isBox(info);
+    head.classList.toggle('disabled', !info.set || box);
+    if (box) {
+      head.title = 'the box backend works at its own long side';
+      head.innerHTML = `<span>${info.working_size ? `${info.working_size}px long side` : '-'}</span>`;
+      return;
+    }
+    head.title = info.set ? 'capture width and downscale for this set' : 'bind a set of tiles first';
+    head.innerHTML = `<span>${info.set && info.input_width ? this.inputLabel(info) : '-'}</span>`;
+  }
+
+  inputLabel(info) { return `${info.capture_width} / ${info.downscale} = ${info.input_width}px`; }
+
+  captureFacts(info) {
+    if (!info.set) return [];
+    if (this.isBox(info)) {
+      return info.working_size ? [['working size', `${info.working_size}px long side`]] : [];
+    }
+    const source = info.capture_override ? 'set here' : 'from the frames';
+    return [
+      ['input', info.input_width
+        ? `${this.inputLabel(info)} (capture ${source})`
+        : 'unknown - no frames read yet'],
+      ...(info.resampled_from
+        ? [['resampled', `frames are ${info.resampled_from}px, `
+            + `resampled to the weights' ${info.weights_capture_width}px`]]
+        : []),
+    ];
+  }
+
+  // capture width and downscale live on the set, so applying writes them through the same route
+  // the backend picker uses. an empty width clears the override and follows the frames again
+  openCapturePicker(head) {
+    if (!this.setName) { this.say('bind a set of tiles first'); return; }
+    if (head.classList.contains('disabled')) return;
+    const pending = {
+      width: this.capture.override == null ? '' : String(this.capture.override),
+      downscale: this.capture.downscale,
+    };
+    const effective = () => {
+      const width = Number(pending.width) || this.capture.observed;
+      return width ? `${Math.floor(width / pending.downscale)}px` : 'unknown';
+    };
+    // the width field is not redrawn as it is typed - a refresh would take the caret with it -
+    // so the input size below follows the last downscale pick, not the half-typed number
+    const sections = () => [
+      {kind: 'field', label: 'capture width', value: pending.width,
+       placeholder: this.capture.observed ? `${this.capture.observed} - what the frames are` : 'px',
+       onInput: value => { pending.width = value; }},
+      {kind: 'list', label: `downscale - input ${effective()}`,
+       items: DOWNSCALES.map(n => ({id: String(n), label: `/ ${n}`, on: pending.downscale === n})),
+       onPick: item => { pending.downscale = Number(item.id); menu.refresh(sections()); }},
+      {kind: 'buttons', buttons: [
+        {id: 'apply', label: 'apply', tone: 'adds', onClick: m => this.applyCapture(pending, m)}]},
+    ];
+    const menu = new Menu({title: 'capture size', persistent: true, sections: sections()});
+    menu.openAt(head);
+  }
+
+  async applyCapture(pending, menu) {
+    const text = String(pending.width).trim();
+    const width = text === '' ? null : Number(text);
+    if (width !== null && !Number.isInteger(width)) {
+      this.say('capture width must be a whole number of pixels');
+      return;
+    }
+    const res = await api('/api/train-set-backend', {
+      name: this.setName, backend: this.backend, size_mode: this.sizeMode,
+      capture_width: width, downscale: pending.downscale,
+    });
+    if (res.error) { this.say(res.error); return; }
+    menu.close();
+    await this.loadInfo();
+    await this.loadFloor();
+    this.say(this.capture.input ? `input ${this.capture.input}px` : 'capture size saved');
   }
 
   // the server names its backends in the error body of an unknown-backend request; nothing is written
@@ -201,6 +303,7 @@ class TrainTab {
     // two directory browsers, each rooted at its own base. a pick is sent as a name relative to
     // that root, which is what train-bind and load-checkpoint resolve
     document.getElementById('train-backend').onclick = evt => this.openBackendPicker(evt.currentTarget);
+    document.getElementById('train-capture').onclick = evt => this.openCapturePicker(evt.currentTarget);
     document.getElementById('train-open').onclick = evt => {
       const head = evt.currentTarget;
       dirMenu('tiles', this.treeFetcher('tiles', () => this.setNames()), async path => {
@@ -399,6 +502,7 @@ class TrainTab {
   async pollSweep() {
     const job = await api('/api/sweep-status');
     if (job.total) document.getElementById('sweep-bar-fill').style.width = `${Math.round(job.done / job.total * 100)}%`;
+    this.showSweepWarning(job);
     if (job.running) { setText('sweep-progress-text', job.note || `${job.done} / ${job.total} frames`); return; }
     clearInterval(this.sweepTimer);
     this.sweepTimer = null;
@@ -410,6 +514,13 @@ class TrainTab {
       if (job.found && this.sweepAbove) this.showSweepCount();
       else setText('sweep-progress-text', job.found ? `${job.found} proposals found` : 'nothing above the floor');
     }
+  }
+
+  // frames wider or narrower than the weights were trained on are resampled, not refused
+  showSweepWarning(job) {
+    const el = document.getElementById('sweep-warning');
+    el.textContent = job.warning || '';
+    el.classList.toggle('hidden', !job.warning);
   }
 
   wireSweep() {
@@ -440,6 +551,7 @@ class TrainTab {
         min_score: this.sweepScore(),
       });
       if (res.error) { setText('sweep-progress-text', res.error); return; }
+      this.showSweepWarning({});
       document.getElementById('sweep-send').classList.add('disabled');
       clearInterval(this.sweepTimer);
       this.sweepTimer = setInterval(() => this.pollSweep(), 500);
