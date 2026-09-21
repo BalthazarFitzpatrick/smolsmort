@@ -194,3 +194,12 @@ def test_build_training_set_allows_mixed_resolutions_when_asked(tmp_path):
 
     with pytest.raises(DatasetError):
         build_training_set(path, tmp_path)
+
+
+def test_the_dataset_margins_are_the_review_tools_margins():
+    """detect/dataset.py keeps its own copy so the library needs nothing from review; the two
+    must not drift, or a centre computed here lands elsewhere than the tool drew it"""
+    from smolsmort.detect import dataset
+    from smolsmort.review import paths
+
+    assert (dataset.MARGIN_X, dataset.MARGIN_Y) == (paths.MARGIN_X, paths.MARGIN_Y)

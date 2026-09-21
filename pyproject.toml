@@ -1,6 +1,6 @@
 [project]
 name = "smolsmort"
-version = "0.3.0"
+version = "0.4.0"
 description = "a human-in-the-loop sorting loop: find candidates, judge them, train, predict, judge again"
 # 3.11, matching the oldest consumer. a floor above a consumer's makes the package unusable there
 requires-python = ">=3.11"
@@ -64,7 +64,7 @@ python_functions = ["test_*"]
 
 [tool.uv.sources]
 # smortui v0.2.0: dirMenu, range-slider, stepper and the arrangement recipes
-ui-base = { git = "https://github.com/BalthazarFitzpatrick/smortui.git", tag = "v0.2.0" }
+ui-base = { git = "https://github.com/BalthazarFitzpatrick/smortui.git", tag = "v0.2.1" }
 
 [dependency-groups]
 dev = ["ruff>=0.11.0", "pytest>=8.0", "torch>=2.0"]

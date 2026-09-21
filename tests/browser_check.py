@@ -10,6 +10,8 @@ import tempfile
 import threading
 import time
 import urllib.request
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -525,7 +527,18 @@ def seed(base: str) -> None:
     call(base, "/api/unbind-recording", {})
 
 
-def run(shots: Path | None = None) -> None:
+class Session:
+    """one live server, one page, and the request log the checks assert against"""
+
+    def __init__(self, page: Page, base: str, app, log: list, urls: list[str]):
+        self.page, self.base, self.app, self.log, self.urls = page, base, app, log, urls
+
+
+@contextmanager
+def session() -> Iterator[Session]:
+    """the real review server over a seeded synthetic recording, and a headless page on it.
+    page errors are collected while it runs and raised on exit, so a check that passed on a
+    page that threw does not count"""
     errors: list[str] = []
     log: list = []
     urls: list[str] = []
@@ -571,27 +584,38 @@ def run(shots: Path | None = None) -> None:
                 page.on("request", record)
                 page.goto(base + "/")
                 page.wait_for_timeout(400)
-                check_tabs_and_extension(page)
-                for name, check in (
-                    ("find", check_find),
-                    ("select", check_select),
-                    ("train", check_train),
-                ):
-                    check(page, base, log, *([urls, app] if name == "train" else []))
-                    show_tab(page, name)
-                    page.wait_for_timeout(300)
-                    if shots:
-                        page.screenshot(path=str(shots / f"{name}.png"))
-                show_tab(page, "housekeeping")
-                page.wait_for_timeout(300)
-                if shots:
-                    page.screenshot(path=str(shots / "housekeeping.png"))
+                yield Session(page, base, app, log, urls)
                 browser.close()
         finally:
             server.shutdown()
             server.server_close()
             review_world.unregister_world_backend()
     assert not errors, errors
+
+
+# THE ORDER IS THE LOOP: find draws the boxes select judges and train learns from, so each check
+# builds on the one before it. a runner splits them into named steps but keeps this order
+CHECKS = (
+    ("find", lambda s: check_find(s.page, s.base, s.log)),
+    ("select", lambda s: check_select(s.page, s.base, s.log)),
+    ("train", lambda s: check_train(s.page, s.base, s.log, s.urls, s.app)),
+)
+
+
+def run(shots: Path | None = None) -> None:
+    """every check in order on one session, with a screenshot of each tab when `shots` is given"""
+    with session() as live:
+        check_tabs_and_extension(live.page)
+        for name, check in CHECKS:
+            check(live)
+            show_tab(live.page, name)
+            live.page.wait_for_timeout(300)
+            if shots:
+                live.page.screenshot(path=str(shots / f"{name}.png"))
+        show_tab(live.page, "housekeeping")
+        live.page.wait_for_timeout(300)
+        if shots:
+            live.page.screenshot(path=str(shots / "housekeeping.png"))
 
 
 if __name__ == "__main__":

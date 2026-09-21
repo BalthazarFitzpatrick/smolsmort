@@ -8,8 +8,12 @@ late, because torch tests earlier in the same run had already initialised their 
 """
 
 import os
+import sys
 
-os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
-# single-threaded: allowing torch's openmp pool and xgboost's to both spin up threads segfaults
-# the process on macos even with the duplicate-lib check disabled above
-os.environ.setdefault("OMP_NUM_THREADS", "1")
+# macos only: the clash is torch's bundled openmp against homebrew's libomp. linux (the ci image)
+# has one runtime, and single-threading every torch op there just made the suite slower
+if sys.platform == "darwin":
+    os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+    # single-threaded: allowing torch's openmp pool and xgboost's to both spin up threads
+    # segfaults the process even with the duplicate-lib check disabled above
+    os.environ.setdefault("OMP_NUM_THREADS", "1")

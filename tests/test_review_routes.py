@@ -209,7 +209,7 @@ def test_every_image_route_answers_404_rather_than_dropping_the_connection(serve
 def test_every_response_forbids_caching(server):
     """a tile is re-cut in place under an unchanged url, so a cached copy shows the OLD crop"""
     _, url = server
-    for path in ("/", "/api/tile-size", "/tile/nope"):
+    for path in ("/", "/api/train-info", "/tile/nope"):
         try:
             with urllib.request.urlopen(url + path, timeout=20) as response:
                 headers = response.headers
@@ -319,13 +319,11 @@ def test_binding_something_that_is_not_there_is_a_404_and_a_bad_kind_a_400(serve
     assert post(url, "/api/bind-recording", {"kind": "banana", "name": "x"})[0] == 400
 
 
-def test_tile_size_and_height_delta(server):
+def test_height_delta(server):
     _, url = server
-    assert jpost(url, "/api/tile-size", {"height_delta": 3})["height"] == 17
-    assert jget(url, "/api/tile-size")["height"] == 17
     _bind_and_draw(url)
     out = jpost(url, "/api/height-delta", {"index": 0, "delta": 2})
-    assert out["height_delta"] == 2 and out["effective_height"] == 19
+    assert out["height_delta"] == 2 and out["effective_height"] == 16
     assert jpost(url, "/api/reviewed", {"index": 0})["ok"]
     assert jget(url, "/api/page")["total"] == 5
 
@@ -610,6 +608,54 @@ def test_saved_checkpoints_entries_are_passed_through_untouched(server, monkeypa
     assert jget(url, "/api/saved-checkpoints") == {"weights": [entry]}
 
 
+def test_two_unnamed_saves_in_one_second_do_not_overwrite_each_other(server, world):
+    app, url = server
+    app.trainer.trainer.weights = review_world.WorldWeights(
+        classes={"x": 0}, trained_on=1, box=(8, 8)
+    )
+    first = jpost(url, "/api/save-checkpoint", {})
+    second = jpost(url, "/api/save-checkpoint", {})
+    # the suggested name is stamped to the second, so these two collide by the clock, not by choice
+    assert first["name"] != second["name"], (first, second)
+    assert second["name"].endswith("-2.pt"), second
+    listed = {w["name"] for w in jget(url, "/api/saved-checkpoints")["weights"]}
+    assert {first["name"], second["name"]} <= listed, listed
+
+
+def test_a_typed_checkpoint_name_that_is_taken_is_refused(server, world):
+    app, url = server
+    app.trainer.trainer.weights = review_world.WorldWeights(
+        classes={"x": 0}, trained_on=1, box=(8, 8)
+    )
+    assert jpost(url, "/api/save-checkpoint", {"name": "r1"})["name"] == "r1.pt"
+    again = jpost(url, "/api/save-checkpoint", {"name": "r1"})
+    assert "already exists" in again["error"] and "error" in again
+
+
+def test_a_finished_runs_own_save_numbers_a_taken_name_instead_of_refusing(server, world):
+    app, _ = server
+    app.trainer.trainer.weights = review_world.WorldWeights(
+        classes={"x": 0}, trained_on=1, box=(8, 8)
+    )
+    assert app.trainer.save_checkpoint("r1")["name"] == "r1.pt"
+    # nobody is at the dialog when a run saves itself, so refusing would write nothing at all
+    assert app.trainer.save_checkpoint("r1", number_taken=True)["name"] == "r1-2.pt"
+
+
+def test_a_saved_checkpoints_reply_names_it_the_way_the_listing_does(server, world):
+    app, url = server
+    (world.checkpoints / "runs").mkdir()
+    app.trainer.trainer.weights = review_world.WorldWeights(
+        classes={"x": 0}, trained_on=1, box=(8, 8)
+    )
+    saved = jpost(url, "/api/save-checkpoint", {"name": "r1", "folder": "runs"})
+    assert saved["name"] == "runs/r1.pt", saved
+    listed = [w["name"] for w in jget(url, "/api/saved-checkpoints")["weights"]]
+    assert saved["name"] in listed, listed
+    # the name a save replies with is one load-checkpoint accepts
+    assert "error" not in jpost(url, "/api/load-checkpoint", {"name": saved["name"]})
+
+
 def test_the_checkpoint_folder_picker_is_confined(server, world):
     _, url = server
     (world.checkpoints / "runs").mkdir()
@@ -701,6 +747,7 @@ def test_the_whole_loop_over_http_find_judge_promote_train_predict(server, world
 
     # the named run is saved once it finishes, and is listed with its set
     saved = _wait(url, "/api/saved-checkpoints", lambda s: bool(s["weights"]))
+    # the provenance lands before the weights, so the first listing already names the set
     assert (
         saved["weights"][0]["name"] == "run1.pt" and saved["weights"][0]["training_set"] == "loop"
     )
@@ -900,6 +947,55 @@ def test_the_box_backend_reports_its_working_size_and_no_capture_settings(server
     info = jget(url, "/api/train-info")
     assert info["working_size"] == 768
     assert "downscale" not in info and "capture_width" not in info
+
+
+def test_state_changes_are_refused_while_a_sweep_reads_the_model(server, world):
+    """the worker reads the backend, weights and classes per chunk; a bind, load, backend
+    switch or training start under it would mix two models into one candidates file"""
+    app, url = server
+
+    class Weights:
+        capture_width = 200
+
+    class Slow:
+        def predict(self, weights, frames, *, classes):
+            time.sleep(0.4)
+            return []
+
+    app.trainer.trainer.weights = Weights()
+    app.trainer.trainer._backend = Slow()
+    assert jpost(url, "/api/sweep-start", {"recording": "rec_a", "min_score": 0.5}) == {"ok": True}
+    for path, body in (
+        ("/api/train-bind", {"name": "loop"}),
+        ("/api/load-checkpoint", {"name": "x.pt"}),
+        ("/api/train-set-backend", {"name": "loop", "backend": "heatmap"}),
+        ("/api/train-start", {}),
+    ):
+        assert "sweep is running" in jpost(url, path, body)["error"], path
+    _wait(url, "/api/sweep-status", lambda s: s["finished"] or s["error"])
+    # the same set can be bound once the sweep is done
+    assert "sweep is running" not in json.dumps(jpost(url, "/api/train-bind", {"name": "loop"}))
+
+
+def test_bind_load_and_backend_switch_are_refused_while_a_run_is_going(server, world):
+    """the run's end saves its weights under the bound set; a bind or load in between would file
+    them under another name. the status dict is what start_sweep already consults, so it is
+    flipped directly rather than racing a real run"""
+    app, url = server
+    trainer = app.trainer.trainer
+    with trainer._job_lock:
+        trainer.job["running"] = True
+    try:
+        for path, body in (
+            ("/api/train-bind", {"name": "loop"}),
+            ("/api/load-checkpoint", {"name": "x.pt"}),
+            ("/api/train-set-backend", {"name": "loop", "backend": "heatmap"}),
+        ):
+            assert "training run is going" in jpost(url, path, body)["error"], path
+    finally:
+        with trainer._job_lock:
+            trainer.job["running"] = False
+    assert "run is going" not in json.dumps(jpost(url, "/api/train-bind", {"name": "loop"}))
 
 
 def test_a_sweep_over_frames_of_another_width_warns(server, world):

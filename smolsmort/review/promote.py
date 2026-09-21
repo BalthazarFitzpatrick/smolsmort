@@ -21,7 +21,7 @@ from pathlib import Path
 from PIL import Image
 
 from smolsmort.review import paths, setconfig
-from smolsmort.review.find_state import read_jsonl, write_json_atomic
+from smolsmort.review.find_state import read_jsonl, write_json_atomic, write_jsonl_atomic
 from smolsmort.review.naming import DEFAULT_SET_NAME, _tile_index, _tile_tag, set_filename
 from smolsmort.review.recordings import session_frames_for
 from smolsmort.review.render import corrected_box
@@ -262,7 +262,7 @@ class PromoteMixin:
 
         merged = merge_rows(existing, rows) if mode == "merge" and existing else rows
         # rewritten whole, not appended: promoting twice must not double every row
-        out.write_text("".join(json.dumps(r) + "\n" for r in merged))
+        write_jsonl_atomic(out, merged)
         meta = self._write_set_meta(
             out,
             merged,

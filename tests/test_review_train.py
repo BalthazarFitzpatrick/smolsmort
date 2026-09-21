@@ -606,3 +606,28 @@ def test_window_floor_needs_the_box_and_snaps_to_cells():
     assert floor % STRIDE == 0 and floor >= 226 / DEFAULT_DOWNSCALE / 0.2
     # a coarser downscale shrinks the box in the input, so its floor is smaller
     assert window_floor(226, 100, downscale=LEGACY_DOWNSCALE) < floor
+
+
+def test_provenance_lands_before_the_weights_so_a_listing_never_sees_one_without_it(tmp_path):
+    from smolsmort.review.backends import provenance_path, save_named
+
+    class SeesProvenance:
+        def save(self, weights, path):
+            # a lister finds a checkpoint by its .pt; by then its provenance must already be there
+            assert provenance_path(path).is_file()
+            path.write_text("w")
+
+    saved = save_named(SeesProvenance(), object(), tmp_path / "a.pt", training_set="s")
+    assert saved["training_set"] == "s" and (tmp_path / "a.pt").is_file()
+
+
+def test_a_failed_save_leaves_no_provenance_behind(tmp_path):
+    from smolsmort.review.backends import provenance_path, save_named
+
+    class Fails:
+        def save(self, weights, path):
+            raise OSError("disk full")
+
+    with pytest.raises(OSError):
+        save_named(Fails(), object(), tmp_path / "b.pt")
+    assert not provenance_path(tmp_path / "b.pt").exists()

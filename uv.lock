@@ -854,7 +854,7 @@ wheels = [
 
 [[package]]
 name = "smolsmort"
-version = "0.2.1"
+version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -882,7 +882,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.0" },
     { name = "pillow", specifier = ">=11.0" },
     { name = "torch", marker = "extra == 'vision'", specifier = ">=2.0" },
-    { name = "ui-base", git = "https://github.com/BalthazarFitzpatrick/smortui.git?tag=v0.2.0" },
+    { name = "ui-base", git = "https://github.com/BalthazarFitzpatrick/smortui.git?tag=v0.2.1" },
     { name = "xgboost", specifier = ">=3.2.0" },
 ]
 provides-extras = ["vision"]
@@ -977,8 +977,8 @@ wheels = [
 
 [[package]]
 name = "ui-base"
-version = "0.1.10"
-source = { git = "https://github.com/BalthazarFitzpatrick/smortui.git?tag=v0.2.0#2525a218cbcfcd4f0beea8078b9f606378eda83b" }
+version = "0.2.1"
+source = { git = "https://github.com/BalthazarFitzpatrick/smortui.git?tag=v0.2.1#5b1625e8f42da5bf6eec33d7d2c759a0d413ab33" }
 
 [[package]]
 name = "xgboost"

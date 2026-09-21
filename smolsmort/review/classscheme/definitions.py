@@ -30,6 +30,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from smolsmort.review.find_state import write_text_atomic
+
 # ABSOLUTE, NOT RELATIVE, and rooted at the repo rather than the package - the same reasoning
 # review/paths.py documents for every other data directory: a relative default only works when the
 # tool is launched from the repo root, and silently finds nothing from anywhere else.
@@ -182,7 +184,7 @@ def save(definition: ClassDef, directory: Path | None = None) -> Path:
     root = directory or DEFS_DIR
     root.mkdir(parents=True, exist_ok=True)
     path = root / f"{definition.slug}.toml"
-    path.write_text(definition.as_toml())
+    write_text_atomic(path, definition.as_toml())
     return path
 
 

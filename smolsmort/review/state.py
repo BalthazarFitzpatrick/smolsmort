@@ -30,7 +30,7 @@ from smolsmort.review.promote import PromoteMixin
 from smolsmort.review.render import ImageRenderer
 
 # a neutral starting box for uniform tiles, from the dataset layer's own defaults (64x14); the
-# find tab's tile-size control moves the height from here
+# the height a drawn tile gets by default; a per-tile height-delta adjusts it from the find tab
 DEFAULT_TILE_SIZE = (64, 14)
 
 

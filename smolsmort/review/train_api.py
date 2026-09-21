@@ -13,6 +13,7 @@ reports (progress, losses, a `final` flag) reach the page without this layer kno
 from __future__ import annotations
 
 import inspect
+import itertools
 import json
 import statistics
 import threading
@@ -27,11 +28,21 @@ from PIL import Image
 from smolsmort import backends
 from smolsmort.detect.dataset import DatasetError, Example, build_training_set, frame_width
 from smolsmort.review import hyperparams, paths, setconfig, splits
+from smolsmort.review.find_state import write_jsonl_atomic
 from smolsmort.review.naming import set_filename
 from smolsmort.review.recordings import flat_recording, frame_files, frames_dir_of
 from smolsmort.review.train import TrainState, TrainStateError, saved_checkpoints
 
 CHECKPOINT_SUFFIX = ".pt"
+
+
+def _free_name(target: Path) -> Path:
+    """`target`, or the first `<stem>-2`, `-3` ... beside it that nothing holds yet"""
+    for nth in itertools.count(2):
+        candidate = target.with_name(f"{target.stem}-{nth}{target.suffix}")
+        if not candidate.exists():
+            return candidate
+    raise AssertionError("unreachable")  # pragma: no cover - itertools.count never ends
 
 
 def counts_above(candidates: list[dict]) -> list[int]:
@@ -117,6 +128,30 @@ class TrainApi:
         if config:
             self._use_backend(config["backend"])
 
+    def _sweeping(self) -> dict | None:
+        """the refusal a state change gets while a sweep is reading that state.
+
+        the sweep worker reads `trainer._backend`, `.weights` and `.classes` per chunk of frames,
+        so binding a set (drops the weights), loading a checkpoint (swaps them and the classes),
+        switching the backend or starting a run would change the model under it mid-recording:
+        proposals from two models in one candidates file, or predict(None) killing the sweep.
+        """
+        with self.lock:
+            running = bool(self.sweep_job.get("running"))
+        if running:
+            return {"error": "a sweep is running - wait for it to finish, then try again"}
+        return None
+
+    def _busy(self) -> dict | None:
+        """`_sweeping`, and the same refusal while a training run is going: the run's end writes
+        its weights and saves them under the bound set, so a bind or load in between would file
+        them under another set's name, or under none"""
+        if refusal := self._sweeping():
+            return refusal
+        if self.trainer.status().get("running"):
+            return {"error": "a training run is going - wait for it to finish, then try again"}
+        return None
+
     def set_backend(
         self,
         name: str,
@@ -134,6 +169,8 @@ class TrainApi:
         """
         if not name:
             return {"error": "no set name given"}
+        if busy := self._busy():
+            return busy
         try:
             saved = setconfig.write_set_config(
                 name, backend, size_mode, capture_width=capture_width, downscale=downscale
@@ -151,6 +188,8 @@ class TrainApi:
         """which promoted set the next run trains on. binding drops any loaded weights: a
         checkpoint carries its own channel map, and keeping one against a new set would offer
         that model's classes for this set's data."""
+        if busy := self._busy():
+            return busy
         if not name:
             self._examples = []
             self.trainer.bind([], {}, training_set=None)
@@ -338,6 +377,8 @@ class TrainApi:
         long run outright, so a value outside the range that ever makes sense is corrected rather
         than trusted. a `name` saves the run's weights under it once it finishes.
         """
+        if busy := self._sweeping():
+            return busy
         if not self.trainer.examples:
             return {"error": "nothing bound to train on - bind a training set first"}
         # the set names its backend: build that one, whatever the trainer was started with
@@ -419,7 +460,8 @@ class TrainApi:
         while self.trainer.status().get("running"):
             time.sleep(0.05)
         if self.trainer.status().get("finished"):
-            self.save_checkpoint(name, "")
+            # nobody is at the dialog to pick another name, so a taken one is numbered
+            self.save_checkpoint(name, "", number_taken=True)
 
     def abort(self) -> dict:
         return self.trainer.abort()
@@ -435,23 +477,44 @@ class TrainApi:
     def saved_checkpoints(self) -> dict:
         return saved_checkpoints(paths.CHECKPOINTS_DIR)
 
-    def save_checkpoint(self, name: str | None = None, folder: str = "") -> dict:
-        """snapshot the current weights under a name, in a folder under the checkpoints root"""
+    def save_checkpoint(
+        self, name: str | None = None, folder: str = "", *, number_taken: bool = False
+    ) -> dict:
+        """snapshot the current weights under a name, in a folder under the checkpoints root.
+
+        A TYPED NAME IS REFUSED WHEN IT IS TAKEN, the way `checkpoint_target` refuses one: the
+        caller chose that name and silently writing over the earlier snapshot is the worse answer.
+        The suggested name is only stamped to the second, so two saves inside one second would
+        collide through no choice of the caller's - that one is numbered instead.
+
+        `number_taken` numbers a typed name too. It is for a save nobody is watching (a run's own
+        save when it finishes), where refusing would end with no weights written at all.
+        """
         root = paths.CHECKPOINTS_DIR
         if self.trainer.weights is None:
             return {"error": "nothing trained or loaded yet - train a model first"}
+        typed = bool(name)
         stem = set_filename(name or self.checkpoint_folders(folder)["name"])
         target = (root / folder / stem).with_suffix(CHECKPOINT_SUFFIX).resolve()
         if root.resolve() not in target.parents:
             return {"error": "that folder is outside the checkpoints directory"}
+        relative = target.relative_to(root.resolve()).as_posix()
+        if target.exists():
+            if typed and not number_taken:
+                return {"error": f"{relative} already exists - pick another name"}
+            target = _free_name(target)
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
             saved = self.trainer.save(target)
         except TrainStateError as exc:
             return {"error": str(exc)}
-        return {"name": target.relative_to(root.resolve()).as_posix(), **saved}
+        # the relative path goes LAST: `save_named` carries the bare filename under the same key,
+        # and a reply of "r1.pt" for runs/r1.pt cannot be handed back to load-checkpoint
+        return {**saved, "name": target.relative_to(root.resolve()).as_posix()}
 
     def load_checkpoint(self, name: str) -> dict:
+        if busy := self._busy():
+            return busy
         path = self.trainer.resolve_checkpoint(paths.CHECKPOINTS_DIR, name)
         if path is None:
             return {"error": f"no checkpoint called {name!r}"}
@@ -655,7 +718,7 @@ class TrainApi:
                 f"{flat_recording(recording)}.cnn-{stamp}.candidates.jsonl"
             )
             out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_text("".join(json.dumps(c) + "\n" for c in candidates))
+            write_jsonl_atomic(out, candidates)
             # the size comes from the training set's own boxes, or failing that from the proposals
             width, height = self.trained_box_size()
             if candidates and not self.trainer.training_set:
@@ -686,7 +749,8 @@ class TrainApi:
         """cut the last sweep's proposals above this score into the pool. the sweep is untouched
         by the choice, so a threshold can be tried, looked at and tried again for the cost of
         the cut. THIS IS THE ONLY PLACE THE POOL IS TOUCHED by a sweep."""
-        job = self.sweep_job
+        with self.lock:
+            job = self.sweep_job
         proposals = job.get("proposals") or []
         if not proposals:
             return {"error": "no sweep to send - run one first"}
@@ -706,5 +770,7 @@ class TrainApi:
             select=keep,
         )
         with self.lock:
-            self.sweep_job["tiles"] = cut
+            # a sweep started meanwhile has its own job; the count belongs to the one we cut from
+            if self.sweep_job is job:
+                job["tiles"] = cut
         return {"sent": len(keep), "tiles": cut, "of": len(proposals), "tag": job["tag"]}

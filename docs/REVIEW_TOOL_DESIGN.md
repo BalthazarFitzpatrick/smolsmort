@@ -55,10 +55,13 @@ Known implementations at port time:
 ### 2. example renderer - turning a candidate into something a human can judge
 
     class ExampleRenderer(Protocol):
-        def frame(self, name: str) -> bytes: ...          # a whole frame, to draw on
-        def crop(self, candidate: Candidate) -> bytes: ... # one candidate, framed for judging
+        def frame(self, name: str, *, frames_dir: Path) -> bytes: ...     # a whole frame, to draw on
+        def crop(self, candidate: Candidate, *, frames_dir: Path) -> bytes: ...  # framed for judging
+        def thumb(self, box: Candidate, *, frames_dir: Path) -> bytes: ...  # the box in its frame
 
-Both methods take an optional `frames_dir` keyword, because one pool can span several recordings.
+Every method takes the recording's `frames_dir`, because one pool can span several recordings, and
+every read goes through one confinement (`render.frame_file`): a stored path is cut to its bare
+file name and must land inside `frames_dir`, so no method trusts what a candidates file says.
 
 **Responsibilities.** Read a source frame and produce the pixels the browser shows: a whole frame for
 the drawing surface, and a padded crop for one candidate on the judge tab. The pad around a crop is

@@ -10,6 +10,7 @@ captured at different resolutions train as one set.
 from __future__ import annotations
 
 import math
+import os
 import random
 from pathlib import Path
 
@@ -23,9 +24,11 @@ from smolsmort.boxes.model import (
     build_model,
     classes_in,
     decode_boxes,
+    head_in,
     padded,
     receptive_field,
     scale_for,
+    widths_in,
 )
 from smolsmort.detect.dataset import Example
 from smolsmort.detect.model import _torch
@@ -311,17 +314,23 @@ def sweep(
 def save(model, path: Path) -> Path:
     torch = _torch()
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), path)
+    # temp beside it, then replace: a crash mid-write never leaves a checkpoint torch.load
+    # refuses, and a lister never sees a half-written .pt
+    temp = path.with_name(path.name + ".tmp")
+    torch.save(model.state_dict(), temp)
+    os.replace(temp, path)
     return path
 
 
 def load(path: Path, device: str | None = None):
-    """the class count is read off the checkpoint's own heatmap head, never assumed"""
+    """class count, stage widths and head width are all read off the checkpoint, never assumed"""
     torch = _torch()
     if device is None:
         device = "mps" if torch.backends.mps.is_available() else "cpu"
     state = torch.load(path, map_location=device)
-    model = build_model(classes=classes_in(state)).to(device)
+    model = build_model(classes=classes_in(state), widths=widths_in(state), head=head_in(state)).to(
+        device
+    )
     model.load_state_dict(state)
     model.eval()
     return model
