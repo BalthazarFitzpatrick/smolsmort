@@ -243,19 +243,25 @@ class TrainApi:
 
     def _capture_info(self) -> dict:
         """capture_width (the override, else what the frames are), downscale, input_width, and
-        resampled_from when loaded weights were trained at another width than the set's frames"""
+        resampled_from when loaded weights were trained at another width than the set's frames.
+
+        capture_override and observed_width are reported apart so a picker can show an override
+        as an override rather than as the frames' own width."""
         config = setconfig.read_set_config(self.trainer.training_set) or {}
         observed = self.observed_width()
         capture = config.get("capture_width") or observed
         downscale = self.set_downscale()
         info = {
             "capture_width": capture,
+            "capture_override": config.get("capture_width"),
+            "observed_width": observed,
             "downscale": downscale,
             "input_width": capture // downscale if capture else None,
         }
         kept = getattr(self.trainer.weights, "capture_width", None)
         if kept and observed and kept != observed:
             info["resampled_from"] = observed
+            info["weights_capture_width"] = int(kept)
         return info
 
     @staticmethod

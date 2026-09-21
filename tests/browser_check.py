@@ -75,7 +75,7 @@ def check_tabs_and_extension(page: Page) -> None:
     assert "hello from a host tab" in page.locator('.tab-panel[data-panel="extra"]').inner_text()
 
 
-def check_train(page: Page, base: str, log: list, urls: list) -> None:
+def check_train(page: Page, base: str, log: list, urls: list, app) -> None:
     show_tab(page, "train")
     # both loaders are directory browsers rooted at their own base: they drill in and out via '..'
     for head, root, folder, inner in [
@@ -126,6 +126,40 @@ def check_train(page: Page, base: str, log: list, urls: list) -> None:
     assert f"sizes {mode}" in page.inner_text("#train-summary")
     assert call(base, "/api/train-info")["backend"] == other
     snap(page, "train-backend")
+    dismiss(page)
+
+    # the capture picker: width and downscale are stored on the set, the head says what the net sees
+    call(base, "/api/train-set-backend", {"name": "world_set", "backend": "heatmap"})
+    show_tab(page, "find")
+    show_tab(page, "train")
+    page.wait_for_function('document.getElementById("train-capture").innerText.includes("px")')
+    head = page.inner_text("#train-capture").strip()
+    assert "/" in head and head.endswith("px"), head
+    page.click("#train-capture")
+    page.wait_for_selector('.menu-panel .menu-item:has-text("/ 4")')
+    assert "downscale" in page.locator(".menu-panel").inner_text()
+    page.fill(".menu-panel input", "160")
+    page.click('.menu-panel .menu-item:has-text("/ 4")')
+    page.click('.menu-panel .toggle:has-text("apply")')
+    page.wait_for_function(
+        'document.getElementById("train-capture").innerText.trim() == "160 / 4 = 40px"'
+    )
+    sent = posts(log, "train-set-backend")[-1]
+    assert sent["capture_width"] == 160 and sent["downscale"] == 4, sent
+    stored = call(base, "/api/train-info")
+    assert (stored["capture_width"], stored["downscale"]) == (160, 4), stored
+    assert "capture set here" in page.inner_text("#train-summary")
+    snap(page, "train-capture")
+    # an empty width follows the frames again
+    page.click("#train-capture")
+    page.wait_for_selector(".menu-panel input")
+    page.fill(".menu-panel input", "")
+    page.click('.menu-panel .menu-item:has-text("/ 2")')
+    page.click('.menu-panel .toggle:has-text("apply")')
+    page.wait_for_function(
+        'document.getElementById("train-summary").innerText.includes("from the frames")'
+    )
+    assert call(base, "/api/train-info").get("capture_override") is None
     dismiss(page)
     page.click("#train-load")
     page.wait_for_selector(".menu-panel")
@@ -220,6 +254,28 @@ def check_train(page: Page, base: str, log: list, urls: list) -> None:
     page.click("#sweep-send")
     page.wait_for_timeout(500)
     assert page.locator('.tab-panel[data-panel="select"]:not(.hidden)').count() == 1
+
+    # frames of another width than the weights were trained at are resampled, and the sweep says so
+    class Weights:
+        capture_width = 400
+
+    class Fake:
+        def predict(self, weights, frames, *, classes):
+            return []
+
+    app.trainer.trainer.weights = Weights()
+    app.trainer.trainer._backend = Fake()
+    show_tab(page, "train")
+    assert "hidden" in page.get_attribute("#sweep-warning", "class")
+    page.click("#sweep-start")
+    page.wait_for_selector("#sweep-warning:not(.hidden)", timeout=20000)
+    assert "400" in page.inner_text("#sweep-warning")
+    # the whole sentence is readable, not clipped to one ellipsed line
+    warn = box(page, "#sweep-warning")
+    assert warn["height"] > 20, warn
+    # loading weights unbinds the set, so the summary has no capture facts to show here - the
+    # sweep line is what reports the mismatch on this path
+    snap(page, "train-sweep-warning")
 
 
 def check_find(page: Page, base: str, log: list) -> None:
@@ -521,7 +577,7 @@ def run(shots: Path | None = None) -> None:
                     ("select", check_select),
                     ("train", check_train),
                 ):
-                    check(page, base, log, *([urls] if name == "train" else []))
+                    check(page, base, log, *([urls, app] if name == "train" else []))
                     show_tab(page, name)
                     page.wait_for_timeout(300)
                     if shots:
