@@ -141,6 +141,16 @@ class TrainApi:
             return {"error": "a sweep is running - wait for it to finish, then try again"}
         return None
 
+    def _busy(self) -> dict | None:
+        """`_sweeping`, and the same refusal while a training run is going: the run's end writes
+        its weights and saves them under the bound set, so a bind or load in between would file
+        them under another set's name, or under none"""
+        if refusal := self._sweeping():
+            return refusal
+        if self.trainer.status().get("running"):
+            return {"error": "a training run is going - wait for it to finish, then try again"}
+        return None
+
     def set_backend(
         self,
         name: str,
@@ -158,7 +168,7 @@ class TrainApi:
         """
         if not name:
             return {"error": "no set name given"}
-        if busy := self._sweeping():
+        if busy := self._busy():
             return busy
         try:
             saved = setconfig.write_set_config(
@@ -177,7 +187,7 @@ class TrainApi:
         """which promoted set the next run trains on. binding drops any loaded weights: a
         checkpoint carries its own channel map, and keeping one against a new set would offer
         that model's classes for this set's data."""
-        if busy := self._sweeping():
+        if busy := self._busy():
             return busy
         if not name:
             self._examples = []
@@ -502,7 +512,7 @@ class TrainApi:
         return {**saved, "name": target.relative_to(root.resolve()).as_posix()}
 
     def load_checkpoint(self, name: str) -> dict:
-        if busy := self._sweeping():
+        if busy := self._busy():
             return busy
         path = self.trainer.resolve_checkpoint(paths.CHECKPOINTS_DIR, name)
         if path is None:

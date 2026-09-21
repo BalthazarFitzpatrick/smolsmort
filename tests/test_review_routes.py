@@ -977,6 +977,27 @@ def test_state_changes_are_refused_while_a_sweep_reads_the_model(server, world):
     assert "sweep is running" not in json.dumps(jpost(url, "/api/train-bind", {"name": "loop"}))
 
 
+def test_bind_load_and_backend_switch_are_refused_while_a_run_is_going(server, world):
+    """the run's end saves its weights under the bound set; a bind or load in between would file
+    them under another name. the status dict is what start_sweep already consults, so it is
+    flipped directly rather than racing a real run"""
+    app, url = server
+    trainer = app.trainer.trainer
+    with trainer._job_lock:
+        trainer.job["running"] = True
+    try:
+        for path, body in (
+            ("/api/train-bind", {"name": "loop"}),
+            ("/api/load-checkpoint", {"name": "x.pt"}),
+            ("/api/train-set-backend", {"name": "loop", "backend": "heatmap"}),
+        ):
+            assert "training run is going" in jpost(url, path, body)["error"], path
+    finally:
+        with trainer._job_lock:
+            trainer.job["running"] = False
+    assert "run is going" not in json.dumps(jpost(url, "/api/train-bind", {"name": "loop"}))
+
+
 def test_a_sweep_over_frames_of_another_width_warns(server, world):
     app, url = server
 
