@@ -167,7 +167,7 @@ the same change).
 
       backends.py           backends by name: what the train tab offers, `register()` for more
 
-      review/               the loop: the WoW-free review web tool. NO domain facts live here.
+      review/               the loop: the domain-free review web tool. NO domain facts live here.
         seams.py            the four Protocols (lifted verbatim from tests/test_loop.py by the
                             first port card; until then they live in the test, see below)
         paths.py            every directory the loop touches, named once; the mutable ones read

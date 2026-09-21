@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # two boxes this close in both axes are the same object seen again. measured on real captures: the
-# teacher's own left edge jitters a few px between frames and a mob drifts while walking, so an
+# teacher's own left edge jitters a few px between frames and an object drifts while walking, so an
 # exact match finds nothing
 SAME_OBJECT_PX = 40
 # two boxes in the SAME frame sharing this much of the narrower one's WIDTH, and lying within
