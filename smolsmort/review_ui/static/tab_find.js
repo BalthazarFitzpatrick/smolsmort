@@ -22,8 +22,11 @@ function mountFind(panel) {
             <span class="field-label" id="draw-last">-</span>
           </div>
           <span class="field-value" id="draw-pos">-</span>
+          <span class="stat frame-badge hidden" id="frame-badge">exhaustive</span>
         </div>
         <div class="toggle" id="draw-next">next</div>
+        <div class="toggle disabled" id="frame-mode"
+             title="explicit: only the boxes drawn count. exhaustive: every object on this frame is boxed">explicit</div>
         <span id="draw-zoom-value" class="stat">100%</span>
         <div class="toggle" id="draw-zoom-fit">reset view</div>
         <span class="spacer"></span>
@@ -62,6 +65,7 @@ class FindTab {
     this.boundName = '';
     this.boundPercent = '';
     this.stamp = 0;
+    this.modes = {};        // frame basename -> true when exhaustive, missing = explicit
     this.boxes = {};        // frame name -> [{left, top, width, height}]
     this.image = new Image();
     this.drawing = null;
@@ -189,6 +193,43 @@ class FindTab {
     this.syncSlider();
   }
 
+  frameKey() { return (this.frames[this.index] || '').split('/').pop(); }
+
+  paintMode() {
+    const key = this.frameKey();
+    const exhaustive = !!this.modes[key];
+    const toggle = document.getElementById('frame-mode');
+    toggle.textContent = exhaustive ? 'exhaustive' : 'explicit';
+    toggle.classList.toggle('on', exhaustive);
+    toggle.classList.toggle('disabled', !key || !this.boundName);
+    document.getElementById('frame-badge').classList.toggle('hidden', !exhaustive);
+  }
+
+  // frame modes are read per recording, on load and whenever the recording changes
+  async loadModes() {
+    this.modes = {};
+    if (this.boundName) {
+      try {
+        const data = await api('/api/frame-modes?recording=' + encodeURIComponent(this.boundName));
+        Object.entries(data.frames || {}).forEach(([frame, mode]) => {
+          if (mode.exhaustive) this.modes[frame] = true;
+        });
+      } catch (err) { /* a proposal set has no frame modes: everything stays explicit */ }
+    }
+    this.paintMode();
+  }
+
+  async flipMode() {
+    const key = this.frameKey();
+    if (!key || !this.boundName) return;
+    const exhaustive = !this.modes[key];
+    try {
+      await api('/api/frame-mode', {recording: this.boundName, frame: key, exhaustive});
+      if (exhaustive) this.modes[key] = true; else delete this.modes[key];
+      this.paintMode();
+    } catch (err) { setText('find-status', err.message); }
+  }
+
   // the slider follows the index, it does not lead it
   syncSlider() {
     const slider = document.getElementById('draw-slider');
@@ -239,7 +280,9 @@ class FindTab {
       where.textContent = 'recordings';
       where.className = 'placeholder';
       this.frames = [];
+      this.boundName = '';
       this.syncSlider();
+      this.loadModes();
       return;
     }
     this.boundName = bound;
@@ -250,6 +293,7 @@ class FindTab {
     this.index = 0;
     where.textContent = bound;
     where.className = '';
+    this.loadModes();
     this.loadImage();
   }
 
@@ -315,6 +359,7 @@ class FindTab {
         item => { el.dataset.value = item.id; el.innerHTML = `<span>${item.id}%</span>`; this.openFrames(); }
       ).openAt(el);
     };
+    document.getElementById('frame-mode').onclick = () => this.flipMode();
     document.getElementById('draw-prev').onclick = () => this.goTo(this.index - 1);
     document.getElementById('draw-next').onclick = () => this.goTo(this.index + 1);
     // input, not change, so a scrub shows the frames it passes over
@@ -336,9 +381,11 @@ class FindTab {
     const boxes = [];
     Object.entries(this.boxes).forEach(([path, list]) => list.forEach(b => boxes.push({...b, path})));
     if (!boxes.length) return;
-    const res = await api('/api/find-run', {mode: 'drawn', boxes});
+    const set = window.smolsmortActiveSet || undefined;
+    const res = await api('/api/find-run', {mode: 'drawn', boxes, set});
     if (res.error) { setText('find-status', res.error); return; }
-    setText('find-status', `${res.count} boxes saved` + (res.tiles ? ` - ${res.tiles} tiles cut` : ''));
+    setText('find-status', `${res.count} boxes saved` + (res.tiles ? ` - ${res.tiles} tiles cut` : '')
+      + (res.size_mode ? ` - sizes ${res.size_mode}` : ''));
     // saving rebinds to the written set, so the picker head is told
     const now = await api('/api/draw-frames?percent=' + this.percent());
     const where = document.getElementById('draw-where');
