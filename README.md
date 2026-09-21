@@ -90,6 +90,23 @@ from that run:
 - `score` reports FAIL when the truth has no empty frames, even at 100% recall. False positives can
   only be counted on frames with nothing in them, so include some.
 
+## Adding a tab to the review UI
+
+`uv run smolsmort` serves the review page: find, select, train and housekeeping tabs on the shared
+`ui_base` kit. The tab bar is built from a list, so a host page adds its own tab by loading a
+script after `boot.js` that calls:
+
+```js
+window.smolsmortTabs.register({
+  id: 'mytab',          // unique, used as the panel's data-panel
+  label: 'my tab',      // shown in the tab bar
+  mount(panelEl) {      // runs once; fill panelEl with your markup
+    panelEl.textContent = 'hello';
+    return {enter() {}};  // optional: called each time the tab is shown
+  },
+});
+```
+
 ## Swapping the model
 
 Every backend has the same four methods: train, predict, save and load. The loop drives whichever
@@ -131,14 +148,26 @@ just near the middle. A quarter are centred on hard negatives when a frame has t
 random. Targets are small Gaussian blobs snapped to cell centres, trained with a CentreNet-style
 focal loss. Channels train independently, so a rare class is not drowned out by a common one.
 
-**What a label means.** Keeping a candidate makes it a positive. Discarding one does not make it a
-negative: a discard can mean misaligned or redundant just as often as "not an object". Discarded and
-never-reviewed candidates become ignore regions the loss does not look at. Explicit negatives come
-only from places the model fired and was told no. A frame can also be marked exhaustive, meaning
-every object on it was proposed and judged. There, anything proposed and not kept becomes a
-negative, except a discard centred inside a kept box. A `heatmap` training set must use one capture
+**What a label means.** In the review tool, keeping a tile with a class makes it a positive and
+discarding it ("not a class") makes it a negative, for swept and drawn boxes alike. Tiles nobody
+judged are ignored by the loss. In a raw candidates queue read by `build_from`, a discard is still
+only an ignore region. A frame can also be marked exhaustive, meaning every object on it was
+proposed and judged. There, anything proposed and not kept becomes a negative, except a box centred
+inside a kept box. A `heatmap` training set must use one capture
 resolution, since the object is a different pixel size on each screen, and mixing them is refused;
 `box` scales every frame to one working size instead.
+
+**Per-set and per-frame settings in the review tool.** Each is a small optional json file, and an
+absent file means the old behaviour:
+- `<set>._backend.json` beside a training set holds `{"backend", "size_mode"}`. No file means
+  `heatmap` and `uniform`. `native` keeps every drawn box at its own width and height; `uniform`
+  fits one size to the set. Written by `POST /api/train-set-backend {name, backend, size_mode?}`
+  (`size_mode` defaults to `native` for `box`, else `uniform`; an unknown backend answers `{error}`
+  listing the names), read by `GET /api/train-info`, `train-bind` and `train-start`. Drawing for a
+  set passes `set` to `/api/find-run`.
+- `<recording>._frames.json` in the labels folder holds `{frame: {"exhaustive": true}}`. No entry
+  means explicit. `GET /api/frame-modes?recording=` and `POST /api/frame-mode {recording, frame,
+  exhaustive}`. On promotion, unjudged boxes on an exhaustive frame become negatives.
 
 **Sweeping.** `sweep` runs trained weights over whole frames and returns candidates in the same
 schema the judging step reads, capped per frame and strongest first. It decodes the next frames on
@@ -227,9 +256,16 @@ Common leases for this repo:
 | the heatmap backend | `smolsmort/detect/**`, `tests/**` |
 | the box backend | `smolsmort/boxes/**`, `tests/test_boxes.py`, `tests/test_variable_boxes.py` |
 | backends by name | `smolsmort/backends.py`, `tests/**` |
-| the review tool | `smolsmort/review/**`, `snapshot/**` |
+| the review tool | `smolsmort/review/**`, `smolsmort/review_ui/**`, `tests/**` |
 | docs | `README.md`, `docs/**` |
 
 ## Licence
 
 MIT, see [LICENSE](LICENSE).
+
+## Extra tabs
+
+A host adds tabs without editing the loop: build a `smolsmort.review.routes.Tab` with its own
+`get` and `post` route tables (full paths, json in and out) and optional `images`, and pass it in
+`build_app(tabs=[...])`. A path that collides with a core route is refused when the server is
+built. `GET /api/tabs` lists the registered names so a page can offer them.

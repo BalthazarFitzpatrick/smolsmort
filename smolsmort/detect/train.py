@@ -39,6 +39,7 @@ from smolsmort.detect.model import (
     downscale_of,
     gaussian_target,
 )
+from smolsmort.optim import build_optimizer
 
 CROP = 256  # input pixels, i.e. CROP * downscale capture pixels a side (512 at the default 2)
 
@@ -231,6 +232,9 @@ def train(
     crop: int | None = None,
     downscale: int = DEFAULT_DOWNSCALE,
     channels: int = DEFAULT_CHANNELS,
+    optimizer: str = "adamw",
+    momentum: float = 0.9,
+    weight_decay: float = 0.0,
 ):
     """returns (model, history). on_progress is called once per epoch with a Progress.
 
@@ -238,6 +242,10 @@ def train(
     each object trains only its own - which is what makes a rare class survive a common one, and
     what a single softmax over the same labels would not do. Left None, this behaves exactly as it
     did: one channel, every object a positive, and every existing checkpoint still loads.
+
+    optimizer/momentum/weight_decay go through smolsmort.optim.build_optimizer - "adamw" at
+    momentum 0.9 and weight_decay 0 behaves exactly as the old hardcoded Adam(lr) did, so every
+    default and existing checkpoint is unaffected.
 
     `downscale` is the capture:input factor the model is trained at. it is stored in the model, so
     save() keeps it and load() restores it - callers decoding or sweeping read it off the model.
@@ -262,7 +270,13 @@ def train(
     model = build_model(
         classes=len(classes) if classes else 1, downscale=downscale, channels=channels
     ).to(device)
-    optimiser = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    optimiser = build_optimizer(
+        model.parameters(),
+        optimizer=optimizer,
+        learning_rate=learning_rate,
+        momentum=momentum,
+        weight_decay=weight_decay,
+    )
     cache = {e.path: _load_input(e.path, downscale) for e in usable}
 
     history = []
@@ -301,6 +315,29 @@ def train(
         if on_progress:
             on_progress(Progress(epoch=epoch, epochs=epochs, loss=mean, seen=seen))
     return model, history
+
+
+def evaluate(model, examples: list[Example], *, classes=None, window: int | None = None) -> float:
+    """mean masked focal loss of model over examples: eval mode, no gradient, and every example
+    cut with its own fixed-seed rng so two calls agree"""
+    torch = _torch()
+    size = snapped_window(CROP if window is None else int(window))
+    device = next(model.parameters()).device
+    was_training = model.training
+    model.eval()
+    losses = []
+    with torch.no_grad():
+        for example in examples:
+            image = _load_input(example.path, downscale_of(model))
+            w, t, m = _crop_window(example, image, random.Random(0), classes, size)
+            x = torch.from_numpy(np.ascontiguousarray(w[None])).to(device)
+            y = torch.from_numpy(np.ascontiguousarray(t[None])).to(device)
+            if y.dim() == 3:
+                y = y.unsqueeze(1)
+            mask = torch.from_numpy(np.ascontiguousarray(m[None])).unsqueeze(1).to(device)
+            losses.append(float(masked_focal_loss(model(x), y, mask).cpu()))
+    model.train(was_training)
+    return sum(losses) / len(losses) if losses else 0.0
 
 
 def heatmap_for(model, path: Path, device: str | None = None) -> np.ndarray:

@@ -41,21 +41,52 @@ def fitted_box(examples) -> tuple[int, int]:
 class HeatmapBackend:
     name = NAME
 
-    def __init__(self, *, epochs: int = 30, device: str | None = None, min_score: float = 0.5):
+    def __init__(
+        self,
+        *,
+        epochs: int = 30,
+        device: str | None = None,
+        min_score: float = 0.5,
+        learning_rate: float = 3e-4,
+        seed: int = 0,
+        channels: int = 24,
+        optimizer: str = "adamw",
+        momentum: float = 0.9,
+        weight_decay: float = 0.0,
+    ):
         self.epochs = epochs
         self.device = device
         self.min_score = min_score
+        self.learning_rate = learning_rate
+        self.seed = seed
+        self.channels = channels
+        self.optimizer = optimizer
+        self.momentum = momentum
+        self.weight_decay = weight_decay
 
-    def train(self, examples, *, classes, on_progress=None) -> HeatmapWeights:
+    def train(self, examples, *, classes, on_progress=None, window=None) -> HeatmapWeights:
         converted = [example_from(e) for e in examples]
         model, _ = heatmap_train.train(
             converted,
             epochs=self.epochs,
+            learning_rate=self.learning_rate,
+            seed=self.seed,
+            crop=window,
             device=self.device,
             classes=dict(classes) or None,
-            on_progress=(lambda p: on_progress(p.epoch, p.epochs)) if on_progress else None,
+            channels=self.channels,
+            optimizer=self.optimizer,
+            momentum=self.momentum,
+            weight_decay=self.weight_decay,
+            on_progress=(lambda p: on_progress(p.epoch, p.epochs, p.loss)) if on_progress else None,
         )
         return HeatmapWeights(model=model, classes=dict(classes), box=fitted_box(converted))
+
+    def evaluate(self, weights, examples, *, classes) -> float:
+        """mean training loss of the weights over examples, no augmentation"""
+        return heatmap_train.evaluate(
+            weights.model, [example_from(e) for e in examples], classes=dict(classes) or None
+        )
 
     def predict(self, weights, frames, *, classes) -> list[dict]:
         if weights.box is None:

@@ -7,6 +7,8 @@ without dragging its neighbours along.
 
 from __future__ import annotations
 
+import re
+
 
 def _flat(name: str) -> str:
     """a session name as ONE filename component.
@@ -33,3 +35,14 @@ def _tile_index(name: str) -> int:
     after the LAST "k", never a fixed slice offset, since the prefix's own length varies.
     """
     return int(name.rsplit("k", 1)[-1])
+
+
+# what a set is called when nobody names it
+DEFAULT_SET_NAME = "training"
+
+
+def set_filename(name: str) -> str:
+    """a typed set name as ONE safe filename stem: anything but a word character, dot or dash
+    collapses to an underscore, and an empty result falls back to the default name"""
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", name.strip()).strip("._-")
+    return stem or DEFAULT_SET_NAME

@@ -37,6 +37,11 @@ class BoxBackend:
         min_score: float = 0.3,
         max_per_frame: int = 50,
         seed: int = 0,
+        learning_rate: float = 2e-3,
+        widths: tuple[int, int, int, int, int] | None = None,
+        optimizer: str = "adamw",
+        momentum: float = 0.9,
+        weight_decay: float = 1e-4,
     ):
         self.epochs = epochs
         self.device = device
@@ -44,6 +49,11 @@ class BoxBackend:
         self.min_score = min_score
         self.max_per_frame = max_per_frame
         self.seed = seed
+        self.learning_rate = learning_rate
+        self.widths = widths
+        self.optimizer = optimizer
+        self.momentum = momentum
+        self.weight_decay = weight_decay
 
     def train(self, examples, *, classes, on_progress=None) -> BoxWeights:
         model, _ = box_train.train(
@@ -51,11 +61,25 @@ class BoxBackend:
             epochs=self.epochs,
             device=self.device,
             seed=self.seed,
+            learning_rate=self.learning_rate,
             classes=dict(classes) or None,
             long_side=self.long_side,
+            widths=self.widths,
+            optimizer=self.optimizer,
+            momentum=self.momentum,
+            weight_decay=self.weight_decay,
             on_progress=(lambda p: on_progress(p.epoch, p.epochs)) if on_progress else None,
         )
         return BoxWeights(model=model, classes=dict(classes), long_side=self.long_side)
+
+    def evaluate(self, weights, examples, *, classes) -> float:
+        """mean training loss of the weights over examples, no augmentation"""
+        return box_train.evaluate(
+            weights.model,
+            [example_from(e) for e in examples],
+            classes=dict(classes) or None,
+            long_side=weights.long_side,
+        )
 
     def predict(self, weights, frames, *, classes) -> list[dict]:
         return box_train.sweep(

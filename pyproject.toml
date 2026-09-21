@@ -19,6 +19,9 @@ dependencies = [
 [project.optional-dependencies]
 vision = ["torch>=2.0"]
 
+[project.scripts]
+smolsmort = "smolsmort.cli:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -29,8 +32,6 @@ packages = ["smolsmort"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-# reference material being carved into the package, not code of this project - see snapshot/README.md
-extend-exclude = ["snapshot"]
 
 # THE SAME SELECTION AS THE CONSUMER IT WAS EXTRACTED FROM, deliberately. The code moved across
 # verbatim; a different rule set here would flag lines that are fine upstream, and "fixing" them
@@ -62,8 +63,8 @@ python_files = ["test_*.py"]
 python_functions = ["test_*"]
 
 [tool.uv.sources]
-# pinned to a sha, not a tag: smortui's tags do not bump its version yet
-ui-base = { git = "https://github.com/BalthazarFitzpatrick/smortui.git", tag = "v0.1.10" }
+# smortui v0.2.0: dirMenu, range-slider, stepper and the arrangement recipes
+ui-base = { git = "https://github.com/BalthazarFitzpatrick/smortui.git", tag = "v0.2.0" }
 
 [dependency-groups]
 dev = ["ruff>=0.11.0", "pytest>=8.0", "torch>=2.0"]

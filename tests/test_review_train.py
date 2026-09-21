@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -180,7 +181,8 @@ class PausableBackend:
         return Path(path)
 
     def load(self, path):
-        return json.loads(Path(path).read_text())
+        data = json.loads(Path(path).read_text())
+        return SimpleNamespace(**data)
 
 
 @pytest.fixture
@@ -326,7 +328,13 @@ def test_saved_checkpoints_falls_back_to_the_backend_sidecar_with_no_provenance(
 
     listing = saved_checkpoints(tmp_path)
     assert listing["weights"] == [
-        {"name": "bare.pt", "training_set": None, "classes": ["friendly", "hostile"], "kb": 0}
+        {
+            "name": "bare.pt",
+            "training_set": None,
+            "classes": ["friendly", "hostile"],
+            "kb": 0,
+            "final": False,
+        }
     ]
 
 
@@ -414,3 +422,187 @@ def test_channel_inspection_refuses_a_box_backend():
     trainer.weights = object()  # inspection checks the backend name before touching weights
     with pytest.raises(TrainStateError, match="does not expose one heatmap per class"):
         trainer.channel_heatmap("f.jpg")
+
+
+def test_heatmap_backend_trains_with_a_custom_optimizer_and_size(tmp_path):
+    """the hyperparams menu's options (optimizer, momentum, weight_decay, channels) reach the real
+    trainer through backend_options - proven with sgd/nesterov and a smaller model, not just the
+    adamw default the other end-to-end test above already covers"""
+    from smolsmort.detect.model import build_model, count_parameters
+
+    frames, examples = _synthetic_examples(tmp_path)
+    classes = {"friendly": 0, "hostile": 1}
+
+    trainer = TrainState(
+        "heatmap",
+        epochs=1,
+        device="cpu",
+        optimizer="sgd",
+        momentum=0.9,
+        weight_decay=1e-4,
+        channels=16,
+        learning_rate=1e-2,
+    )
+    trainer.bind(examples, classes, training_set="synthetic")
+    trainer.train()
+
+    assert count_parameters(trainer.weights.model) == count_parameters(
+        build_model(channels=16, classes=2)
+    )
+    # one sgd epoch on synthetic noise proves nothing about detection quality - the point here is
+    # that sweep() still runs end to end against a model built with the custom options
+    trainer.sweep([str(frames[0])])
+
+
+# ---------------------------------------------------------------- losses, named runs, final flag
+
+
+class LossBackend:
+    """a fake that reports a loss per epoch, hands its weights to the callback, and can evaluate"""
+
+    def __init__(self, epochs=4):
+        self.epochs = epochs
+
+    def train(self, examples, *, classes, on_progress=None, window=None):
+        for epoch in range(1, self.epochs + 1):
+            if on_progress:
+                on_progress(epoch, self.epochs, 1.0 / epoch, {"epoch": epoch})
+        return {"classes": dict(classes), "window": window}
+
+    def evaluate(self, weights, examples, *, classes):
+        return 0.1 * len(examples)
+
+    def predict(self, weights, frames, *, classes):
+        return []
+
+    def save(self, weights, path):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_text(json.dumps(weights))
+        return Path(path)
+
+    def load(self, path):
+        data = json.loads(Path(path).read_text())
+        return SimpleNamespace(**data)
+
+
+@pytest.fixture
+def _lossy():
+    backends.register("lossy", "test_review_train", "LossBackend")
+    try:
+        yield
+    finally:
+        backends._REGISTRY.pop("lossy", None)
+
+
+STATUS_KEYS = {
+    "running",
+    "state",
+    "train_loss",
+    "val_loss",
+    "test_loss",
+    "checkpoint_count",
+    "epoch",
+    "epochs",
+    "error",
+    "finished",
+    "aborted",
+}
+
+
+def _run_lossy(tmp_path, **start):
+    trainer = TrainState("lossy", epochs=4)
+    trainer.bind(
+        FAKE_EXAMPLES,
+        FAKE_CLASSES,
+        val_examples=FAKE_EXAMPLES[:1],
+        test_examples=FAKE_EXAMPLES * 2,
+    )
+    assert trainer.start(root=tmp_path, **start) == {"ok": True}
+    trainer._worker.join(5)
+    return trainer
+
+
+def test_status_has_its_keys_before_during_and_after_a_run(_lossy, tmp_path):
+    idle = TrainState("lossy")
+    assert set(idle.status()) >= STATUS_KEYS
+    assert idle.status()["state"] == "idle" and idle.status()["test_loss"] is None
+
+    trainer = _run_lossy(tmp_path, name="run")
+    done = trainer.status()
+    assert set(done) >= STATUS_KEYS
+    assert done["state"] == "finished" and done["running"] is False
+    assert done["train_loss"] == pytest.approx(0.25)
+    assert done["val_loss"] == pytest.approx(0.1)
+    assert done["test_loss"] == pytest.approx(0.4)
+    assert done["checkpoint_count"] == 1
+
+
+def test_losses_are_none_for_a_backend_without_evaluate(_pausable):
+    trainer, release, _ = _abortable_trainer(_pausable, epochs=2)
+    release.set()
+    trainer.start()
+    trainer._worker.join(5)
+    done = trainer.status()
+    assert done["val_loss"] is None and done["test_loss"] is None
+    assert done["checkpoint_count"] == 0
+
+
+def test_interim_checkpoints_count_and_the_final_one_lists_first(_lossy, tmp_path):
+    trainer = _run_lossy(tmp_path, name="run", checkpoint_every=2)
+    assert trainer.status()["checkpoint_count"] == 2  # epoch 2 interim, then the final
+    entries = saved_checkpoints(tmp_path)["weights"]
+    assert [e["name"] for e in entries][0] == "run.pt"
+    assert [e["final"] for e in entries] == [True, False]
+    assert {e["name"] for e in entries} == {"run.pt", "run-e2.pt"}
+
+
+def test_a_manual_save_is_not_final(tmp_path):
+    trainer = TrainState("fake")
+    trainer.bind(FAKE_EXAMPLES, FAKE_CLASSES)
+    trainer.train()
+    trainer.save(tmp_path / "a.pt")
+    trainer.save(tmp_path / "b.pt", final=True)
+    flags = {e["name"]: e["final"] for e in saved_checkpoints(tmp_path)["weights"]}
+    assert flags == {"a.pt": False, "b.pt": True}
+
+
+def test_a_named_run_round_trips_through_load_weights(_lossy, tmp_path):
+    trainer = _run_lossy(tmp_path, name="my run!", window=320)
+    assert trainer.status()["weights"] == "myrun.pt" and trainer.status()["window"] == 320
+    provenance = json.loads((tmp_path / "myrun.pt.provenance.json").read_text())
+    assert provenance["final"] is True and provenance["test_loss"] == pytest.approx(0.4)
+
+    reloaded = TrainState("lossy")
+    reloaded.load_weights(tmp_path / "myrun.pt")
+    assert reloaded.weights.window == 320
+    assert reloaded.classes == FAKE_CLASSES
+
+
+def test_a_taken_or_escaping_name_is_refused_up_front(_lossy, tmp_path):
+    _run_lossy(tmp_path, name="run")
+    again = TrainState("lossy")
+    again.bind(FAKE_EXAMPLES, FAKE_CLASSES)
+    assert "already exists" in again.start(root=tmp_path, name="run")["error"]
+    assert "outside" in again.start(root=tmp_path, name="x", folder="../..")["error"]
+    assert "checkpoints folder" in again.start(name="x")["error"]
+
+
+def test_an_aborted_named_run_writes_no_final_weights(_pausable, tmp_path):
+    trainer, release, _ = _abortable_trainer(_pausable)
+    trainer.start(root=tmp_path, name="cut")
+    trainer.abort()
+    release.set()
+    trainer._worker.join(5)
+    assert trainer.status()["state"] == "aborted"
+    assert saved_checkpoints(tmp_path)["weights"] == []
+
+
+def test_window_floor_needs_the_box_and_snaps_to_cells():
+    pytest.importorskip("torch")
+    from smolsmort.detect.model import DEFAULT_DOWNSCALE, LEGACY_DOWNSCALE, STRIDE
+    from smolsmort.review.train import window_floor
+
+    floor = window_floor(226, 100)
+    assert floor % STRIDE == 0 and floor >= 226 / DEFAULT_DOWNSCALE / 0.2
+    # a coarser downscale shrinks the box in the input, so its floor is smaller
+    assert window_floor(226, 100, downscale=LEGACY_DOWNSCALE) < floor
