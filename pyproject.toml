@@ -63,9 +63,8 @@ python_files = ["test_*.py"]
 python_functions = ["test_*"]
 
 [tool.uv.sources]
-# a sha on smortui's development branch (dirMenu, range-slider, stepper, arrangement recipes);
-# move to a tag once smortui v0.2.0 is released
-ui-base = { git = "https://github.com/BalthazarFitzpatrick/smortui.git", rev = "8bedd6556358a2bc9a053c4c8fac2eb7a98e67af" }
+# smortui v0.2.0: dirMenu, range-slider, stepper and the arrangement recipes
+ui-base = { git = "https://github.com/BalthazarFitzpatrick/smortui.git", tag = "v0.2.0" }
 
 [dependency-groups]
 dev = ["ruff>=0.11.0", "pytest>=8.0", "torch>=2.0"]

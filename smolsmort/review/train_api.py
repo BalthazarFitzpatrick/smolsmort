@@ -240,7 +240,7 @@ class TrainApi:
     def window_floor(self) -> dict:
         """the smallest training window this set's boxes fit inside, whole. reported, not just
         enforced: a number that looks reasonable and quietly clips a box is the failure mode."""
-        from smolsmort.detect.model import DOWNSCALE
+        from smolsmort.detect.model import DEFAULT_DOWNSCALE as DOWNSCALE
         from smolsmort.detect.train import CROP, minimum_window, snapped_window
 
         width, height = self.trained_box_size()
@@ -396,7 +396,8 @@ class TrainApi:
         NOT A HOLDOUT: these are frames the model was fitted on, the optimistic case.
         """
         try:
-            from smolsmort.detect.model import DOWNSCALE, STRIDE
+            from smolsmort.detect.model import DEFAULT_DOWNSCALE as DOWNSCALE
+            from smolsmort.detect.model import STRIDE
             from smolsmort.detect.train import SCORE_BUCKETS
         except ImportError as exc:
             return {"error": f"the heatmap backend is unavailable: {exc}"}

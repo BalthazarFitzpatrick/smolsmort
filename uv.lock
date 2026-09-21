@@ -882,7 +882,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.0" },
     { name = "pillow", specifier = ">=11.0" },
     { name = "torch", marker = "extra == 'vision'", specifier = ">=2.0" },
-    { name = "ui-base", git = "https://github.com/BalthazarFitzpatrick/smortui.git?rev=8bedd6556358a2bc9a053c4c8fac2eb7a98e67af" },
+    { name = "ui-base", git = "https://github.com/BalthazarFitzpatrick/smortui.git?tag=v0.2.0" },
     { name = "xgboost", specifier = ">=3.2.0" },
 ]
 provides-extras = ["vision"]
@@ -978,7 +978,7 @@ wheels = [
 [[package]]
 name = "ui-base"
 version = "0.1.10"
-source = { git = "https://github.com/BalthazarFitzpatrick/smortui.git?rev=8bedd6556358a2bc9a053c4c8fac2eb7a98e67af#8bedd6556358a2bc9a053c4c8fac2eb7a98e67af" }
+source = { git = "https://github.com/BalthazarFitzpatrick/smortui.git?tag=v0.2.0#2525a218cbcfcd4f0beea8078b9f606378eda83b" }
 
 [[package]]
 name = "xgboost"

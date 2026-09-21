@@ -73,7 +73,7 @@ def window_floor(box_width: int, box_height: int, *, downscale: int | None = Non
 
     REPORTED, NOT JUST ENFORCED: a bare "283" means nothing without the box that produced it.
     """
-    from smolsmort.detect.model import DOWNSCALE
+    from smolsmort.detect.model import DEFAULT_DOWNSCALE as DOWNSCALE
     from smolsmort.detect.train import JITTER_FRACTION, snapped_window
 
     scale = DOWNSCALE if downscale is None else downscale
@@ -324,7 +324,7 @@ class TrainState:
 
     def window_floor(self) -> dict | None:
         """the floor for the bound set's own box, with the box and downscale that produced it"""
-        from smolsmort.detect.model import DOWNSCALE
+        from smolsmort.detect.model import DEFAULT_DOWNSCALE as DOWNSCALE
 
         box = self._fitted_box()
         if box is None:
