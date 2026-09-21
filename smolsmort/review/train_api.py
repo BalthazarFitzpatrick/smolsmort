@@ -716,7 +716,8 @@ class TrainApi:
         """cut the last sweep's proposals above this score into the pool. the sweep is untouched
         by the choice, so a threshold can be tried, looked at and tried again for the cost of
         the cut. THIS IS THE ONLY PLACE THE POOL IS TOUCHED by a sweep."""
-        job = self.sweep_job
+        with self.lock:
+            job = self.sweep_job
         proposals = job.get("proposals") or []
         if not proposals:
             return {"error": "no sweep to send - run one first"}
@@ -736,5 +737,7 @@ class TrainApi:
             select=keep,
         )
         with self.lock:
-            self.sweep_job["tiles"] = cut
+            # a sweep started meanwhile has its own job; the count belongs to the one we cut from
+            if self.sweep_job is job:
+                job["tiles"] = cut
         return {"sent": len(keep), "tiles": cut, "of": len(proposals), "tag": job["tag"]}
