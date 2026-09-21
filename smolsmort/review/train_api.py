@@ -26,8 +26,8 @@ from PIL import Image
 
 from smolsmort import backends
 from smolsmort.detect.dataset import DatasetError, Example, build_training_set
-from smolsmort.review import hyperparams, paths, splits
-from smolsmort.review.promote import set_filename
+from smolsmort.review import hyperparams, paths, setconfig, splits
+from smolsmort.review.naming import set_filename
 from smolsmort.review.recordings import flat_recording, frame_files, frames_dir_of
 from smolsmort.review.train import TrainState, TrainStateError, saved_checkpoints
 
@@ -82,13 +82,7 @@ class TrainApi:
     def _set_path(name: str) -> Path:
         """a set's file: a plain name, or a path relative to the sets folder. a path that would
         leave the folder raises ValueError, so a picker cannot bind something outside it"""
-        if "/" not in name:
-            return paths.DATASETS_DIR / f"{set_filename(name)}.jsonl"
-        root = paths.DATASETS_DIR.resolve()
-        target = (root / name).resolve()
-        if root not in target.parents:
-            raise ValueError(f"{name!r} is outside the sets folder")
-        return target if target.suffix == ".jsonl" else target.with_name(target.name + ".jsonl")
+        return setconfig.set_path(name)
 
     @staticmethod
     def _rows(path: Path) -> list[dict]:
@@ -107,6 +101,41 @@ class TrainApi:
         )
         return splits.keep(examples, self._rows(path), paths.SESSIONS_DIR, "train"), classes
 
+    def _use_backend(self, name: str) -> None:
+        """make the trainer drive this backend, rebuilding it only when the name changes"""
+        if name == self.trainer.backend_name:
+            return
+        backend = backends.get_backend(name)
+        self.trainer.backend_name = name
+        self.trainer.backend_options = {}
+        self.trainer._backend = backend
+
+    def _adopt_set_backend(self, name: str) -> None:
+        """switch to the backend a set names. a set without a `_backend.json` keeps whatever the
+        trainer already drives, so sets written before the file existed train as they did"""
+        config = setconfig.read_set_config(name)
+        if config:
+            self._use_backend(config["backend"])
+
+    def set_backend(self, name: str, backend: str, size_mode: str | None = None) -> dict:
+        """name the backend (and box size mode) a training set trains with, and remember it.
+
+        an unknown backend is refused with the known names. the set need not exist yet: the mode
+        matters while boxes are still being drawn for it.
+        """
+        if not name:
+            return {"error": "no set name given"}
+        try:
+            saved = setconfig.write_set_config(name, backend, size_mode)
+        except setconfig.SetConfigError as exc:
+            return {"error": str(exc), "backends": backends.names()}
+        except (OSError, ValueError) as exc:
+            return {"error": str(exc)}
+        self.state.active_set = name
+        if self.trainer.training_set == name:
+            self.bind(name)
+        return {"name": name, **saved}
+
     def bind(self, name: str) -> dict:
         """which promoted set the next run trains on. binding drops any loaded weights: a
         checkpoint carries its own channel map, and keeping one against a new set would offer
@@ -116,9 +145,11 @@ class TrainApi:
             self.trainer.bind([], {}, training_set=None)
             return self.class_names()
         try:
+            self._adopt_set_backend(name)
             examples, classes = self._load_set(name)
-        except (DatasetError, OSError, ValueError) as exc:
+        except (DatasetError, OSError, ValueError, backends.BackendError, ImportError) as exc:
             return {"error": str(exc), **self.class_names()}
+        self.state.active_set = name
         self._examples = examples
         self.trainer.bind([example_dict(e) for e in examples], classes, training_set=name)
         return self.class_names()
@@ -143,6 +174,7 @@ class TrainApi:
         base = {"device": self._device(), "model_exists": self.trainer.weights is not None}
         if not name:
             return {"set": None, **base}
+        base.update(setconfig.set_config(name))
         try:
             path = self._set_path(name)
             counts = dict.fromkeys(splits.SPLITS, 0)
@@ -237,6 +269,11 @@ class TrainApi:
         """
         if not self.trainer.examples:
             return {"error": "nothing bound to train on - bind a training set first"}
+        # the set names its backend: build that one, whatever the trainer was started with
+        try:
+            self._adopt_set_backend(self.trainer.training_set or "")
+        except (backends.BackendError, ImportError) as exc:
+            return {"error": str(exc)}
         epochs = max(1, min(2000, int(payload.get("epochs", 200))))
         batch = max(1, min(64, int(payload.get("batch", 8))))
         crop = payload.get("crop")

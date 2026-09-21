@@ -27,6 +27,8 @@ from smolsmort.review.render import corrected_box
 from smolsmort.review.tiles import load_tile, tile_png
 
 UNJUDGED = "unjudged"
+# the group a "not an object" verdict shows under. it is a verdict on the tile, not a class
+NOT_AN_OBJECT = "not an object"
 
 
 def _dataset_of(tile_name: str) -> str:
@@ -126,7 +128,7 @@ class PoolMixin:
                 continue
             tiles += 1
             record = records.get(path.stem) or {}
-            if record.get("label") or record.get("excluded"):
+            if record.get("label") or record.get("excluded") or record.get("not_object"):
                 judged += 1
         return {"tag": tag, "tiles": tiles, "judged": judged, "unsaved": self.pending_count(tag)}
 
@@ -170,7 +172,8 @@ class PoolMixin:
     # ---------------------------------------------------------------- judgements on disk
 
     def pool_records(self) -> dict:
-        """tile name -> {"label": str|None, "excluded": bool}, POOL-WIDE.
+        """tile name -> {"label": str|None, "excluded": bool, "not_object": bool (optional)},
+        POOL-WIDE. a record without the not_object key is an older one and reads as not so.
 
         a decision record keyed by candidate index is per dataset, but the grid shows every tile
         in the pool - judging a tile from one recording while another was bound wrote onto the
@@ -222,8 +225,11 @@ class PoolMixin:
         records = self.pool_records()
         record = records.setdefault(name, {"label": None, "excluded": False})
         record["excluded"] = excluded
+        # the verdicts are mutually exclusive: discarding clears not-an-object
+        if excluded:
+            record.pop("not_object", None)
         # a record claiming nothing is not a record
-        if not record.get("label") and not excluded:
+        if not record.get("label") and not excluded and not record.get("not_object"):
             records.pop(name, None)
         self._write_pool_records(records)
 
@@ -271,6 +277,16 @@ class PoolMixin:
             self._label_buffer.setdefault(_dataset_of(name), {})[name] = (label, definition)
             return self.pending_count()
 
+    def buffer_not_object(self, name: str) -> int | None:
+        """record a "not an object" verdict in memory, like a label: nothing reaches disk until
+        save_labels. it shares the buffer with class assignments - a later press on the same tile
+        replaces the earlier one. returns the pending total, or None when no such tile."""
+        if self.tile_path(name) is None:
+            return None
+        with self.lock:
+            self._label_buffer.setdefault(_dataset_of(name), {})[name] = (None, "")
+            return self.pending_count()
+
     def pending_count(self, tag: str | None = None) -> int:
         if tag is not None:
             return len(self._label_buffer.get(tag, {}))
@@ -289,8 +305,9 @@ class PoolMixin:
     def save_labels(self) -> dict:
         """flush the buffer to disk in ONE atomic write per pool, and empty it.
 
-        assigning a class is the opposite press to "not a class", so it un-excludes. a buffered
-        tile that has since gone from the pool is skipped and not counted.
+        assigning a class is the opposite press to "not a class", so it un-excludes, and it clears
+        a not-an-object verdict for the same reason. a buffered not-an-object clears the class and
+        the exclusion. a buffered tile that has since gone from the pool is skipped, not counted.
         """
         with self.lock:
             records = self.pool_records()
@@ -300,7 +317,12 @@ class PoolMixin:
                     if self.tile_path(name) is None:
                         continue
                     record = records.setdefault(name, {"label": None, "excluded": False})
-                    record.update(label=label, classdef=definition, excluded=False)
+                    if label is None:
+                        record.pop("classdef", None)
+                        record.update(label=None, excluded=False, not_object=True)
+                    else:
+                        record.pop("not_object", None)
+                        record.update(label=label, classdef=definition, excluded=False)
                     saved += 1
             if saved:
                 self._write_pool_records(records)
@@ -329,10 +351,12 @@ class PoolMixin:
         def item_of(name: str) -> dict:
             record = records.get(name, {})
             buffered = pending.get(name)
+            not_object = buffered[0] is None if buffered else bool(record.get("not_object"))
             return {
                 "name": name,
                 "excluded": False if buffered else record.get("excluded", False),
                 "assigned": buffered[0] if buffered else record.get("label"),
+                "not_object": not_object,
                 "pending": buffered is not None,
                 "source": _dataset_of(name),
             }
@@ -340,9 +364,12 @@ class PoolMixin:
         by_label: dict[str, list[dict]] = {}
         unjudged: list[dict] = []
         excluded: list[dict] = []
+        not_objects: list[dict] = []
         for name in names:
             item = item_of(name)
-            if item["excluded"]:
+            if item["not_object"]:
+                not_objects.append(item)
+            elif item["excluded"]:
                 excluded.append(item)
             elif item["assigned"]:
                 by_label.setdefault(item["assigned"], []).append(item)
@@ -350,14 +377,16 @@ class PoolMixin:
                 unjudged.append(item)
 
         clusters = [{"label": label, "items": by_label[label]} for label in sorted(by_label)]
-        for label, group in ((UNJUDGED, unjudged), (NOT_A_CLASS, excluded)):
+        groups = ((UNJUDGED, unjudged), (NOT_AN_OBJECT, not_objects), (NOT_A_CLASS, excluded))
+        for label, group in groups:
             if group:
                 clusters.append({"label": label, "items": group})
         return {
             "clusters": clusters,
             "counts": {
                 "boxes_loaded": len(names),
-                "classes_assigned": sum(len(group) for group in by_label.values()),
+                "classes_assigned": sum(len(group) for group in by_label.values())
+                + len(not_objects),
             },
         }
 

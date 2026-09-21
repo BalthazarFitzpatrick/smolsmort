@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from smolsmort.review import classscheme, housekeeping, paths
+from smolsmort.review import classscheme, housekeeping, paths, setconfig
 from smolsmort.review.bases import BaseRootError
 from smolsmort.review.playback_state import PlaybackState
 from smolsmort.review.state import ReviewState
@@ -146,7 +146,10 @@ def _height_delta(app: App, p: dict):
 @post("/api/find-run")
 def _find_run(app: App, p: dict):
     # find is drawing only: the boxes are the ones a human drew, nothing is mined
-    return app.state.save_drawn(p.get("boxes", []), negatives=p.get("negatives") or [])
+    # `set` names the training set being drawn for, whose size_mode decides if sizes are kept
+    return app.state.save_drawn(
+        p.get("boxes", []), negatives=p.get("negatives") or [], set_name=p.get("set") or None
+    )
 
 
 @post("/api/bind-recording")
@@ -278,7 +281,16 @@ def _exclude(app: App, p: dict):
 @post("/api/manual-label")
 def _manual_label(app: App, p: dict):
     """record the class picked for one or several tiles IN MEMORY. nothing is written until
-    /api/save-labels, and promotion reads disk only."""
+    /api/save-labels, and promotion reads disk only. `not_object: true` records the verdict
+    "this is not an object" instead of a class, buffered the same way."""
+    if p.get("not_object"):
+        pending = None
+        for one in p.get("names") or [p.get("name")]:
+            if one is not None:
+                pending = app.state.buffer_not_object(one) or pending
+        if pending is None:
+            raise RequestError(f"no tile called {p.get('name')}")
+        return {"ok": True, "not_object": True, "pending": pending}
     try:
         scheme = app.load_scheme(p["definition"])
         label = scheme.label_for(p.get("picked", {}))
@@ -292,6 +304,36 @@ def _manual_label(app: App, p: dict):
     if pending is None:
         raise RequestError(f"no tile called {p.get('name')}")
     return {"ok": True, "label": label, "pending": pending}
+
+
+@get("/api/frame-modes")
+def _frame_modes(app: App, q: dict):
+    recording = q.get("recording", "")
+    _check_recording(recording)
+    return {"frames": setconfig.read_frame_modes(recording)}
+
+
+@post("/api/frame-mode")
+def _frame_mode(app: App, p: dict):
+    recording, frame = str(p.get("recording", "")), str(p.get("frame", ""))
+    _check_recording(recording)
+    if not frame or "exhaustive" not in p:
+        raise RequestError("frame-mode needs a 'frame' and an 'exhaustive' boolean")
+    setconfig.write_frame_mode(recording, Path(frame).name, bool(p["exhaustive"]))
+    return {
+        "ok": True,
+        "recording": recording,
+        "frame": Path(frame).name,
+        "exhaustive": bool(p["exhaustive"]),
+    }
+
+
+def _check_recording(recording: str) -> None:
+    """a frame mode belongs to a recording that exists under the sessions base"""
+    root = paths.SESSIONS_DIR.resolve()
+    target = (root / recording).resolve() if recording else root
+    if not recording or root not in target.parents or not (target / "frames").is_dir():
+        raise RequestError(f"no recording called {recording!r}", 404)
 
 
 @post("/api/save-labels")
@@ -397,6 +439,14 @@ def _sweep_recordings(app: App, q: dict):
 @get("/api/sweep-status")
 def _sweep_status(app: App, q: dict):
     return app.trainer.sweep_status()
+
+
+@post("/api/train-set-backend")
+def _train_set_backend(app: App, p: dict):
+    # body: {name, backend, size_mode?}. size_mode defaults to native for box, uniform otherwise
+    return app.trainer.set_backend(
+        str(p.get("name", "")), str(p.get("backend", "")), p.get("size_mode")
+    )
 
 
 @post("/api/train-bind")
