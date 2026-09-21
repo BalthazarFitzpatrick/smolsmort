@@ -33,6 +33,13 @@ def test_a_reviewed_rect_wins_over_the_detector_guess():
     assert (x, y) == (500 - MARGIN_X + 30 + 32.0, 300 - MARGIN_Y + 12 + 7.0)
 
 
+def test_a_caller_with_its_own_crop_padding_passes_it_as_the_margin():
+    # a tool that pads crops by another amount undoes its own padding, not the review tool's
+    decision = {"rect": {"left": 0, "top": 0}}
+    x, y = centre_of(candidate(), decision, 64, 14, margin=(10, 4))
+    assert (x, y) == (500 - 10 + 32.0, 300 - 4 + 7.0)
+
+
 def test_height_delta_moves_the_centre():
     base = centre_of(candidate(), {"rect": {"left": 0, "top": 0}}, 64, 14)
     taller = centre_of(candidate(), {"rect": {"left": 0, "top": 0}, "height_delta": 6}, 64, 14)

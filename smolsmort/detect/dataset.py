@@ -39,9 +39,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # the review tool pads each candidate crop by this much before the user aligns a rect inside it;
-# rect coordinates are relative to that padded crop, so undoing it recovers frame coordinates
+# rect coordinates are relative to that padded crop, so undoing it recovers frame coordinates.
+# A DELIBERATE COPY of review.paths.MARGIN_X/Y: this package is the library layer and must not
+# import the review tool, so the value is a parameter (`margin=`) with the tool's numbers as
+# default, and tests/test_dataset.py pins the two pairs equal
 MARGIN_X = 30
 MARGIN_Y = 12
+MARGIN = (MARGIN_X, MARGIN_Y)
 
 
 class DatasetError(Exception):
@@ -79,7 +83,14 @@ class Example:
         return len(self.centres)
 
 
-def centre_of(candidate: dict, decision: dict | None, uniform_width: int, uniform_height: int):
+def centre_of(
+    candidate: dict,
+    decision: dict | None,
+    uniform_width: int,
+    uniform_height: int,
+    *,
+    margin: tuple[int, int] = MARGIN,
+):
     """where the object actually sits in FRAME coordinates.
 
     the candidate's own box is the detector's guess; if the reviewer dragged an alignment rect the
@@ -88,8 +99,8 @@ def centre_of(candidate: dict, decision: dict | None, uniform_width: int, unifor
     """
     rect = (decision or {}).get("rect")
     if rect:
-        origin_left = candidate["left"] - MARGIN_X
-        origin_top = candidate["top"] - MARGIN_Y
+        origin_left = candidate["left"] - margin[0]
+        origin_top = candidate["top"] - margin[1]
         height = max(4, uniform_height + (decision or {}).get("height_delta", 0))
         left = origin_left + float(rect["left"])
         top = origin_top + float(rect["top"])
@@ -106,6 +117,7 @@ def build(
     *,
     uniform_width: int = 64,
     uniform_height: int = 14,
+    margin: tuple[int, int] = MARGIN,
 ) -> list[Example]:
     """group one dataset's reviewed candidates into per-frame examples, reading from disk"""
     if not candidates_path.is_file():
@@ -121,6 +133,7 @@ def build(
         frames_dir,
         uniform_width=uniform_width,
         uniform_height=uniform_height,
+        margin=margin,
     )
 
 
@@ -224,6 +237,7 @@ def build_from(
     uniform_height: int = 14,
     labels: dict[int, str] | None = None,
     exhaustive_frames: set[str] | None = None,
+    margin: tuple[int, int] = MARGIN,
 ) -> list[Example]:
     """same, from lists already in memory - the review server holds live decisions that the file
     on disk may not have caught up with yet.
@@ -247,7 +261,7 @@ def build_from(
         example = by_frame.setdefault(candidate["path"], Example(path=image))
         if candidate["path"] in exhaustive_frames:
             example.exhaustive = True
-        centre = centre_of(candidate, decision, uniform_width, uniform_height)
+        centre = centre_of(candidate, decision, uniform_width, uniform_height, margin=margin)
 
         if decision and decision.get("keep"):
             example.centres.append(centre)
