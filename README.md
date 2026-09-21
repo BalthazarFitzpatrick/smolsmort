@@ -157,6 +157,22 @@ negative, except a discard centred inside a kept box. A `heatmap` training set m
 resolution, since the object is a different pixel size on each screen, and mixing them is refused;
 `box` scales every frame to one working size instead.
 
+**Per-set and per-frame settings in the review tool.** Each is a small optional json file, and an
+absent file means the old behaviour:
+- `<set>._backend.json` beside a training set holds `{"backend", "size_mode"}`. No file means
+  `heatmap` and `uniform`. `native` keeps every drawn box at its own width and height; `uniform`
+  fits one size to the set. Written by `POST /api/train-set-backend {name, backend, size_mode?}`
+  (`size_mode` defaults to `native` for `box`, else `uniform`; an unknown backend answers `{error}`
+  listing the names), read by `GET /api/train-info`, `train-bind` and `train-start`. Drawing for a
+  set passes `set` to `/api/find-run`.
+- `<recording>._frames.json` in the labels folder holds `{frame: {"exhaustive": true}}`. No entry
+  means explicit. `GET /api/frame-modes?recording=` and `POST /api/frame-mode {recording, frame,
+  exhaustive}`. On promotion, unjudged boxes on an exhaustive frame become negatives.
+- A tile record in `_labels.json` may carry `not_object: true`, the verdict "this is not an
+  object". It excludes label and discard, and is a hard negative on any frame. Discard is unchanged.
+  `POST /api/manual-label` takes `{names|name, not_object: true}` and buffers it until
+  `save-labels`.
+
 **Sweeping.** `sweep` runs trained weights over whole frames and returns candidates in the same
 schema the judging step reads, capped per frame and strongest first. It decodes the next frames on
 worker threads while the model runs: at 3420x2224, decoding a JPEG took 51 ms against 39 ms for the

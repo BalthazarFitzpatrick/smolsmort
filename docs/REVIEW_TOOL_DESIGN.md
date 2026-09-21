@@ -134,6 +134,13 @@ misaligned and clipped tiles. *Exhaustive* means a human declared the frame comp
 was proposed and not kept becomes a negative. The exception is a discard centred inside a kept box,
 which is a misaligned copy of a real object. Both backends get both modes for free.
 
+**A third verdict, and two optional files.** A tile may be judged `not_object`: unlike a discard it
+is a confirmed absence, so promotion writes it as a hard negative on any frame. It is mutually
+exclusive with a label and a discard, and buffered like a label until `save-labels`. A training set
+names its backend and size mode in `<set>._backend.json`, and a recording keeps per-frame labelling
+modes in `<recording>._frames.json` (see the README); both are read through `smolsmort.review.setconfig`
+and absent means the old behaviour.
+
 **Torch stays optional.** `detect/model.py` imports torch lazily inside `_torch()`, and the package
 declares it as an optional `vision` extra (`pyproject.toml`). The loop itself never imports torch,
 so a consumer doing tabular work is not made to install it. Tests that exercise the real CNN keep
