@@ -112,6 +112,27 @@ def classes_in(state: dict) -> int:
     return int(weight.shape[0])
 
 
+def widths_in(state: dict) -> tuple[int, int, int, int, int]:
+    """the five stage widths a checkpoint was built with, read off each stage's first conv.
+    a net built narrower or wider than the default could not be reloaded before this: `load`
+    rebuilt the default and load_state_dict refused the shapes"""
+    found = []
+    for stage in ("stem", "s4", "s8", "s16", "s32"):
+        weight = state.get(f"{stage}.0.0.weight")
+        if weight is None:
+            raise BoxModelError(f"not a box-model checkpoint: it has no {stage}.0.0.weight")
+        found.append(int(weight.shape[0]))
+    return tuple(found)
+
+
+def head_in(state: dict) -> int:
+    """the head width, read off the lateral conv that feeds it"""
+    weight = state.get("lat4.weight")
+    if weight is None:
+        raise BoxModelError("not a box-model checkpoint: it has no lat4.weight")
+    return int(weight.shape[0])
+
+
 def receptive_field(model, side: int = 1024) -> int:
     """how far one centre cell can see, in input px, measured rather than derived.
 
