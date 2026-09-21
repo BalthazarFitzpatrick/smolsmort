@@ -1,7 +1,7 @@
 """scoring a detector against hand-reviewed labels.
 
 THE CRITERION THIS ENCODES, written down before training rather than after: on held-out frames from
-a zone NOT in the training split, recall >= 90% of frames that contain an object, with a false-positive
+a recording NOT in the training split, recall >= 90% of frames that contain an object, with a false-positive
 rate <= 5% of frames that contain none. Anything that does not clearly beat the border-pair teacher's
 measured ~75% / ~75% on the same frames means the learned route is abandoned rather than tuned - so
 the teacher's own output is scored through this exact function too, and is the number to beat.

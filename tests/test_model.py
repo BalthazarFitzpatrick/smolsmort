@@ -1,6 +1,6 @@
 """the heatmap net: shapes, loss behaviour, decoding, and that it can actually learn.
 
-synthetic plates here - a gold bar on noisy green - because no corrected real dataset exists yet.
+synthetic objects here - a gold bar on noisy green - because no corrected real dataset exists yet.
 these prove the MACHINERY is sound so that the moment real labels arrive the only variable left is
 the data.
 """
@@ -101,7 +101,7 @@ def test_decode_inverts_the_snap_the_training_target_applies():
     """the round trip that was broken: a snapped centre must decode back to where it came from.
 
     decode added scale//2, a convention that fits a FLOOR snap. the target snaps with round(), so
-    the half-cell was pure bias - measured at +7px in x and +9px in y against real plates, which
+    the half-cell was pure bias - measured at +7px in x and +9px in y against real objects, which
     cost more localisation than everything else in the detector put together.
     """
     scale = STRIDE * DEFAULT_DOWNSCALE
@@ -118,7 +118,7 @@ def test_decode_inverts_the_snap_the_training_target_applies():
 def test_decode_suppresses_a_neighbouring_cell_of_the_same_blob():
     heat = np.zeros((20, 20), dtype=np.float32)
     heat[5, 7] = 0.9
-    heat[5, 8] = 0.8  # same plate, one cell over
+    heat[5, 8] = 0.8  # same object, one cell over
     assert len(decode_peaks(heat)) == 1
 
 
@@ -141,7 +141,7 @@ def test_a_non_2d_heatmap_is_refused():
 
 
 def test_the_net_can_actually_learn_a_synthetic_plate():
-    """the end-to-end check: overfit one frame and confirm the peak lands on the real plate.
+    """the end-to-end check: overfit one frame and confirm the peak lands on the real object.
 
     if the architecture, target and loss did not agree this would never converge, so it is the one
     test that exercises all three together.

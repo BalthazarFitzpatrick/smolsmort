@@ -29,7 +29,7 @@ def test_a_reviewed_rect_wins_over_the_detector_guess():
     """the rect is the human correction; it is crop-local so the padding has to come back off"""
     decision = {"rect": {"left": 30, "top": 12, "width": 64, "height": 14}}
     x, y = centre_of(candidate(), decision, 64, 14)
-    # rect at exactly the padding offset means the plate sits at the candidate's own origin
+    # rect at exactly the padding offset means the object sits at the candidate's own origin
     assert (x, y) == (500 - MARGIN_X + 30 + 32.0, 300 - MARGIN_Y + 12 + 7.0)
 
 
@@ -49,7 +49,7 @@ def test_kept_candidates_become_centres(tmp_path):
 def test_a_discard_is_ignored_not_a_negative(tmp_path):
     """REGRESSION. Discard means "not wanted as a tile" - misaligned, clipped, redundant - not
     "not an object". Drawing the labels showed a discarded candidate sitting on a legible one,
-    so training it as background would teach the model to suppress real plates."""
+    so training it as background would teach the model to suppress real objects."""
     frame = tmp_path / "f.jpg"
     frame.write_bytes(b"x")
     examples = build_from([candidate()], {"0": {"discard": True}}, tmp_path)

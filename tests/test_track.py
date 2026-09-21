@@ -1,4 +1,4 @@
-"""tracking the one plate through a recording, and refusing to answer when it cannot be found.
+"""tracking the one object through a recording, and refusing to answer when it cannot be found.
 
 the model itself is not exercised here - that needs torch and a trained checkpoint. What IS tested
 is everything around it, because every failure this module exists to prevent was a SELECTION
@@ -38,8 +38,8 @@ def test_with_no_history_the_strongest_peak_wins():
 
 
 def test_a_peak_too_far_from_the_last_one_is_not_the_same_plate():
-    """A PLATE CANNOT CROSS THE SCREEN IN 0.2s. The corner decoy sat ~1600px from the plate and
-    answered a steady 0.25 while the plate ran 0.35-0.51, so on any frame the plate dipped the
+    """AN OBJECT CANNOT CROSS THE SCREEN IN 0.2s. The corner decoy sat ~1600px from the object and
+    answered a steady 0.25 while the object ran 0.35-0.51, so on any frame the object dipped the
     strongest peak was the decoy - 12 jumps of ~1600px over one walk.
     """
     previous = (1280.0, 700.0)
@@ -47,7 +47,7 @@ def test_a_peak_too_far_from_the_last_one_is_not_the_same_plate():
 
 
 def test_among_plausible_peaks_the_strongest_wins_not_the_nearest():
-    """a real plate that dipped in score is still the plate; nearest alone chases whichever noise
+    """a real object that dipped in score is still the object; nearest alone chases whichever noise
     happens to sit closest to the last position
     """
     previous = (1280.0, 700.0)
@@ -65,26 +65,26 @@ def test_nothing_on_offer_is_answered_with_nothing():
 
 def test_a_peak_that_holds_one_spot_through_a_rotation_is_chrome():
     """MEASURED: a target frame answered at one position in 226 of 234 frames spanning 355 degrees,
-    while real plates held a position over 5-10 degrees. Balthazar Fitzpatrick spotted it - "I think its the model
+    while real objects held a position over 5-10 degrees. Balthazar Fitzpatrick spotted it - "I think its the model
     finding the target frame in the pictures".
     """
     per_frame, facings = {}, {}
     for i in range(60):
         name = f"{i:07d}.jpg"
         angle = 2 * math.pi * i / 60
-        # a fixed hud element, and a plate that moves with the camera
+        # a fixed hud element, and an object that moves with the camera
         per_frame[name] = [peak(2400, 50), peak(1280 + 400 * math.cos(angle), 700)]
         facings[name] = angle
 
     chrome = chrome_cells(per_frame, facings)
     assert chrome, "the fixed element was not detected"
     assert any(abs(cx * 50 - 2400) < 60 for cx, _ in chrome)
-    # and the moving plate is never called chrome, wherever it happens to sit
+    # and the moving object is never called chrome, wherever it happens to sit
     assert not any(abs(cy * 50 - 700) < 30 for _, cy in chrome)
 
 
 def test_a_position_seen_only_briefly_is_not_chrome():
-    """a plate parked while the player stands still must not be mistaken for a hud element - the
+    """an object parked while the player stands still must not be mistaken for a hud element - the
     discriminator is the FACING spread, not how many frames a position appears in
     """
     per_frame = {f"{i:07d}.jpg": [peak(1280, 700)] for i in range(40)}
@@ -128,8 +128,8 @@ def test_too_few_frames_to_have_a_neighbourhood_are_left_alone():
 
 
 def test_the_lost_threshold_allows_a_brief_occlusion():
-    """a plate hidden behind something for a frame or two must not hand the track to a decoy, and
-    a plate genuinely gone must not lock the tracker out for the rest of the recording
+    """an object hidden behind something for a frame or two must not hand the track to a decoy, and
+    an object genuinely gone must not lock the tracker out for the rest of the recording
     """
     assert 1 < LOST_AFTER_FRAMES < 30
 
