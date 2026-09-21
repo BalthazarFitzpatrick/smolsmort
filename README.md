@@ -148,12 +148,12 @@ just near the middle. A quarter are centred on hard negatives when a frame has t
 random. Targets are small Gaussian blobs snapped to cell centres, trained with a CentreNet-style
 focal loss. Channels train independently, so a rare class is not drowned out by a common one.
 
-**What a label means.** Keeping a candidate makes it a positive. Discarding one does not make it a
-negative: a discard can mean misaligned or redundant just as often as "not an object". Discarded and
-never-reviewed candidates become ignore regions the loss does not look at. Explicit negatives come
-only from places the model fired and was told no. A frame can also be marked exhaustive, meaning
-every object on it was proposed and judged. There, anything proposed and not kept becomes a
-negative, except a discard centred inside a kept box. A `heatmap` training set must use one capture
+**What a label means.** In the review tool, keeping a tile with a class makes it a positive and
+discarding it ("not a class") makes it a negative, for swept and drawn boxes alike. Tiles nobody
+judged are ignored by the loss. In a raw candidates queue read by `build_from`, a discard is still
+only an ignore region. A frame can also be marked exhaustive, meaning every object on it was
+proposed and judged. There, anything proposed and not kept becomes a negative, except a box centred
+inside a kept box. A `heatmap` training set must use one capture
 resolution, since the object is a different pixel size on each screen, and mixing them is refused;
 `box` scales every frame to one working size instead.
 
@@ -168,10 +168,6 @@ absent file means the old behaviour:
 - `<recording>._frames.json` in the labels folder holds `{frame: {"exhaustive": true}}`. No entry
   means explicit. `GET /api/frame-modes?recording=` and `POST /api/frame-mode {recording, frame,
   exhaustive}`. On promotion, unjudged boxes on an exhaustive frame become negatives.
-- A tile record in `_labels.json` may carry `not_object: true`, the verdict "this is not an
-  object". It excludes label and discard, and is a hard negative on any frame. Discard is unchanged.
-  `POST /api/manual-label` takes `{names|name, not_object: true}` and buffers it until
-  `save-labels`.
 
 **Sweeping.** `sweep` runs trained weights over whole frames and returns candidates in the same
 schema the judging step reads, capped per frame and strongest first. It decodes the next frames on
