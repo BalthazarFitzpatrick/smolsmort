@@ -21,6 +21,8 @@ from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
+from smolsmort.review.find_state import write_json_atomic, write_jsonl_atomic
+
 SPLITS = ("train", "val", "test")
 DEFAULT_RATIO = (70, 20, 10)
 
@@ -141,13 +143,13 @@ def write_into(set_path: Path, ratio: Sequence[int] = DEFAULT_RATIO, seed: int =
         row["split"] = by_frame[f"{row['recording']}/{row['frame']}"]
         counts["rows"][row["split"]] += 1
     counts["frames"] = {name: list(by_frame.values()).count(name) for name in SPLITS}
-    set_path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    write_jsonl_atomic(set_path, rows)
 
     meta_path = set_path.with_suffix(".meta.json")
     if meta_path.is_file():
         meta = json.loads(meta_path.read_text())
         meta["split"] = counts
-        meta_path.write_text(json.dumps(meta, indent=1))
+        write_json_atomic(meta_path, meta, indent=1)
     return counts
 
 

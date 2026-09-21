@@ -10,6 +10,7 @@ captured at different resolutions train as one set.
 from __future__ import annotations
 
 import math
+import os
 import random
 from pathlib import Path
 
@@ -311,7 +312,11 @@ def sweep(
 def save(model, path: Path) -> Path:
     torch = _torch()
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), path)
+    # temp beside it, then replace: a crash mid-write never leaves a checkpoint torch.load
+    # refuses, and a lister never sees a half-written .pt
+    temp = path.with_name(path.name + ".tmp")
+    torch.save(model.state_dict(), temp)
+    os.replace(temp, path)
     return path
 
 

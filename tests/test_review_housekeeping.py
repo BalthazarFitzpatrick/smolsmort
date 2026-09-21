@@ -161,11 +161,16 @@ def test_assets_for_finds_a_set_from_any_of_its_several_sources(bases):
 def test_assets_for_finds_a_checkpoint_via_its_training_sets_meta(bases):
     meta = {"name": "combo", "sources": [{"source": "rec_a"}]}
     (bases["sets"] / "combo.meta.json").write_text(json.dumps(meta))
-    classes = bases["checkpoints"] / "combo-20260901-000000.classes.json"
-    classes.write_text(json.dumps({"training_set": "combo", "classes": ["x"]}))
-    (bases["checkpoints"] / "combo-20260901-000000.pt").write_bytes(b"weights")
+    # the three files a named save writes: weights, the backend sidecar, the provenance
+    weights = bases["checkpoints"] / "combo-20260901-000000.pt"
+    weights.write_bytes(b"weights")
+    weights.with_name(weights.name + ".json").write_text(json.dumps({"classes": {"x": 0}}))
+    provenance = weights.with_name(weights.name + ".provenance.json")
+    provenance.write_text(json.dumps({"training_set": "combo", "classes": ["x"]}))
 
-    assert len(hk.assets_for("rec_a")["checkpoints"]) == 1
+    (found,) = hk.assets_for("rec_a")["checkpoints"]
+    assert found["label"] == "combo-20260901-000000"
+    assert {p.rsplit("/", 1)[-1] for p in found["paths"]} >= {weights.name, provenance.name}
     assert hk.assets_for("rec_z")["checkpoints"] == []
 
 

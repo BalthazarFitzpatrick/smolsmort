@@ -212,18 +212,21 @@ def assets_for(tag: str) -> dict[str, list[dict]]:
                 groups["sets"].append(_asset_row(name, files))
 
     if paths.CHECKPOINTS_DIR.is_dir():
-        for classes_path in sorted(paths.CHECKPOINTS_DIR.glob("*.classes.json")):
+        # a named save writes <stem>.pt, <stem>.pt.json (the backend sidecar) and
+        # <stem>.pt.provenance.json, which names the training set; the last is the key
+        for provenance in sorted(paths.CHECKPOINTS_DIR.rglob("*.pt.provenance.json")):
             try:
-                classes = json.loads(classes_path.read_text())
+                meta = json.loads(provenance.read_text())
             except (json.JSONDecodeError, OSError):
                 continue
-            set_name = classes.get("training_set")
+            set_name = meta.get("training_set")
             if tag not in sources_by_set.get(set_name, []):
                 continue
-            stem = classes_path.name.removesuffix(".classes.json")
-            weights = classes_path.with_name(f"{stem}.pt")
-            files = [p for p in (weights, classes_path) if p.exists()]
+            weights = provenance.with_name(provenance.name.removesuffix(".provenance.json"))
+            sidecar = weights.with_name(weights.name + ".json")
+            files = [p for p in (weights, sidecar, provenance) if p.exists()]
             if files:
+                stem = weights.relative_to(paths.CHECKPOINTS_DIR).with_suffix("").as_posix()
                 groups["checkpoints"].append(_asset_row(stem, files))
 
     return groups
