@@ -505,6 +505,10 @@ def test_promoting_writes_a_named_set_and_its_provenance_sidecar(state, world):
     assert {r["recording"] for r in rows} == {"rec_a"}
     meta = json.loads((world.sets / "first.meta.json").read_text())
     assert meta["sources"][0]["source"] == "rec_a" and meta["mode"] == "new"
+    assert "backend" not in meta and "size_mode" not in meta
+    # a human aid pointing at the candidates file, relative so moving labels_root can't stale it
+    candidates = meta["sources"][0]["candidates"]
+    assert not candidates.startswith("/") and str(world.labels) not in candidates
 
 
 def test_a_name_that_exists_is_a_decision_not_an_overwrite(state, world):
