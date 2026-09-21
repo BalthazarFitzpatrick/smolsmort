@@ -610,6 +610,54 @@ def test_saved_checkpoints_entries_are_passed_through_untouched(server, monkeypa
     assert jget(url, "/api/saved-checkpoints") == {"weights": [entry]}
 
 
+def test_two_unnamed_saves_in_one_second_do_not_overwrite_each_other(server, world):
+    app, url = server
+    app.trainer.trainer.weights = review_world.WorldWeights(
+        classes={"x": 0}, trained_on=1, box=(8, 8)
+    )
+    first = jpost(url, "/api/save-checkpoint", {})
+    second = jpost(url, "/api/save-checkpoint", {})
+    # the suggested name is stamped to the second, so these two collide by the clock, not by choice
+    assert first["name"] != second["name"], (first, second)
+    assert second["name"].endswith("-2.pt"), second
+    listed = {w["name"] for w in jget(url, "/api/saved-checkpoints")["weights"]}
+    assert {first["name"], second["name"]} <= listed, listed
+
+
+def test_a_typed_checkpoint_name_that_is_taken_is_refused(server, world):
+    app, url = server
+    app.trainer.trainer.weights = review_world.WorldWeights(
+        classes={"x": 0}, trained_on=1, box=(8, 8)
+    )
+    assert jpost(url, "/api/save-checkpoint", {"name": "r1"})["name"] == "r1.pt"
+    again = jpost(url, "/api/save-checkpoint", {"name": "r1"})
+    assert "already exists" in again["error"] and "error" in again
+
+
+def test_a_finished_runs_own_save_numbers_a_taken_name_instead_of_refusing(server, world):
+    app, _ = server
+    app.trainer.trainer.weights = review_world.WorldWeights(
+        classes={"x": 0}, trained_on=1, box=(8, 8)
+    )
+    assert app.trainer.save_checkpoint("r1")["name"] == "r1.pt"
+    # nobody is at the dialog when a run saves itself, so refusing would write nothing at all
+    assert app.trainer.save_checkpoint("r1", number_taken=True)["name"] == "r1-2.pt"
+
+
+def test_a_saved_checkpoints_reply_names_it_the_way_the_listing_does(server, world):
+    app, url = server
+    (world.checkpoints / "runs").mkdir()
+    app.trainer.trainer.weights = review_world.WorldWeights(
+        classes={"x": 0}, trained_on=1, box=(8, 8)
+    )
+    saved = jpost(url, "/api/save-checkpoint", {"name": "r1", "folder": "runs"})
+    assert saved["name"] == "runs/r1.pt", saved
+    listed = [w["name"] for w in jget(url, "/api/saved-checkpoints")["weights"]]
+    assert saved["name"] in listed, listed
+    # the name a save replies with is one load-checkpoint accepts
+    assert "error" not in jpost(url, "/api/load-checkpoint", {"name": saved["name"]})
+
+
 def test_the_checkpoint_folder_picker_is_confined(server, world):
     _, url = server
     (world.checkpoints / "runs").mkdir()
