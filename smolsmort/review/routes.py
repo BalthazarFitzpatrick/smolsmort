@@ -281,16 +281,7 @@ def _exclude(app: App, p: dict):
 @post("/api/manual-label")
 def _manual_label(app: App, p: dict):
     """record the class picked for one or several tiles IN MEMORY. nothing is written until
-    /api/save-labels, and promotion reads disk only. `not_object: true` records the verdict
-    "this is not an object" instead of a class, buffered the same way."""
-    if p.get("not_object"):
-        pending = None
-        for one in p.get("names") or [p.get("name")]:
-            if one is not None:
-                pending = app.state.buffer_not_object(one) or pending
-        if pending is None:
-            raise RequestError(f"no tile called {p.get('name')}")
-        return {"ok": True, "not_object": True, "pending": pending}
+    /api/save-labels, and promotion reads disk only."""
     try:
         scheme = app.load_scheme(p["definition"])
         label = scheme.label_for(p.get("picked", {}))

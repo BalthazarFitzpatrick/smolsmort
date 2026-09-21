@@ -173,20 +173,17 @@ class PromoteMixin:
                 )
             }
 
-        by_tag: dict[str, list[tuple[int, str | None, bool, bool]]] = {}
+        by_tag: dict[str, list[tuple[int, str | None, bool]]] = {}
         for tile, record in records.items():
             excluded = bool(record.get("excluded"))
-            not_object = bool(record.get("not_object"))
-            # an excluded swept box is a HARD NEGATIVE: the model fired there and was told no,
-            # the one kind of background worth sampling deliberately. an excluded drawn box is
-            # simply dropped - nothing proposed it. a not-an-object verdict is a hard negative on
-            # any frame, drawn or swept, explicit or exhaustive
-            if not excluded and not not_object and not record.get("label"):
+            # DISCARD AND "NOT A CLASS" ARE ONE VERDICT: this box is a negative, whether a sweep
+            # proposed it or a human drew it, on an explicit frame or an exhaustive one
+            if not excluded and not record.get("label"):
                 continue
             tag = _tile_tag(tile)
             if tag:
                 by_tag.setdefault(tag, []).append(
-                    (_tile_index(tile), record.get("label"), excluded, not_object)
+                    (_tile_index(tile), record.get("label"), excluded)
                 )
 
         rows, missing = [], 0
@@ -196,17 +193,16 @@ class PromoteMixin:
                 missing += len(entries)
                 continue
             candidates, candidates_path = self._resolve_candidates(
-                labels_root, tag, [index for index, _, _, _ in entries]
+                labels_root, tag, [index for index, _, _ in entries]
             )
             corrections = self._corrections_beside(candidates_path)
             frames_dir = session_frames_for(tag)
             tag_rows: list[dict] = []
-            for index, label, excluded, not_object in entries:
+            for index, label, excluded in entries:
                 if index >= len(candidates) or frames_dir is None:
                     missing += 1
                     continue
                 box = corrected_box(candidates[index], corrections.get(str(index)))
-                hard = excluded or not_object
                 row = {
                     "recording": str(frames_dir.parent.relative_to(paths.SESSIONS_DIR)),
                     "frame": box["path"],
@@ -214,12 +210,10 @@ class PromoteMixin:
                     "top": box["top"],
                     "width": box["width"],
                     "height": box["height"],
-                    "label": None if hard else label,
-                    "negative": hard,
+                    "label": None if excluded else label,
+                    "negative": excluded,
                     "source": tag,
                 }
-                if not_object:
-                    row["not_object"] = True
                 tag_rows.append(row)
             if frames_dir is not None and tag_rows:
                 self._apply_exhaustive(tag_rows, candidates, corrections, tag, entries)
@@ -301,7 +295,7 @@ class PromoteMixin:
         candidates: list[dict],
         corrections: dict,
         tag: str,
-        entries: list[tuple[int, str | None, bool, bool]],
+        entries: list[tuple[int, str | None, bool]],
     ) -> None:
         """on a frame a human declared exhaustive, every proposed box nobody kept is background.
 

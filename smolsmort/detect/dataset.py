@@ -22,6 +22,10 @@ teaches the model to suppress the very thing it is for. Discards are therefore i
 dataset carries NO explicit negatives - the background is everything the mining never proposed,
 which is almost all of every frame and is plenty.
 
+THIS IS THE RULE FOR build/build_from, a candidates queue with keep and discard decisions. the
+review tool's promoted sets differ: there a discard ("not a class") is one verdict, "this box is a
+negative", and promotion writes it as a negative row for swept and drawn boxes alike.
+
 THAT REASONING HOLDS ONLY WHERE THE MINING WAS A FILTERED SUBSET. A human can also declare a frame
 EXHAUSTIVE - every object in it has been proposed and reviewed, nothing else is out there. On such
 a frame an unkept candidate is not an unknown, it is a confirmed absence, so it becomes a real

@@ -660,7 +660,7 @@ def test_the_whole_loop_over_http_find_judge_promote_train_predict(server, world
     found = jpost(url, "/api/find-run", {"boxes": drawn_boxes(), "set": "loop"})
     assert found["tiles"] == 6 and found["size_mode"] == "native"
 
-    # judge, all three verdicts: four classes, one discard, one not-an-object
+    # judge: four classes, and two discards (drawn boxes, so drawn negatives)
     names = [i["name"] for c in jget(url, "/api/clusters")["clusters"] for i in c["items"]]
     for i, name in enumerate(names[:4]):
         jpost(
@@ -672,17 +672,14 @@ def test_the_whole_loop_over_http_find_judge_promote_train_predict(server, world
                 "picked": {"kind": "alpha" if i % 2 == 0 else "beta"},
             },
         )
-    verdict = jpost(url, "/api/manual-label", {"name": names[4], "not_object": True})
-    assert verdict == {"ok": True, "not_object": True, "pending": 5}
-    assert jpost(url, "/api/exclude", {"name": names[5], "excluded": True})["done"] == [names[5]]
-    assert jget(url, "/api/labels-buffer")["pending"] == 5
-    assert jpost(url, "/api/save-labels") == {"saved": 5}
+    assert jpost(url, "/api/exclude", {"names": names[4:], "excluded": True})["done"] == names[4:]
+    assert jget(url, "/api/labels-buffer")["pending"] == 4
+    assert jpost(url, "/api/save-labels") == {"saved": 4}
     grid = jget(url, "/api/clusters")
-    assert grid["counts"]["classes_assigned"] == 5
-    flagged = [i for c in grid["clusters"] for i in c["items"] if i["not_object"]]
-    assert [i["name"] for i in flagged] == [names[4]]
+    assert grid["counts"]["classes_assigned"] == 4
+    assert all("not_object" not in i for c in grid["clusters"] for i in c["items"])
 
-    # promote: one durable, named set; the two negatives are the verdicts, not classes
+    # promote: one durable, named set; the two discards are negative rows, not classes
     promoted = jpost(url, "/api/promote-training", {"name": "loop"})
     assert promoted["rows"] == 4 and promoted["classes"] == {"alpha": 2, "beta": 2}
     assert promoted["negatives"] >= 2
@@ -813,21 +810,3 @@ def test_frame_modes_over_http(server, world):
     assert jget(url, "/api/frame-modes?recording=rec_a") == {"frames": {}}
     assert get(url, "/api/frame-modes?recording=ghost")[0] == 404
     assert post(url, "/api/frame-mode", {"recording": "rec_a", "frame": "f01.png"})[0] == 400
-
-
-def test_not_object_round_trip_over_http(server, world):
-    _, url = server
-    save_definition()
-    jpost(url, "/api/bind-recording", {"kind": "session", "name": "rec_a"})
-    jpost(url, "/api/find-run", {"boxes": drawn_boxes()})
-    name = jget(url, "/api/clusters")["clusters"][0]["items"][0]["name"]
-    jpost(url, "/api/manual-label", {"names": [name], "not_object": True})
-    assert not (world.tiles / "_labels.json").exists()
-    jpost(url, "/api/save-labels")
-    assert json.loads((world.tiles / "_labels.json").read_text())[name]["not_object"] is True
-    jpost(
-        url, "/api/manual-label", {"name": name, "definition": "kinds", "picked": {"kind": "beta"}}
-    )
-    jpost(url, "/api/save-labels")
-    assert "not_object" not in json.loads((world.tiles / "_labels.json").read_text())[name]
-    assert post(url, "/api/manual-label", {"name": "ghost_k00000", "not_object": True})[0] == 400
