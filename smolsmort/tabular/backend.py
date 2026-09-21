@@ -46,16 +46,8 @@ def _row(path: Path) -> dict[str, float]:
     return {k: float(v) for k, v in features.items()}
 
 
-@dataclass
-class TabularExample:
-    path: Path
-    label: str | None = None
-
-
-def _example_row(item) -> tuple[Path, str | None]:
-    """a training example as (path, label) - a TabularExample, or the loop's dict shape"""
-    if isinstance(item, TabularExample):
-        return item.path, item.label
+def _example_row(item: dict) -> tuple[Path, str | None]:
+    """a training example as (path, label), from the loop's dict shape"""
     return Path(item["path"]), item.get("label")
 
 
