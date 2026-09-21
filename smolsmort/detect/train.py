@@ -563,7 +563,7 @@ def _sweep_frames(
         image, original = pending.pop(index).result()
         maps = _heatmaps_of(model, image, device)
         # frame px per capture px; boxes and peaks are decoded in capture px and mapped back
-        ratio = original / capture if capture else 1.0
+        ratio = frame_ratio(model, original)
         resampled = bool(capture) and original != capture
         highest = max(highest, float(maps.max()))
         counts, _ = np.histogram(maps.max(axis=0), bins=SCORE_BUCKETS, range=(0.0, 1.0))

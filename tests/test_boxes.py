@@ -99,6 +99,22 @@ def test_decode_scales_back_to_capture_pixels():
     assert found.width == pytest.approx(80, abs=2) and found.height == pytest.approx(240, abs=2)
 
 
+def test_a_box_checkpoint_built_narrower_than_the_default_reloads(tmp_path):
+    torch = pytest.importorskip("torch")
+    from smolsmort.boxes.model import build_model, head_in, widths_in
+    from smolsmort.boxes.train import load, save
+
+    # load used to rebuild the default net and load_state_dict refused these shapes
+    widths, head = (8, 16, 32, 48, 64), 24
+    model = build_model(classes=2, widths=widths, head=head)
+    path = save(model, tmp_path / "narrow.pt")
+    state = torch.load(path, map_location="cpu")
+    assert widths_in(state) == widths and head_in(state) == head
+    back = load(path, device="cpu")
+    assert back.heat[-1].weight.shape[0] == 2
+    assert back.stem[0][0].weight.shape[0] == 8 and back.lat4.weight.shape[0] == head
+
+
 def test_two_overlapping_objects_both_decode():
     """detect's decode drops a peak within 3 cells of a stronger one; overlapping centres are
     closer than that, and the second object is the one that must survive"""
