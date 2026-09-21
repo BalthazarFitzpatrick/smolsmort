@@ -196,6 +196,35 @@ def test_build_training_set_allows_mixed_resolutions_when_asked(tmp_path):
         build_training_set(path, tmp_path)
 
 
+def test_a_row_missing_a_required_key_is_skipped_and_counted(tmp_path):
+    frames = tmp_path / "rec" / "frames"
+    frames.mkdir(parents=True)
+    (frames / "f.jpg").write_bytes(b"x")
+    good = _training_row(frame="f.jpg")
+    bad = _training_row(frame="g.jpg")
+    del bad["frame"]
+    path = tmp_path / "training.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in (good, bad)) + "\n")
+
+    examples, classes = build_training_set(path, tmp_path)
+    assert len(examples) == 1 and examples[0].object_count == 1
+    assert classes.skipped == {"frame": 1}
+
+
+def test_a_non_numeric_box_value_is_skipped_and_counted(tmp_path):
+    frames = tmp_path / "rec" / "frames"
+    frames.mkdir(parents=True)
+    (frames / "f.jpg").write_bytes(b"x")
+    good = _training_row(frame="f.jpg")
+    bad = _training_row(frame="f.jpg", left="abc")
+    path = tmp_path / "training.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in (good, bad)) + "\n")
+
+    examples, classes = build_training_set(path, tmp_path)
+    assert examples[0].object_count == 1
+    assert classes.skipped == {"left: non-numeric": 1}
+
+
 def test_the_dataset_margins_are_the_review_tools_margins():
     """detect/dataset.py keeps its own copy so the library needs nothing from review; the two
     must not drift, or a centre computed here lands elsewhere than the tool drew it"""
