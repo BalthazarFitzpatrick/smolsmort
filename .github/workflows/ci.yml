@@ -3,6 +3,10 @@
 # macOS". This is the Linux runner. It also tests the OLDEST python the package claims to support,
 # which nothing local does; declaring >=3.11 while only ever running 3.14 is an aspiration, not a
 # fact.
+#
+# THE BROWSER CHECK RUNS HERE TOO, on one python. without it the ui layer was never proven by ci:
+# tests/test_review_ui_browser.py skips when playwright is not importable, and a green run said
+# nothing about tab wiring, pickers or the page's own scripts.
 name: ci
 
 on:
@@ -38,3 +42,10 @@ jobs:
 
       - name: pytest
         run: uv run pytest -q
+
+      - name: browser check
+        # one python is enough: the page does not change with the interpreter, chromium does the work
+        if: matrix.python == '3.14'
+        run: |
+          uv run --with playwright playwright install --with-deps chromium
+          uv run --with playwright pytest tests/test_review_ui_browser.py -q -rs
