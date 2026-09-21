@@ -86,4 +86,7 @@ class ReviewState(FindMixin, PoolMixin, PromoteMixin, BasesMixin):
         # ONE size for every candidate's tile, not each guessing its own. width is treated as
         # known and fixed; height is nudged live from the find tab
         self.uniform_width, self.uniform_height = DEFAULT_TILE_SIZE
+        # the training set drawing is for: its size_mode decides whether drawn sizes are kept.
+        # set by naming a backend for a set or binding one; None means uniform, as before
+        self.active_set: str | None = None
         self.load_crop_settings()

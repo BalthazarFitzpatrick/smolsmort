@@ -649,13 +649,20 @@ def test_the_whole_loop_over_http_find_judge_promote_train_predict(server, world
     _, url = server
     save_definition()
 
+    # the set names its backend and keeps drawn sizes; find draws for it
+    named = jpost(
+        url, "/api/train-set-backend", {"name": "loop", "backend": "world", "size_mode": "native"}
+    )
+    assert named == {"name": "loop", "backend": "world", "size_mode": "native"}
+
     # find: bind a recording, draw boxes, save
     jpost(url, "/api/bind-recording", {"kind": "session", "name": "rec_a"})
-    assert jpost(url, "/api/find-run", {"boxes": drawn_boxes()})["tiles"] == 6
+    found = jpost(url, "/api/find-run", {"boxes": drawn_boxes(), "set": "loop"})
+    assert found["tiles"] == 6 and found["size_mode"] == "native"
 
-    # judge: pick a class for every tile, then save
+    # judge: four classes, and two discards (drawn boxes, so drawn negatives)
     names = [i["name"] for c in jget(url, "/api/clusters")["clusters"] for i in c["items"]]
-    for i, name in enumerate(names):
+    for i, name in enumerate(names[:4]):
         jpost(
             url,
             "/api/manual-label",
@@ -665,18 +672,25 @@ def test_the_whole_loop_over_http_find_judge_promote_train_predict(server, world
                 "picked": {"kind": "alpha" if i % 2 == 0 else "beta"},
             },
         )
-    assert jget(url, "/api/labels-buffer")["pending"] == 6
-    assert jpost(url, "/api/save-labels") == {"saved": 6}
+    assert jpost(url, "/api/exclude", {"names": names[4:], "excluded": True})["done"] == names[4:]
+    assert jget(url, "/api/labels-buffer")["pending"] == 4
+    assert jpost(url, "/api/save-labels") == {"saved": 4}
+    grid = jget(url, "/api/clusters")
+    assert grid["counts"]["classes_assigned"] == 4
+    assert all("not_object" not in i for c in grid["clusters"] for i in c["items"])
 
-    # promote: one durable, named set
+    # promote: one durable, named set; the two discards are negative rows, not classes
     promoted = jpost(url, "/api/promote-training", {"name": "loop"})
-    assert promoted["rows"] == 6 and promoted["classes"] == {"alpha": 3, "beta": 3}
+    assert promoted["rows"] == 4 and promoted["classes"] == {"alpha": 2, "beta": 2}
+    assert promoted["negatives"] >= 2
 
     # train: bind, start with options, poll to the end
     bound = jpost(url, "/api/train-bind", {"name": "loop"})
     assert bound["classes"] == ["alpha", "beta"] and bound["set"] == "loop"
     info = jget(url, "/api/train-info")
-    assert info["frames"] == 3 and info["objects"] == 6 and info["thinnest"]["count"] == 3
+    assert info["frames"] == 3 and info["objects"] == 4 and info["thinnest"]["count"] == 2
+    assert info["backend"] == "world" and info["size_mode"] == "native"
+    assert info["negatives"] >= 2
     assert jpost(
         url, "/api/train-start", {"epochs": 3, "learning_rate": 0.001, "seed": 7, "name": "run1"}
     ) == {"ok": True}
@@ -719,7 +733,7 @@ def test_the_whole_loop_over_http_find_judge_promote_train_predict(server, world
     )
     jpost(url, "/api/save-labels")
     again = jpost(url, "/api/promote-training", {"name": "loop", "mode": "merge"})
-    assert again["mode"] == "merge" and again["rows"] == 7
+    assert again["mode"] == "merge" and again["rows"] == 5
     assert {s["source"] for s in again["sources"]} >= {"rec_a", sent["tag"]}
 
     # a saved checkpoint loads back with its class map
@@ -733,3 +747,66 @@ def test_binding_takes_a_set_path_inside_the_sets_folder_and_refuses_an_escape(s
     assert "outside the sets folder" in out["error"]
     assert "error" in jpost(url, "/api/train-bind", {"name": "nested/ghost"})
     assert "error" in jpost(url, "/api/load-checkpoint", {"name": "../../x.pt"})
+
+
+def test_a_set_without_a_backend_file_reports_heatmap_and_uniform(server, world):
+    _, url = server
+    save_definition()
+    jpost(url, "/api/bind-recording", {"kind": "session", "name": "rec_a"})
+    jpost(url, "/api/find-run", {"boxes": drawn_boxes()})
+    for name in [i["name"] for c in jget(url, "/api/clusters")["clusters"] for i in c["items"]]:
+        jpost(
+            url,
+            "/api/manual-label",
+            {"name": name, "definition": "kinds", "picked": {"kind": "alpha"}},
+        )
+    jpost(url, "/api/save-labels")
+    jpost(url, "/api/promote-training", {"name": "plain"})
+    jpost(url, "/api/train-bind", {"name": "plain"})
+    info = jget(url, "/api/train-info")
+    assert (info["backend"], info["size_mode"]) == ("heatmap", "uniform")
+    assert not list(world.sets.glob("*._backend.json"))
+    # no file: the trainer keeps the backend it was started with
+    assert jpost(url, "/api/train-start", {"epochs": 1}) == {"ok": True}
+    _wait(url, "/api/train-status", lambda s: s["finished"] or s["error"])
+    assert review_world.WorldBackend.seen["epochs"] == 1
+
+
+def test_train_set_backend_persists_and_refuses_unknown_names(server, world):
+    _, url = server
+    saved = jpost(url, "/api/train-set-backend", {"name": "s1", "backend": "box"})
+    assert saved == {"name": "s1", "backend": "box", "size_mode": "native"}
+    assert json.loads((world.sets / "s1._backend.json").read_text()) == {
+        "backend": "box",
+        "size_mode": "native",
+    }
+    other = jpost(url, "/api/train-set-backend", {"name": "s2", "backend": "heatmap"})
+    assert other["size_mode"] == "uniform"
+    override = jpost(
+        url, "/api/train-set-backend", {"name": "s3", "backend": "heatmap", "size_mode": "native"}
+    )
+    assert override["size_mode"] == "native"
+    refused = jpost(url, "/api/train-set-backend", {"name": "s4", "backend": "nope"})
+    assert (
+        "nope" in refused["error"] and "heatmap" in refused["error"] and "box" in refused["error"]
+    )
+    assert not (world.sets / "s4._backend.json").exists()
+
+
+def test_frame_modes_over_http(server, world):
+    _, url = server
+    assert jget(url, "/api/frame-modes?recording=rec_a") == {"frames": {}}
+    reply = jpost(
+        url, "/api/frame-mode", {"recording": "rec_a", "frame": "f01.png", "exhaustive": True}
+    )
+    assert reply == {"ok": True, "recording": "rec_a", "frame": "f01.png", "exhaustive": True}
+    assert jget(url, "/api/frame-modes?recording=rec_a") == {
+        "frames": {"f01.png": {"exhaustive": True}}
+    }
+    assert json.loads((world.labels / "rec_a._frames.json").read_text()) == {
+        "f01.png": {"exhaustive": True}
+    }
+    jpost(url, "/api/frame-mode", {"recording": "rec_a", "frame": "f01.png", "exhaustive": False})
+    assert jget(url, "/api/frame-modes?recording=rec_a") == {"frames": {}}
+    assert get(url, "/api/frame-modes?recording=ghost")[0] == 404
+    assert post(url, "/api/frame-mode", {"recording": "rec_a", "frame": "f01.png"})[0] == 400

@@ -140,13 +140,21 @@ class FindMixin:
             return None
 
     def save_drawn(
-        self, boxes: list[dict], mode: str = "drawn", negatives: list[dict] | None = None
+        self,
+        boxes: list[dict],
+        mode: str = "drawn",
+        negatives: list[dict] | None = None,
+        set_name: str | None = None,
     ) -> dict:
         """turn drawn boxes into a candidates file, bind it, and cut every box into the pool.
 
         THE SIZE IS FITTED, NOT TAKEN: a hand-drawn box is a few pixels out in each direction, and
         the median width and height across the set is a better estimate of the real object than
         any single one, so each box keeps its position and takes the set's size.
+
+        THE EXCEPTION IS A NATIVE SET. when the training set (`set_name`, else the active one)
+        has size_mode "native" every box keeps the width and height it was drawn at, marked
+        `size_mode: native` so a later re-cut reads the stored rectangle and never refits it.
         """
         if not boxes:
             return {"error": "no boxes drawn"}
@@ -154,16 +162,22 @@ class FindMixin:
         heights = sorted(int(b["height"]) for b in boxes)
         width = widths[len(widths) // 2]
         height = heights[len(heights) // 2]
+        # imported here: setconfig itself imports this module's atomic writer
+        from smolsmort.review import setconfig
+
+        size_mode = setconfig.set_config(set_name or self.active_set)["size_mode"]
+        native = size_mode == "native"
 
         def candidate_of(box: dict, **extra) -> dict:
             return {
                 "path": Path(box["path"]).name,
                 "left": int(box["left"]),
                 "top": int(box["top"]),
-                "width": width,
-                "height": height,
+                "width": int(box["width"]) if native else width,
+                "height": int(box["height"]) if native else height,
                 "matched_template": "drawn",
                 "score": 1.0,  # a human drew it; nothing scored it
+                **({"size_mode": "native"} if native else {}),
                 **extra,
             }
 
@@ -211,6 +225,7 @@ class FindMixin:
             "negatives": len(negatives or []),
             "width": width,
             "height": height,
+            "size_mode": size_mode,
             "tiles": saved,
             "spread": {"width": [widths[0], widths[-1]], "height": [heights[0], heights[-1]]},
         }
@@ -261,7 +276,6 @@ class FindMixin:
         falls back to the bare box, and one that cannot be cut at all is skipped: losing a crop
         is better than losing the save.
         """
-        pad_x, pad_y = self.crop_pads(width, height)
         self.unsorted_dir.mkdir(parents=True, exist_ok=True)
         source_dir = frames_dir or self.frames_dir
         recording = tag or _flat(recording_name(source_dir))
@@ -282,6 +296,12 @@ class FindMixin:
                 continue
             for index in indices:
                 candidate = candidates[index]
+                # a native box is cut from its own stored rectangle, not the set's fitted size
+                if candidate.get("size_mode") == "native":
+                    box_w, box_h = int(candidate["width"]), int(candidate["height"])
+                else:
+                    box_w, box_h = width, height
+                pad_x, pad_y = self.crop_pads(box_w, box_h)
                 # named after the RECORDING, not the dataset: the dataset tag carries the file's
                 # timestamp, so every save would mint fresh names and replace nothing
                 tile_name = f"{recording}_k{start_index + index:05d}"
@@ -292,13 +312,13 @@ class FindMixin:
                         tile_name,
                         top=top - pad_y,
                         left=left - pad_x,
-                        height=height + pad_y * 2,
-                        width=width + pad_x * 2,
+                        height=box_h + pad_y * 2,
+                        width=box_w + pad_x * 2,
                     )
                 except TileError:
                     try:
                         tile = cut_tile(
-                            frame, tile_name, top=top, left=left, height=height, width=width
+                            frame, tile_name, top=top, left=left, height=box_h, width=box_w
                         )
                     except TileError:
                         continue

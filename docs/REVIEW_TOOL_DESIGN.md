@@ -129,10 +129,15 @@ example dicts the loop hands a backend carry per-object `sizes` beside `centres`
 backend learns them, and a fixed-size one reads the single width/height.
 
 **Two labelling modes, decided per frame, in the dataset layer rather than in any backend.**
-*Explicit* is the default: whatever a human did not keep is ignored, because Discard also covers
-misaligned and clipped tiles. *Exhaustive* means a human declared the frame complete, so whatever
+*Explicit* is the default: a box nobody judged is ignored. In the review tool a discard
+("not a class") is a negative on every frame, swept or drawn. *Exhaustive* means a human declared the frame complete, so whatever
 was proposed and not kept becomes a negative. The exception is a discard centred inside a kept box,
 which is a misaligned copy of a real object. Both backends get both modes for free.
+
+**Two optional files.** A training set
+names its backend and size mode in `<set>._backend.json`, and a recording keeps per-frame labelling
+modes in `<recording>._frames.json` (see the README); both are read through `smolsmort.review.setconfig`
+and absent means the old behaviour.
 
 **Torch stays optional.** `detect/model.py` imports torch lazily inside `_torch()`, and the package
 declares it as an optional `vision` extra (`pyproject.toml`). The loop itself never imports torch,

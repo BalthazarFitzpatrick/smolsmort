@@ -14,31 +14,21 @@ from __future__ import annotations
 
 import json
 import random
-import re
 import zlib
 from datetime import datetime
 from pathlib import Path
 
 from PIL import Image
 
-from smolsmort.review import paths
+from smolsmort.review import paths, setconfig
 from smolsmort.review.find_state import read_jsonl, write_json_atomic
-from smolsmort.review.naming import _tile_index, _tile_tag
+from smolsmort.review.naming import DEFAULT_SET_NAME, _tile_index, _tile_tag, set_filename
 from smolsmort.review.recordings import session_frames_for
 from smolsmort.review.render import corrected_box
 
-# what a set is called when nobody names it
-DEFAULT_SET_NAME = "training"
 # what makes two rows the same box: the recording, the frame and the rect. NOT the source tag - the
 # same box re-proposed by a later sweep is still the same box, and a merge must not keep both
 ROW_KEY = ("recording", "frame", "left", "top", "width", "height")
-
-
-def set_filename(name: str) -> str:
-    """a typed set name as ONE safe filename stem: anything but a word character, dot or dash
-    collapses to an underscore, and an empty result falls back to the default name"""
-    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", name.strip()).strip("._-")
-    return stem or DEFAULT_SET_NAME
 
 
 def row_key(row: dict) -> tuple:
@@ -186,9 +176,8 @@ class PromoteMixin:
         by_tag: dict[str, list[tuple[int, str | None, bool]]] = {}
         for tile, record in records.items():
             excluded = bool(record.get("excluded"))
-            # an excluded swept box is a HARD NEGATIVE: the model fired there and was told no,
-            # the one kind of background worth sampling deliberately. an excluded drawn box is
-            # simply dropped - nothing proposed it
+            # DISCARD AND "NOT A CLASS" ARE ONE VERDICT: this box is a negative, whether a sweep
+            # proposed it or a human drew it, on an explicit frame or an exhaustive one
             if not excluded and not record.get("label"):
                 continue
             tag = _tile_tag(tile)
@@ -208,24 +197,27 @@ class PromoteMixin:
             )
             corrections = self._corrections_beside(candidates_path)
             frames_dir = session_frames_for(tag)
+            tag_rows: list[dict] = []
             for index, label, excluded in entries:
                 if index >= len(candidates) or frames_dir is None:
                     missing += 1
                     continue
                 box = corrected_box(candidates[index], corrections.get(str(index)))
-                rows.append(
-                    {
-                        "recording": str(frames_dir.parent.relative_to(paths.SESSIONS_DIR)),
-                        "frame": box["path"],
-                        "left": box["left"],
-                        "top": box["top"],
-                        "width": box["width"],
-                        "height": box["height"],
-                        "label": None if excluded else label,
-                        "negative": excluded,
-                        "source": tag,
-                    }
-                )
+                row = {
+                    "recording": str(frames_dir.parent.relative_to(paths.SESSIONS_DIR)),
+                    "frame": box["path"],
+                    "left": box["left"],
+                    "top": box["top"],
+                    "width": box["width"],
+                    "height": box["height"],
+                    "label": None if excluded else label,
+                    "negative": excluded,
+                    "source": tag,
+                }
+                tag_rows.append(row)
+            if frames_dir is not None and tag_rows:
+                self._apply_exhaustive(tag_rows, candidates, corrections, tag, entries)
+            rows.extend(tag_rows)
 
         synthetic = self._add_synthetic_negatives(rows)
 
@@ -272,7 +264,12 @@ class PromoteMixin:
         # rewritten whole, not appended: promoting twice must not double every row
         out.write_text("".join(json.dumps(r) + "\n" for r in merged))
         meta = self._write_set_meta(
-            out, merged, labels_root, mode if existing else "new", {r.get("source") for r in rows}
+            out,
+            merged,
+            labels_root,
+            mode if existing else "new",
+            {r.get("source") for r in rows},
+            setconfig.read_set_config(set_filename(name)),
         )
         counts: dict[str, int] = {}
         for row in merged:
@@ -291,6 +288,58 @@ class PromoteMixin:
             "sources": meta["sources"],
             "pending": self.pending_count(),
         }
+
+    @staticmethod
+    def _apply_exhaustive(
+        tag_rows: list[dict],
+        candidates: list[dict],
+        corrections: dict,
+        tag: str,
+        entries: list[tuple[int, str | None, bool]],
+    ) -> None:
+        """on a frame a human declared exhaustive, every proposed box nobody kept is background.
+
+        rows on such a frame carry `exhaustive: true`. each candidate of the tag that was not
+        judged becomes a negative row, unless its centre sits inside a kept box on that frame: that
+        is a misaligned copy of a real object, not a confirmed absence. explicit frames untouched.
+        """
+        recording = tag_rows[0]["recording"]
+        flagged = setconfig.exhaustive_frames(recording)
+        if not flagged:
+            return
+        judged = {index for index, *_ in entries}
+        kept = [r for r in tag_rows if not r["negative"]]
+        for row in tag_rows:
+            if row["frame"] in flagged:
+                row["exhaustive"] = True
+        for index, candidate in enumerate(candidates):
+            if index in judged or candidate["path"] not in flagged:
+                continue
+            box = corrected_box(candidate, corrections.get(str(index)))
+            cx = box["left"] + box["width"] / 2.0
+            cy = box["top"] + box["height"] / 2.0
+            inside = any(
+                r["frame"] == box["path"]
+                and abs(cx - (r["left"] + r["width"] / 2.0)) <= r["width"] / 2.0
+                and abs(cy - (r["top"] + r["height"] / 2.0)) <= r["height"] / 2.0
+                for r in kept
+            )
+            if inside:
+                continue
+            tag_rows.append(
+                {
+                    "recording": recording,
+                    "frame": box["path"],
+                    "left": box["left"],
+                    "top": box["top"],
+                    "width": box["width"],
+                    "height": box["height"],
+                    "label": None,
+                    "negative": True,
+                    "source": tag,
+                    "exhaustive": True,
+                }
+            )
 
     @staticmethod
     def _add_synthetic_negatives(rows: list[dict]) -> int:
@@ -336,6 +385,7 @@ class PromoteMixin:
         labels_root: Path,
         mode: str,
         written_sources: set[str],
+        config: dict | None = None,
     ) -> dict:
         """the sidecar that says where each row in the set came from.
 
@@ -377,5 +427,8 @@ class PromoteMixin:
             "rows": len(rows),
             "sources": sorted(by_source.values(), key=lambda e: e["source"]),
         }
+        # the backend the set names, recorded only for a set that has one
+        if config:
+            meta.update(backend=config["backend"], size_mode=config["size_mode"])
         write_json_atomic(meta_path, meta, indent=2)
         return meta
