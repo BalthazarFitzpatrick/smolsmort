@@ -215,10 +215,12 @@ A caller with pixels in hand (a live capture) does not have to write a file. Thr
 ```python
 from smolsmort.detect.train import frame_input, heatmaps_for_frame, load, predict_frame
 
-model = load(path)                                   # capture width and downscale come with it
-inputs, original_width = frame_input(model, frame)   # frame: (h, w, 3) rgb uint8, frame px
-maps, ratio = heatmaps_for_frame(model, frame)       # decode peaks yourself; x, y * ratio -> frame px
-found = predict_frame(model, frame, classes=classes, width=64, height=14)  # sweep's dicts minus path
+model = load(path)  # capture width and downscale come with it
+inputs, original_width = frame_input(model, frame)  # frame: (h, w, 3) rgb uint8, frame px
+maps, ratio = heatmaps_for_frame(model, frame)  # decode peaks yourself; x, y * ratio -> frame px
+found = predict_frame(
+    model, frame, classes=classes, width=64, height=14
+)  # sweep's dicts minus path
 ```
 
 `width` and `height` are the box in capture px, as `sweep` takes them. A frame narrower or wider
