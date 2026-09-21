@@ -608,14 +608,24 @@ def test_saved_checkpoints_entries_are_passed_through_untouched(server, monkeypa
     assert jget(url, "/api/saved-checkpoints") == {"weights": [entry]}
 
 
-def test_two_unnamed_saves_in_one_second_do_not_overwrite_each_other(server, world):
+def test_two_unnamed_saves_in_one_second_do_not_overwrite_each_other(server, world, monkeypatch):
     app, url = server
     app.trainer.trainer.weights = review_world.WorldWeights(
         classes={"x": 0}, trained_on=1, box=(8, 8)
     )
+
+    # the suggested name is stamped to the second; the clock is frozen so the two saves collide
+    # by construction rather than by racing a second boundary (ci once landed either side of it)
+    class Frozen:
+        @staticmethod
+        def now():
+            from datetime import datetime
+
+            return datetime(2026, 9, 21, 12, 0, 0)
+
+    monkeypatch.setattr("smolsmort.review.train.datetime", Frozen)
     first = jpost(url, "/api/save-checkpoint", {})
     second = jpost(url, "/api/save-checkpoint", {})
-    # the suggested name is stamped to the second, so these two collide by the clock, not by choice
     assert first["name"] != second["name"], (first, second)
     assert second["name"].endswith("-2.pt"), second
     listed = {w["name"] for w in jget(url, "/api/saved-checkpoints")["weights"]}
