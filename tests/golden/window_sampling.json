@@ -1,0 +1,326 @@
+[
+ {
+  "backend": "detect",
+  "frame": 320,
+  "seed": 0,
+  "shape": [
+   3,
+   128,
+   128
+  ],
+  "win_sum": 24540.259765625,
+  "target_sum": 0.0,
+  "mask_sum": 1024.0
+ },
+ {
+  "backend": "box",
+  "frame": 320,
+  "seed": 0,
+  "shape": [
+   3,
+   128,
+   128
+  ],
+  "win_sum": 24540.259765625,
+  "heat_sum": 0.0,
+  "mask_sum": 1022.0,
+  "size_sum": 0.0
+ },
+ {
+  "backend": "detect",
+  "frame": 320,
+  "seed": 1,
+  "shape": [
+   3,
+   128,
+   128
+  ],
+  "win_sum": 24610.83203125,
+  "target_sum": 28.263662338256836,
+  "mask_sum": 994.0
+ },
+ {
+  "backend": "box",
+  "frame": 320,
+  "seed": 1,
+  "shape": [
+   3,
+   128,
+   128
+  ],
+  "win_sum": 24610.83203125,
+  "heat_sum": 8.042522430419922,
+  "mask_sum": 992.0,
+  "size_sum": 9.441452026367188
+ },
+ {
+  "backend": "detect",
+  "frame": 320,
+  "seed": 2,
+  "shape": [
+   3,
+   128,
+   128
+  ],
+  "win_sum": 24525.6875,
+  "target_sum": 28.23461151123047,
+  "mask_sum": 1009.0
+ },
+ {
+  "backend": "box",
+  "frame": 320,
+  "seed": 2,
+  "shape": [
+   3,
+   128,
+   128
+  ],
+  "win_sum": 24525.6875,
+  "heat_sum": 8.042522430419922,
+  "mask_sum": 1007.0,
+  "size_sum": 9.441452026367188
+ },
+ {
+  "backend": "detect",
+  "frame": 320,
+  "seed": 7,
+  "shape": [
+   3,
+   128,
+   128
+  ],
+  "win_sum": 24610.83203125,
+  "target_sum": 28.263662338256836,
+  "mask_sum": 994.0
+ },
+ {
+  "backend": "box",
+  "frame": 320,
+  "seed": 7,
+  "shape": [
+   3,
+   128,
+   128
+  ],
+  "win_sum": 24610.83203125,
+  "heat_sum": 8.042522430419922,
+  "mask_sum": 992.0,
+  "size_sum": 9.441452026367188
+ },
+ {
+  "backend": "detect",
+  "frame": 256,
+  "seed": 0,
+  "shape": [
+   3,
+   128,
+   128
+  ],
+  "win_sum": 24571.86328125,
+  "target_sum": 0.0,
+  "mask_sum": 1024.0
+ },
+ {
+  "backend": "box",
+  "frame": 256,
+  "seed": 0,
+  "shape": [
+   3,
+   128,
+   128
+  ],
+  "win_sum": 24571.86328125,
+  "heat_sum": 0.0,
+  "mask_sum": 1022.0,
+  "size_sum": 0.0
+ },
+ {
+  "backend": "detect",
+  "frame": 256,
+  "seed": 1,
+  "shape": [
+   3,
+   128,
+   128
+  ],
+  "win_sum": 24581.16015625,
+  "target_sum": 28.26366424560547,
+  "mask_sum": 992.0
+ },
+ {
+  "backend": "box",
+  "frame": 256,
+  "seed": 1,
+  "shape": [
+   3,
+   128,
+   128
+  ],
+  "win_sum": 24581.16015625,
+  "heat_sum": 8.042522430419922,
+  "mask_sum": 992.0,
+  "size_sum": 9.441452026367188
+ },
+ {
+  "backend": "detect",
+  "frame": 256,
+  "seed": 2,
+  "shape": [
+   3,
+   128,
+   128
+  ],
+  "win_sum": 24533.0859375,
+  "target_sum": 23.077363967895508,
+  "mask_sum": 1024.0
+ },
+ {
+  "backend": "box",
+  "frame": 256,
+  "seed": 2,
+  "shape": [
+   3,
+   128,
+   128
+  ],
+  "win_sum": 24533.0859375,
+  "heat_sum": 7.0345458984375,
+  "mask_sum": 1024.0,
+  "size_sum": 9.441452026367188
+ },
+ {
+  "backend": "detect",
+  "frame": 256,
+  "seed": 7,
+  "shape": [
+   3,
+   128,
+   128
+  ],
+  "win_sum": 24581.16015625,
+  "target_sum": 28.26366424560547,
+  "mask_sum": 992.0
+ },
+ {
+  "backend": "box",
+  "frame": 256,
+  "seed": 7,
+  "shape": [
+   3,
+   128,
+   128
+  ],
+  "win_sum": 24581.16015625,
+  "heat_sum": 8.042522430419922,
+  "mask_sum": 992.0,
+  "size_sum": 9.441452026367188
+ },
+ {
+  "backend": "detect",
+  "frame": 400,
+  "seed": 0,
+  "shape": [
+   3,
+   128,
+   128
+  ],
+  "win_sum": 24634.98046875,
+  "target_sum": 0.0,
+  "mask_sum": 1024.0
+ },
+ {
+  "backend": "box",
+  "frame": 400,
+  "seed": 0,
+  "shape": [
+   3,
+   128,
+   128
+  ],
+  "win_sum": 24634.98046875,
+  "heat_sum": 0.0,
+  "mask_sum": 1024.0,
+  "size_sum": 0.0
+ },
+ {
+  "backend": "detect",
+  "frame": 400,
+  "seed": 1,
+  "shape": [
+   3,
+   128,
+   128
+  ],
+  "win_sum": 24606.05078125,
+  "target_sum": 28.263662338256836,
+  "mask_sum": 992.0
+ },
+ {
+  "backend": "box",
+  "frame": 400,
+  "seed": 1,
+  "shape": [
+   3,
+   128,
+   128
+  ],
+  "win_sum": 24606.05078125,
+  "heat_sum": 8.042522430419922,
+  "mask_sum": 992.0,
+  "size_sum": 9.441452026367188
+ },
+ {
+  "backend": "detect",
+  "frame": 400,
+  "seed": 2,
+  "shape": [
+   3,
+   128,
+   128
+  ],
+  "win_sum": 24576.103515625,
+  "target_sum": 28.26366424560547,
+  "mask_sum": 1016.0
+ },
+ {
+  "backend": "box",
+  "frame": 400,
+  "seed": 2,
+  "shape": [
+   3,
+   128,
+   128
+  ],
+  "win_sum": 24576.103515625,
+  "heat_sum": 8.042522430419922,
+  "mask_sum": 1016.0,
+  "size_sum": 9.441452026367188
+ },
+ {
+  "backend": "detect",
+  "frame": 400,
+  "seed": 7,
+  "shape": [
+   3,
+   128,
+   128
+  ],
+  "win_sum": 24606.05078125,
+  "target_sum": 28.263662338256836,
+  "mask_sum": 992.0
+ },
+ {
+  "backend": "box",
+  "frame": 400,
+  "seed": 7,
+  "shape": [
+   3,
+   128,
+   128
+  ],
+  "win_sum": 24606.05078125,
+  "heat_sum": 8.042522430419922,
+  "mask_sum": 992.0,
+  "size_sum": 9.441452026367188
+ }
+]

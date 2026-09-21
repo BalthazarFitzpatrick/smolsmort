@@ -32,7 +32,9 @@ from smolsmort.boxes.model import (
 )
 from smolsmort.detect.dataset import Example
 from smolsmort.detect.model import _torch
+from smolsmort.detect.prefetch import decode_ahead
 from smolsmort.detect.train import Progress
+from smolsmort.detect.windows import carve_ignore, window_origin
 from smolsmort.optim import build_optimizer
 
 CROP = 256  # training window side, input px; a multiple of the net's 32
@@ -73,20 +75,18 @@ def _window(example: Example, image: np.ndarray, scale: float, rng: random.Rando
     """one training window and its target, with the object anywhere in it rather than central"""
     _, height, width = image.shape
     side = min(size, height - height % 32, width - width % 32)
-    roll = rng.random()
-    if example.centres and roll < 0.6:
-        cx, cy = rng.choice(example.centres)
-        jitter = side * JITTER_FRACTION
-        left = int(cx * scale - side / 2 + rng.uniform(-jitter, jitter))
-        top = int(cy * scale - side / 2 + rng.uniform(-jitter, jitter))
-    elif example.negatives and roll < 0.8:
-        # a place the model fired and was told no - a random window almost never holds one
-        cx, cy = rng.choice(example.negatives)
-        left = int(cx * scale - side / 2 + rng.uniform(-side / 6, side / 6))
-        top = int(cy * scale - side / 2 + rng.uniform(-side / 6, side / 6))
-    else:
-        left, top = rng.randrange(0, max(1, width - side)), rng.randrange(0, max(1, height - side))
-    left, top = max(0, min(left, width - side)), max(0, min(top, height - side))
+    # the same object / hard-negative / anywhere policy as detect, with this backend's shares
+    left, top = window_origin(
+        rng,
+        side,
+        width,
+        height,
+        centres=[(cx * scale, cy * scale) for cx, cy in example.centres],
+        negatives=[(cx * scale, cy * scale) for cx, cy in example.negatives],
+        jitter_fraction=JITTER_FRACTION,
+        object_share=0.6,
+        negative_share=0.8,
+    )
 
     boxes = []
     for (cx, cy), (box_w, box_h) in zip(example.centres, _sizes_of(example), strict=True):
@@ -98,13 +98,7 @@ def _window(example: Example, image: np.ndarray, scale: float, rng: random.Rando
     cells = side // STRIDE
     target = box_target((cells, cells), boxes, channels, len(classes) if classes else 1)
 
-    for x0, y0, x1, y1 in example.ignore:
-        a, b = int((x0 * scale - left) / STRIDE), int((y0 * scale - top) / STRIDE)
-        c = math.ceil((x1 * scale - left) / STRIDE)
-        d = math.ceil((y1 * scale - top) / STRIDE)
-        a, b, c, d = max(0, a), max(0, b), min(cells, c), min(cells, d)
-        if a < c and b < d:
-            target.mask[b:d, a:c] = 0.0
+    carve_ignore(target.mask, example.ignore, left, top, STRIDE, lambda v: v * scale)
     # an ignore region must never blank out a confirmed object inside it
     target.mask[target.heat.max(axis=0) > 0.3] = 1.0
     return image[:, top : top + side, left : left + side], target
@@ -280,34 +274,26 @@ def sweep(
     frames are decoded one ahead on a worker thread, as in detect's sweep, so the model is not left
     waiting on pillow
     """
-    from concurrent.futures import ThreadPoolExecutor
-
     if device is None:
         device = next(model.parameters()).device
     by_channel = {index: label for label, index in classes.items()}
     out: list[dict] = []
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        pending = pool.submit(load_input, frames[0], long_side) if frames else None
-        for position, path in enumerate(frames, start=1):
-            image, scale = pending.result()
-            if position < len(frames):
-                pending = pool.submit(load_input, frames[position], long_side)
-            for found in _infer(model, image, scale, device, min_score, max_per_frame):
-                out.append(
-                    {
-                        "path": path.name,
-                        "left": max(0, round(found.left)),
-                        "top": max(0, round(found.top)),
-                        "width": max(1, round(found.width)),
-                        "height": max(1, round(found.height)),
-                        "matched_template": by_channel.get(
-                            found.channel, f"channel {found.channel}"
-                        ),
-                        "score": round(found.score, 4),
-                    }
-                )
-            if on_progress:
-                on_progress(position, len(frames), len(out))
+    decoded = decode_ahead(frames, lambda f: load_input(f, long_side), ahead=1, workers=1)
+    for position, (path, (image, scale)) in enumerate(decoded, start=1):
+        for found in _infer(model, image, scale, device, min_score, max_per_frame):
+            out.append(
+                {
+                    "path": path.name,
+                    "left": max(0, round(found.left)),
+                    "top": max(0, round(found.top)),
+                    "width": max(1, round(found.width)),
+                    "height": max(1, round(found.height)),
+                    "matched_template": by_channel.get(found.channel, f"channel {found.channel}"),
+                    "score": round(found.score, 4),
+                }
+            )
+        if on_progress:
+            on_progress(position, len(frames), len(out))
     return out
 
 
