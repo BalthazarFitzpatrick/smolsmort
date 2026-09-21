@@ -86,7 +86,6 @@ def seed(base: str, boxes: list[dict]) -> None:
 
 def shoot(out: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
-    review_world.register_world_backend()
     with tempfile.TemporaryDirectory() as tmp, pytest.MonkeyPatch.context() as patch:
         world = review_world.make_world(Path(tmp), patch, recordings=("demo",), frames=0)
         frames_dir = world.sessions / "demo" / "frames"
@@ -94,7 +93,9 @@ def shoot(out: Path) -> None:
         boxes = write_frames(frames_dir)
         review_world.save_definition("kinds", KINDS)
         app = build_app(
-            backend="world",
+            # the real heatmap backend: a short run on four frames gives a real loss curve and a
+            # real separation readout, which the suite's fake backend cannot
+            backend="heatmap",
             ui_dir=STATIC,
             tabs=[hyperparams_tab()],
             pool=world.tiles,
@@ -142,20 +143,36 @@ def shoot(out: Path) -> None:
                     'document.getElementById("train-summary").innerText.includes("objects")'
                 )
                 dismiss(page)
+                # 200 epochs is the default; twenty is enough for a curve and quick on cpu
+                for _ in range(4):
+                    page.click('[data-stepper="epochs"] [data-step="-50"]')
+                page.click('[data-stepper="epochs"] [data-step="50"]')
+                page.click('[data-stepper="epochs"] [data-step="-50"]')
                 page.click("#train-start")
                 page.wait_for_function(
                     'document.getElementById("train-progress-text").innerText.startsWith("done")',
+                    timeout=600000,
+                )
+                # the summary and the separation readout refresh after the run reports done
+                page.wait_for_function(
+                    'document.getElementById("train-summary").innerText.includes("ready to sweep")',
                     timeout=30000,
                 )
+                page.wait_for_timeout(1500)
+                page.evaluate("window.scrollTo(0, 0)")
+                page.wait_for_timeout(200)
+                page.screenshot(path=str(out / "train.jpg"), type="jpeg", quality=85)
                 page.click("#sweep-open")
                 page.click('.menu-item:has-text("demo")')
                 page.click("#sweep-start")
                 page.wait_for_function(
-                    'document.getElementById("sweep-progress-text").innerText.includes("proposals") || document.getElementById("sweep-progress-text").innerText.includes("floor")',
-                    timeout=30000,
+                    'document.getElementById("sweep-progress-text").innerText.includes("proposals")'
+                    ' || document.getElementById("sweep-progress-text").innerText.includes("floor")',
+                    timeout=300000,
                 )
                 page.wait_for_timeout(300)
-                page.screenshot(path=str(out / "train.jpg"), type="jpeg", quality=85)
+                page.locator("#sweep-send").scroll_into_view_if_needed()
+                page.screenshot(path=str(out / "train-sweep.jpg"), type="jpeg", quality=85)
 
                 show_tab(page, "housekeeping")
                 page.wait_for_timeout(400)
@@ -164,7 +181,6 @@ def shoot(out: Path) -> None:
         finally:
             server.shutdown()
             server.server_close()
-            review_world.unregister_world_backend()
     print(f"wrote {', '.join(p.name for p in sorted(out.glob('*.jpg')))} to {out}")
 
 
