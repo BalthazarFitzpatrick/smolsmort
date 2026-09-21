@@ -119,6 +119,25 @@ def test_a_frame_of_the_trained_width_is_not_reported_as_resampled(trained):
     assert abs(best["left"] + 20 - cx) <= 10 and abs(best["top"] + 8 - cy) <= 10
 
 
+def test_predict_frame_on_an_array_matches_a_sweep_over_the_same_file(trained):
+    from smolsmort.detect.train import heatmaps_for_frame, predict_frame
+
+    folder, model = trained
+    classes = {"bar": 0}
+    for name, width in (("arr_same.png", 320), ("arr_half.png", 160)):
+        draw_frame(folder / name, width)
+        swept = sweep(model, classes, [folder / name], width=BOX[0], height=BOX[1], device="cpu")
+        pixels = np.asarray(Image.open(folder / name).convert("RGB"))
+        direct = predict_frame(
+            model, pixels, classes=classes, width=BOX[0], height=BOX[1], device="cpu"
+        )
+        # the same candidates in the same order, minus the file name an array does not have
+        assert direct == [{k: v for k, v in c.items() if k != "path"} for c in swept], name
+        assert direct and ("resampled_from" in direct[0]) == (width != 320)
+        maps, ratio = heatmaps_for_frame(model, pixels, device="cpu")
+        assert maps.shape[0] == 1 and ratio == pytest.approx(width / 320)
+
+
 def test_fine_tuning_at_another_downscale_is_refused_naming_both(trained):
     folder, model = trained
     example = example_at(folder / "a.png", 320)

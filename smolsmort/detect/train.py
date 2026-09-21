@@ -135,13 +135,77 @@ def _load_frame(
     from PIL import Image
 
     with Image.open(path) as handle:
-        image = handle.convert("RGB")
-        original = image.width
-        if capture_width and original != capture_width:
-            height = max(1, round(image.height * capture_width / original))
-            image = image.resize((capture_width, height), Image.BILINEAR)
-        image = image.resize((image.width // downscale, image.height // downscale), Image.BILINEAR)
+        return _fit(handle.convert("RGB"), downscale, capture_width)
+
+
+def _fit(image, downscale: int, capture_width: int | None) -> tuple[np.ndarray, int]:
+    """(the net's input, the image's own width) for an rgb pillow image: resampled to the
+    capture width when it differs, then downscaled. one body for a file and for an array"""
+    from PIL import Image
+
+    original = image.width
+    if capture_width and original != capture_width:
+        height = max(1, round(image.height * capture_width / original))
+        image = image.resize((capture_width, height), Image.BILINEAR)
+    image = image.resize((image.width // downscale, image.height // downscale), Image.BILINEAR)
     return np.asarray(image, dtype=np.float32).transpose(2, 0, 1) / 255.0, original
+
+
+def frame_input(model, frame: np.ndarray) -> tuple[np.ndarray, int]:
+    """(the net's input, the frame's width) from a DECODED frame - (h, w, 3) rgb uint8 in the
+    frame's own px - using the capture width and downscale the weights record. the array-taking
+    twin of `_load_frame`, for a caller that already holds the pixels (a live capture) and used
+    to mirror the resample and downscale by hand"""
+    from PIL import Image
+
+    image = Image.fromarray(np.ascontiguousarray(frame)).convert("RGB")
+    return _fit(image, downscale_of(model), capture_width_of(model))
+
+
+def heatmaps_for_frame(model, frame: np.ndarray, device=None) -> tuple[np.ndarray, float]:
+    """(per-class heatmaps, frame px per capture px) for one decoded frame. peaks decoded from
+    the heatmaps with `decode_peaks(..., downscale=downscale_of(model))` are in capture px;
+    multiply by the ratio to land on the frame"""
+    if device is None:
+        device = next(model.parameters()).device
+    image, original = frame_input(model, frame)
+    return _heatmaps_of(model, image, device), frame_ratio(model, original)
+
+
+def predict_frame(
+    model,
+    frame: np.ndarray,
+    *,
+    classes: dict[str, int],
+    width: int,
+    height: int,
+    min_score: float = 0.5,
+    max_per_frame: int = 12,
+    device=None,
+) -> list[dict]:
+    """candidates for ONE decoded frame, in the frame's own px and in the schema `sweep` writes
+    (minus `path`, which an array does not have). the same steps a sweep takes per file, so a
+    caller holding a live capture gets exactly what the review tool would propose for it"""
+    if device is None:
+        device = next(model.parameters()).device
+    image, original = frame_input(model, frame)
+    maps = _heatmaps_of(model, image, device)
+    by_channel = {index: label for label, index in classes.items()}
+    found = _decode_frame(
+        maps,
+        frame_ratio(model, original),
+        by_channel,
+        downscale_of(model),
+        width=width,
+        height=height,
+        min_score=min_score,
+        max_per_frame=max_per_frame,
+    )
+    capture = capture_width_of(model)
+    if capture and original != capture:
+        for candidate in found:
+            candidate["resampled_from"] = original
+    return found
 
 
 def _load_input(
@@ -562,45 +626,71 @@ def _sweep_frames(
             pending[ahead] = pool.submit(_load_frame, frames[ahead], downscale, capture)
         image, original = pending.pop(index).result()
         maps = _heatmaps_of(model, image, device)
-        # frame px per capture px; boxes and peaks are decoded in capture px and mapped back
-        ratio = frame_ratio(model, original)
         resampled = bool(capture) and original != capture
         highest = max(highest, float(maps.max()))
         counts, _ = np.histogram(maps.max(axis=0), bins=SCORE_BUCKETS, range=(0.0, 1.0))
         histogram += counts
-        # STRONGEST FIRST, THEN CAPPED PER FRAME. an undertrained model answers warm nearly
-        # everywhere - measured: 6 epochs on 126 boxes produced 2278 peaks on a single frame, which
-        # is not a review queue, it is noise. a real frame holds a handful of objects, so keeping
-        # the best few is both honest and what makes the output judgeable
-        found = [
-            (peak, channel)
-            for channel in range(maps.shape[0])
-            # BOUNDED PER CHANNEL. only the best max_per_frame survive across all channels below,
-            # so nothing beyond that many from any single channel can ever be kept - decoding more
-            # is work thrown away, and at a low floor it is minutes of it
-            for peak in decode_peaks(
-                maps[channel], min_score=min_score, limit=max_per_frame, downscale=downscale
-            )
-        ]
-        found.sort(key=lambda pair: pair[0].score, reverse=True)
-        box_w, box_h = round(width * ratio), round(height * ratio)
-        for peak, channel in found[:max_per_frame]:
-            candidate = {
-                "path": path.name,
-                # decode_peaks gives a CENTRE; a candidate box is its top-left corner
-                "left": max(0, round(peak.x * ratio) - box_w // 2),
-                "top": max(0, round(peak.y * ratio) - box_h // 2),
-                "width": box_w,
-                "height": box_h,
-                "matched_template": by_channel.get(channel, f"channel {channel}"),
-                "score": round(peak.score, 4),
-            }
+        found = _decode_frame(
+            maps,
+            frame_ratio(model, original),
+            by_channel,
+            downscale,
+            width=width,
+            height=height,
+            min_score=min_score,
+            max_per_frame=max_per_frame,
+        )
+        for candidate in found:
+            candidate["path"] = path.name
             if resampled:
                 candidate["resampled_from"] = original
             out.append(candidate)
         if on_progress:
             on_progress(position, len(frames), len(out), highest, histogram)
     return out, highest, histogram
+
+
+def _decode_frame(
+    maps: np.ndarray,
+    ratio: float,
+    by_channel: dict[int, str],
+    downscale: int,
+    *,
+    width: int,
+    height: int,
+    min_score: float,
+    max_per_frame: int,
+) -> list[dict]:
+    """candidates in frame px from one frame's heatmaps. `ratio` is frame px per capture px;
+    boxes and peaks are decoded in capture px and mapped back"""
+    # STRONGEST FIRST, THEN CAPPED PER FRAME. an undertrained model answers warm nearly
+    # everywhere - measured: 6 epochs on 126 boxes produced 2278 peaks on a single frame, which
+    # is not a review queue, it is noise. a real frame holds a handful of objects, so keeping
+    # the best few is both honest and what makes the output judgeable
+    found = [
+        (peak, channel)
+        for channel in range(maps.shape[0])
+        # BOUNDED PER CHANNEL. only the best max_per_frame survive across all channels below,
+        # so nothing beyond that many from any single channel can ever be kept - decoding more
+        # is work thrown away, and at a low floor it is minutes of it
+        for peak in decode_peaks(
+            maps[channel], min_score=min_score, limit=max_per_frame, downscale=downscale
+        )
+    ]
+    found.sort(key=lambda pair: pair[0].score, reverse=True)
+    box_w, box_h = round(width * ratio), round(height * ratio)
+    return [
+        {
+            # decode_peaks gives a CENTRE; a candidate box is its top-left corner
+            "left": max(0, round(peak.x * ratio) - box_w // 2),
+            "top": max(0, round(peak.y * ratio) - box_h // 2),
+            "width": box_w,
+            "height": box_h,
+            "matched_template": by_channel.get(channel, f"channel {channel}"),
+            "score": round(peak.score, 4),
+        }
+        for peak, channel in found[:max_per_frame]
+    ]
 
 
 def save(model, path: Path) -> Path:
