@@ -1,9 +1,9 @@
 # smolsmort
 
-A small detector you train by judging its guesses. It finds objects on screen, proposes new ones on
-frames nobody has labelled, and those proposals come back to you to judge. Every round of judging
-makes the next model better. The model is swappable: a fixed-size and a variable-size one are built
-in, and your own plugs in by name.
+A small object detector you train by judging its guesses. Draw a few boxes, sort the tiles into
+classes, train, and the model proposes boxes on frames nobody has labelled. Those proposals come
+back to you to judge, and a wrong one becomes a labelled hard negative rather than being thrown
+away. Every round of judging makes the next model better, not just retrained.
 
 ```
   frames ──find──▶ candidates ──cut──▶ tiles ──judge──▶ classes
@@ -15,8 +15,30 @@ in, and your own plugs in by name.
       └──────────▶ judge again   (the loop closes here)
 ```
 
-The loop closes at judging. A wrong proposal becomes a labelled hard negative instead of being
-thrown away, and that is what makes the next model better rather than just retrained.
+Two ways in: a web tool that runs the whole loop (`uv run smolsmort`), and a python library for
+the pieces (train, predict, sweep, score, track). The model is swappable: a fixed-size `heatmap`
+backend and a variable-size `box` backend are built in, a tabular one sits beside them, and your own
+plugs in by name.
+
+The long version - every tab, every file on disk, every route - is
+[docs/GUIDE.md](docs/GUIDE.md). A worked setup on one object class is
+[docs/FISH.md](docs/FISH.md). The plugin seams and the reasoning behind them are
+[docs/REVIEW_TOOL_DESIGN.md](docs/REVIEW_TOOL_DESIGN.md).
+
+## Principles
+
+- **Judging is the product; the model is replaceable.** The loop is four seams with a written
+  contract, and a test drives it over fakes. A new model plugs in by name; the loop is not edited.
+- **A wrong proposal is a hard negative.** "Not a class" is a label, for swept and drawn boxes
+  alike. Unjudged tiles are ignored, never guessed. On a frame marked exhaustive, everything not kept
+  is background.
+- **Every default has a provenance.** Each number was measured on a real consumer and the code says
+  where. Pass your own for a different object.
+- **Measure before trusting.** A falling loss means training converged, not that the model is
+  right. Only a holdout says that, empty frames included.
+- **On-disk conventions are fixed; every extra file is optional.** Old data keeps loading; an
+  absent setting means the old behaviour; the loop's files are written whole or not at all.
+- **Torch is optional.** The loop, box maths, scoring and tracking need only numpy and pillow.
 
 ## Does it fit your problem?
 
@@ -25,9 +47,9 @@ One question picks the backend: **is the object a fixed, known size in pixels?**
 - **Yes: `heatmap`.** The model only answers *where* and *which class*. It regresses no width or
   height, which is why it has about 100,000 parameters instead of millions.
 - **No: `box`.** It predicts each object's own box, for objects that vary 4x and more in size, in
-  frames of different resolutions. About 844,000 parameters. It is new and proven only on synthetic
-  frames: it found 97% of objects standing apart, at a median IoU of 0.74, but only about half of
-  those overlapping another.
+  frames of different resolutions. About 844,000 parameters. Proven so far on synthetic frames: it
+  found 97% of objects standing apart, at a median IoU of 0.74, but only about half of those
+  overlapping another.
 
 | your setup | backend |
 |---|---|
@@ -39,24 +61,48 @@ One question picks the backend: **is the object a fixed, known size in pixels?**
 | You need outlines, not positions | neither, you want segmentation |
 
 Quick test: measure your object in twenty frames. If the largest is more than about 1.5 times the
-smallest, use `box`. [docs/FISH.md](docs/FISH.md) walks through a full setup with `heatmap` on a
-worked example.
+smallest, use `box`.
 
 ## Install
 
-Not on PyPI. Pin a commit from git:
+Not on PyPI. Pin a release tag from git:
 
 ```bash
-uv add "smolsmort[vision] @ git+https://github.com/BalthazarFitzpatrick/smolsmort.git@82d7374"
+uv add "smolsmort[vision] @ git+https://github.com/BalthazarFitzpatrick/smolsmort.git@v0.4.0"
 ```
 
-`[vision]` pulls torch (about 2 GB). Without it you get the box maths, scoring and tracking, which
-need only numpy and pillow. Pin `82d7374` or later: the `v0.1.0` tag predates a fix that moved every
-decoded peak 8 px down and right.
+`[vision]` pulls torch (about 2 GB). Without it you get the box maths, scoring and tracking. The
+review tool's page is built on `ui-base`, pulled in as a git dependency. Python 3.11 and newer; CI
+runs 3.11 and 3.14 on Linux.
 
-Python 3.11 and newer. CI runs 3.11 and 3.14 on Linux.
+## The review tool
 
-## Quickstart
+```bash
+uv run smolsmort                 # http://127.0.0.1:8080
+uv run smolsmort --port 8766 --backend box
+```
+
+Four tabs. Data lives under the repo root - `sessions/<recording>/frames/` for frames, `training/`
+for everything the loop produces - and the settings popup repoints any of it by browsing.
+
+- **find** - bind a recording, draw boxes on a sample of its frames, mark a frame exhaustive when
+  every object on it has been judged. Save cuts each box into a tile with a margin of frame around
+  it and writes the boxes as a candidates file.
+- **select** - open drawn passes and sweeps into one pool. Tiles arrive clustered; assign a class
+  from a definition, or mark a tile "not a class". Assignments are buffered until you save.
+  Promote writes the training set.
+- **train** - bind a set, pick the backend, see `capture / downscale = input px`, set epochs and
+  window (the tab refuses a window that would clip a box), train, watch the loss and the separation
+  between object and background, save weights by name. Then sweep a recording and send the
+  proposals above a score back to select.
+- **housekeeping** - what each recording, live or deleted, still owns downstream, and archive or
+  delete it without leaving a pool index pointing at nothing.
+
+Everything on disk is plain files with fixed names and meanings - candidates and decisions,
+tiles, a pool index, sets with a small config beside them, checkpoints with two json sidecars.
+[docs/GUIDE.md](docs/GUIDE.md) section 9 is the table.
+
+## The library
 
 Train on labelled centres, then find objects on frames the model has not seen. This runs as written
 on synthetic frames with a 132x12 bar on noise:
@@ -83,134 +129,12 @@ print("\n".join(score([boxes], [[Box(left, top, 132, 12)]]).lines()))
 ```
 
 On 20 training frames, 40 epochs on CPU found all 4 held-out bars within 8 px. Two things to know
-from that run:
+from that run: weaker secondary peaks around 0.4 appear beside a strong one (`decode_peaks` keeps
+anything above `min_score`, 0.35 by default, so raise it or pass `limit`), and `score` reports FAIL
+when the truth has no empty frames even at 100% recall, because a false positive can only be
+counted on a frame with nothing in it.
 
-- Weaker secondary peaks around 0.4 appear beside a strong one. `decode_peaks` keeps anything above
-  `min_score` (0.35 by default), so raise it or pass `limit`.
-- `score` reports FAIL when the truth has no empty frames, even at 100% recall. False positives can
-  only be counted on frames with nothing in them, so include some.
-
-## Adding a tab to the review UI
-
-`uv run smolsmort` serves the review page: find, select, train and housekeeping tabs on the shared
-`ui_base` kit. The tab bar is built from a list, so a host page adds its own tab by loading a
-script after `boot.js` that calls:
-
-```js
-window.smolsmortTabs.register({
-  id: 'mytab',          // unique, used as the panel's data-panel
-  label: 'my tab',      // shown in the tab bar
-  mount(panelEl) {      // runs once; fill panelEl with your markup
-    panelEl.textContent = 'hello';
-    return {enter() {}};  // optional: called each time the tab is shown
-  },
-});
-```
-
-## Swapping the model
-
-Every backend has the same four methods: train, predict, save and load. The loop drives whichever
-one it is handed and never learns which:
-
-```python
-from smolsmort import backends
-
-backend = backends.get_backend("box")  # or "heatmap"
-backends.register("mine", "my_package.backend", "MyBackend")  # your own model, no smolsmort edit
-```
-
-Listing or picking a backend never imports torch until a vision backend is actually built. A JSON
-file saved beside each checkpoint names the backend that wrote it (`backends.backend_of`), and a
-checkpoint without one is a heatmap checkpoint. `smolsmort.boxes.synthetic` writes frames with known
-boxes, for proving a setup before any real data is labelled.
-
-## How it works
-
-**The model.** A fully convolutional net with one heatmap channel per class. It runs on the frame
-downscaled 4x, and the heatmap has a stride of 4 on top of that, so one heatmap cell covers 16x16
-capture pixels. A wide 3x9 kernel near the end helps it see across long, thin objects. Parameters:
-99,769 with one class, 100,210 with ten. Fully convolutional means it trains on small crops and runs
-on whole frames of any size.
-
-**Peaks, not boxes.** `decode_peaks` finds local maxima above a threshold, suppresses neighbours
-within 3 cells, and returns centres in capture pixels. Since the object size is known, the box
-follows from the centre (`boxes_from_peaks`). The channel a peak comes from is its class.
-
-**The box backend.** The same heatmap idea, plus two more outputs at each cell: the object's log
-width and height, and where its centre sits inside the cell. An encoder down to stride 32 gives each
-cell a view of about 440 px, enough to size the largest object it is trained on, and training
-refuses an object bigger than that rather than sizing it wrong. Every frame is scaled to one working
-long side (768 px) first, which is why frames of different resolutions can train together.
-
-**Training.** Each batch is cut into 256 px windows (512 capture pixels). Half the windows are
-centred on a real object, offset up to 40% of the window so the model learns objects anywhere, not
-just near the middle. A quarter are centred on hard negatives when a frame has them, the rest are
-random. Targets are small Gaussian blobs snapped to cell centres, trained with a CentreNet-style
-focal loss. Channels train independently, so a rare class is not drowned out by a common one.
-
-**What a label means.** In the review tool, keeping a tile with a class makes it a positive and
-discarding it ("not a class") makes it a negative, for swept and drawn boxes alike. Tiles nobody
-judged are ignored by the loss. In a raw candidates queue read by `build_from`, a discard is still
-only an ignore region. A frame can also be marked exhaustive, meaning every object on it was
-proposed and judged. There, anything proposed and not kept becomes a negative, except a box centred
-inside a kept box. A `heatmap` training set must use one capture
-resolution, since the object is a different pixel size on each screen, and mixing them is refused;
-`box` scales every frame to one working size instead.
-
-**Per-set and per-frame settings in the review tool.** Each is a small optional json file, and an
-absent file means the old behaviour:
-- `<set>._backend.json` beside a training set holds `{"backend", "size_mode"}`. No file means
-  `heatmap` and `uniform`. `native` keeps every drawn box at its own width and height; `uniform`
-  fits one size to the set. Written by `POST /api/train-set-backend {name, backend, size_mode?}`
-  (`size_mode` defaults to `native` for `box`, else `uniform`; an unknown backend answers `{error}`
-  listing the names), read by `GET /api/train-info`, `train-bind` and `train-start`. Drawing for a
-  set passes `set` to `/api/find-run`.
-- `<recording>._frames.json` in the labels folder holds `{frame: {"exhaustive": true}}`. No entry
-  means explicit. `GET /api/frame-modes?recording=` and `POST /api/frame-mode {recording, frame,
-  exhaustive}`. On promotion, unjudged boxes on an exhaustive frame become negatives.
-
-**Sweeping.** `sweep` runs trained weights over whole frames and returns candidates in the same
-schema the judging step reads, capped per frame and strongest first. It decodes the next frames on
-worker threads while the model runs: at 3420x2224, decoding a JPEG took 51 ms against 39 ms for the
-forward pass, so the model was otherwise waiting on pillow.
-
-**Scoring.** Matching is per frame and positional. Two boxes match when they cover the same span on
-the same row. IoU fails on thin objects: on a 132x12 bar, an 8 px vertical offset drops IoU to 0.12.
-For squarer or variable-size objects, pass `match=iou_match(0.5)` instead. Empty frames are scored,
-because that is the only place a false positive can be counted cleanly. The built-in pass marks are
-90% recall with at most 5% false-positive frames. `beats_the_teacher` compares against a 75% recall,
-75% precision classical detector, the baseline the model was built to beat.
-
-**Tracking.** `track` follows one object across a recording from per-frame detections:
-- With no history, it takes the strongest peak. After that, it takes the strongest peak within a
-  plausible step, not the nearest, so it does not chase decoys.
-- `despike` drops frames that disagree with the median of their neighbours, which catches a tracker
-  that re-acquired onto a decoy and followed it smoothly.
-- `chrome_cells` finds detections that stay put while the camera turns. Those are part of the
-  interface, not the world.
-
-## Capture size and downscale
-
-The heatmap model records the frame width it was trained at (`capture_width`, px) and its
-`downscale` factor (an integer, 1 to 8, default 2). Both live in the checkpoint as buffers and are
-copied into the `<weights>.json` sidecar; an old checkpoint loads as capture unknown, downscale 4.
-
-- Training: `capture_width` left out is read from the frames and recorded. A smaller or larger value
-  resamples each frame to that width (aspect kept) before the downscale.
-- Inference: a frame whose width differs from the recorded capture width is resampled to it, run at
-  the weights' own downscale, and decoded boxes are mapped back to the frame's own pixels. Each such
-  candidate carries `resampled_from` (the frame width) and a sweep reports a `warning`. Unknown
-  capture: frames are used as given.
-- Fine-tuning: continuing from weights at a different downscale is refused (the architecture depends
-  on it); the weights' capture width wins over a different requested one.
-- Per set: `<set>._backend.json` may hold `capture_width` (absent: follow the frames) and
-  `downscale` (absent: the default). The box backend keeps its own `long_side`, shown as
-  `working_size`.
-
-### Predicting on a frame you already hold
-
-A caller with pixels in hand (a live capture) does not have to write a file. Three entry points in
-`smolsmort.detect.train` walk the same steps a sweep walks per file, so the two cannot drift:
+**Pixels you already hold.** A live capture does not have to become a file:
 
 ```python
 from smolsmort.detect.train import frame_input, heatmaps_for_frame, load, predict_frame
@@ -223,14 +147,92 @@ found = predict_frame(
 )  # sweep's dicts minus path
 ```
 
-`width` and `height` are the box in capture px, as `sweep` takes them. A frame narrower or wider
-than the recorded capture width is resampled first, and every returned box carries
-`resampled_from`.
+`width` and `height` are the box in capture px. A frame narrower or wider than the recorded
+capture width is resampled first, and every returned box carries `resampled_from`.
+
+**Swapping the model.** Every backend has four methods - train, predict, save, load - and the loop
+drives whichever it is handed:
+
+```python
+from smolsmort import backends
+
+backend = backends.get_backend("box")  # or "heatmap", "xgboost"
+backends.register("mine", "my_package.backend", "MyBackend")  # yours, no smolsmort edit
+```
+
+Listing or picking a backend never imports torch until a vision backend is built. A json sidecar
+beside each checkpoint names the backend that wrote it, and a checkpoint without one is a heatmap
+checkpoint. `smolsmort.boxes.synthetic` writes frames with known boxes, for proving a setup before
+any real data is labelled.
+
+**Adding a tab.** A host page loads a script after `boot.js` that calls:
+
+```js
+window.smolsmortTabs.register({
+  id: 'mytab',          // unique, used as the panel's data-panel
+  label: 'my tab',      // shown in the tab bar
+  mount(panelEl) {      // runs once; fill panelEl with your markup
+    panelEl.textContent = 'hello';
+    return {enter() {}};  // optional: called each time the tab is shown
+  },
+});
+```
+
+Its routes come in as a `smolsmort.review.routes.Tab` (`get`, `post`, `images` tables) passed to
+`build_app(tabs=[...])`; a path that collides with a core route is refused when the server is
+built, and `GET /api/tabs` lists what is registered.
+
+## How it works
+
+**The model.** A fully convolutional net with one heatmap channel per class. It runs on the frame
+downscaled (2 by default; the factor is stored in the checkpoint), with a stride of 4 on top, so one
+heatmap cell covers 8x8 capture pixels at the default. A wide 3x9 kernel near the end helps it see
+across long, thin objects. Parameters: 99,769 with one class, 100,210 with ten. Fully convolutional
+means it trains on small crops and runs on whole frames of any size.
+
+**Peaks, not boxes.** `decode_peaks` finds local maxima above a threshold, suppresses neighbours
+within 3 cells, and returns centres in capture pixels. Since the object size is known, the box
+follows from the centre. The channel a peak comes from is its class.
+
+**The box backend.** The same heatmap idea plus two more outputs per cell: the object's log width
+and height, and where its centre sits inside the cell. An encoder down to stride 32 gives each cell a
+view of about 440 px, enough to size the largest object it is trained on, and training refuses an
+object bigger than that rather than sizing it wrong. Every frame is scaled to one working long side
+(768 px) first, which is why frames of different resolutions can train together.
+
+**Training.** Each batch is cut into 256 px windows. Half the windows land around a real object,
+offset up to 40% of the window so the model learns objects anywhere, not just near the middle. A
+quarter land around hard negatives when a frame has them, the rest anywhere. Both backends share
+that policy (`smolsmort.detect.windows`). Targets are small Gaussian blobs snapped to cell centres,
+trained with a CentreNet-style focal loss; channels train independently, so a rare class is not
+drowned out by a common one.
+
+**Capture size.** The heatmap model records the frame width it was trained at and its downscale.
+Training reads the width off the frames unless told otherwise; a frame of another width is
+resampled to it before the downscale, at training and at inference, and decoded boxes are mapped
+back to the frame's own pixels. Fine-tuning at a different downscale is refused; the architecture
+depends on it. A `heatmap` set must use one capture resolution and mixing is refused; `box` scales
+every frame to one working size instead.
+
+**Sweeping.** `sweep` runs trained weights over whole frames and returns candidates in the schema
+the judging step reads, capped per frame and strongest first. Frames decode on worker threads ahead
+of the model: at 3420x2224, decoding a JPEG took 51 ms against 39 ms for the forward pass.
+
+**Scoring.** Matching is per frame and positional: two boxes match when they cover the same span on
+the same row. IoU fails on thin objects (an 8 px vertical offset on a 132x12 bar drops IoU to 0.12);
+pass `match=iou_match(0.5)` for squarer or variable-size objects. The built-in pass marks are 90%
+recall with at most 5% false-positive frames; `beats_the_teacher` compares against the 75% recall,
+75% precision classical detector the model was built to beat.
+
+**Tracking.** `track` follows one object across a recording: the strongest peak with no history,
+then the strongest within a plausible step (not the nearest, so it does not chase decoys).
+`despike` drops frames that disagree with their neighbours' median; `chrome_cells` finds detections
+that never move while the camera turns - interface, not world.
 
 ## Defaults and where they came from
 
 Every tuned number was measured on the first consumer, a game-screen detector for long, thin bars
-about 132x12 px at 2560 wide. They are parameters with a stated origin, so pass your own for a
+about 132x12 px at 2560 wide. They are parameters with a stated origin; pass your own for a
 different object.
 
 | setting | default | where it lives |
@@ -242,68 +244,32 @@ different object.
 | training window / offset | 256 px / 40% | `train.CROP`, `train.JITTER_FRACTION` |
 | tracker step / lost after | 600 px / 5 frames | `track.MAX_STEP_PX`, `LOST_AFTER_FRAMES` |
 | box backend working long side | 768 px, from a synthetic spike | `boxes.model.WORK_LONG_SIDE` |
+| review tile | 64x14 px, plus a crop margin | `review.state.DEFAULT_TILE_SIZE`, `paths.MARGIN_X/Y` |
 
-`train.minimum_window(width, height)` tells you the smallest window that never clips your object at
-the offset extremes. `train.snapped_window` rounds a window up to a whole number of cells, which the
-model and target need to agree on.
+`train.minimum_window(width, height)` is the smallest window that never clips your object at the
+offset extremes; `train.snapped_window` rounds a window up to a whole number of cells.
 
 ## In use
 
-A private game-overlay project finds nameplates with it: 10 classes,
-100,210 parameters, about 44 ms per 3420x2224 frame on an Apple M4 including the JPEG decode. Its
-first honest evaluation on a hand-drawn holdout returned 24% precision, with the highest-scoring
-detections the wrong ones. That is what the loop exists to find out. Read a falling loss as "training
-converged", never as "the model is right". Only a holdout tells you that.
+A private game-overlay project finds nameplates with it: 10 classes, 100,210 parameters, about 44
+ms per 3420x2224 frame on an Apple M4 including the JPEG decode. Its first honest evaluation on a
+hand-drawn holdout returned 24% precision, with the highest-scoring detections the wrong ones. That
+is what the loop exists to find out.
 
-## Status
-
-- **Here now:** the heatmap backend in `smolsmort/detect/` (box, model, dataset, train, scoring,
-  track), the box backend in `smolsmort/boxes/`, and backends by name in `smolsmort/backends.py`.
-- **In progress:** the review web tool, where candidates are found, judged and promoted. It is being
-  ported from that project in PR #2.
-- **Planned:** a train tab that picks the backend by name, and a tabular backend (xgboost) beside the
-  vision ones.
-
-The API will move until the port is finished.
-
-## Troubleshooting
-
-### A smortboard card stopped on `LEASE_CONFLICT`
-
-Work on this repo runs as [smortboard](https://github.com/BalthazarFitzpatrick/smortboard) cards. A
-card may only write the files its lease allows; when it writes outside it, the card stops with
-`LEASE_CONFLICT` and its note names the files it needed. Widen the lease, then resume the card:
+## Development
 
 ```bash
-curl -s -X PATCH 127.0.0.1:8000/api/cards/<card-id> \
-  -H 'content-type: application/json' \
-  -d '{"leases": ["smolsmort/detect/**", "tests/**"]}'
-curl -s -X POST 127.0.0.1:8000/api/cards/<card-id>/answer \
-  -H 'content-type: application/json' \
-  -d '{"message": "lease widened to smolsmort/detect/**, tests/** - go ahead"}'
+uv sync --extra vision
+uv run ruff check . --fix --extend-exclude .claude && uv run ruff format --extend-exclude .claude .
+uv run pytest -q
+uv run --with playwright pytest tests/test_review_ui_browser.py -q   # headless chromium, one test per tab
 ```
 
-The PATCH replaces the whole lease, so repeat any glob it should keep. Card ids come from
-`curl -s 127.0.0.1:8000/api/boards/<board-id>/cards`. The full procedure, and how globs are
-matched, is in [smortboard's troubleshooting](https://github.com/BalthazarFitzpatrick/smortboard#troubleshooting).
-
-Common leases for this repo:
-
-| Change | Lease |
-|---|---|
-| the heatmap backend | `smolsmort/detect/**`, `tests/**` |
-| the box backend | `smolsmort/boxes/**`, `tests/test_boxes.py`, `tests/test_variable_boxes.py` |
-| backends by name | `smolsmort/backends.py`, `tests/**` |
-| the review tool | `smolsmort/review/**`, `smolsmort/review_ui/**`, `tests/**` |
-| docs | `README.md`, `docs/**` |
+CI runs the suite on 3.11 and 3.14 and the browser check on 3.14. Work on this repo runs as
+[smortboard](https://github.com/BalthazarFitzpatrick/smortboard) cards; a card may only write the
+files its lease allows, and one that stops on `LEASE_CONFLICT` names the files it needed - widen
+the lease and resume it (the procedure is in smortboard's troubleshooting).
 
 ## Licence
 
 MIT, see [LICENSE](LICENSE).
-
-## Extra tabs
-
-A host adds tabs without editing the loop: build a `smolsmort.review.routes.Tab` with its own
-`get` and `post` route tables (full paths, json in and out) and optional `images`, and pass it in
-`build_app(tabs=[...])`. A path that collides with a core route is refused when the server is
-built. `GET /api/tabs` lists the registered names so a page can offer them.
