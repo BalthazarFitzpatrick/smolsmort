@@ -87,6 +87,8 @@ def make_handler(train_state_for: Callable[[], object] | None = None):
                     "Content-Type", "text/javascript" if path.endswith(".js") else "text/css"
                 )
                 self.send_header("Content-Length", str(len(body)))
+                # the same policy as this page's own files above: nothing cached across a reload
+                self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(body)
                 return
@@ -109,7 +111,8 @@ def make_handler(train_state_for: Callable[[], object] | None = None):
             backend = payload.get("backend", "heatmap")
             try:
                 resolved = resolve_hyperparams(backend, payload)
-            except RequestError as exc:
+            except (RequestError, ValueError, TypeError) as exc:
+                # ValueError/TypeError: a field that is not a number, e.g. "abc" for a rate
                 self._json({"error": str(exc)}, status=400)
                 return
             if train_state_for is None:

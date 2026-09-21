@@ -94,6 +94,13 @@ def test_an_unknown_backend_is_a_400(running_server):
     assert status == 400 and "nope" in payload["error"]
 
 
+def test_a_field_that_is_not_a_number_is_a_400_not_a_dropped_connection(running_server):
+    status, payload = _post(
+        running_server, "/api/train-start", {"backend": "heatmap", "learning_rate": "abc"}
+    )
+    assert status == 400 and "abc" in payload["error"]
+
+
 def test_train_start_with_no_bound_trainer_only_resolves(running_server):
     status, payload = _post(
         running_server, "/api/train-start", {"backend": "heatmap", "learning_rate": 5e-4}
