@@ -106,7 +106,7 @@ def test_a_named_save_round_trips_with_provenance(tmp_path):
     saved = trainer.save(weights_path)
 
     assert saved["training_set"] == "set_a"
-    assert saved["classes"] == ["friendly", "hostile"]
+    assert saved["classes"] == {"friendly": 0, "hostile": 1}
     assert weights_path.is_file()
 
     sidecar = json.loads(weights_path.with_name(weights_path.name + ".provenance.json").read_text())
@@ -400,7 +400,7 @@ def test_bind_train_inspect_sweep_save_load_against_the_heatmap_backend(tmp_path
 
     weights_path = tmp_path / "checkpoints" / "run-a.pt"
     saved = trainer.save(weights_path)
-    assert saved["classes"] == ["friendly", "hostile"]
+    assert saved["classes"] == {"friendly": 0, "hostile": 1}
     assert saved["training_set"] == "synthetic"
 
     reloaded = TrainState("heatmap", device="cpu")
@@ -631,3 +631,13 @@ def test_a_failed_save_leaves_no_provenance_behind(tmp_path):
     with pytest.raises(OSError):
         save_named(Fails(), object(), tmp_path / "b.pt")
     assert not provenance_path(tmp_path / "b.pt").exists()
+
+
+def test_a_provenance_written_as_a_name_list_still_reads(tmp_path):
+    """older provenance files carried classes as a sorted name list; the dict came later"""
+    from smolsmort.review.backends import class_map, class_names
+
+    assert class_map(["friendly", "hostile"]) == {"friendly": 0, "hostile": 1}
+    assert class_map({"hostile": 1, "friendly": 0}) == {"hostile": 1, "friendly": 0}
+    assert class_names({"hostile": 1, "friendly": 0}) == ["friendly", "hostile"]
+    assert class_names(None) == [] and class_map(None) == {}
