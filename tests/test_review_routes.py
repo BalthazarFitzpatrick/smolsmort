@@ -949,6 +949,55 @@ def test_the_box_backend_reports_its_working_size_and_no_capture_settings(server
     assert "downscale" not in info and "capture_width" not in info
 
 
+def test_state_changes_are_refused_while_a_sweep_reads_the_model(server, world):
+    """the worker reads the backend, weights and classes per chunk; a bind, load, backend
+    switch or training start under it would mix two models into one candidates file"""
+    app, url = server
+
+    class Weights:
+        capture_width = 200
+
+    class Slow:
+        def predict(self, weights, frames, *, classes):
+            time.sleep(0.4)
+            return []
+
+    app.trainer.trainer.weights = Weights()
+    app.trainer.trainer._backend = Slow()
+    assert jpost(url, "/api/sweep-start", {"recording": "rec_a", "min_score": 0.5}) == {"ok": True}
+    for path, body in (
+        ("/api/train-bind", {"name": "loop"}),
+        ("/api/load-checkpoint", {"name": "x.pt"}),
+        ("/api/train-set-backend", {"name": "loop", "backend": "heatmap"}),
+        ("/api/train-start", {}),
+    ):
+        assert "sweep is running" in jpost(url, path, body)["error"], path
+    _wait(url, "/api/sweep-status", lambda s: s["finished"] or s["error"])
+    # the same set can be bound once the sweep is done
+    assert "sweep is running" not in json.dumps(jpost(url, "/api/train-bind", {"name": "loop"}))
+
+
+def test_bind_load_and_backend_switch_are_refused_while_a_run_is_going(server, world):
+    """the run's end saves its weights under the bound set; a bind or load in between would file
+    them under another name. the status dict is what start_sweep already consults, so it is
+    flipped directly rather than racing a real run"""
+    app, url = server
+    trainer = app.trainer.trainer
+    with trainer._job_lock:
+        trainer.job["running"] = True
+    try:
+        for path, body in (
+            ("/api/train-bind", {"name": "loop"}),
+            ("/api/load-checkpoint", {"name": "x.pt"}),
+            ("/api/train-set-backend", {"name": "loop", "backend": "heatmap"}),
+        ):
+            assert "training run is going" in jpost(url, path, body)["error"], path
+    finally:
+        with trainer._job_lock:
+            trainer.job["running"] = False
+    assert "run is going" not in json.dumps(jpost(url, "/api/train-bind", {"name": "loop"}))
+
+
 def test_a_sweep_over_frames_of_another_width_warns(server, world):
     app, url = server
 
