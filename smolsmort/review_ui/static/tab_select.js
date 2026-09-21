@@ -181,7 +181,12 @@ class SelectTab {
       cell.className = 'cluster-item' + (item.excluded ? ' excluded' : '');
       cell.dataset.name = item.name;
       cell.innerHTML = '<div class="tile-viewport"><img loading="lazy" decoding="async"></div>'
-        + `<span class="tile-dot ${verdict}"></span>`;
+        + `<span class="tile-dot ${verdict}"></span>`
+        + '<span class="tile-x" role="button" title="not a class" aria-label="not a class">x</span>';
+      const mark = cell.querySelector('.tile-x');
+      // stop the press so the grid's pick and net-drag never see it
+      ['mousedown', 'click'].forEach(kind => mark.addEventListener(kind, evt => evt.stopPropagation()));
+      mark.addEventListener('click', () => this.toggleNotClass(item));
       cell.querySelector('img').src = `/unsorted-thumb/${item.name}?v=${this.bust}`;
       const stands = given || (item.excluded ? 'not a class' : (item.assigned || 'unjudged'));
       cell.title = `${item.name} - ${stands}\nclick to pick, cmd/ctrl+click to add\n`
@@ -189,6 +194,18 @@ class SelectTab {
       this.grid.appendChild(cell);
     });
     this.sel.repaint();
+  }
+
+  // the x on a tile: marks it not a class, or lifts the mark when it already has one
+  async toggleNotClass(item) {
+    const excluded = !item.excluded;
+    try {
+      await api('/api/exclude', {name: item.name, excluded});
+      this.pendingNames.delete(item.name);
+      await this.refreshPending();
+      await this.load();
+      this.status(excluded ? '1 marked not a class' : '1 back in play');
+    } catch (err) { this.status(err.message); }
   }
 
   showSelection(names) {
@@ -263,7 +280,7 @@ class SelectTab {
         lines: [`you have ${res.unsaved} unsaved class assignments`],
         buttons: [
           {id: 'save-close', label: 'save and close', tone: 'adds'},
-          {id: 'discard-close', label: 'discard and close', tone: 'removes'},
+          {id: 'close-unsaved', label: 'close without saving', tone: 'removes'},
           {id: 'cancel', label: 'cancel'},
         ],
       });

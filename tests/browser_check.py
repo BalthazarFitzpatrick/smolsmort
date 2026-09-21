@@ -107,6 +107,26 @@ def check_train(page: Page, base: str, log: list, urls: list) -> None:
     page.wait_for_function('document.getElementById("train-summary").innerText.includes("objects")')
     assert "2 objects" in page.inner_text("#train-summary")
     assert posts(log, "train-bind")[-1] == {"name": "world_set"}
+
+    # the backend picker: names come from the server, a pick persists and shows the size mode
+    picker = page.locator("#train-backend")
+    assert "disabled" not in picker.get_attribute("class")
+    picker.click()
+    page.wait_for_selector(".menu-panel .menu-item")
+    names = menu_labels(page)
+    assert "box" in names and len(names) > 1, names
+    other = next(n for n in names if n != page.inner_text("#train-backend").strip())
+    page.click(f'.menu-panel .menu-item:has-text("{other}")')
+    page.wait_for_function(
+        f'document.getElementById("train-backend").innerText.trim() == "{other}"'
+    )
+    sent = posts(log, "train-set-backend")[-1]
+    assert sent == {"name": "world_set", "backend": other}, sent
+    mode = call(base, "/api/train-info")["size_mode"]
+    assert f"sizes {mode}" in page.inner_text("#train-summary")
+    assert call(base, "/api/train-info")["backend"] == other
+    snap(page, "train-backend")
+    dismiss(page)
     page.click("#train-load")
     page.wait_for_selector(".menu-panel")
     page.wait_for_selector('.menu-item:has-text("runs/")')
@@ -257,6 +277,28 @@ def check_find(page: Page, base: str, log: list) -> None:
     dismiss(page)
     page.click("#crop-aspect")
 
+    # per-frame mode: explicit by default, the toggle flips it, the badge shows, reload keeps it
+    assert page.inner_text("#frame-mode") == "explicit"
+    assert "hidden" in page.get_attribute("#frame-badge", "class")
+    page.click("#frame-mode")
+    page.wait_for_timeout(300)
+    frame = call(base, "/api/draw-frames?percent=20")["frames"][0].split("/")[-1]
+    sent = posts(log, "frame-mode")[-1]
+    assert sent["exhaustive"] is True and sent["frame"].split("/")[-1] == frame, sent
+    assert page.inner_text("#frame-mode") == "exhaustive"
+    assert "hidden" not in page.get_attribute("#frame-badge", "class")
+    snap(page, "find-exhaustive")
+    page.reload()
+    page.wait_for_timeout(500)
+    show_tab(page, "find")
+    page.wait_for_function("document.getElementById('draw-canvas').width > 0")
+    page.wait_for_function('document.getElementById("frame-mode").innerText == "exhaustive"')
+    modes = call(base, f"/api/frame-modes?recording={sent['recording']}")["frames"]
+    assert modes[frame] == {"exhaustive": True}, modes
+    page.click("#frame-mode")
+    page.wait_for_timeout(300)
+    assert page.inner_text("#frame-mode") == "explicit"
+
 
 def check_select(page: Page, base: str, log: list) -> None:
     show_tab(page, "select")
@@ -336,15 +378,15 @@ def check_select(page: Page, base: str, log: list) -> None:
     snap(page, "select-unsaved-dialog")
     text = page.inner_text("#ask-dialog")
     assert "you have 2 unsaved class assignments" in text
-    for label in ("save and close", "discard and close", "cancel"):
+    for label in ("save and close", "close without saving", "cancel"):
         assert label in text
     page.click("#ask-cancel")
     assert page.locator("#ask-dialog").count() == 0
     assert page.inner_text("#cluster-save") == "save (2)"
     assert posts(log, "save-labels") == []
-    # discard drops the buffer and writes nothing
+    # close without saving drops the buffer and writes nothing
     close_set()
-    page.click("#ask-discard-close")
+    page.click("#ask-close-unsaved")
     page.wait_for_timeout(300)
     assert posts(log, "close-source")[-1] == {"tag": "rec_a", "discard": True}
     assert posts(log, "save-labels") == []
@@ -371,6 +413,37 @@ def check_select(page: Page, base: str, log: list) -> None:
     assert page.locator(".cluster-item.excluded").count() == 1
     assert page.inner_text("#cluster-save") == "save"
     snap(page, "select-after-judging")
+
+    # the x on every tile: marks and unmarks "not a class", dims the tile, sinks it to the end
+    assert page.locator(".tile-x").count() == 6
+    assert page.get_attribute(".tile-x >> nth=0", "title") == "not a class"
+    assert page.get_attribute(".tile-x >> nth=0", "aria-label") == "not a class"
+    cell, mark = box(page, ".cluster-item >> nth=0"), box(page, ".tile-x >> nth=0")
+    assert mark["x"] + mark["width"] <= cell["x"] + cell["width"] + 1
+    assert mark["y"] + mark["height"] <= cell["y"] + cell["height"] + 1
+    assert mark["x"] > cell["x"] + cell["width"] / 2 and mark["y"] > cell["y"] + cell["height"] / 2
+    before = len(posts(log, "exclude"))
+    target = page.get_attribute(".cluster-item:not(.excluded) >> nth=0", "data-name")
+    page.click(f'.cluster-item[data-name="{target}"] .tile-x')
+    page.wait_for_timeout(400)
+    assert posts(log, "exclude")[before:] == [{"name": target, "excluded": True}]
+    assert page.locator(".cluster-item.excluded").count() == 2
+    dimmed = page.eval_on_selector(
+        ".cluster-item.excluded .tile-viewport", "e => Number(getComputedStyle(e).opacity)"
+    )
+    assert 0.3 < dimmed < 0.6, dimmed
+    flags = page.eval_on_selector_all(
+        ".cluster-item", "els => els.map(e => e.classList.contains('excluded'))"
+    )
+    assert flags == sorted(flags), flags
+    assert flags[-2:] == [True, True]
+    assert page.locator(".filter-last, #filter-judged .toggle").last.inner_text() == "not a class"
+    snap(page, "select-x-marked")
+    page.click(f'.cluster-item[data-name="{target}"] .tile-x')
+    page.wait_for_timeout(400)
+    assert posts(log, "exclude")[-1] == {"name": target, "excluded": False}
+    assert page.locator(".cluster-item.excluded").count() == 1
+    assert "discard" not in page.inner_text("body").lower()
 
 
 def seed(base: str) -> None:

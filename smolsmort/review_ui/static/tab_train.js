@@ -26,6 +26,11 @@ function mountTrain(panel) {
         <div class="toggle dropdown-head grow" id="train-open"><span>tiles</span></div>
         <div class="toggle dropdown-head grow" id="train-load"><span>weights</span></div>
       </div>
+      <div class="run-controls" id="train-backend-row">
+        <span class="field-label">backend</span>
+        <div class="toggle dropdown-head grow disabled" id="train-backend"
+             title="bind a set of tiles first"><span>-</span></div>
+      </div>
       <div id="train-summary" class="train-facts"></div>
       <div class="h-divider"></div>
 
@@ -120,6 +125,9 @@ class TrainTab {
   async loadInfo() {
     const info = await api('/api/train-info');
     if (info.backend) this.backend = info.backend;
+    this.setName = info.set || null;
+    window.smolsmortActiveSet = this.setName;
+    this.paintBackend(info);
     this.hasWeights = !!info.model_exists;
     this.paintSave();
     if (info.error) { this.facts('train-summary', [['problem', info.error]]); return; }
@@ -130,9 +138,39 @@ class TrainTab {
       ['classes', info.thinnest
         ? `${info.classes}, thinnest is ${info.thinnest.label} with ${info.thinnest.count}`
         : (info.set ? 'none labelled' : '-')],
+      ...(info.set ? [['backend', `${info.backend} - sizes ${info.size_mode}`]] : []),
       ['device', info.device],
       ['model', info.model_exists ? 'trained, ready to sweep' : 'none yet - train or load weights'],
     ]);
+  }
+
+  // the backend head: disabled with a hint until a set is bound
+  paintBackend(info) {
+    const head = document.getElementById('train-backend');
+    head.classList.toggle('disabled', !info.set);
+    head.title = info.set ? 'the backend this set trains with' : 'bind a set of tiles first';
+    head.innerHTML = `<span>${info.set ? info.backend : '-'}</span>`;
+  }
+
+  // the server names its backends in the error body of an unknown-backend request; nothing is written
+  async backendNames() {
+    if (this.backendList) return this.backendList;
+    const res = await api('/api/train-set-backend', {name: '_probe', backend: ''});
+    this.backendList = res.backends || [];
+    return this.backendList;
+  }
+
+  async openBackendPicker(head) {
+    if (!this.setName) { this.say('bind a set of tiles first'); return; }
+    let names = [];
+    try { names = await this.backendNames(); } catch (err) { this.say(err.message); return; }
+    listMenu('backend', names.map(name => ({id: name, label: name, on: name === this.backend})),
+      async item => {
+        const res = await api('/api/train-set-backend', {name: this.setName, backend: item.id});
+        if (res.error) { this.say(res.error); return; }
+        this.say(`${res.backend} - sizes ${res.size_mode}`);
+        await this.loadInfo();
+      }).openAt(head);
   }
 
   async loadFloor() {
@@ -162,6 +200,7 @@ class TrainTab {
   wirePickers() {
     // two directory browsers, each rooted at its own base. a pick is sent as a name relative to
     // that root, which is what train-bind and load-checkpoint resolve
+    document.getElementById('train-backend').onclick = evt => this.openBackendPicker(evt.currentTarget);
     document.getElementById('train-open').onclick = evt => {
       const head = evt.currentTarget;
       dirMenu('tiles', this.treeFetcher('tiles', () => this.setNames()), async path => {
