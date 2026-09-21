@@ -352,7 +352,10 @@ Two shapes worth knowing: `train-info` reports `capture_width`, `capture_overrid
 **A tab.** A host page registers one with `window.smolsmortTabs.register({id, label, mount})`
 (README, "Adding a tab"). Its routes come in as a `smolsmort.review.routes.Tab(name, get, post,
 images)` passed to `build_app(tabs=[...])`; a path that collides with a core route is refused when
-the server is built.
+the server is built. A host that keeps its own page directory passes it as `ui_dir` and this
+package's page directory (`smolsmort.review_ui.server.STATIC`) in `ui_fallbacks`: `/ui/<name>` is
+served from ui_base first, then the host's directory, then each fallback, so the host's
+`index.html` can load `core.js` and the tab scripts without copying them.
 
 **A renderer.** `frame`, `crop` and `thumb`, each taking the recording's `frames_dir`; every read
 goes through one confinement so no method trusts a stored path.

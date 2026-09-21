@@ -63,6 +63,9 @@ class App:
     tabs: list[Tab] = field(default_factory=list)
     # the ui served at / and /ui/. read at request time so a markup edit shows on refresh
     ui_dir: Path | None = None
+    # searched after ui_dir for a /ui/ asset the host page does not carry itself - a host that
+    # keeps its own page dir still gets this tool's core.js and tab scripts without copying them
+    ui_fallbacks: tuple[Path, ...] = ()
     # name -> ClassScheme (the class-scheme seam). the default reads definitions from disk
     load_scheme: Callable[[str], object] = classscheme.load
 
@@ -648,8 +651,9 @@ def make_handler(app: App) -> type[BaseHTTPRequestHandler]:
 
         def _serve_ui_asset(self, name: str) -> None:
             """one file: the shared ones from ui_base first (so a stale local copy can never
-            shadow the pinned one), then this tool's own from ui_dir, confined to it - resolve()
-            collapses any "../" before the check, however it is spelled in the url."""
+            shadow the pinned one), then the host's from ui_dir, then each fallback dir in order,
+            each confined to itself - resolve() collapses any "../" before the check, however it
+            is spelled in the url."""
             data = None
             try:
                 from ui_base import UiBaseError, read_asset
@@ -660,9 +664,11 @@ def make_handler(app: App) -> type[BaseHTTPRequestHandler]:
                     data = read_asset(name)
                 except UiBaseError:
                     data = None
-            if data is None and app.ui_dir is not None:
-                target = (app.ui_dir / name).resolve()
-                if app.ui_dir.resolve() in target.parents and target.is_file():
+            for folder in (app.ui_dir, *app.ui_fallbacks):
+                if data is not None or folder is None:
+                    break
+                target = (folder / name).resolve()
+                if folder.resolve() in target.parents and target.is_file():
                     data = target.read_bytes()
             if data is None:
                 self._send(404, b"", "text/plain")

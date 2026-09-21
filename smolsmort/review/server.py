@@ -27,6 +27,7 @@ def build_app(
     playback: PlaybackState | None = None,
     tabs: list[Tab] | None = None,
     ui_dir: Path | None = None,
+    ui_fallbacks: tuple[Path, ...] = (),
     pool: Path | None = None,
     bases_file: Path | None = None,
     crop_file: Path | None = None,
@@ -53,6 +54,7 @@ def build_app(
         playback=playback,
         tabs=tabs or [],
         ui_dir=ui_dir if ui_dir is not None else paths.REVIEW_UI_DIR,
+        ui_fallbacks=tuple(ui_fallbacks),
     )
 
 
