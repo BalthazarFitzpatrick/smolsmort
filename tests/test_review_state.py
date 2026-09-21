@@ -720,3 +720,14 @@ def test_a_second_pool_is_read_but_never_written_to(state, world, tmp_path):
     state.save_labels()
     assert names[0] in json.loads((extra / "_labels.json").read_text())
     assert not (world.tiles / "_labels.json").exists()
+
+
+def test_atomic_jsonl_and_text_writes_leave_no_temp_behind(tmp_path):
+    from smolsmort.review.find_state import read_jsonl, write_jsonl_atomic, write_text_atomic
+
+    out = tmp_path / "deep" / "rows.jsonl"
+    write_jsonl_atomic(out, [{"a": 1}, {"b": 2}])
+    assert read_jsonl(out) == [{"a": 1}, {"b": 2}]
+    write_text_atomic(tmp_path / "t.toml", "x = 1\n")
+    assert (tmp_path / "t.toml").read_text() == "x = 1\n"
+    assert not list(tmp_path.rglob("*.tmp"))

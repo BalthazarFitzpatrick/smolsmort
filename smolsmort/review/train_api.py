@@ -28,6 +28,7 @@ from PIL import Image
 from smolsmort import backends
 from smolsmort.detect.dataset import DatasetError, Example, build_training_set, frame_width
 from smolsmort.review import hyperparams, paths, setconfig, splits
+from smolsmort.review.find_state import write_jsonl_atomic
 from smolsmort.review.naming import set_filename
 from smolsmort.review.recordings import flat_recording, frame_files, frames_dir_of
 from smolsmort.review.train import TrainState, TrainStateError, saved_checkpoints
@@ -685,7 +686,7 @@ class TrainApi:
                 f"{flat_recording(recording)}.cnn-{stamp}.candidates.jsonl"
             )
             out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_text("".join(json.dumps(c) + "\n" for c in candidates))
+            write_jsonl_atomic(out, candidates)
             # the size comes from the training set's own boxes, or failing that from the proposals
             width, height = self.trained_box_size()
             if candidates and not self.trainer.training_set:

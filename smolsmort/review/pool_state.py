@@ -20,7 +20,7 @@ from pathlib import Path
 
 from smolsmort.review import paths
 from smolsmort.review.classscheme import NOT_A_CLASS
-from smolsmort.review.find_state import read_jsonl, write_json_atomic
+from smolsmort.review.find_state import read_jsonl, write_json_atomic, write_jsonl_atomic
 from smolsmort.review.naming import _tile_index, _tile_tag
 from smolsmort.review.recordings import dataset_tag, session_frames_for
 from smolsmort.review.render import corrected_box
@@ -485,7 +485,7 @@ class PoolMixin:
         found["boxes"][found["line_index"]] = box
         tag, _, digits = name.rpartition("_k")
         with self.lock:
-            path.write_text("".join(json.dumps(b) + "\n" for b in found["boxes"]))
+            write_jsonl_atomic(path, found["boxes"])
             cut = self._cut_drawn(
                 [box],
                 found["width"],

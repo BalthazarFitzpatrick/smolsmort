@@ -38,6 +38,19 @@ def write_json_atomic(path: Path, value, *, indent: int | None = None, **dump) -
     os.replace(temp, path)
 
 
+def write_text_atomic(path: Path, text: str) -> None:
+    """write text so a reader never sees half a file: temp beside it, then replace"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(path.name + ".tmp")
+    temp.write_text(text)
+    os.replace(temp, path)
+
+
+def write_jsonl_atomic(path: Path, rows) -> None:
+    """one json object per line, written whole or not at all"""
+    write_text_atomic(path, "".join(json.dumps(row) + "\n" for row in rows))
+
+
 def read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
@@ -205,8 +218,7 @@ class FindMixin:
         else:
             stamp = datetime.now().strftime("%Y%m%d-%H%M")
             out = labels_root / f"{base}.{mode}-{stamp}.candidates.jsonl"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text("".join(json.dumps(c) + "\n" for c in candidates))
+        write_jsonl_atomic(out, candidates)
 
         # a drawn box is already confirmed, and the dataset builder has to be told: it only counts
         # a candidate as an object when its decision says keep, and treats the rest as ignore
