@@ -37,7 +37,7 @@ more than roughly 1.5x the smallest, the fixed-size assumption is broken: use `b
 ## 1. Install
 
 ```bash
-uv add "smolsmort[vision] @ git+https://github.com/BalthazarFitzpatrick/smolsmort.git@v0.4.1"
+uv add "smolsmort[vision] @ git+https://github.com/BalthazarFitzpatrick/smolsmort.git@v0.5.0"
 uv run python -c "from smolsmort.detect import model, train, dataset, scoring; print('ok')"
 ```
 

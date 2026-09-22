@@ -94,7 +94,9 @@ refused rather than silently averaged; a malformed row is skipped and counted, n
 files the loop depends on are written whole or not at all.
 
 **Torch is optional.** The loop, the box maths, scoring and tracking need only numpy and pillow.
-Only a vision backend imports torch, and only when it is built.
+Only a vision backend imports torch, and only when it is built. Core ML is optional on top of
+that: a trained heatmap can run on an Apple neural engine through `load(..., runtime="coreml")`,
+and nothing above `load` learns the difference (section 11).
 
 ## 3. The loop, stage by stage
 
@@ -319,7 +321,19 @@ found = predict_frame(model, frame, classes=classes, width=64, height=14)
 ```
 
 `predict_frame` returns the dicts a sweep writes, minus `path`, and shares one decode with the
-sweep so the two cannot drift. `smolsmort.detect.scoring` scores detections against truth per frame
+sweep so the two cannot drift.
+
+**Runtimes.** `load(path, runtime="coreml")` returns a runner with the module's call contract - a
+(1, 3, h, w) float batch in, logits out - carrying the same `downscale` and `capture_width`, so
+`frame_input`, `heatmaps_for_frame`, `predict_frame` and `sweep` take it unchanged. The `.pt`
+stays the source of truth; the runner converts it once to `<name>.pt.mlpackage` beside it (fp16,
+the input shape of the first frame it sees), reuses that while it is newer than the checkpoint,
+and refuses a frame of another shape with an error naming both shapes. Convert ahead of time with
+`uv run --extra coreml python -m smolsmort.detect.export_coreml weights.pt --height 936` (width
+defaults to the checkpoint's capture width). Measured 2026-09-22 on an M4, 18 classes, 100,602
+parameters, input (1, 3, 468, 720): torch cpu on four threads 20.3 ms per frame (p90 25.1), Core
+ML all units 1.0 ms (p90 1.1), Core ML cpu only 4.8 ms; fp16 drift at most 0.040 in logits, 0.0035
+after the sigmoid. The registry in `smolsmort.detect.runtime` takes another runtime by name. `smolsmort.detect.scoring` scores detections against truth per frame
 (positional match for thin objects, `iou_match(0.5)` for squarer ones); `smolsmort.detect.track`
 follows one object across a recording and flags interface chrome that never moves.
 
@@ -369,6 +383,7 @@ the loop only carries the string.
 uv sync --extra vision
 uv run ruff check . --fix --extend-exclude .claude && uv run ruff format --extend-exclude .claude .
 uv run pytest -q                                              # the suite
+uv run --extra coreml pytest tests/test_coreml_runtime.py -q -s   # macos only; prints ms/frame cpu vs neural engine
 uv run --with playwright pytest tests/test_review_ui_browser.py -q   # headless chromium over the real server
 uv run --with playwright python tests/browser_check.py shots/  # the same, with a screenshot per tab
 ```

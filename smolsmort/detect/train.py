@@ -165,12 +165,18 @@ def frame_input(model, frame: np.ndarray) -> tuple[np.ndarray, int]:
     return _fit(image, downscale_of(model), capture_width_of(model))
 
 
+def _device_of(model):
+    """where a model or runner takes its input: a runner says so, a module has parameters"""
+    found = getattr(model, "device", None)
+    return found if found is not None else next(model.parameters()).device
+
+
 def heatmaps_for_frame(model, frame: np.ndarray, device=None) -> tuple[np.ndarray, float]:
     """(per-class heatmaps, frame px per capture px) for one decoded frame. peaks decoded from
     the heatmaps with `decode_peaks(..., downscale=downscale_of(model))` are in capture px;
     multiply by the ratio to land on the frame"""
     if device is None:
-        device = next(model.parameters()).device
+        device = _device_of(model)
     image, original = frame_input(model, frame)
     return _heatmaps_of(model, image, device), frame_ratio(model, original)
 
@@ -190,7 +196,7 @@ def predict_frame(
     (minus `path`, which an array does not have). the same steps a sweep takes per file, so a
     caller holding a live capture gets exactly what the review tool would propose for it"""
     if device is None:
-        device = next(model.parameters()).device
+        device = _device_of(model)
     image, original = frame_input(model, frame)
     maps = _heatmaps_of(model, image, device)
     by_channel = {index: label for label, index in classes.items()}
@@ -488,7 +494,7 @@ def heatmap_for(model, path: Path, device: str | None = None) -> np.ndarray:
     """run the net over a whole capture and return its raw heatmap"""
     torch = _torch()
     if device is None:
-        device = next(model.parameters()).device
+        device = _device_of(model)
     image = _load_input(path, downscale_of(model), capture_width_of(model))
     with torch.no_grad():
         model.eval()
@@ -505,7 +511,7 @@ def heatmaps_for(model, path: Path, device: str | None = None) -> np.ndarray:
     """
     torch = _torch()
     if device is None:
-        device = next(model.parameters()).device
+        device = _device_of(model)
     image = _load_input(path, downscale_of(model), capture_width_of(model))
     with torch.no_grad():
         model.eval()
@@ -553,7 +559,7 @@ def sweep(
     """
     by_channel = {index: label for label, index in classes.items()}
     if device is None:
-        device = next(model.parameters()).device
+        device = _device_of(model)
     factor = downscale_of(model)
     capture = capture_width_of(model)
     # decoded ahead of the model on two workers, see detect/prefetch.py for the measurement
@@ -677,8 +683,13 @@ def save(model, path: Path) -> Path:
     return path
 
 
-def load(path: Path, device: str | None = None, classes: int | None = None):
+def load(path: Path, device: str | None = None, classes: int | None = None, runtime: str = "torch"):
     """the head is sized FROM THE CHECKPOINT unless classes is given.
+
+    `runtime` picks where the model runs: "torch" (this module, on `device`) or "coreml" (a
+    runner over a core ml package beside the checkpoint, see smolsmort.detect.runtime). a runner
+    answers the same call as the module and carries the same `downscale` and `capture_width`, so
+    everything above this function is indifferent to the choice.
 
     it used to default to classes=1 and simply fail on anything else, with a torch size-mismatch
     error that names tensor shapes rather than the problem. That broke every reload of a real
@@ -708,4 +719,8 @@ def load(path: Path, device: str | None = None, classes: int | None = None):
     ).to(device)
     model.load_state_dict(state)
     model.eval()
+    if runtime != "torch":
+        from smolsmort.detect.runtime import build
+
+        return build(runtime, model.to("cpu"), Path(path))
     return model
