@@ -106,9 +106,10 @@ def test_unknown_runtime_is_named(weights):
 
 
 def test_spike_prints_ms_per_frame(weights, capsys):
-    """not an assertion on speed - hardware varies - but the figure this pr was built on:
-    2026-09-22, apple m4, 18-class 100,602-parameter checkpoint at (1, 3, 468, 720):
-    torch cpu 4 threads 20.3 ms median, core ml all units 1.0 ms, core ml cpu only 4.8 ms"""
+    """not an assertion on speed - hardware and load vary - but the figures the runtime shipped
+    on: 2026-09-22, apple m4, python 3.13, 18-class 100,602-parameter checkpoint at
+    (1, 3, 468, 720), interleaved under load 3.4: torch cpu 30.4 ms, torch mps 12.1 ms, core ml
+    2.1 ms through heatmaps_of (bare call 1.06 ms)"""
     module = load(weights, device="cpu")
     runner = load(weights, runtime="coreml")
     x = torch.rand(*INPUT)

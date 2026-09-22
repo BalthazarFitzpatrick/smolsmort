@@ -11,14 +11,20 @@ newer than the checkpoint; the class-map sidecars are not touched. a core ml mod
 shape at conversion, and the first frame is where that shape is known, so conversion happens on
 the first call unless `smolsmort.detect.export_coreml` did it ahead of time.
 
-MEASURED 2026-09-22 on an apple m4 with the first consumer's checkpoint (100,602 parameters,
-18 classes, 1440x936 frames -> (1, 3, 468, 720) input): see the spike test's printout and the
-release notes for the ms/frame of torch cpu against the neural engine.
+MEASURED 2026-09-22 on an apple m4 (10 cores), python 3.13, torch 2.14, coremltools 9.0, with the
+first consumer's checkpoint (100,602 parameters, 18 classes, 1440x936 frames -> (1, 3, 468, 720)
+input), the three interleaved through `heatmaps_of` under a load average of 3.4: torch cpu
+30.4 ms per frame (p90 39.4; 43/35/33 ms alone at 1/4/8 threads), torch mps 12.1 ms (p90 13.5),
+core ml 2.1 ms (p90 2.6; the bare runner call 1.06 ms). fp16 drift against the fp32 module at
+most 0.040 in logits, 0.0035 after the sigmoid. python 3.14 cannot run it until coremltools ships
+wheels for it - see _coremltools.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import os
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -70,13 +76,32 @@ def package_path(weights: Path) -> Path:
 
 
 def _coremltools():
+    """coremltools with its native libraries, or a named refusal. on a python coremltools has
+    no wheels for (3.14 with coremltools 9.0) the package still installs and imports, as a
+    pure-python shell whose first model load dies of "BlobWriter not loaded" - so the check is
+    for the compiled module, not the import"""
     try:
         import coremltools
     except ImportError as exc:
         raise RuntimeError_(
             'the "coreml" runtime needs coremltools - install smolsmort[coreml]'
         ) from exc
+    if not native_libraries_present(coremltools):
+        version = ".".join(str(part) for part in sys.version_info[:2])
+        raise RuntimeError_(
+            f"coremltools {coremltools.__version__} on python {version} has no native libraries "
+            "(no wheels for this interpreter) - core ml needs a python it ships them for, "
+            "3.11 to 3.13 as of coremltools 9.0"
+        )
     return coremltools
+
+
+def native_libraries_present(coremltools) -> bool:
+    """whether the compiled half of coremltools is there: the model loader and the blob writer"""
+    return all(
+        importlib.util.find_spec(f"coremltools.{name}") is not None
+        for name in ("libcoremlpython", "libmilstoragepython")
+    )
 
 
 def convert(model, weights: Path, input_shape: tuple[int, int, int, int]) -> Path:

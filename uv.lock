@@ -999,7 +999,7 @@ dependencies = [
 
 [package.optional-dependencies]
 coreml = [
-    { name = "coremltools" },
+    { name = "coremltools", marker = "python_full_version < '3.14'" },
     { name = "torch" },
 ]
 vision = [
@@ -1015,7 +1015,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "coremltools", marker = "extra == 'coreml'", specifier = ">=8" },
+    { name = "coremltools", marker = "python_full_version < '3.14' and extra == 'coreml'", specifier = ">=8" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "pillow", specifier = ">=11.0" },
     { name = "torch", marker = "extra == 'coreml'", specifier = ">=2.0" },
