@@ -1,13 +1,31 @@
 # smolsmort user guide
 
-What smolsmort does, the principles it is built on, what it writes to disk, and how to drive it -
-from the review web tool or from python. Every path, route and number here exists in the code at
-the version this guide ships with; where something is a known limit it says so.
+**Everything the README leaves out.** What smolsmort does and does not do, the principles it is
+built on, each tab control by control, every file it writes and the shape of each, every route, and
+how to extend it. Every path, route and number here exists in the code at the version this guide
+ships with; where something is a known limit it says so.
 
-Shorter reads: the [README](../README.md) for the pitch, install and API quickstart;
-[FISH.md](FISH.md) for a worked setup on one object class;
+Shorter reads: the [README](../README.md) for the pitch, the concepts and the library;
+[WORKED_EXAMPLE.md](WORKED_EXAMPLE.md) for a setup on one object class;
 [REVIEW_TOOL_DESIGN.md](REVIEW_TOOL_DESIGN.md) for the four plugin seams and why they are cut
 where they are.
+
+**Contents** ·
+[What it is](#1-what-it-is) ·
+[Principles](#2-principles) ·
+[The loop](#3-the-loop-stage-by-stage) ·
+[Running the tool](#4-running-the-review-tool) ·
+[Find](#5-the-find-tab) ·
+[Select](#6-the-select-tab) ·
+[Train](#7-the-train-tab) ·
+[Housekeeping](#8-the-housekeeping-tab) ·
+[On disk](#9-what-lands-on-disk) ·
+[Backends](#10-backends) ·
+[Library](#11-using-the-library-directly) ·
+[Routes](#12-routes) ·
+[Extending](#13-extending) ·
+[Development](#14-development) ·
+[Limits](#15-known-limits)
 
 ---
 
@@ -19,21 +37,25 @@ result, the model proposes boxes on frames nobody has drawn on, and those propos
 you to judge. A proposal you reject is not thrown away: it becomes a labelled hard negative, and
 that is what makes the next model better rather than merely retrained.
 
-```
-  frames ──find──▶ candidates ──cut──▶ tiles ──judge──▶ classes
-                                                          │
-                                                       promote
-                                                          ▼
-  proposals ◀──sweep── weights ◀──────train─────── training set
-      │
-      └──────────▶ judge again   (the loop closes here)
+```mermaid
+flowchart LR
+    F[frames] -->|find: draw boxes| C[candidates]
+    C -->|cut| T[tiles]
+    T -->|judge: assign a class<br/>or mark not a class| K[classes]
+    K -->|promote| S[training set]
+    S -->|train| W[weights]
+    W -->|sweep| P[proposals]
+    P -.->|judge again:<br/>a rejected proposal is a hard negative| T
+    style W fill:#fbebdd,stroke:#e8842f
+    style P fill:#fbebdd,stroke:#e8842f
+    style K fill:#ddf0ef,stroke:#2a8c8a
 ```
 
 Three model backends drive the same loop and never learn which one they are:
 
 | backend | for | size |
 |---|---|---|
-| `heatmap` | objects of one known pixel size on a fixed camera | ~100k parameters |
+| `heatmap` | objects of one known pixel size on a fixed camera or screen capture | ~100k parameters |
 | `box` | objects that vary 4x and more in size, frames of different resolutions | ~844k parameters |
 | `xgboost` | rows of features instead of frames (a forecast task; the seam holds, real data is still to come) | - |
 
@@ -72,7 +94,9 @@ refused rather than silently averaged; a malformed row is skipped and counted, n
 files the loop depends on are written whole or not at all.
 
 **Torch is optional.** The loop, the box maths, scoring and tracking need only numpy and pillow.
-Only a vision backend imports torch, and only when it is built.
+Only a vision backend imports torch, and only when it is built. Core ML is optional on top of
+that: a trained heatmap can run on an Apple neural engine through `load(..., runtime="coreml")`,
+and nothing above `load` learns the difference (section 11).
 
 ## 3. The loop, stage by stage
 
@@ -118,6 +142,8 @@ The settings popup browses folders rather than taking typed paths, and remembers
 
 ## 5. The find tab
 
+![The find tab: a bound recording, the crop rule sliders, and boxes drawn on the first frame](images/find.jpg)
+
 - **recordings** opens a picker over the sessions folder; binding one loads its frames. A percent
   control decides how many of the frames you draw on (evenly spaced), so a long recording is
   labelled on a sample.
@@ -134,6 +160,8 @@ The settings popup browses folders rather than taking typed paths, and remembers
 
 ## 6. The select tab
 
+![The select tab: ten tiles cut from the frames, class buttons, and the not-a-class verdict](images/select.jpg)
+
 - **boxes** opens sources into the pool: a drawn pass or a sweep (proposed). Several can be open at
   once; closing one drops its tiles from the grid (and, if you choose discard, its saved judgements).
 - **groups**: tiles arrive clustered. Filter by dimension or by judged/unjudged; select all or a
@@ -146,6 +174,8 @@ The settings popup browses folders rather than taking typed paths, and remembers
 - **promote** writes the training set named in the prompt, merging into an existing one when asked.
 
 ## 7. The train tab
+
+![The train tab after a run: the bound set, backend and input rows, the loss curve and the separation readout](images/train.jpg)
 
 - **tiles** binds a promoted set (a directory browser over the sets folder). **weights** loads a
   saved checkpoint instead; loading drops the bound set, since the weights carry their own class
@@ -165,6 +195,8 @@ The settings popup browses folders rather than taking typed paths, and remembers
   background (99th percentile), on a sample of frames - the number a sweep threshold is chosen
   against. **val split** / test loss need a backend with `evaluate()`; heatmap and box have one, and
   it scores one fixed window per frame, so read it as a trend.
+![The sweep controls: recording, share, min score, the proposals found, and the send button](images/train-sweep.jpg)
+
 - **sweep**: pick a recording and how much of it, set the min score, sweep. A frame narrower or
   wider than the weights' capture width is resampled and the warning says so. **send above
   threshold to select** cuts the proposals above the slider into the pool and switches tabs.
@@ -172,6 +204,8 @@ The settings popup browses folders rather than taking typed paths, and remembers
   a run are refused with a message - the worker reads the model as it goes.
 
 ## 8. The housekeeping tab
+
+![The housekeeping tab: recordings and the assets each one owns](images/housekeeping.jpg)
 
 Recordings get deleted by hand from `sessions/`, but nothing downstream (boxes, tiles, sets,
 checkpoints) knows. The tab lists every recording, live or gone, with the assets it owns, and
@@ -182,6 +216,43 @@ updated in the same operation, so it never points at a tile that is gone.
 
 The stage files are the contract. Names and meanings do not change between versions; new fields
 are optional and old files keep loading.
+
+```mermaid
+flowchart TB
+    subgraph sessions/
+        FR[recording/frames/*.png]
+    end
+    subgraph training/boxes/
+        CA[recording.drawn-stamp.candidates.jsonl]
+        DE[....decisions.json]
+        FM[recording._frames.json]
+    end
+    subgraph training/tiles/
+        TI[tag_kN.npz]
+        LB[_labels.json]
+    end
+    subgraph training/sets/
+        SE[name.jsonl]
+        BK[name._backend.json]
+        ME[name.meta.json]
+    end
+    subgraph training/weights/checkpoints/
+        PT[name.pt]
+        SC[name.pt.json]
+        PR[name.pt.provenance.json]
+    end
+    FR -->|find| CA
+    CA --- DE
+    CA -->|cut| TI
+    TI --- LB
+    LB -->|promote| SE
+    SE --- BK
+    SE --- ME
+    SE -->|train| PT
+    PT --- SC
+    PT --- PR
+    PT -->|sweep| CA
+```
 
 | stage | file | shape |
 |---|---|---|
@@ -241,16 +312,37 @@ The README's quickstart trains on labelled centres and scores a holdout. Three m
 matter for a caller that already holds pixels (a live capture):
 
 ```python
-from smolsmort.detect.train import frame_input, heatmaps_for_frame, load, predict_frame
+from smolsmort.detect.train import frame_input, heatmaps_for_frame, heatmaps_of, load, predict_frame
 
 model = load("weights.pt")  # capture width and downscale come with it
 inputs, width = frame_input(model, frame)  # the net's input from an (h, w, 3) rgb frame
 maps, ratio = heatmaps_for_frame(model, frame)  # decode yourself; x, y * ratio -> frame px
+maps = heatmaps_of(model, inputs)  # the same from a prepared input, masked however you like
 found = predict_frame(model, frame, classes=classes, width=64, height=14)
 ```
 
 `predict_frame` returns the dicts a sweep writes, minus `path`, and shares one decode with the
-sweep so the two cannot drift. `smolsmort.detect.scoring` scores detections against truth per frame
+sweep so the two cannot drift.
+
+**Runtimes.** `load(path, runtime="coreml")` returns a runner with the module's call contract - a
+(1, 3, h, w) float batch in, logits out - carrying the same `downscale` and `capture_width`, so
+`frame_input`, `heatmaps_for_frame`, `predict_frame` and `sweep` take it unchanged. The `.pt`
+stays the source of truth; the runner converts it to `<name>.pt.<h>x<w>.mlpackage` beside it
+(fp16, one package per input shape, named for it), reuses a package while it is newer than the
+checkpoint, and converts another on the first frame of a new shape - half a second once, so a
+capture that changes resolution costs a conversion, not a restart. Convert ahead of time with
+`uv run --extra coreml python -m smolsmort.detect.export_coreml weights.pt --height 936` (width
+defaults to the checkpoint's capture width). Measured 2026-09-22 on an M4 (10 cores), Python 3.13,
+torch 2.14, coremltools 9.0, 18 classes, 100,602 parameters, input (1, 3, 468, 720), the three
+interleaved through `heatmaps_of` under a load average of 3.4: torch cpu 30.4 ms per frame (p90
+39.4; alone 43 / 35 / 33 ms at 1 / 4 / 8 threads), torch mps 12.1 ms (p90 13.5), Core ML 2.1 ms
+(p90 2.6; the bare runner call 1.06 ms, Core ML cpu-only 4.8 ms); fp16 drift at most 0.040 in
+logits, 0.0035 after the sigmoid. Core ML needs a Python coremltools ships wheels for: 3.11 to
+3.13 as of coremltools 9.0. On 3.14 the package installs as a pure-python shell, so the extra's
+marker leaves it out there and `load(..., runtime="coreml")` refuses with the interpreter named.
+The registry in `smolsmort.detect.runtime` takes another runtime by name.
+
+`smolsmort.detect.scoring` scores detections against truth per frame
 (positional match for thin objects, `iou_match(0.5)` for squarer ones); `smolsmort.detect.track`
 follows one object across a recording and flags interface chrome that never moves.
 
@@ -283,7 +375,10 @@ Two shapes worth knowing: `train-info` reports `capture_width`, `capture_overrid
 **A tab.** A host page registers one with `window.smolsmortTabs.register({id, label, mount})`
 (README, "Adding a tab"). Its routes come in as a `smolsmort.review.routes.Tab(name, get, post,
 images)` passed to `build_app(tabs=[...])`; a path that collides with a core route is refused when
-the server is built.
+the server is built. A host that keeps its own page directory passes it as `ui_dir` and this
+package's page directory (`smolsmort.review_ui.server.STATIC`) in `ui_fallbacks`: `/ui/<name>` is
+served from ui_base first, then the host's directory, then each fallback, so the host's
+`index.html` can load `core.js` and the tab scripts without copying them.
 
 **A renderer.** `frame`, `crop` and `thumb`, each taking the recording's `frames_dir`; every read
 goes through one confinement so no method trusts a stored path.
@@ -297,6 +392,7 @@ the loop only carries the string.
 uv sync --extra vision
 uv run ruff check . --fix --extend-exclude .claude && uv run ruff format --extend-exclude .claude .
 uv run pytest -q                                              # the suite
+uv run --extra coreml pytest tests/test_coreml_runtime.py -q -s   # macos only; prints ms/frame cpu vs neural engine
 uv run --with playwright pytest tests/test_review_ui_browser.py -q   # headless chromium over the real server
 uv run --with playwright python tests/browser_check.py shots/  # the same, with a screenshot per tab
 ```
@@ -316,4 +412,4 @@ sets openmp variables on macOS only, where torch's and xgboost's runtimes clash.
 - A typed checkpoint name that is already taken is refused; a suggested name is numbered.
 - Loading weights unbinds the set, so the train tab's capture facts are empty until a set is bound;
   the sweep line still reports a resample.
-- Every default was measured on one consumer (long, thin bars ~132x12 px at 2560 wide). Pass your own.
+- Every default was measured on one consumer (long, thin objects ~132x12 px on a 2560-wide capture). Pass your own.

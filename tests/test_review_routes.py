@@ -246,6 +246,26 @@ def test_own_assets_are_served_and_traversal_is_not(server, world):
         assert get(url, attempt)[0] == 404, attempt
 
 
+def test_a_host_page_gets_this_tools_scripts_from_a_fallback_directory(world):
+    """a host that keeps its own page dir does not copy core.js: the fallback serves it, the
+    host's own file wins on a shared name, and traversal is refused against every dir"""
+    shared = world.root / "shared"
+    shared.mkdir()
+    (shared / "core.js").write_text("core")
+    (shared / "app.js").write_text("shadowed")
+    (world.root / "secret.txt").write_text("nope")
+    app, httpd, url = _start(world, ui_fallbacks=(shared,))
+    try:
+        assert get(url, "/ui/core.js")[1] == b"core"
+        assert get(url, "/ui/app.js")[1] == b"console.log(1)"
+        assert get(url, "/ui/missing.js")[0] == 404
+        for attempt in ("/ui/../secret.txt", "/ui/%2e%2e/secret.txt"):
+            assert get(url, attempt)[0] == 404, attempt
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
 # ---------------------------------------------------------------- host tabs
 
 

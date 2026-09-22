@@ -1,6 +1,6 @@
 [project]
 name = "smolsmort"
-version = "0.4.1"
+version = "0.5.0"
 description = "a human-in-the-loop sorting loop: find candidates, judge them, train, predict, judge again"
 # 3.11, matching the oldest consumer. a floor above a consumer's makes the package unusable there
 requires-python = ">=3.11"
@@ -18,6 +18,10 @@ dependencies = [
 # judging half. `detect/model.py` imports torch lazily inside `_torch()` for exactly this reason.
 [project.optional-dependencies]
 vision = ["torch>=2.0"]
+# core ml on apple silicon: the "coreml" runtime of smolsmort.detect.train.load; needs torch too.
+# coremltools 9.0 has wheels for 3.11-3.13 only - on 3.14 it installs as a pure-python shell with
+# no native libraries, so the marker leaves it out there and the runtime says so by name
+coreml = ["torch>=2.0", "coremltools>=8; python_version < '3.14'"]
 
 [project.scripts]
 smolsmort = "smolsmort.cli:main"
@@ -63,8 +67,8 @@ python_files = ["test_*.py"]
 python_functions = ["test_*"]
 
 [tool.uv.sources]
-# smortui v0.2.0: dirMenu, range-slider, stepper and the arrangement recipes
-ui-base = { git = "https://github.com/BalthazarFitzpatrick/smortui.git", tag = "v0.2.1" }
+# smortui v0.2.3: dirMenu, range-slider, stepper, the arrangement recipes and the review page fixes
+ui-base = { git = "https://github.com/BalthazarFitzpatrick/smortui.git", tag = "v0.2.3" }
 
 [dependency-groups]
 dev = ["ruff>=0.11.0", "pytest>=8.0", "torch>=2.0"]
