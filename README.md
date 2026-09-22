@@ -36,7 +36,7 @@ being thrown away, and that is what makes the next model better instead of merel
 Two commands, then look before you label anything real:
 
 ```bash
-uv add "smolsmort[vision] @ git+https://github.com/BalthazarFitzpatrick/smolsmort.git@v0.4.1"
+uv add "smolsmort[vision] @ git+https://github.com/BalthazarFitzpatrick/smolsmort.git@v0.5.0"
 uv run smolsmort
 ```
 
@@ -45,7 +45,8 @@ recording under `sessions/<name>/frames/` (any folder of images), bind it from t
 few boxes and save: you now have tiles to judge, and the rest of the page comes alive.
 
 `[vision]` pulls torch (about 2 GB). Without it you get the loop's file handling, the box maths,
-scoring and tracking, and no model. The page is built on [smortui](https://github.com/BalthazarFitzpatrick/smortui),
+scoring and tracking, and no model. `[coreml]` adds coremltools on top, for running a trained
+heatmap on an Apple neural engine (see "Where the model runs"). The page is built on [smortui](https://github.com/BalthazarFitzpatrick/smortui),
 pulled in as a git dependency. Python 3.11 and newer; CI runs 3.11 and 3.14 on Linux.
 
 **Decide first whether it fits.** One question picks the backend: *is the object a fixed, known
@@ -226,15 +227,26 @@ On 20 training frames, 40 epochs on CPU found all 4 held-out bars within 8 px.
 sweep walks per frame, so the two cannot drift:
 
 ```python
-from smolsmort.detect.train import frame_input, heatmaps_for_frame, load, predict_frame
+from smolsmort.detect.train import frame_input, heatmaps_for_frame, heatmaps_of, load, predict_frame
 
 model = load(path)  # capture width and downscale come with it
 inputs, original_width = frame_input(model, frame)  # frame: (h, w, 3) rgb uint8, frame px
 maps, ratio = heatmaps_for_frame(model, frame)  # decode peaks yourself; x, y * ratio -> frame px
+maps = heatmaps_of(model, inputs)  # the same from a prepared input, masked however you like
 found = predict_frame(
     model, frame, classes=classes, width=64, height=14
 )  # sweep's dicts minus path
 ```
+
+**Where the model runs.** `load(path, runtime="coreml")` hands back a runner instead of the torch
+module: same call, same `downscale` and `capture_width`, so every function above takes it
+unchanged. The runner converts the checkpoint once to a Core ML package beside it
+(`<name>.pt.mlpackage`, fp16, one fixed input shape), rebuilds it when the `.pt` is newer, and
+refuses a frame of another size by name rather than resampling in silence. Measured on an M4 with
+an 18-class checkpoint at 1440x936: 1.0 ms per frame on the neural engine against 20.3 ms on four
+torch cpu threads (sigmoid drift at most 0.0035). Needs `smolsmort[coreml]`;
+`uv run --extra coreml python -m smolsmort.detect.export_coreml weights.pt --height 936` converts
+ahead of time, for a process that must not pay the first-call conversion.
 
 **Swapping the model.** Every backend has the same four methods, and listing or picking one never
 imports torch until a vision backend is built:
@@ -381,6 +393,7 @@ page in headless chromium, one test per tab, on every pull request.
 uv sync --extra vision
 uv run ruff check . --fix --extend-exclude .claude && uv run ruff format --extend-exclude .claude .
 uv run pytest -q
+uv run --extra coreml pytest tests/test_coreml_runtime.py -q -s      # macos only; prints ms/frame cpu vs neural engine
 uv run --with playwright pytest tests/test_review_ui_browser.py -q   # headless chromium, one test per tab
 uv run --with playwright python tests/browser_check.py shots/         # the same, with a screenshot per tab
 ```
