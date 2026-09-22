@@ -10,7 +10,6 @@ dependencies = [
     "numpy>=2.0",
     "pillow>=11.0",
     "ui-base",
-    "xgboost>=3.2.0",
 ]
 
 # TORCH IS OPTIONAL, deliberately. the loop itself does not need it - only the vision backend does,
@@ -22,6 +21,12 @@ vision = ["torch>=2.0"]
 # coremltools 9.0 has wheels for 3.11-3.13 only - on 3.14 it installs as a pure-python shell with
 # no native libraries, so the marker leaves it out there and the runtime says so by name
 coreml = ["torch>=2.0", "coremltools>=8; python_version < '3.14'"]
+# xgboost was a base dependency, but nothing in the detect/vision path needs it - only
+# tabular/backend.py, resolved lazily through backends.py's string registry. as a base
+# dependency it made coremltools's own xgboost import unconditional too, and xgboost's
+# libxgboost.dylib links homebrew's libomp, which segfaults against torch's bundled libomp
+# in any process that also uses the coreml runtime. a vision-only consumer should never pay for it.
+tabular = ["xgboost>=3.2.0"]
 
 [project.scripts]
 smolsmort = "smolsmort.cli:main"

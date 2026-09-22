@@ -993,14 +993,16 @@ dependencies = [
     { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pillow" },
     { name = "ui-base" },
-    { name = "xgboost", version = "3.2.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "xgboost", version = "3.4.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
 
 [package.optional-dependencies]
 coreml = [
     { name = "coremltools", marker = "python_full_version < '3.14'" },
     { name = "torch" },
+]
+tabular = [
+    { name = "xgboost", version = "3.2.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "xgboost", version = "3.4.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
 vision = [
     { name = "torch" },
@@ -1021,9 +1023,9 @@ requires-dist = [
     { name = "torch", marker = "extra == 'coreml'", specifier = ">=2.0" },
     { name = "torch", marker = "extra == 'vision'", specifier = ">=2.0" },
     { name = "ui-base", git = "https://github.com/BalthazarFitzpatrick/smortui.git?tag=v0.2.3" },
-    { name = "xgboost", specifier = ">=3.2.0" },
+    { name = "xgboost", marker = "extra == 'tabular'", specifier = ">=3.2.0" },
 ]
-provides-extras = ["vision", "coreml"]
+provides-extras = ["vision", "coreml", "tabular"]
 
 [package.metadata.requires-dev]
 dev = [

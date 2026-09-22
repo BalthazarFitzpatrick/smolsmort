@@ -39,6 +39,8 @@ def test_both_built_in_backends_have_the_seam_shape():
     from test_loop import ModelBackend
 
     for name in backends.names():
+        if name == "xgboost":
+            pytest.importorskip("xgboost")
         assert isinstance(backends.get_backend(name), ModelBackend), name
 
 
