@@ -5,11 +5,13 @@
 `capture_width` like the module does, so everything above `load` (frame_input, heatmaps_for_frame,
 predict_frame, sweep, decode_peaks) never learns which runtime it holds.
 
-THE .pt STAYS THE SOURCE OF TRUTH. the core ml package is a compiled copy beside it,
-`<name>.pt.mlpackage`, converted once at fp16 for one fixed input shape and reused while it is
+THE .pt STAYS THE SOURCE OF TRUTH. a core ml package is a compiled copy beside it, converted at
+fp16 for ONE input shape and named for it - `<name>.pt.468x720.mlpackage` - and reused while it is
 newer than the checkpoint; the class-map sidecars are not touched. a core ml model wants its input
-shape at conversion, and the first frame is where that shape is known, so conversion happens on
-the first call unless `smolsmort.detect.export_coreml` did it ahead of time.
+shape at conversion, and the first frame is where that shape is known, so a shape the runner has no
+package for is converted on first sight (about half a second) rather than refused: a capture that
+changes resolution costs one conversion, not a restart. `smolsmort.detect.export_coreml` does the
+same ahead of time for a process that must not pay it.
 
 MEASURED 2026-09-22 on an apple m4 (10 cores), python 3.13, torch 2.14, coremltools 9.0, with the
 first consumer's checkpoint (100,602 parameters, 18 classes, 1440x936 frames -> (1, 3, 468, 720)
@@ -70,9 +72,11 @@ register("torch", _torch_runtime)
 # ---------------------------------------------------------------- core ml
 
 
-def package_path(weights: Path) -> Path:
-    """the compiled copy beside a checkpoint: weights/a.pt -> weights/a.pt.mlpackage"""
-    return weights.with_name(weights.name + ".mlpackage")
+def package_path(weights: Path, input_shape: tuple[int, ...]) -> Path:
+    """the compiled copy beside a checkpoint, one per input shape:
+    weights/a.pt at (1, 3, 468, 720) -> weights/a.pt.468x720.mlpackage"""
+    height, width = int(input_shape[-2]), int(input_shape[-1])
+    return weights.with_name(f"{weights.name}.{height}x{width}.mlpackage")
 
 
 def _coremltools():
@@ -122,7 +126,7 @@ def convert(model, weights: Path, input_shape: tuple[int, int, int, int]) -> Pat
         compute_precision=ct.precision.FLOAT16,
         compute_units=ct.ComputeUnit.ALL,
     )
-    target = package_path(weights)
+    target = package_path(weights, input_shape)
     package.save(str(target))
     return target
 
@@ -133,31 +137,48 @@ def _input_shape_of(package) -> tuple[int, ...]:
 
 
 class CoreMLRunner:
-    """the torch module's call contract over a core ml package.
+    """the torch module's call contract over core ml packages, one per input shape.
 
     `__call__` takes a (1, 3, H, W) float32 torch tensor or numpy array and returns logits as a
     torch tensor on cpu, so `torch.sigmoid(model(x))[0].cpu().numpy()` reads the same. the package
-    is converted on the first call when none is beside the checkpoint or it is older than the
-    checkpoint; a later call with another shape is refused rather than silently resampled.
+    for a shape is loaded on the first call at that shape, converted first when it is missing or
+    older than the checkpoint, and kept for the runner's life; nothing is ever resampled.
     """
 
     def __init__(self, model, weights: Path):
         self._model = model
         self._weights = Path(weights)
-        self._package = None
+        self._packages: dict[tuple[int, ...], object] = {}
         self.downscale = downscale_of(model)
         self.capture_width = capture_width_of(model)
         self.runtime = "coreml"
         self.device = "cpu"
-        ct = _coremltools()
-        target = package_path(self._weights)
-        fresh = target.exists() and os.path.getmtime(target) >= os.path.getmtime(self._weights)
-        if fresh:
-            self._package = ct.models.MLModel(str(target), compute_units=ct.ComputeUnit.ALL)
+        _coremltools()  # refuse at load time, not on the first frame, when the extra is missing
 
     @property
-    def input_shape(self) -> tuple[int, ...] | None:
-        return _input_shape_of(self._package) if self._package is not None else None
+    def shapes(self) -> tuple[tuple[int, ...], ...]:
+        """the input shapes this runner holds a package for, in the order they were first seen"""
+        return tuple(self._packages)
+
+    def _package_for(self, shape: tuple[int, ...]):
+        package = self._packages.get(shape)
+        if package is not None:
+            return package
+        ct = _coremltools()
+        target = package_path(self._weights, shape)
+        fresh = target.exists() and os.path.getmtime(target) >= os.path.getmtime(self._weights)
+        if not fresh:
+            started = time.perf_counter()
+            convert(self._model, self._weights, shape)
+            self.converted_in = time.perf_counter() - started
+        package = ct.models.MLModel(str(target), compute_units=ct.ComputeUnit.ALL)
+        if _input_shape_of(package) != shape:
+            raise RuntimeError_(
+                f"{target.name} carries input {_input_shape_of(package)}, not {shape} - "
+                "delete it and let the runner convert again"
+            )
+        self._packages[shape] = package
+        return package
 
     def eval(self):
         return self
@@ -172,19 +193,8 @@ class CoreMLRunner:
         array = np.ascontiguousarray(array, dtype=np.float32)
         if array.ndim != 4:
             raise RuntimeError_(f"a (1, 3, h, w) batch is expected, got shape {array.shape}")
-        if self._package is None:
-            ct = _coremltools()
-            started = time.perf_counter()
-            target = convert(self._model, self._weights, tuple(array.shape))
-            self._package = ct.models.MLModel(str(target), compute_units=ct.ComputeUnit.ALL)
-            self.converted_in = time.perf_counter() - started
-        elif tuple(array.shape) != self.input_shape:
-            raise RuntimeError_(
-                f"{package_path(self._weights).name} was converted for input {self.input_shape}, "
-                f"this frame is {tuple(array.shape)} - re-export it for this size "
-                "(python -m smolsmort.detect.export_coreml)"
-            )
-        logits = self._package.predict({"frame": array})["logits"]
+        package = self._package_for(tuple(int(n) for n in array.shape))
+        logits = package.predict({"frame": array})["logits"]
         return torch.from_numpy(np.ascontiguousarray(logits, dtype=np.float32))
 
 

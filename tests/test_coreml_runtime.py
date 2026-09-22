@@ -54,27 +54,35 @@ def test_coreml_runner_answers_like_the_module(weights):
     got = torch.sigmoid(runner(x)).numpy()
     assert got.shape == ref.shape == (1, 4, *HEAT)
     assert np.abs(got - ref).max() < 0.02, "fp16 on the neural engine drifted past 0.02 in sigmoid"
-    # the package now sits beside the checkpoint and is picked up without converting again
-    assert package_path(weights).exists()
+    # the package now sits beside the checkpoint, named for its shape, and is picked up without
+    # converting again
+    assert package_path(weights, INPUT).name == "small.pt.468x720.mlpackage"
+    assert package_path(weights, INPUT).exists()
     again = load(weights, runtime="coreml")
-    assert again.input_shape == INPUT
+    again(x)
+    assert again.shapes == (INPUT,)
     assert not hasattr(again, "converted_in")
 
 
-def test_stale_package_is_rebuilt_and_other_shape_refused(weights):
+def test_stale_package_is_rebuilt_and_another_shape_gets_its_own(weights):
     runner = load(weights, runtime="coreml")
     runner(torch.zeros(*INPUT))
-    package = package_path(weights)
+    package = package_path(weights, INPUT)
     # the checkpoint is newer than the package: the runner must convert again on first use
     save(load(weights, device="cpu"), weights)
     stamp = package.stat().st_mtime - 10
     os.utime(package, (stamp, stamp))
     fresh = load(weights, runtime="coreml")
-    assert fresh.input_shape is None
+    assert fresh.shapes == ()
     fresh(torch.zeros(*INPUT))
-    assert fresh.input_shape == INPUT
-    with pytest.raises(RuntimeError_, match="converted for input"):
-        fresh(torch.zeros(1, 3, 234, 360))
+    assert fresh.shapes == (INPUT,) and fresh.converted_in > 0
+    # a capture that changes resolution gets a second package beside the first, no refusal
+    other = (1, 3, 232, 360)
+    out = fresh(torch.zeros(*other))
+    assert out.shape[-2:] == (232 // STRIDE, 360 // STRIDE)
+    assert fresh.shapes == (INPUT, other)
+    assert package_path(weights, other).name == "small.pt.232x360.mlpackage"
+    assert package_path(weights, other).exists() and package.exists()
 
 
 def test_heatmaps_for_frame_takes_the_runner(weights):
