@@ -331,10 +331,17 @@ stays the source of truth; the runner converts it once to `<name>.pt.mlpackage` 
 the input shape of the first frame it sees), reuses that while it is newer than the checkpoint,
 and refuses a frame of another shape with an error naming both shapes. Convert ahead of time with
 `uv run --extra coreml python -m smolsmort.detect.export_coreml weights.pt --height 936` (width
-defaults to the checkpoint's capture width). Measured 2026-09-22 on an M4, 18 classes, 100,602
-parameters, input (1, 3, 468, 720): torch cpu on four threads 20.3 ms per frame (p90 25.1), Core
-ML all units 1.0 ms (p90 1.1), Core ML cpu only 4.8 ms; fp16 drift at most 0.040 in logits, 0.0035
-after the sigmoid. The registry in `smolsmort.detect.runtime` takes another runtime by name. `smolsmort.detect.scoring` scores detections against truth per frame
+defaults to the checkpoint's capture width). Measured 2026-09-22 on an M4 (10 cores), Python 3.13,
+torch 2.14, coremltools 9.0, 18 classes, 100,602 parameters, input (1, 3, 468, 720), the three
+interleaved through `heatmaps_of` under a load average of 3.4: torch cpu 30.4 ms per frame (p90
+39.4; alone 43 / 35 / 33 ms at 1 / 4 / 8 threads), torch mps 12.1 ms (p90 13.5), Core ML 2.1 ms
+(p90 2.6; the bare runner call 1.06 ms, Core ML cpu-only 4.8 ms); fp16 drift at most 0.040 in
+logits, 0.0035 after the sigmoid. Core ML needs a Python coremltools ships wheels for: 3.11 to
+3.13 as of coremltools 9.0. On 3.14 the package installs as a pure-python shell, so the extra's
+marker leaves it out there and `load(..., runtime="coreml")` refuses with the interpreter named.
+The registry in `smolsmort.detect.runtime` takes another runtime by name.
+
+`smolsmort.detect.scoring` scores detections against truth per frame
 (positional match for thin objects, `iou_match(0.5)` for squarer ones); `smolsmort.detect.track`
 follows one object across a recording and flags interface chrome that never moves.
 

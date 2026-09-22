@@ -243,8 +243,11 @@ module: same call, same `downscale` and `capture_width`, so every function above
 unchanged. The runner converts the checkpoint once to a Core ML package beside it
 (`<name>.pt.mlpackage`, fp16, one fixed input shape), rebuilds it when the `.pt` is newer, and
 refuses a frame of another size by name rather than resampling in silence. Measured on an M4 with
-an 18-class checkpoint at 1440x936: 1.0 ms per frame on the neural engine against 20.3 ms on four
-torch cpu threads (sigmoid drift at most 0.0035). Needs `smolsmort[coreml]`;
+an 18-class checkpoint at 1440x936, Python 3.13, the three interleaved on the same input under a
+load average of 3.4: 2.1 ms per frame through `heatmaps_of` on the neural engine (1.1 ms for the
+bare call) against 12.1 ms on torch mps and 30.4 ms on torch cpu; sigmoid drift at most 0.0035.
+Needs `smolsmort[coreml]`, and a Python coremltools ships wheels for - 3.11 to 3.13 as of
+coremltools 9.0; on 3.14 the extra installs nothing and the runtime refuses by name.
 `uv run --extra coreml python -m smolsmort.detect.export_coreml weights.pt --height 936` converts
 ahead of time, for a process that must not pay the first-call conversion.
 

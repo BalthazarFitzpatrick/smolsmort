@@ -18,8 +18,10 @@ dependencies = [
 # judging half. `detect/model.py` imports torch lazily inside `_torch()` for exactly this reason.
 [project.optional-dependencies]
 vision = ["torch>=2.0"]
-# core ml on apple silicon: the "coreml" runtime of smolsmort.detect.train.load; needs torch too
-coreml = ["torch>=2.0", "coremltools>=8"]
+# core ml on apple silicon: the "coreml" runtime of smolsmort.detect.train.load; needs torch too.
+# coremltools 9.0 has wheels for 3.11-3.13 only - on 3.14 it installs as a pure-python shell with
+# no native libraries, so the marker leaves it out there and the runtime says so by name
+coreml = ["torch>=2.0", "coremltools>=8; python_version < '3.14'"]
 
 [project.scripts]
 smolsmort = "smolsmort.cli:main"
