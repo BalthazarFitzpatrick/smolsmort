@@ -30,6 +30,10 @@ def test_a_shell_without_native_libraries_names_the_interpreter(weights, monkeyp
     shell = types.ModuleType("coremltools")
     shell.__version__ = "9.0"
     shell.__path__ = []  # a package with nothing compiled under it
+    # a real coremltools imported earlier in this process would answer find_spec from
+    # sys.modules; forget its submodules so the check has to look under the shell's path
+    for name in [n for n in sys.modules if n.startswith("coremltools.")]:
+        monkeypatch.delitem(sys.modules, name)
     monkeypatch.setitem(sys.modules, "coremltools", shell)
     assert not native_libraries_present(shell)
     version = f"{sys.version_info[0]}.{sys.version_info[1]}"

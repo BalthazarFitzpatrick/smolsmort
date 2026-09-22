@@ -241,8 +241,9 @@ found = predict_frame(
 **Where the model runs.** `load(path, runtime="coreml")` hands back a runner instead of the torch
 module: same call, same `downscale` and `capture_width`, so every function above takes it
 unchanged. The runner converts the checkpoint once to a Core ML package beside it
-(`<name>.pt.mlpackage`, fp16, one fixed input shape), rebuilds it when the `.pt` is newer, and
-refuses a frame of another size by name rather than resampling in silence. Measured on an M4 with
+(`<name>.pt.468x720.mlpackage`, fp16, one package per input shape), rebuilds it when the `.pt`
+is newer, and converts a new package on the first frame of another size - about half a second
+once, never a resample. Measured on an M4 with
 an 18-class checkpoint at 1440x936, Python 3.13, the three interleaved on the same input under a
 load average of 3.4: 2.1 ms per frame through `heatmaps_of` on the neural engine (1.1 ms for the
 bare call) against 12.1 ms on torch mps and 30.4 ms on torch cpu; sigmoid drift at most 0.0035.

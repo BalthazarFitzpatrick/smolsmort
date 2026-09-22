@@ -1,4 +1,5 @@
-"""convert a heatmap checkpoint to core ml ahead of time, for one frame size.
+"""convert a heatmap checkpoint to core ml ahead of time, for one frame size; the package is
+named for its input shape (`weights.pt.468x720.mlpackage`) so several sizes can sit side by side.
 
     uv run --extra coreml python -m smolsmort.detect.export_coreml weights.pt --height 936
 

@@ -327,9 +327,10 @@ sweep so the two cannot drift.
 **Runtimes.** `load(path, runtime="coreml")` returns a runner with the module's call contract - a
 (1, 3, h, w) float batch in, logits out - carrying the same `downscale` and `capture_width`, so
 `frame_input`, `heatmaps_for_frame`, `predict_frame` and `sweep` take it unchanged. The `.pt`
-stays the source of truth; the runner converts it once to `<name>.pt.mlpackage` beside it (fp16,
-the input shape of the first frame it sees), reuses that while it is newer than the checkpoint,
-and refuses a frame of another shape with an error naming both shapes. Convert ahead of time with
+stays the source of truth; the runner converts it to `<name>.pt.<h>x<w>.mlpackage` beside it
+(fp16, one package per input shape, named for it), reuses a package while it is newer than the
+checkpoint, and converts another on the first frame of a new shape - half a second once, so a
+capture that changes resolution costs a conversion, not a restart. Convert ahead of time with
 `uv run --extra coreml python -m smolsmort.detect.export_coreml weights.pt --height 936` (width
 defaults to the checkpoint's capture width). Measured 2026-09-22 on an M4 (10 cores), Python 3.13,
 torch 2.14, coremltools 9.0, 18 classes, 100,602 parameters, input (1, 3, 468, 720), the three
