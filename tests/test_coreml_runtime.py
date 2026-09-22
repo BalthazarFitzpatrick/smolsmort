@@ -21,7 +21,7 @@ from smolsmort.detect.model import (
     set_capture_width,
 )
 from smolsmort.detect.runtime import RuntimeError_, names, package_path
-from smolsmort.detect.train import frame_input, heatmaps_for_frame, load, save
+from smolsmort.detect.train import frame_input, heatmaps_for_frame, heatmaps_of, load, save
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("coremltools")
@@ -82,6 +82,22 @@ def test_heatmaps_for_frame_takes_the_runner(weights):
     frame = np.random.default_rng(2).integers(0, 255, FRAME, dtype=np.uint8)
     maps, ratio = heatmaps_for_frame(runner, frame)
     assert maps.shape == (4, *HEAT) and ratio == 1.0
+
+
+def test_heatmaps_of_takes_a_prepared_array_on_both_runtimes(weights):
+    """the seam a caller that masks its own input uses: (3, h, w) float32 in, sigmoid maps out"""
+    module = load(weights, device="cpu")
+    runner = load(weights, runtime="coreml")
+    frame = np.random.default_rng(3).integers(0, 255, FRAME, dtype=np.uint8)
+    image, _ = frame_input(module, frame)
+    image[:, :40, :] = 0.0  # a masked strip, as a consumer zeroes its hud before inference
+    ref = heatmaps_of(module, image)
+    got = heatmaps_of(runner, image)
+    assert got.shape == ref.shape == (4, *HEAT)
+    assert np.abs(got - ref).max() < 0.02
+    # a numpy batch goes straight into the runner too, and comes back a cpu float32 tensor
+    out = runner(image[None])
+    assert isinstance(out, torch.Tensor) and out.dtype == torch.float32 and out.device.type == "cpu"
 
 
 def test_unknown_runtime_is_named(weights):

@@ -227,11 +227,12 @@ On 20 training frames, 40 epochs on CPU found all 4 held-out bars within 8 px.
 sweep walks per frame, so the two cannot drift:
 
 ```python
-from smolsmort.detect.train import frame_input, heatmaps_for_frame, load, predict_frame
+from smolsmort.detect.train import frame_input, heatmaps_for_frame, heatmaps_of, load, predict_frame
 
 model = load(path)  # capture width and downscale come with it
 inputs, original_width = frame_input(model, frame)  # frame: (h, w, 3) rgb uint8, frame px
 maps, ratio = heatmaps_for_frame(model, frame)  # decode peaks yourself; x, y * ratio -> frame px
+maps = heatmaps_of(model, inputs)  # the same from a prepared input, masked however you like
 found = predict_frame(
     model, frame, classes=classes, width=64, height=14
 )  # sweep's dicts minus path

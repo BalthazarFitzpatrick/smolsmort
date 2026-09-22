@@ -178,7 +178,7 @@ def heatmaps_for_frame(model, frame: np.ndarray, device=None) -> tuple[np.ndarra
     if device is None:
         device = _device_of(model)
     image, original = frame_input(model, frame)
-    return _heatmaps_of(model, image, device), frame_ratio(model, original)
+    return heatmaps_of(model, image, device), frame_ratio(model, original)
 
 
 def predict_frame(
@@ -198,7 +198,7 @@ def predict_frame(
     if device is None:
         device = _device_of(model)
     image, original = frame_input(model, frame)
-    maps = _heatmaps_of(model, image, device)
+    maps = heatmaps_of(model, image, device)
     by_channel = {index: label for label, index in classes.items()}
     found = _decode_frame(
         maps,
@@ -524,12 +524,17 @@ def heatmaps_for(model, path: Path, device: str | None = None) -> np.ndarray:
 SCORE_BUCKETS = 40
 
 
-def _heatmaps_of(model, image: np.ndarray, device) -> np.ndarray:
-    """heatmaps for an ALREADY DECODED input, so a caller can decode off the model's thread"""
+def heatmaps_of(model, image: np.ndarray, device=None) -> np.ndarray:
+    """(classes, h / stride, w / stride) sigmoid heatmaps for an ALREADY PREPARED (3, h, w) float32
+    input - what `frame_input` returns, after whatever masking the caller does - so a caller can
+    decode off the model's thread. the one seam every runtime answers: `model` may be the torch
+    module or a runner from `load(..., runtime=...)`"""
     torch = _torch()
+    if device is None:
+        device = _device_of(model)
     with torch.no_grad():
         model.eval()
-        x = torch.from_numpy(image).unsqueeze(0).to(device)
+        x = torch.from_numpy(np.ascontiguousarray(image, dtype=np.float32)).unsqueeze(0).to(device)
         return torch.sigmoid(model(x))[0].cpu().numpy()
 
 
@@ -604,7 +609,7 @@ def _sweep_frames(
     # threshold against: the response on THIS recording rather than on the training frames
     histogram = np.zeros(SCORE_BUCKETS, dtype=np.int64)
     for position, (path, (image, original)) in enumerate(decoded, start=1):
-        maps = _heatmaps_of(model, image, device)
+        maps = heatmaps_of(model, image, device)
         resampled = bool(capture) and original != capture
         highest = max(highest, float(maps.max()))
         counts, _ = np.histogram(maps.max(axis=0), bins=SCORE_BUCKETS, range=(0.0, 1.0))

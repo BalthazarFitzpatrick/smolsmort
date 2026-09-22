@@ -312,11 +312,12 @@ The README's quickstart trains on labelled centres and scores a holdout. Three m
 matter for a caller that already holds pixels (a live capture):
 
 ```python
-from smolsmort.detect.train import frame_input, heatmaps_for_frame, load, predict_frame
+from smolsmort.detect.train import frame_input, heatmaps_for_frame, heatmaps_of, load, predict_frame
 
 model = load("weights.pt")  # capture width and downscale come with it
 inputs, width = frame_input(model, frame)  # the net's input from an (h, w, 3) rgb frame
 maps, ratio = heatmaps_for_frame(model, frame)  # decode yourself; x, y * ratio -> frame px
+maps = heatmaps_of(model, inputs)  # the same from a prepared input, masked however you like
 found = predict_frame(model, frame, classes=classes, width=64, height=14)
 ```
 
