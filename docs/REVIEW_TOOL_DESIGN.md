@@ -124,8 +124,9 @@ heatmap CNN); a tabular one (xgboost, for forecasting) is meant to sit beside it
 
 **Two implementations exist, picked by name.** `smolsmort/boxes` is the second: a size-aware CNN
 that predicts each object's own box, for objects that vary in size and frames of different
-resolutions. `smolsmort/backends.py` maps a name (`heatmap`, `box`) to the class that implements it,
-imported lazily so listing names never imports torch. That list is what the train tab offers, and
+resolutions. `smolsmort/backends.py` maps a name (`heatmap`, `box`, `xgboost`) to the class that
+implements it, imported lazily so listing names never imports torch. The vision names are what the
+train tab offers (the `xgboost` row backend stays a mechanics check of the seam), and
 `register()` adds an outside model without editing smolsmort. A JSON sidecar saved beside each
 checkpoint names the backend that wrote it; a checkpoint without one is a heatmap checkpoint. The
 example dicts the loop hands a backend carry per-object `sizes` beside `centres`: a size-aware
@@ -147,6 +148,27 @@ declares it as an optional `vision` extra (`pyproject.toml`). The loop itself ne
 so a consumer doing tabular work is not made to install it. Tests that exercise the real CNN keep
 the `pytest.importorskip("torch")` pattern; the loop test uses a FAKE backend and therefore runs
 with no torch at all.
+
+## topics, and why forecasting is not a fifth seam
+
+The page groups its tabs into topics - vision, regression, classification - each with its own tabs
+and a first-row dropdown for backend and flavour. A tab registered without a topic lands in vision,
+so a host page that never heard of topics keeps working.
+
+The regression and classification topics do not run through the four seams. The seams exist for a
+loop in which **a human judges** each candidate; a forecast has nobody to judge it. Its judge is the
+holdout: rows cut by time into train, validation and test, a search that only ever reads validation,
+and a test split touched once by the frozen winner. What comes back is a forecast plus a verdict that
+says whether it is worth acting on. Forcing that through `ModelBackend` would have meant candidates
+with no boxes and a judge step that never happens - the shape would lie about the work.
+
+Two rules the forecast package keeps that the vision loop never needed:
+
+- **Nothing after the origin.** A series feature for step d, predicted from origin d - b, reads only
+  values up to the origin. A test changes every value after an origin and asserts no feature at or
+  before it moves.
+- **xgboost never shares a process with torch.** Both bring an OpenMP runtime and the process aborts
+  when both start one; the search runs in a worker process that refuses to start if torch is loaded.
 
 ## package layout
 
@@ -200,8 +222,19 @@ the same change).
         render/             example renderer seam implementations
           crop.py           padded-crop + whole-frame rendering (from state + tools/playback)
 
-      tabular/              model backend seam, implementation #3 (xgboost). FUTURE - named here so
-                            the seam is visibly plural and detect is visibly not the product.
+      tabular/              model backend seam, implementation #3 (xgboost): a mechanics check that
+                            keeps the seam visibly plural, not a forecasting tool
+
+      forecast/             the regression and classification topics - OUTSIDE the four seams
+        spec.py             what a prep spec says and the reserved columns every unit reads
+        prep.py             spec + source file -> cached parquet, as one duckdb sql script
+        splits.py           chronological train / val / test cuts, as-of relabelling
+        profile.py          train-only stats: leaks, censoring, season, lead-lag, starting genes
+        features.py         row features; series features per horizon bucket, read at the origin
+        model.py evaluate.py  xgboost fits, conformal bands, the trust verdict
+        pipeline.py search.py  scoring phases and the genetic search
+        worker.py runs.py   the search in its own process; run folders
+        tab.py views.py     the http routes and the chart / table / export views
 
     docs/
       REVIEW_TOOL_DESIGN.md   this document
