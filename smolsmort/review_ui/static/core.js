@@ -74,13 +74,9 @@ function askDialog({title, lines, buttons}) {
 }
 
 // ---- the tab registry: the nav bar and panels are built from this list ----
-// a host adds a tab with window.smolsmortTabs.register({id, label, mount(panelEl), topic}); mount
-// runs once and may return {enter()} to be told each time the tab is shown. topic defaults to
-// 'vision', so a host page that never heard of topics keeps working unchanged.
-//
-// topics group tabs behind a first-row switch, each with its own remembered tab and its own
-// flavour picker (setFlavours/flavour/onFlavour) - the dropdown a backend or model kind is chosen
-// from. only vision has tabs today; the switch itself stays hidden until a second topic does too.
+// register({id, label, mount(panelEl), topic}); mount may return {enter()}. topic defaults to
+// 'vision' so older hosts keep working; each topic remembers its tab and its flavour dropdown,
+// and the topic switch stays hidden until a second topic has tabs
 const smolsmortTabs = (() => {
   const tabs = [];
   const topicOrder = [];

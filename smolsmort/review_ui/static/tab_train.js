@@ -271,11 +271,11 @@ class TrainTab {
     return this.backendList;
   }
 
-  // on a core.js that carries topics, the vision flavour dropdown is the one place to pick the
-  // backend and this tab's own row hides; an older core.js (a host page not yet updated) keeps
-  // this tab's picker working exactly as before
+  // with topics and the first-row dropdown on the page, that dropdown picks the backend and this
+  // row hides; an older core.js or a host page without the dropdown keeps this tab's own picker
   async wireBackendFlavours() {
-    if (typeof smolsmortTabs.setFlavours !== 'function') return;
+    const topics = typeof smolsmortTabs.setFlavours === 'function';
+    if (!topics || !document.getElementById('topic-flavour')) return;
     let names = [];
     try { names = await this.backendNames(); } catch (err) { return; }
     const items = names.filter(name => name !== 'xgboost').map(name => ({id: name, label: name}));
@@ -283,10 +283,13 @@ class TrainTab {
     document.getElementById('train-backend-row').classList.add('hidden');
     if (this.flavourWired) return;
     this.flavourWired = true;
+    // a pick that cannot apply snaps the dropdown back to the backend actually in use
+    const snapBack = () => smolsmortTabs.setFlavours('vision', items, this.backend);
     smolsmortTabs.onFlavour('vision', async id => {
-      if (!this.setName || id === this.backend) return;
+      if (id === this.backend) return;
+      if (!this.setName) { this.say('bind a set of tiles first'); snapBack(); return; }
       const res = await api('/api/train-set-backend', {name: this.setName, backend: id});
-      if (res.error) { this.say(res.error); return; }
+      if (res.error) { this.say(res.error); snapBack(); return; }
       this.say(`${res.backend} - sizes ${res.size_mode}`);
       await this.loadInfo();
     });
