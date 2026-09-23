@@ -68,33 +68,43 @@ def menu_labels(page: Page) -> list[str]:
 def check_tabs_and_extension(page: Page) -> None:
     tabs = page.locator("#nav-bar .nav-tab").all_inner_texts()
     assert tabs == ["find", "select", "train", "housekeeping"], tabs
-    # a runtime tab with no topic lands in vision: it joins the same nav-bar, and the topic
-    # switch (only vision has tabs so far) stays hidden
+    # regression and classification each carry real tabs from the page's own scripts, so the
+    # topic switch is already visible with all three topics before any runtime registration
+    assert "hidden" not in page.get_attribute("#topic-switch", "class")
+    assert page.locator("#topic-switch .topic-tab").all_inner_texts() == [
+        "vision",
+        "regression",
+        "classification",
+    ]
+
+    # a runtime tab with no topic lands in vision: it joins the same nav-bar
     page.evaluate(
         """() => window.smolsmortTabs.register({id: 'extra', label: 'extra',
              mount: el => { el.textContent = 'hello from a host tab'; }})"""
     )
     assert page.locator("#nav-bar .nav-tab").all_inner_texts()[-1] == "extra"
-    assert "hidden" in page.get_attribute("#topic-switch", "class")
     show_tab(page, "extra")
     assert "hello from a host tab" in page.locator('.tab-panel[data-panel="extra"]').inner_text()
 
-    # a second topic makes the switch appear; its tab lives on its own row, and switching back
-    # restores vision's own last tab rather than resetting to the first one
+    # a brand new topic joins the switch too, on its own row, and switching back restores
+    # vision's own last tab rather than resetting to the first one
     page.evaluate(
-        """() => window.smolsmortTabs.register({id: 'forecast', label: 'forecast',
-             topic: 'regression',
-             mount: el => { el.textContent = 'hello from regression'; }})"""
+        """() => window.smolsmortTabs.register({id: 'other-tab', label: 'other tab',
+             topic: 'other', mount: el => { el.textContent = 'hello from other'; }})"""
     )
     page.wait_for_timeout(100)
-    assert "hidden" not in page.get_attribute("#topic-switch", "class")
-    assert page.locator("#topic-switch .topic-tab").all_inner_texts() == ["vision", "regression"]
+    assert page.locator("#topic-switch .topic-tab").all_inner_texts() == [
+        "vision",
+        "regression",
+        "classification",
+        "other",
+    ]
     assert page.locator("#nav-bar .nav-tab").all_inner_texts()[-1] == "extra"
 
-    page.click('#topic-switch .topic-tab:has-text("regression")')
+    page.click('#topic-switch .topic-tab:has-text("other")')
     page.wait_for_timeout(100)
-    assert page.locator("#nav-bar .nav-tab").all_inner_texts() == ["forecast"]
-    assert "hello from regression" in page.locator('.tab-panel[data-panel="forecast"]').inner_text()
+    assert page.locator("#nav-bar .nav-tab").all_inner_texts() == ["other tab"]
+    assert "hello from other" in page.locator('.tab-panel[data-panel="other-tab"]').inner_text()
 
     page.click('#topic-switch .topic-tab:has-text("vision")')
     page.wait_for_timeout(100)
@@ -194,8 +204,9 @@ def check_train(page: Page, base: str, log: list, urls: list, app) -> None:
     tiles, weights = box(page, "#train-open"), box(page, "#train-load")
     assert abs(tiles["y"] - weights["y"]) < 2 and tiles["x"] < weights["x"]
 
-    # one stepper per row, label left, value and buttons right-aligned
-    rows = page.locator("[data-stepper]")
+    # one stepper per row, label left, value and buttons right-aligned. scoped to this panel -
+    # the forecast topics' search tabs carry their own [data-stepper] rows elsewhere on the page
+    rows = page.locator('.tab-panel[data-panel="train"] [data-stepper]')
     assert rows.count() == 3
     tops = []
     for i in range(3):
