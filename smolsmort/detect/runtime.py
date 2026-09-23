@@ -13,6 +13,10 @@ package for is converted on first sight (about half a second) rather than refuse
 changes resolution costs one conversion, not a restart. `smolsmort.detect.export_coreml` does the
 same ahead of time for a process that must not pay it.
 
+`compute_units` ("all", "cpu_and_ne", "cpu_and_gpu", "cpu_only") picks the hardware core ml may run
+on, "all" by default. it is a load-time choice only: packages converted under ALL and CPU_AND_NE
+were byte-identical in spec and weights (coremltools 9.0), so one package per shape serves them all.
+
 MEASURED 2026-09-22 on an apple m4 (10 cores), python 3.13, torch 2.14, coremltools 9.0, with the
 first consumer's checkpoint (100,602 parameters, 18 classes, 1440x936 frames -> (1, 3, 468, 720)
 input), the three interleaved through `heatmaps_of` under a load average of 3.4: torch cpu
@@ -50,13 +54,13 @@ def names() -> list[str]:
     return sorted(RUNTIMES)
 
 
-def build(name: str, model, path: Path):
-    """the runner for `name` over the torch `model` loaded from `path`"""
+def build(name: str, model, path: Path, **options):
+    """the runner for `name` over the torch `model` loaded from `path`; options go to its factory"""
     try:
         factory = RUNTIMES[name]
     except KeyError:
         raise RuntimeError_(f"no runtime called {name!r} - known: {', '.join(names())}") from None
-    return factory(model, Path(path))
+    return factory(model, Path(path), **options)
 
 
 # ---------------------------------------------------------------- torch
@@ -98,6 +102,17 @@ def _coremltools():
             "3.11 to 3.13 as of coremltools 9.0"
         )
     return coremltools
+
+
+def compute_unit(value, ct):
+    """a ct.ComputeUnit from its lowercase name, or passed through as-is"""
+    if isinstance(value, ct.ComputeUnit):
+        return value
+    try:
+        return ct.ComputeUnit[str(value).upper()]
+    except KeyError:
+        known = ", ".join(unit.name.lower() for unit in ct.ComputeUnit)
+        raise RuntimeError_(f"no compute units called {value!r} - known: {known}") from None
 
 
 def native_libraries_present(coremltools) -> bool:
@@ -142,10 +157,11 @@ class CoreMLRunner:
     `__call__` takes a (1, 3, H, W) float32 torch tensor or numpy array and returns logits as a
     torch tensor on cpu, so `torch.sigmoid(model(x))[0].cpu().numpy()` reads the same. the package
     for a shape is loaded on the first call at that shape, converted first when it is missing or
-    older than the checkpoint, and kept for the runner's life; nothing is ever resampled.
+    older than the checkpoint, and kept for the runner's life; nothing is ever resampled. every
+    package is loaded under the runner's one `compute_units`, named back as a lowercase string.
     """
 
-    def __init__(self, model, weights: Path):
+    def __init__(self, model, weights: Path, compute_units="all"):
         self._model = model
         self._weights = Path(weights)
         self._packages: dict[tuple[int, ...], object] = {}
@@ -153,7 +169,9 @@ class CoreMLRunner:
         self.capture_width = capture_width_of(model)
         self.runtime = "coreml"
         self.device = "cpu"
-        _coremltools()  # refuse at load time, not on the first frame, when the extra is missing
+        # refuse at load time, not on the first frame, when the extra is missing
+        self._compute_unit = compute_unit(compute_units, _coremltools())
+        self.compute_units = self._compute_unit.name.lower()
 
     @property
     def shapes(self) -> tuple[tuple[int, ...], ...]:
@@ -171,7 +189,7 @@ class CoreMLRunner:
             started = time.perf_counter()
             convert(self._model, self._weights, shape)
             self.converted_in = time.perf_counter() - started
-        package = ct.models.MLModel(str(target), compute_units=ct.ComputeUnit.ALL)
+        package = ct.models.MLModel(str(target), compute_units=self._compute_unit)
         if _input_shape_of(package) != shape:
             raise RuntimeError_(
                 f"{target.name} carries input {_input_shape_of(package)}, not {shape} - "
@@ -198,8 +216,8 @@ class CoreMLRunner:
         return torch.from_numpy(np.ascontiguousarray(logits, dtype=np.float32))
 
 
-def _coreml_runtime(model, path: Path):
-    return CoreMLRunner(model, path)
+def _coreml_runtime(model, path: Path, compute_units="all"):
+    return CoreMLRunner(model, path, compute_units)
 
 
 register("coreml", _coreml_runtime)

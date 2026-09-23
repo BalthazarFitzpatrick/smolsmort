@@ -39,3 +39,8 @@ def test_a_shell_without_native_libraries_names_the_interpreter(weights, monkeyp
     version = f"{sys.version_info[0]}.{sys.version_info[1]}"
     with pytest.raises(RuntimeError_, match=f"python {version} has no native libraries"):
         load(weights, runtime="coreml")
+
+
+def test_compute_units_without_the_coreml_runtime_is_refused(weights):
+    with pytest.raises(RuntimeError_, match='pass runtime="coreml"'):
+        load(weights, compute_units="cpu_and_ne")

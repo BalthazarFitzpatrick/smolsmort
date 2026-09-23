@@ -24,7 +24,7 @@ from smolsmort.detect.runtime import RuntimeError_, names, package_path
 from smolsmort.detect.train import frame_input, heatmaps_for_frame, heatmaps_of, load, save
 
 torch = pytest.importorskip("torch")
-pytest.importorskip("coremltools")
+ct = pytest.importorskip("coremltools")
 
 FRAME = (936, 1440, 3)  # the first consumer's capture, downscaled by 2 to (468, 720)
 INPUT = (1, 3, 468, 720)
@@ -85,6 +85,29 @@ def test_stale_package_is_rebuilt_and_another_shape_gets_its_own(weights):
     assert package_path(weights, other).exists() and package.exists()
 
 
+def test_compute_units_reach_the_loaded_package_and_share_its_file(weights):
+    """compute units are chosen at load, not baked at conversion, so a cpu_and_ne runner reuses
+    the package an "all" runner converted rather than writing its own"""
+    default = load(weights, runtime="coreml")
+    assert default.compute_units == "all"
+    default(torch.zeros(*INPUT))
+    module = load(weights, device="cpu")
+    runner = load(weights, runtime="coreml", compute_units="cpu_and_ne")
+    frame = np.random.default_rng(4).integers(0, 255, FRAME, dtype=np.uint8)
+    image, _ = frame_input(module, frame)
+    assert np.abs(heatmaps_of(runner, image) - heatmaps_of(module, image)).max() < 0.02
+    assert runner.compute_units == "cpu_and_ne"
+    assert runner._packages[INPUT].compute_unit == ct.ComputeUnit.CPU_AND_NE
+    assert not hasattr(runner, "converted_in")
+
+
+def test_compute_units_take_the_enum_and_name_an_unknown_one(weights):
+    runner = load(weights, runtime="coreml", compute_units=ct.ComputeUnit.CPU_ONLY)
+    assert runner.compute_units == "cpu_only"
+    with pytest.raises(RuntimeError_, match="no compute units called 'nope' - known: all, "):
+        load(weights, runtime="coreml", compute_units="nope")
+
+
 def test_heatmaps_for_frame_takes_the_runner(weights):
     runner = load(weights, runtime="coreml")
     frame = np.random.default_rng(2).integers(0, 255, FRAME, dtype=np.uint8)
@@ -120,6 +143,7 @@ def test_spike_prints_ms_per_frame(weights, capsys):
     2.1 ms through heatmaps_of (bare call 1.06 ms)"""
     module = load(weights, device="cpu")
     runner = load(weights, runtime="coreml")
+    engine = load(weights, runtime="coreml", compute_units="cpu_and_ne")
     x = torch.rand(*INPUT)
 
     def bench(fn, n=20):
@@ -136,6 +160,10 @@ def test_spike_prints_ms_per_frame(weights, capsys):
     with torch.no_grad():
         cpu = bench(lambda: module(x))
     ane = bench(lambda: runner(x))
+    ne = bench(lambda: engine(x))
     with capsys.disabled():
-        print(f"\ncoreml spike: torch cpu {cpu:.1f} ms/frame, coreml all units {ane:.1f} ms/frame")
-    assert ane > 0 and cpu > 0
+        print(
+            f"\ncoreml spike: torch cpu {cpu:.1f} ms/frame, coreml all units {ane:.1f} ms/frame, "
+            f"coreml cpu_and_ne {ne:.1f} ms/frame"
+        )
+    assert ane > 0 and ne > 0 and cpu > 0
