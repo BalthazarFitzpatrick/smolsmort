@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 
+from smolsmort.forecast.tab import forecast_tab
 from smolsmort.review import paths
 from smolsmort.review.server import build_app, serve
 from smolsmort.review_ui.server import STATIC
@@ -25,7 +26,7 @@ def main(argv: list[str] | None = None) -> int:
     app = build_app(
         backend=args.backend,
         ui_dir=STATIC,
-        tabs=[hyperparams_tab()],
+        tabs=[hyperparams_tab(), forecast_tab()],
         bases_file=settings / "review_bases.json",
         crop_file=settings / "review_crop.json",
     )

@@ -58,6 +58,8 @@ outputs/
 # should split its own working data the same way.
 tiles/
 weights/
+# the forecast topics' data root: source files, prep caches and runs - never committed
+/forecast/
 predictions/
 
 # ledgers live in a private repo; these are local symlinks into it
