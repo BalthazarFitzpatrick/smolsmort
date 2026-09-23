@@ -12,10 +12,10 @@ import io
 import json
 from pathlib import Path
 
-import duckdb
 import numpy as np
 
 from smolsmort.forecast import evaluate as ev
+from smolsmort.forecast.tables import connect
 
 MAX_LINES = 12
 MC_DRAWS = 200
@@ -155,7 +155,7 @@ def series_view(run_dir: Path, request: dict, query: dict) -> dict:
     test = run_dir / "test.parquet"
     forecast = run_dir / "forecast.parquet"
 
-    con = duckdb.connect()
+    con = connect()
     where = _filter_clause(filters, dims)
     combos = _series_combos(con, panel, breakdown, where)
     note = None
@@ -343,7 +343,7 @@ def row_view(run_dir: Path, request: dict, query: dict) -> dict:
     forecast_path = run_dir / "forecast.parquet"
     validation_path = run_dir / "validation.parquet"
 
-    con = duckdb.connect()
+    con = connect()
     where = _filter_clause(filters, dims)
     combos = _series_combos(con, rows_path, breakdown, where)
     note = None
@@ -506,7 +506,7 @@ def series_table(run_dir: Path, request: dict, query: dict) -> dict:
         FROM read_parquet({_lit(str(run_dir / "forecast.parquet"))}) f
         JOIN keymap k USING (series)
     """
-    con = duckdb.connect()
+    con = connect()
     full_sql = f"SELECT * FROM ({hist_sql}) t WHERE {where}"
     sort = query.get("sort") or "future"
     order = "DESC" if sort == "future" or query.get("desc") == "1" else "ASC"
@@ -546,7 +546,7 @@ def row_table(run_dir: Path, request: dict, query: dict) -> dict:
 
     keymap_sql = _row_keymap_sql(rows_path, dims)
     dims_sel = ", ".join(f"k.{_quote(d)}" for d in dims)
-    con = duckdb.connect()
+    con = connect()
     sql = f"""
         WITH keymap AS ({keymap_sql})
         SELECT f.row, {dims_sel + "," if dims else ""} f.anchor, f.predicted_date, f.prediction,

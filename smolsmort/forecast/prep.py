@@ -14,8 +14,6 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-import duckdb
-
 from smolsmort.forecast.spec import (
     ANCHOR,
     FILES,
@@ -27,6 +25,7 @@ from smolsmort.forecast.spec import (
     UPPER,
     PrepSpec,
 )
+from smolsmort.forecast.tables import connect
 
 # a working flag only; it never reaches the parquet files
 PREDICT = "__predict"
@@ -70,7 +69,7 @@ def prepare(spec: PrepSpec, cache_root: Path) -> Prepared:
     cache_root.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(dir=cache_root, prefix=".tmp-")).resolve()
     try:
-        con = duckdb.connect()
+        con = connect()
         # single-threaded: row_number() over the raw scan must match source file order
         con.execute("SET threads=1")
         read_expr = _load_source(spec, source_path, source_bytes, tmp)

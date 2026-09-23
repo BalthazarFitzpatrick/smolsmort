@@ -7,12 +7,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import duckdb
-
 from smolsmort.forecast import runs, views
 from smolsmort.forecast.prep import prepare
 from smolsmort.forecast.runs import RunError
 from smolsmort.forecast.spec import SpecError, spec_from_dict
+from smolsmort.forecast.tables import connect
 from smolsmort.review.routes import RequestError, Tab
 
 SOURCE_SUFFIXES = (".csv", ".json")
@@ -100,7 +99,7 @@ def _column_kind(duckdb_type: str) -> str:
 def _columns(app, payload: dict) -> dict:
     source = _resolve_source(app, payload.get("source", ""))
     encoding = payload.get("encoding") or "utf-8"
-    con = duckdb.connect()
+    con = connect()
     if encoding.lower() not in ("utf-8", "utf8"):
         text = source.read_bytes().decode(encoding)
         tmp = source.with_suffix(f".utf8{source.suffix}")
