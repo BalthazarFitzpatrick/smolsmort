@@ -27,6 +27,8 @@ coreml = ["torch>=2.0", "coremltools>=8; python_version < '3.14'"]
 # libxgboost.dylib links homebrew's libomp, which segfaults against torch's bundled libomp
 # in any process that also uses the coreml runtime. a vision-only consumer should never pay for it.
 tabular = ["xgboost>=3.2.0"]
+# the forecast topics: prep runs in duckdb sql, the search fits xgboost in its own process
+forecast = ["xgboost>=3.2.0", "duckdb>=1.1"]
 
 [project.scripts]
 smolsmort = "smolsmort.cli:main"
