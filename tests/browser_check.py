@@ -68,6 +68,16 @@ def menu_labels(page: Page) -> list[str]:
 def check_tabs_and_extension(page: Page) -> None:
     tabs = page.locator("#nav-bar .nav-tab").all_inner_texts()
     assert tabs == ["find", "select", "train", "housekeeping"], tabs
+    # regression and classification each carry real tabs from the page's own scripts, so the
+    # topic switch is already visible with all three topics before any runtime registration
+    assert "hidden" not in page.get_attribute("#topic-switch", "class")
+    assert page.locator("#topic-switch .topic-tab").all_inner_texts() == [
+        "vision",
+        "regression",
+        "classification",
+    ]
+
+    # a runtime tab with no topic lands in vision: it joins the same nav-bar
     page.evaluate(
         """() => window.smolsmortTabs.register({id: 'extra', label: 'extra',
              mount: el => { el.textContent = 'hello from a host tab'; }})"""
@@ -75,6 +85,30 @@ def check_tabs_and_extension(page: Page) -> None:
     assert page.locator("#nav-bar .nav-tab").all_inner_texts()[-1] == "extra"
     show_tab(page, "extra")
     assert "hello from a host tab" in page.locator('.tab-panel[data-panel="extra"]').inner_text()
+
+    # a brand new topic joins the switch too, on its own row, and switching back restores
+    # vision's own last tab rather than resetting to the first one
+    page.evaluate(
+        """() => window.smolsmortTabs.register({id: 'other-tab', label: 'other tab',
+             topic: 'other', mount: el => { el.textContent = 'hello from other'; }})"""
+    )
+    page.wait_for_timeout(100)
+    assert page.locator("#topic-switch .topic-tab").all_inner_texts() == [
+        "vision",
+        "regression",
+        "classification",
+        "other",
+    ]
+    assert page.locator("#nav-bar .nav-tab").all_inner_texts()[-1] == "extra"
+
+    page.click('#topic-switch .topic-tab:has-text("other")')
+    page.wait_for_timeout(100)
+    assert page.locator("#nav-bar .nav-tab").all_inner_texts() == ["other tab"]
+    assert "hello from other" in page.locator('.tab-panel[data-panel="other-tab"]').inner_text()
+
+    page.click('#topic-switch .topic-tab:has-text("vision")')
+    page.wait_for_timeout(100)
+    assert page.locator("#nav-bar .nav-tab").all_inner_texts()[-1] == "extra"
 
 
 def check_train(page: Page, base: str, log: list, urls: list, app) -> None:
@@ -110,17 +144,16 @@ def check_train(page: Page, base: str, log: list, urls: list, app) -> None:
     assert "2 objects" in page.inner_text("#train-summary")
     assert posts(log, "train-bind")[-1] == {"name": "world_set"}
 
-    # the backend picker: names come from the server, a pick persists and shows the size mode
-    picker = page.locator("#train-backend")
-    assert "disabled" not in picker.get_attribute("class")
-    picker.click()
-    page.wait_for_selector(".menu-panel .menu-item")
-    names = menu_labels(page)
-    assert "box" in names and len(names) > 1, names
-    other = next(n for n in names if n != page.inner_text("#train-backend").strip())
-    page.click(f'.menu-panel .menu-item:has-text("{other}")')
+    # the backend is picked from the topic's vision flavour dropdown, not this tab's own row -
+    # that row hides once it wires into the dropdown
+    assert "hidden" in page.get_attribute("#train-backend-row", "class")
+    flavours = page.eval_on_selector_all("#topic-flavour option", "els => els.map(e => e.value)")
+    assert "box" in flavours and "xgboost" not in flavours, flavours
+    other = next(n for n in flavours if n != page.input_value("#topic-flavour"))
+    page.select_option("#topic-flavour", other)
+    # the select updates at once; the backend switch itself is async, so wait for its effect
     page.wait_for_function(
-        f'document.getElementById("train-backend").innerText.trim() == "{other}"'
+        f'document.getElementById("train-summary").innerText.includes("{other}")'
     )
     sent = posts(log, "train-set-backend")[-1]
     assert sent == {"name": "world_set", "backend": other}, sent
@@ -128,7 +161,6 @@ def check_train(page: Page, base: str, log: list, urls: list, app) -> None:
     assert f"sizes {mode}" in page.inner_text("#train-summary")
     assert call(base, "/api/train-info")["backend"] == other
     snap(page, "train-backend")
-    dismiss(page)
 
     # the capture picker: width and downscale are stored on the set, the head says what the net sees
     call(base, "/api/train-set-backend", {"name": "world_set", "backend": "heatmap"})
@@ -172,8 +204,9 @@ def check_train(page: Page, base: str, log: list, urls: list, app) -> None:
     tiles, weights = box(page, "#train-open"), box(page, "#train-load")
     assert abs(tiles["y"] - weights["y"]) < 2 and tiles["x"] < weights["x"]
 
-    # one stepper per row, label left, value and buttons right-aligned
-    rows = page.locator("[data-stepper]")
+    # one stepper per row, label left, value and buttons right-aligned. scoped to this panel -
+    # the forecast topics' search tabs carry their own [data-stepper] rows elsewhere on the page
+    rows = page.locator('.tab-panel[data-panel="train"] [data-stepper]')
     assert rows.count() == 3
     tops = []
     for i in range(3):

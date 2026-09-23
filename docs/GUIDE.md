@@ -363,6 +363,7 @@ The review server is a small json api; the page and any host tab speak it. All p
 | folders, settings | `GET dir-list`, `GET dir-tree`, `POST set-bases` |
 | housekeeping | `GET housekeeping-recordings`, `GET housekeeping-assets`, `POST housekeeping-archive`, `POST housekeeping-delete` |
 | images | `/tile/<name>`, `/crop/<index>` (png) |
+| forecast | `GET forecast-sources`, `POST forecast-columns`, `POST forecast-prep`, `POST forecast-runs`, `GET forecast-runs`, `GET forecast-run`, `POST forecast-cancel`, `POST forecast-refit`, `GET forecast-view`, `GET forecast-table`, `/forecast-export/<run>.csv` |
 | host | `GET tabs` |
 
 Two shapes worth knowing: `train-info` reports `capture_width`, `capture_override`,
@@ -413,3 +414,69 @@ sets openmp variables on macOS only, where torch's and xgboost's runtimes clash.
 - Loading weights unbinds the set, so the train tab's capture facts are empty until a set is bound;
   the sweep line still reports a resample.
 - Every default was measured on one consumer (long, thin objects ~132x12 px on a 2560-wide capture). Pass your own.
+
+## 16. The regression and classification topics
+
+Two topics beside vision predict from a table instead of frames. Install the extra first:
+
+```bash
+uv sync --extra forecast        # xgboost + duckdb
+```
+
+**The data.** A CSV or JSON file under the forecast root (a base folder like `sessions`, set with
+`set-bases`; by default `forecast/` beside `sessions/`, and never committed). The data tab reads its
+columns and suggests a role for each: time or anchor for a date, dimension for text, measure for a
+number. You pick the target; nothing suggests one.
+
+**The two flavours.**
+
+- *Per row* - one prediction per row. Rows with an empty target are predicted. Mark a measure as
+  not known when predicting if it is only recorded afterwards; it never becomes an input. For a
+  waiting-time target, turn on censoring: an open row then counts as "at least this long", measured
+  from its anchor to the export date.
+- *Time series* - the table is aggregated to one row per step and per combination of dimensions (a
+  sum is zero-filled inside a series' own span, a `last` is carried forward, a mean stays missing),
+  and forecast over a horizon. Set the export date: the step holding it is still running, so history
+  ends before it and later rows - scheduled, not happened - are dropped and counted.
+
+**On the page.** Pick the topic in the first row, then the flavour beside it (regression offers
+*xgboost - per row* and *xgboost - time series*; classification offers per row). Three tabs follow
+the work:
+
+- **data** - pick the file (the forecast root is shown), set the encoding if it is not UTF-8, and
+  give every column a role; per row, untick "known when predicting" for anything recorded after
+  the fact and, for a waiting time, switch censoring on with its anchor, unit and export date; per
+  series, set the step, the horizon and the export date. `prepare` shows what prep did and the SQL.
+- **search** - set the budget (population, plateau generations, a generation cap, a time cap in
+  minutes) and start; the tab shows each generation as it lands and the best ten recipes when it
+  stops. Earlier runs are listed with *open*, *refit* on the current file, and *warm start*.
+- **results** - the verdict above everything, then dimension filters and a *break down by* picker
+  (up to three), the chart, and below it the paged table with an export link.
+
+**Prepare.** Prep is one DuckDB SQL script, shown in full on the data tab and stored beside the
+cache as `prep.sql`. The cache key is the spec plus the file's content hash, so changing a role, an
+aggregation or the file re-runs prep and nothing stale survives.
+
+**Search.** A genetic search tries feature families, objectives and tree settings against the
+validation rows and stops when a generation brings no gain larger than its own noise, or at the time
+cap. It runs in its own process and never reads the test rows. A saved run can be refit on a newer
+file without a search, or seed the next search with its final population.
+
+**Results.** Every run ends with a trust verdict computed on the untouched test rows:
+
+| check | passes when |
+|---|---|
+| beats the naive baseline | error <= 0.9 x the baseline's (group median per row; seasonal naive per series) |
+| band is calibrated | the 80% band covers 65-95% of test rows |
+| band is sharper than the data's own spread | the band is narrower than the target's own 10-90% range |
+| enough history to judge | at least 30 test rows (and 13 test steps for a series) |
+
+A failed check does not hide the forecast; the results tab shows the warning above the chart, names
+every failed check with its numbers, and the CSV export carries it in its first line and on every
+row. The chart shows the total, narrowed by dimension filters and split by up to three dimensions,
+with the band recomputed at the aggregate on screen; the table below pages, sorts and, per row,
+groups by a dimension with each group's earliest and latest predicted date.
+
+**On disk**, under the forecast root: `.forecast-cache/<spec>-<file>/` (prep.sql, prep.json, the
+parquet tables) and `.forecast-runs/<run>/` (request, status, events, profile, leaderboard, recipe,
+result, and the forecast / validation / test parquet files).
