@@ -40,7 +40,8 @@ uv add "smolsmort[vision] @ git+https://github.com/BalthazarFitzpatrick/smolsmor
 uv run smolsmort
 ```
 
-That prints `http://127.0.0.1:8080` - the review tool, four tabs, empty until it has frames. Put a
+That prints `http://127.0.0.1:8080` - the review tool: the vision topic's four tabs, empty until it
+has frames, and the regression and classification topics beside them. Put a
 recording under `sessions/<name>/frames/` (any folder of images), bind it from the find tab, draw a
 few boxes and save: you now have tiles to judge, and the rest of the page comes alive.
 
