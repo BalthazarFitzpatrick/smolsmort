@@ -688,13 +688,20 @@ def save(model, path: Path) -> Path:
     return path
 
 
-def load(path: Path, device: str | None = None, classes: int | None = None, runtime: str = "torch"):
+def load(
+    path: Path,
+    device: str | None = None,
+    classes: int | None = None,
+    runtime: str = "torch",
+    compute_units=None,
+):
     """the head is sized FROM THE CHECKPOINT unless classes is given.
 
     `runtime` picks where the model runs: "torch" (this module, on `device`) or "coreml" (a
     runner over a core ml package beside the checkpoint, see smolsmort.detect.runtime). a runner
     answers the same call as the module and carries the same `downscale` and `capture_width`, so
-    everything above this function is indifferent to the choice.
+    everything above this function is indifferent to the choice. `compute_units` picks core ml's
+    hardware ("all" when omitted, or "cpu_and_ne" to keep it off the gpu) and needs runtime="coreml".
 
     it used to default to classes=1 and simply fail on anything else, with a torch size-mismatch
     error that names tensor shapes rather than the problem. That broke every reload of a real
@@ -703,6 +710,10 @@ def load(path: Path, device: str | None = None, classes: int | None = None, runt
     [1, 48, 1, 1]". A checkpoint already states how many channels it has - the final conv's output
     dimension - so ask it rather than making the caller remember.
     """
+    if compute_units is not None and runtime == "torch":
+        from smolsmort.detect.runtime import RuntimeError_
+
+        raise RuntimeError_('compute_units picks core ml hardware - pass runtime="coreml" with it')
     torch = _torch()
     if device is None:
         device = "mps" if torch.backends.mps.is_available() else "cpu"
@@ -727,5 +738,6 @@ def load(path: Path, device: str | None = None, classes: int | None = None, runt
     if runtime != "torch":
         from smolsmort.detect.runtime import build
 
-        return build(runtime, model.to("cpu"), Path(path))
+        options = {} if compute_units is None else {"compute_units": compute_units}
+        return build(runtime, model.to("cpu"), Path(path), **options)
     return model
