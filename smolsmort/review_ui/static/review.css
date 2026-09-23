@@ -110,3 +110,27 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .frame-badge { color: var(--stone-red-lift); }
 .frame-badge.hidden { display: none; }
 #train-backend-row .field-label { flex: 0 0 auto; }
+
+/* ---- forecast (regression / classification) ---- */
+.forecast-pane { display: flex; flex-direction: column; gap: var(--gap); }
+.field-select {
+  height: var(--row-height); box-sizing: border-box; background: var(--bg);
+  color: var(--text-dim); border: 2px solid var(--grey-border); padding: 0 8px;
+}
+.field-select:hover, .field-select:focus { color: var(--cream); border-color: var(--cream); }
+.forecast-encoding { width: 100px; }
+.forecast-column-grid { border-collapse: collapse; width: 100%; }
+.forecast-column-grid th, .forecast-column-grid td {
+  border: 1px solid var(--grey-border); padding: 4px 8px; text-align: left; font-size: 0.9em;
+}
+.forecast-column-grid th.sortable { cursor: pointer; }
+.forecast-censor-row { flex-wrap: wrap; }
+.forecast-sql { white-space: pre-wrap; max-height: 200px; overflow-y: auto; background: var(--panel-row); padding: 8px; }
+.forecast-run-row { justify-content: flex-start; gap: var(--gap); }
+.forecast-verdict { padding: 8px 12px; border: 2px solid var(--grey-border); }
+.forecast-verdict.trusted { border-color: var(--lichen-deep); color: var(--lichen); }
+.forecast-verdict.warn { border-color: var(--stone-red); color: var(--stone-red-lift); }
+.forecast-verdict-summary { font-weight: 600; }
+.forecast-results { flex: 1 1 auto; min-height: 0; }
+.forecast-chart { flex: 2 1 0; min-height: 160px; }
+.forecast-table-wrap { flex: 3 1 0; min-height: 0; overflow-y: auto; }
