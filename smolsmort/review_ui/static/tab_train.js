@@ -154,6 +154,7 @@ class TrainTab {
     };
     this.paintBackend(info);
     this.paintCapture(info);
+    await this.wireBackendFlavours();
     this.hasWeights = !!info.model_exists;
     this.paintSave();
     if (info.error) { this.facts('train-summary', [['problem', info.error]]); return; }
@@ -268,6 +269,30 @@ class TrainTab {
     const res = await api('/api/train-set-backend', {name: '_probe', backend: ''});
     this.backendList = res.backends || [];
     return this.backendList;
+  }
+
+  // with topics and the first-row dropdown on the page, that dropdown picks the backend and this
+  // row hides; an older core.js or a host page without the dropdown keeps this tab's own picker
+  async wireBackendFlavours() {
+    const topics = typeof smolsmortTabs.setFlavours === 'function';
+    if (!topics || !document.getElementById('topic-flavour')) return;
+    let names = [];
+    try { names = await this.backendNames(); } catch (err) { return; }
+    const items = names.filter(name => name !== 'xgboost').map(name => ({id: name, label: name}));
+    smolsmortTabs.setFlavours('vision', items, this.backend);
+    document.getElementById('train-backend-row').classList.add('hidden');
+    if (this.flavourWired) return;
+    this.flavourWired = true;
+    // a pick that cannot apply snaps the dropdown back to the backend actually in use
+    const snapBack = () => smolsmortTabs.setFlavours('vision', items, this.backend);
+    smolsmortTabs.onFlavour('vision', async id => {
+      if (id === this.backend) return;
+      if (!this.setName) { this.say('bind a set of tiles first'); snapBack(); return; }
+      const res = await api('/api/train-set-backend', {name: this.setName, backend: id});
+      if (res.error) { this.say(res.error); snapBack(); return; }
+      this.say(`${res.backend} - sizes ${res.size_mode}`);
+      await this.loadInfo();
+    });
   }
 
   async openBackendPicker(head) {
