@@ -154,6 +154,7 @@ class TrainTab {
     };
     this.paintBackend(info);
     this.paintCapture(info);
+    await this.wireBackendFlavours();
     this.hasWeights = !!info.model_exists;
     this.paintSave();
     if (info.error) { this.facts('train-summary', [['problem', info.error]]); return; }
@@ -268,6 +269,27 @@ class TrainTab {
     const res = await api('/api/train-set-backend', {name: '_probe', backend: ''});
     this.backendList = res.backends || [];
     return this.backendList;
+  }
+
+  // on a core.js that carries topics, the vision flavour dropdown is the one place to pick the
+  // backend and this tab's own row hides; an older core.js (a host page not yet updated) keeps
+  // this tab's picker working exactly as before
+  async wireBackendFlavours() {
+    if (typeof smolsmortTabs.setFlavours !== 'function') return;
+    let names = [];
+    try { names = await this.backendNames(); } catch (err) { return; }
+    const items = names.filter(name => name !== 'xgboost').map(name => ({id: name, label: name}));
+    smolsmortTabs.setFlavours('vision', items, this.backend);
+    document.getElementById('train-backend-row').classList.add('hidden');
+    if (this.flavourWired) return;
+    this.flavourWired = true;
+    smolsmortTabs.onFlavour('vision', async id => {
+      if (!this.setName || id === this.backend) return;
+      const res = await api('/api/train-set-backend', {name: this.setName, backend: id});
+      if (res.error) { this.say(res.error); return; }
+      this.say(`${res.backend} - sizes ${res.size_mode}`);
+      await this.loadInfo();
+    });
   }
 
   async openBackendPicker(head) {

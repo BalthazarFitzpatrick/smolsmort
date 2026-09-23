@@ -74,20 +74,45 @@ function askDialog({title, lines, buttons}) {
 }
 
 // ---- the tab registry: the nav bar and panels are built from this list ----
-// a host adds a tab with window.smolsmortTabs.register({id, label, mount(panelEl)}); mount runs
-// once and may return {enter()} to be told each time the tab is shown
+// a host adds a tab with window.smolsmortTabs.register({id, label, mount(panelEl), topic}); mount
+// runs once and may return {enter()} to be told each time the tab is shown. topic defaults to
+// 'vision', so a host page that never heard of topics keeps working unchanged.
+//
+// topics group tabs behind a first-row switch, each with its own remembered tab and its own
+// flavour picker (setFlavours/flavour/onFlavour) - the dropdown a backend or model kind is chosen
+// from. only vision has tabs today; the switch itself stays hidden until a second topic does too.
 const smolsmortTabs = (() => {
   const tabs = [];
+  const topicOrder = [];
+  const topicLabels = {};
+  const flavours = {};
   let started = false;
+  let activeTopic = null;
+
+  function storageGet(key) {
+    try { return localStorage.getItem(key); } catch (err) { return null; }
+  }
+  function storageSet(key, value) {
+    try { localStorage.setItem(key, value); } catch (err) { /* private window, no matter */ }
+  }
+
+  function defineTopic({id, label}) {
+    if (!(id in topicLabels)) topicOrder.push(id);
+    topicLabels[id] = label;
+  }
+  defineTopic({id: 'vision', label: 'vision'});
+  defineTopic({id: 'regression', label: 'regression'});
+  defineTopic({id: 'classification', label: 'classification'});
+
+  const topicsWithTabs = () => topicOrder.filter(id => tabs.some(t => t.topic === id));
 
   function build(tab) {
-    const nav = document.getElementById('nav-bar');
     const head = document.createElement('div');
     head.className = 'nav-tab';
     head.dataset.tab = tab.id;
     head.setAttribute('role', 'tab');
     head.textContent = tab.label;
-    nav.appendChild(head);
+    tab.navEl = head;
     const panel = document.createElement('div');
     panel.className = 'tab-panel hidden';
     panel.dataset.panel = tab.id;
@@ -97,13 +122,92 @@ const smolsmortTabs = (() => {
 
   const enter = name => {
     const tab = tabs.find(t => t.id === name);
-    if (tab && tab.handle.enter) tab.handle.enter();
+    if (!tab) return;
+    storageSet(`smolsmort:tab:${tab.topic}`, name);
+    if (tab.handle.enter) tab.handle.enter();
   };
+
+  // only the active topic's tab heads sit in #nav-bar, so the shell's own tab machinery (click,
+  // arrow keys, its own remembered-tab key) only ever sees this topic's tabs
+  function paintNav() {
+    const nav = document.getElementById('nav-bar');
+    const inTopic = tabs.filter(t => t.topic === activeTopic);
+    nav.replaceChildren(...inTopic.map(t => t.navEl));
+    const remembered = storageGet(`smolsmort:tab:${activeTopic}`);
+    const ids = inTopic.map(t => t.id);
+    const fallback = ids.includes(remembered) ? remembered : (ids[0] || '');
+    initShell({onEnter: enter, fallback});
+  }
+
+  function paintTopicSwitch() {
+    const bar = document.getElementById('topic-switch');
+    if (!bar) return;
+    const list = topicsWithTabs();
+    bar.classList.toggle('hidden', list.length < 2);
+    bar.replaceChildren(...list.map(id => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `toggle topic-tab${id === activeTopic ? ' on' : ''}`;
+      btn.textContent = topicLabels[id];
+      btn.dataset.topic = id;
+      btn.setAttribute('role', 'tab');
+      btn.setAttribute('aria-selected', id === activeTopic ? 'true' : 'false');
+      btn.tabIndex = id === activeTopic ? 0 : -1;
+      btn.onclick = () => switchTopic(id);
+      // left/right move focus and switch, matching the tab row's own arrow-key behaviour
+      btn.onkeydown = evt => {
+        const buttons = [...bar.children];
+        const i = buttons.indexOf(btn);
+        let next = null;
+        if (evt.key === 'ArrowRight') next = buttons[(i + 1) % buttons.length];
+        else if (evt.key === 'ArrowLeft') next = buttons[(i - 1 + buttons.length) % buttons.length];
+        if (next) { evt.preventDefault(); next.focus(); switchTopic(next.dataset.topic); }
+      };
+      return btn;
+    }));
+  }
+
+  function paintFlavourRow() {
+    const select = document.getElementById('topic-flavour');
+    if (!select) return;
+    const state = flavours[activeTopic];
+    const has = !!(state && state.items.length);
+    select.classList.toggle('hidden', !has);
+    if (!has) return;
+    select.replaceChildren(...state.items.map(item => {
+      const opt = document.createElement('option');
+      opt.value = item.id;
+      opt.textContent = item.label;
+      return opt;
+    }));
+    select.value = state.selected;
+  }
+
+  function switchTopic(id) {
+    if (id === activeTopic || !topicsWithTabs().includes(id)) return;
+    activeTopic = id;
+    storageSet('smolsmort:topic', id);
+    paintTopicSwitch();
+    paintNav();
+    paintFlavourRow();
+  }
+
+  function initialTopic() {
+    const remembered = storageGet('smolsmort:topic');
+    const avail = topicsWithTabs();
+    if (remembered && avail.includes(remembered)) return remembered;
+    return avail[0] || topicOrder[0];
+  }
 
   function start() {
     started = true;
     tabs.forEach(build);
-    initShell({onEnter: enter, fallback: tabs.length ? tabs[0].id : ''});
+    activeTopic = initialTopic();
+    paintTopicSwitch();
+    paintNav();
+    paintFlavourRow();
+    const select = document.getElementById('topic-flavour');
+    if (select) select.onchange = () => pickFlavour(activeTopic, select.value);
   }
 
   function register(tab) {
@@ -111,14 +215,49 @@ const smolsmortTabs = (() => {
       throw new Error('a tab needs id, label and mount(panelEl)');
     }
     if (tabs.some(t => t.id === tab.id)) throw new Error(`tab ${tab.id} is already registered`);
-    tabs.push({...tab});
+    const topic = tab.topic || 'vision';
+    defineTopic({id: topic, label: topicLabels[topic] || topic});
+    tabs.push({...tab, topic});
     if (started) {
       build(tabs[tabs.length - 1]);
-      initShell({onEnter: enter, fallback: activeTab});
+      paintTopicSwitch();
+      if (topic === activeTopic) paintNav();
     }
   }
 
-  return {register, start, list: () => tabs.map(t => t.id)};
+  // items: [{id, label}]. selectedId wins when it names one of them; otherwise the last flavour
+  // remembered for this topic, otherwise the first item
+  function setFlavours(topicId, items, selectedId) {
+    const remembered = storageGet(`smolsmort:flavour:${topicId}`);
+    const valid = id => items.some(item => item.id === id);
+    const chosen = valid(selectedId) ? selectedId : (valid(remembered) ? remembered
+      : (items[0] ? items[0].id : null));
+    const listeners = (flavours[topicId] && flavours[topicId].listeners) || [];
+    flavours[topicId] = {items, selected: chosen, listeners};
+    if (started && topicId === activeTopic) paintFlavourRow();
+  }
+
+  function flavour(topicId) {
+    return (flavours[topicId] && flavours[topicId].selected) || null;
+  }
+
+  function onFlavour(topicId, fn) {
+    if (!flavours[topicId]) flavours[topicId] = {items: [], selected: null, listeners: []};
+    flavours[topicId].listeners.push(fn);
+  }
+
+  function pickFlavour(topicId, id) {
+    const state = flavours[topicId];
+    if (!state || state.selected === id) return;
+    state.selected = id;
+    storageSet(`smolsmort:flavour:${topicId}`, id);
+    state.listeners.forEach(fn => fn(id));
+  }
+
+  return {
+    register, start, list: () => tabs.map(t => t.id),
+    defineTopic, setFlavours, flavour, onFlavour,
+  };
 })();
 
 window.smolsmortTabs = smolsmortTabs;

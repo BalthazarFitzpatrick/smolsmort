@@ -1,5 +1,16 @@
 /* the review page's own layout, on top of base.css: only what the shared kit does not provide */
 body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+/* the row above the tabs: which topic (vision, regression, ...) and which flavour it runs as.
+   the top margin sits on each child, not the row, so an empty row (nothing to show yet) takes
+   no vertical space at all and the page looks exactly as it did before topics existed */
+#topic-bar { flex: 0 0 auto; display: flex; align-items: center; gap: var(--gap); padding: 0 var(--inset-x); }
+#topic-switch { display: flex; gap: 4px; margin-top: 10px; }
+.topic-tab { padding: 0 14px; }
+#topic-flavour {
+  height: var(--row-height); box-sizing: border-box; background: var(--bg);
+  color: var(--text-dim); border: 2px solid var(--grey-border); padding: 0 8px; margin-top: 10px;
+}
+#topic-flavour:hover, #topic-flavour:focus { color: var(--cream); border-color: var(--cream); }
 #top-bar { flex: 0 0 auto; display: flex; align-items: flex-end; }
 #nav-bar { flex: 1 1 auto; }
 #top-bar-actions { margin: 0 14px 0 8px; display: flex; gap: var(--gap); }
