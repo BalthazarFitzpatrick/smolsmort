@@ -74,8 +74,8 @@ python_files = ["test_*.py"]
 python_functions = ["test_*"]
 
 [tool.uv.sources]
-# smortui v0.2.3: dirMenu, range-slider, stepper, the arrangement recipes and the review page fixes
-ui-base = { git = "https://github.com/BalthazarFitzpatrick/smortui.git", tag = "v0.2.3" }
+# temporary: smortui PR 56 (time chart) until it is tagged
+ui-base = { git = "https://github.com/BalthazarFitzpatrick/smortui.git", rev = "09b3783809e7a043d45fa3a0474508d18e200b8d" }
 
 [dependency-groups]
 dev = ["ruff>=0.11.0", "pytest>=8.0", "torch>=2.0"]
