@@ -46,7 +46,8 @@ few boxes and save: you now have tiles to judge, and the rest of the page comes 
 
 `[vision]` pulls torch (about 2 GB). Without it you get the loop's file handling, the box maths,
 scoring and tracking, and no model. `[coreml]` adds coremltools on top, for running a trained
-heatmap on an Apple neural engine (see "Where the model runs"). The page is built on [smortui](https://github.com/BalthazarFitzpatrick/smortui),
+heatmap on an Apple neural engine (see "Where the model runs"). `[forecast]` adds xgboost and
+duckdb for the regression and classification topics. The page is built on [smortui](https://github.com/BalthazarFitzpatrick/smortui),
 pulled in as a git dependency. Python 3.11 and newer; CI runs 3.11 and 3.14 on Linux.
 
 **Decide first whether it fits.** One question picks the backend: *is the object a fixed, known
@@ -117,6 +118,28 @@ for rows of features instead of frames.
 another width is resampled to it, run at the weights' own downscale, and the boxes come back in the
 frame's own pixels. A `heatmap` set must use one capture resolution - mixing is refused, since the
 object is a different pixel size on each - while `box` scales every frame to one working size.
+
+### Prediction topics: regression and classification
+
+Beside the vision loop sit two more topics, picked from the first row of the page, each with its own
+tabs and a dropdown for the backend and flavour. They predict from a table rather than from frames:
+a CSV or JSON file, one role per column (time or anchor, dimension, measure, target, ignore).
+
+- **Per row.** Each row is one case - an order, a campaign - and the target is one value per row:
+  a number (regression) or a class (classification). Rows without a target get a prediction and an
+  80% interval. A target that is a waiting time can be *censored*: a row still open says "at least
+  this long", and the search can fit that directly rather than pretend the row does not exist.
+- **Time series.** A measure per time step and per combination of dimensions, forecast over a
+  horizon. Future rows are every combination of the chosen dimensions, crossed with the steps
+  ahead; measures are never extended into the future, only read from the past.
+
+Nobody judges these by hand. **The holdout is the judge:** rows are cut by time into training,
+validation and test. A genetic search tries feature sets, objectives and tree settings against
+validation, unattended, until it stops improving or runs out of time. The test rows are touched
+once, by the winner. Every run ends with a **trust verdict** that says, in plain words, whether the
+forecast is worth acting on - it must beat a naive baseline by 10%, its 80% band must cover 65-95%
+of test rows, the band must be narrower than the target's own spread, and there must be enough
+history to judge. A forecast that fails is still shown, with the warning next to it.
 
 ### Sweep, and where the loop closes
 
@@ -347,6 +370,18 @@ then the strongest within a plausible step rather than the nearest, so it does n
 | box backend working long side | 768 px, from a synthetic spike | `boxes.model.WORK_LONG_SIDE` |
 | review tile | 64x14 px, plus a crop margin | `review.state.DEFAULT_TILE_SIZE`, `paths.MARGIN_X/Y` |
 
+The forecast topics' defaults are first guesses, not measurements - each is an argument, and the
+verdict on every run is what tells you whether they served:
+
+| setting | default | where it lives |
+|---|---|---|
+| horizon buckets | one model each for steps 1, 2-4, 5-8, 9-13, 14-26 | `forecast.features.BUCKETS` |
+| row maturity before test | 26 weeks | `forecast.splits.MATURITY_WEEKS` |
+| validation / test length (series) | max(26, 2 x horizon) / max(horizon, 13) steps | `forecast.splits.series_cuts` |
+| search population / elite / plateau | 16 / 3 / 5 generations | `forecast.search.POPULATION`, `ELITE`, `PLATEAU` |
+| search time cap | 20 minutes | `forecast.search.TIME_CAP` |
+| verdict | ratio <= 0.9, coverage 65-95%, 30 rows, 13 steps | `forecast.evaluate` |
+
 `train.minimum_window(width, height)` is the smallest window that never clips your object at the
 offset extremes; the train tab shows it as the floor.
 
@@ -373,6 +408,9 @@ page in headless chromium, one test per tab, on every pull request.
 - **Heatmap overlays stay in the resampled input space**; only sweep decoding maps back to the
   frame.
 - **The tabular backend is a mechanics check.** The seam holds; the real data has not arrived.
+- **The forecast topics are proven on synthetic data.** Both modes run end to end in tests - prep,
+  search, verdict, refit - and the leak checks are enforced by a test that changes the future and
+  asserts no feature moves. Every default above is a first guess until real data has judged it.
 
 ---
 
