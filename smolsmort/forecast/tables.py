@@ -7,6 +7,14 @@ from pathlib import Path
 import numpy as np
 
 
+def connect():
+    """a duckdb connection, importing duckdb only now: the vision half and the cli must run on a
+    plain install without the forecast extra"""
+    import duckdb
+
+    return duckdb.connect()
+
+
 def read_table(path: Path, order_by: str | None = None) -> dict[str, np.ndarray]:
     import duckdb
 
