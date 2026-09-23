@@ -165,3 +165,20 @@ def test_forecast_regression_row_flow(tmp_path):
             csv_bytes = response.read()
         first_line = csv_bytes.decode().splitlines()[0]
         assert first_line.startswith("# verdict:"), first_line
+
+
+def test_stored_filters_with_quotes_fill_their_fields_intact(tmp_path):
+    """sql filters quote column names; stored text must come back verbatim, never break markup"""
+    where = '"branch" <> \'x"y\''
+    with session(tmp_path) as (page, base):
+        page.evaluate(
+            "([key, where]) => localStorage.setItem(key, JSON.stringify("
+            "{state: {where: where, predictWhere: where}}))",
+            [f"smolsmort:forecast:{TOPIC}", where],
+        )
+        page.reload()
+        page.wait_for_timeout(400)
+        switch_to_regression(page)
+        show_tab(page, "regression-data")
+        assert page.locator(f"#{TOPIC}-where").input_value() == where
+        assert page.locator(f"#{TOPIC}-predict-where").input_value() == where

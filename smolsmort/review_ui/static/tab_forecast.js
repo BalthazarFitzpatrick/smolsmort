@@ -123,14 +123,14 @@ class ForecastTopic {
         <span class="field-label">unit</span>
         ${forecastSelectEl(`${this.topic}-censor-unit`, FORECAST_UNITS, this.censorUnit)}
         <span class="field-label">as of</span>
-        <input type="date" id="${this.topic}-censor-asof" value="${this.censorAsOf}">
+        <input type="date" id="${this.topic}-censor-asof">
       </div>` : '';
     panel.innerHTML = `
       <div class="forecast-pane">
         <div class="run-controls">
           <div class="toggle dropdown-head grow" id="${this.topic}-data-source"><span>source</span></div>
           <span class="field-label">encoding</span>
-          <input type="text" id="${this.topic}-data-encoding" value="${this.encoding}" class="forecast-encoding">
+          <input type="text" id="${this.topic}-data-encoding" class="forecast-encoding">
           <span class="stat" id="${this.topic}-data-root"></span>
         </div>
         <div id="${this.topic}-data-columns"></div>
@@ -144,20 +144,20 @@ class ForecastTopic {
           <div class="toggle" data-step="-1" data-target="horizon">-</div>
           <div class="toggle" data-step="1" data-target="horizon">+</div>
           <span class="field-label">as of</span>
-          <input type="date" id="${this.topic}-asof" value="${this.asOf}">
+          <input type="date" id="${this.topic}-asof">
         </div>
         <div class="field-label" id="${this.topic}-row-heading">row settings</div>
         <div id="${this.topic}-row-row">
           ${censorBlock}
           <div class="run-controls">
             <span class="field-label">rows to predict</span>
-            <input type="text" id="${this.topic}-predict-where" value="${this.predictWhere}"
+            <input type="text" id="${this.topic}-predict-where"
                    placeholder="sql filter, optional" class="grow">
           </div>
         </div>
         <div class="run-controls">
           <span class="field-label">filter</span>
-          <input type="text" id="${this.topic}-where" value="${this.where}"
+          <input type="text" id="${this.topic}-where"
                  placeholder="sql filter over the source, optional" class="grow">
         </div>
         <div class="run-controls">
@@ -170,6 +170,15 @@ class ForecastTopic {
           <pre id="${this.topic}-sql-text" class="forecast-sql"></pre>
         </details>
       </div>`;
+    // typed text goes in through the property, never the markup: a sql filter carries quotes
+    const typed = {
+      'censor-asof': this.censorAsOf, 'data-encoding': this.encoding, asof: this.asOf,
+      'predict-where': this.predictWhere, where: this.where,
+    };
+    for (const [suffix, value] of Object.entries(typed)) {
+      const input = panel.querySelector(`#${this.topic}-${suffix}`);
+      if (input) input.value = value || '';
+    }
     this.dataSay = text => setText(`${this.topic}-data-status`, text);
     this.wireData(panel);
     this.paintDataMode();
