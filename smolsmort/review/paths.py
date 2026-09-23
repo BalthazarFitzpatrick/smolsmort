@@ -41,11 +41,14 @@ DEFAULT_BASES = {
     "labels": str(_TRAINING / "boxes"),
     "templates": str(_TRAINING / "library"),
     "pool": str(_TRAINING / "tiles"),
+    # the forecast tool's data root: sources, its prep cache and its run folders all live under
+    # it. default is a sibling of sessions - "the recordings root's parent"
+    "forecast": str(_ROOT / "forecast"),
 }
 
 # the keys set_bases will accept. anything else in a payload is ignored rather than stored, so a
 # stale browser cannot invent a base the server then tries to read
-BASE_KEYS = ("root", "sessions", "labels", "templates", "pool")
+BASE_KEYS = ("root", "sessions", "labels", "templates", "pool", "forecast")
 
 # WHICH BASES TAKE SEVERAL PATHS. Only the tile pool so far, and it is the only one where several
 # directories mean something obvious: the grid lists every tile across all of them, so a generated
