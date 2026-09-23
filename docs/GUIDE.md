@@ -439,6 +439,20 @@ number. You pick the target; nothing suggests one.
   and forecast over a horizon. Set the export date: the step holding it is still running, so history
   ends before it and later rows - scheduled, not happened - are dropped and counted.
 
+**On the page.** Pick the topic in the first row, then the flavour beside it (regression offers
+*xgboost - per row* and *xgboost - time series*; classification offers per row). Three tabs follow
+the work:
+
+- **data** - pick the file (the forecast root is shown), set the encoding if it is not UTF-8, and
+  give every column a role; per row, untick "known when predicting" for anything recorded after
+  the fact and, for a waiting time, switch censoring on with its anchor, unit and export date; per
+  series, set the step, the horizon and the export date. `prepare` shows what prep did and the SQL.
+- **search** - set the budget (population, plateau generations, a generation cap, a time cap in
+  minutes) and start; the tab shows each generation as it lands and the best ten recipes when it
+  stops. Earlier runs are listed with *open*, *refit* on the current file, and *warm start*.
+- **results** - the verdict above everything, then dimension filters and a *break down by* picker
+  (up to three), the chart, and below it the paged table with an export link.
+
 **Prepare.** Prep is one DuckDB SQL script, shown in full on the data tab and stored beside the
 cache as `prep.sql`. The cache key is the spec plus the file's content hash, so changing a role, an
 aggregation or the file re-runs prep and nothing stale survives.
