@@ -102,6 +102,34 @@ def test_columns_detects_a_utf16_tab_export(app, tab):
     assert "Süd" in by_name["Region"]["sample"]
 
 
+def test_decimal_comma_export_lists_numbers_and_preps(app, tab):
+    lines = ["Order Date\tRegion\tSales"]
+    for week in range(30):
+        for region, base in (("West", 755), ("East", 1234)):
+            day = f"2025-{1 + week // 4:02d}-{1 + 7 * (week % 4):02d}"
+            lines.append(f"{day}\t{region}\t{base + week},{week % 10}6")
+    (_forecast_path(app) / "sales.csv").write_bytes(("\n".join(lines) + "\n").encode("utf-16"))
+
+    result = _post(app, tab, "/api/forecast-columns", {"source": "sales.csv"})
+    sales = next(c for c in result["columns"] if c["name"] == "Sales")
+    assert (sales["kind"], sales["suggested_role"]) == ("number", "measure")
+
+    spec = {
+        "source": "sales.csv",
+        "mode": "series",
+        "task": "regression",
+        "step": "month",
+        "horizon": 3,
+        "columns": [
+            {"name": "Order Date", "role": "time"},
+            {"name": "Region", "role": "dimension"},
+            {"name": "Sales", "role": "target", "aggregation": "sum"},
+        ],
+    }
+    prepared = _post(app, tab, "/api/forecast-prep", {"spec": spec})
+    assert prepared["summary"]["mode"] == "series"
+
+
 def _forecast_path(app):
     from pathlib import Path
 

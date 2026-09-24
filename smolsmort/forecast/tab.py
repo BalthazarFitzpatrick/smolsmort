@@ -11,7 +11,7 @@ from smolsmort.forecast import runs, views
 from smolsmort.forecast.prep import prepare
 from smolsmort.forecast.runs import RunError
 from smolsmort.forecast.spec import SpecError, spec_from_dict
-from smolsmort.forecast.tables import connect, resolve_encoding
+from smolsmort.forecast.tables import connect, resolve_encoding, type_source
 from smolsmort.review.routes import RequestError, Tab
 
 SOURCE_SUFFIXES = (".csv", ".json")
@@ -116,6 +116,7 @@ def _columns(app, payload: dict) -> dict:
             if source.suffix.lower() == ".json"
             else f"read_csv('{source}', header = true)"
         )
+    read_expr = type_source(con, read_expr)
     described = con.execute(f"DESCRIBE SELECT * FROM {read_expr}").fetchall()
     mode = payload.get("mode") or "series"
     out = []
