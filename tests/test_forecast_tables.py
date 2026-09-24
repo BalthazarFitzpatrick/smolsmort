@@ -5,9 +5,24 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from smolsmort.forecast.tables import read_table, write_table
+from smolsmort.forecast.tables import read_table, resolve_encoding, write_table
 
 duckdb = pytest.importorskip("duckdb")
+
+
+@pytest.mark.parametrize(
+    ("data", "requested", "expected"),
+    [
+        ("a,b\n".encode("utf-16"), "auto", "utf-16"),
+        (b"\xfe\xff\x00a", "", "utf-16"),
+        ("a,b\n".encode("utf-8-sig"), None, "utf-8-sig"),
+        ("Müller\n".encode(), "auto", "utf-8"),
+        ("Müller\n".encode("cp1252"), "auto", "cp1252"),
+        ("Müller\n".encode("cp1252"), "latin-1", "latin-1"),
+    ],
+)
+def test_resolve_encoding_trusts_a_bom_then_utf8_then_cp1252(data, requested, expected):
+    assert resolve_encoding(data, requested) == expected
 
 
 def test_nulls_read_back_as_nan_none_and_nat(tmp_path):

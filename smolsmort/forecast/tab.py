@@ -11,7 +11,7 @@ from smolsmort.forecast import runs, views
 from smolsmort.forecast.prep import prepare
 from smolsmort.forecast.runs import RunError
 from smolsmort.forecast.spec import SpecError, spec_from_dict
-from smolsmort.forecast.tables import connect
+from smolsmort.forecast.tables import connect, resolve_encoding
 from smolsmort.review.routes import RequestError, Tab
 
 SOURCE_SUFFIXES = (".csv", ".json")
@@ -98,10 +98,11 @@ def _column_kind(duckdb_type: str) -> str:
 
 def _columns(app, payload: dict) -> dict:
     source = _resolve_source(app, payload.get("source", ""))
-    encoding = payload.get("encoding") or "utf-8"
+    data = source.read_bytes()
+    encoding = resolve_encoding(data, payload.get("encoding"))
     con = connect()
     if encoding.lower() not in ("utf-8", "utf8"):
-        text = source.read_bytes().decode(encoding)
+        text = data.decode(encoding)
         tmp = source.with_suffix(f".utf8{source.suffix}")
         tmp.write_text(text, encoding="utf-8")
         read_expr = (
@@ -146,7 +147,7 @@ def _columns(app, payload: dict) -> dict:
                 "suggested_role": suggested,
             }
         )
-    return {"columns": out}
+    return {"columns": out, "encoding": encoding}
 
 
 def _prep(app, payload: dict) -> dict:
