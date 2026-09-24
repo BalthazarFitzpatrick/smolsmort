@@ -62,7 +62,7 @@ class PrepSpec:
     mode: Mode
     task: Task
     columns: tuple[Column, ...]
-    encoding: str = "utf-8"
+    encoding: str = "auto"
     # series mode: the step every series is aggregated to; empty means infer it from the data
     step: Step | None = None
     horizon: int = 8

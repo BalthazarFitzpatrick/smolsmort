@@ -25,7 +25,7 @@ from smolsmort.forecast.spec import (
     UPPER,
     PrepSpec,
 )
-from smolsmort.forecast.tables import connect
+from smolsmort.forecast.tables import connect, resolve_encoding
 
 # a working flag only; it never reaches the parquet files
 PREDICT = "__predict"
@@ -108,9 +108,10 @@ def _load_cached(folder: Path) -> Prepared:
 def _load_source(spec: PrepSpec, source_path: Path, source_bytes: bytes, out: Path) -> str:
     """the duckdb table-function call to read the source, decoding to utf-8 first if needed"""
     read_ref = str(source_path.resolve())
-    if spec.encoding.lower() not in ("utf-8", "utf8"):
+    encoding = resolve_encoding(source_bytes, spec.encoding)
+    if encoding.lower() not in ("utf-8", "utf8"):
         # python's own codec, not duckdb's narrower non-utf8 csv support - matches cp1252 exactly
-        text = source_bytes.decode(spec.encoding)
+        text = source_bytes.decode(encoding)
         copy = out / f"source_utf8{source_path.suffix}"
         copy.write_text(text, encoding="utf-8")
         read_ref = str(copy)

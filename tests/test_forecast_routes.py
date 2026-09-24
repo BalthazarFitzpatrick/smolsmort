@@ -91,6 +91,17 @@ def test_columns_suggests_roles_from_kind(app, tab):
     assert truth.series > 0
 
 
+def test_columns_detects_a_utf16_tab_export(app, tab):
+    # the shape tableau exports: utf-16 with a bom, tab-separated
+    text = "Order Date\tRegion\tQuantity\n2026-01-05\tWest\t3\n2026-01-12\tSüd\t4\n"
+    (_forecast_path(app) / "export.csv").write_bytes(text.encode("utf-16"))
+    result = _post(app, tab, "/api/forecast-columns", {"source": "export.csv", "encoding": "auto"})
+    by_name = {c["name"]: c for c in result["columns"]}
+    assert result["encoding"] == "utf-16"
+    assert by_name["Order Date"]["suggested_role"] == "time"
+    assert "Süd" in by_name["Region"]["sample"]
+
+
 def _forecast_path(app):
     from pathlib import Path
 

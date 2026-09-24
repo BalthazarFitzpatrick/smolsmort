@@ -6,6 +6,24 @@ from pathlib import Path
 
 import numpy as np
 
+AUTO = "auto"
+
+
+def resolve_encoding(data: bytes, requested: str | None) -> str:
+    """the codec to decode a source with: the requested one, or a guess when it is auto or empty.
+    a bom is certain; without one, utf-8 if the bytes decode, else cp1252 (excel's default)"""
+    if requested and requested.lower() != AUTO:
+        return requested
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return "utf-16"
+    if data.startswith(b"\xef\xbb\xbf"):
+        return "utf-8-sig"
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return "cp1252"
+    return "utf-8"
+
 
 def connect():
     """a duckdb connection, importing duckdb only now: the vision half and the cli must run on a

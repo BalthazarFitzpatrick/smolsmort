@@ -56,7 +56,7 @@ class ForecastTopic {
     this.task = task;
     this.storageKey = `smolsmort:forecast:${topic}`;
     this.source = null;
-    this.encoding = 'utf-8';
+    this.encoding = 'auto';
     this.columnsInfo = [];
     this.columnState = {}; // name -> {role, aggregation, known}
     this.step = 'auto';
@@ -91,6 +91,8 @@ class ForecastTopic {
       if (!raw) return;
       const saved = JSON.parse(raw);
       Object.assign(this, saved.state || {});
+      // utf-8 was the old default, and auto still picks it for any file that decodes as utf-8
+      if (this.encoding === 'utf-8') this.encoding = 'auto';
     } catch (err) { /* nothing saved, or it did not parse - start clean */ }
   }
 
@@ -201,8 +203,10 @@ class ForecastTopic {
   wireData(panel) {
     document.getElementById(`${this.topic}-data-source`).onclick = evt => this.openSourcePicker(evt.currentTarget);
     document.getElementById(`${this.topic}-data-encoding`).onchange = evt => {
-      this.encoding = evt.currentTarget.value || 'utf-8';
+      this.encoding = evt.currentTarget.value.trim() || 'auto';
+      evt.currentTarget.value = this.encoding;
       this.saveStored();
+      if (this.source) this.loadColumns();
     };
     const step = document.getElementById(`${this.topic}-step`);
     if (step) step.onchange = () => { this.step = step.value; this.saveStored(); };
@@ -285,7 +289,8 @@ class ForecastTopic {
       this.columnState = next;
       this.renderColumnGrid();
       this.updateCensorAnchor();
-      this.dataSay(`${this.columnsInfo.length} columns`);
+      const detected = this.encoding === 'auto' ? `, detected ${res.encoding}` : '';
+      this.dataSay(`${this.columnsInfo.length} columns${detected}`);
       this.saveStored();
     } catch (err) {
       this.dataSay(err.message);
@@ -382,7 +387,7 @@ class ForecastTopic {
       mode,
       task: this.task,
       columns,
-      encoding: this.encoding || 'utf-8',
+      encoding: this.encoding || 'auto',
       step: series ? (this.step === 'auto' ? null : this.step) : null,
       horizon: series ? this.horizon : 8,
       where: this.where || null,
