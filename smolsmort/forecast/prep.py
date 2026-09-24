@@ -25,7 +25,7 @@ from smolsmort.forecast.spec import (
     UPPER,
     PrepSpec,
 )
-from smolsmort.forecast.tables import connect, resolve_encoding
+from smolsmort.forecast.tables import connect, resolve_encoding, type_source
 
 # a working flag only; it never reaches the parquet files
 PREDICT = "__predict"
@@ -72,7 +72,7 @@ def prepare(spec: PrepSpec, cache_root: Path) -> Prepared:
         con = connect()
         # single-threaded: row_number() over the raw scan must match source file order
         con.execute("SET threads=1")
-        read_expr = _load_source(spec, source_path, source_bytes, tmp)
+        read_expr = type_source(con, _load_source(spec, source_path, source_bytes, tmp))
         if spec.mode == "row":
             sql, summary = _prep_row(con, spec, read_expr, tmp)
         else:

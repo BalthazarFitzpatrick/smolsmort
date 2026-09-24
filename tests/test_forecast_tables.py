@@ -5,7 +5,13 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from smolsmort.forecast.tables import read_table, resolve_encoding, write_table
+from smolsmort.forecast.tables import (
+    number_format,
+    read_table,
+    resolve_encoding,
+    type_source,
+    write_table,
+)
 
 duckdb = pytest.importorskip("duckdb")
 
@@ -23,6 +29,30 @@ duckdb = pytest.importorskip("duckdb")
 )
 def test_resolve_encoding_trusts_a_bom_then_utf8_then_cp1252(data, requested, expected):
     assert resolve_encoding(data, requested) == expected
+
+
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        (["755,96", "16,448", "0,6", "1.234,5", None, ""], "decimal_comma"),
+        (["1,234.5", "12.75", "-3"], "thousands_comma"),
+        (["1,234", "5,678"], None),
+        (["60540", "85254"], None),
+        (["755,96", "West"], None),
+        ([None, ""], None),
+    ],
+)
+def test_number_format_needs_every_value_to_fit_one_format(values, expected):
+    assert number_format(values) == expected
+
+
+def test_type_source_casts_decimal_comma_text_to_double():
+    con = duckdb.connect()
+    raw = "(SELECT * FROM (VALUES ('755,96', 'West'), ('1.234,5', 'East')) t(sales, region))"
+    typed = type_source(con, raw)
+    described = con.execute(f"DESCRIBE SELECT * FROM {typed}").fetchall()
+    assert {name: kind for name, kind, *_ in described} == {"sales": "DOUBLE", "region": "VARCHAR"}
+    assert con.execute(f"SELECT sum(sales) FROM {typed}").fetchone()[0] == pytest.approx(1990.46)
 
 
 def test_nulls_read_back_as_nan_none_and_nat(tmp_path):

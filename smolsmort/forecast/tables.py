@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import numpy as np
 
 AUTO = "auto"
+SCAN_ROWS = 1000
+
+# "1.234,5" / "0,6" and "1,234.5" - a value fitting both (plain "1,234") decides nothing
+DECIMAL_COMMA = re.compile(r"[+-]?(\d{1,3}(\.\d{3})+|\d+)(,\d+)?")
+THOUSANDS_COMMA = re.compile(r"[+-]?(\d{1,3}(,\d{3})+|\d+)(\.\d+)?")
+NUMBER_SQL = {
+    "decimal_comma": "TRY_CAST(replace(replace(trim({q}), '.', ''), ',', '.') AS DOUBLE)",
+    "thousands_comma": "TRY_CAST(replace(trim({q}), ',', '') AS DOUBLE)",
+}
 
 
 def resolve_encoding(data: bytes, requested: str | None) -> str:
@@ -23,6 +33,42 @@ def resolve_encoding(data: bytes, requested: str | None) -> str:
     except UnicodeDecodeError:
         return "cp1252"
     return "utf-8"
+
+
+def number_format(values: list) -> str | None:
+    """decimal_comma or thousands_comma when every value fits exactly that one format, else none"""
+    texts = [str(v).strip() for v in values if v is not None and str(v).strip()]
+    if not texts:
+        return None
+    decimal = all(DECIMAL_COMMA.fullmatch(t) for t in texts)
+    thousands = all(THOUSANDS_COMMA.fullmatch(t) for t in texts)
+    if decimal and not thousands:
+        return "decimal_comma"
+    if thousands and not decimal:
+        return "thousands_comma"
+    return None
+
+
+def type_source(con, read_expr: str) -> str:
+    """the source with text columns holding locale-formatted numbers cast to double, judged on
+    the first SCAN_ROWS rows; later values that do not parse become null"""
+    described = con.execute(f"DESCRIBE SELECT * FROM {read_expr}").fetchall()
+    text_cols = [name for name, kind, *_ in described if kind.upper() == "VARCHAR"]
+    if not text_cols:
+        return read_expr
+    quoted = {name: '"' + name.replace('"', '""') + '"' for name in text_cols}
+    rows = con.execute(
+        f"SELECT {', '.join(quoted.values())} FROM {read_expr} LIMIT {SCAN_ROWS}"
+    ).fetchall()
+    replaced = []
+    for i, name in enumerate(text_cols):
+        found = number_format([row[i] for row in rows])
+        if found:
+            q = quoted[name]
+            replaced.append(f"{NUMBER_SQL[found].format(q=q)} AS {q}")
+    if not replaced:
+        return read_expr
+    return f"(SELECT * REPLACE ({', '.join(replaced)}) FROM {read_expr})"
 
 
 def connect():
