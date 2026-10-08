@@ -338,9 +338,22 @@ def test_scaffold_defaults_empty_and_preserves_saved_picks(tmp_path):
 @pytest.mark.parametrize(
     ("topic", "metric"), [("regression", "wape"), ("classification", "log_loss")]
 )
-def test_search_chart_tracks_every_generation_and_resets(tmp_path, topic, metric):
+def test_search_charts_track_generations_replace_best_fit_and_reset(tmp_path, topic, metric):
     with session(tmp_path) as (page, base):
-        snapshot = {"count": 0, "state": "running"}
+        snapshot = {"count": 0, "state": "running", "history": None}
+        first_fit = {
+            "key": "first",
+            "metric": "rmse" if topic == "regression" else "logloss",
+            "training": [3.0, 2.0, 1.0, 0.8],
+            "validation": [4.0, 3.0, 2.0, 1.0],
+        }
+        second_fit = {
+            "key": "second",
+            "metric": "mae" if topic == "regression" else "mlogloss",
+            "training": [0.7, 0.5],
+            "validation": [0.9, 0.6],
+            "bucket": [1, 4],
+        }
         run_number = 0
         best_values = [0.8, 0.6, 0.6, 0.4]
 
@@ -363,6 +376,7 @@ def test_search_chart_tracks_every_generation_and_resets(tmp_path, topic, metric
                     "generations": generations,
                     "verdict": {"trusted": True},
                     "leaderboard": [],
+                    "eval_history": snapshot["history"],
                 }
             )
 
@@ -386,12 +400,16 @@ def test_search_chart_tracks_every_generation_and_resets(tmp_path, topic, metric
         show_tab(page, f"{topic}-search")
         progress = page.locator(f"#{topic}-search-progress")
         chart = page.locator(f"#{topic}-search-chart")
+        loss = page.locator(f"#{topic}-search-loss")
+        loss_chart = page.locator(f"#{topic}-loss-chart")
         assert not progress.is_visible()
+        assert not loss.is_visible()
         page.click(f"#{topic}-search-start")
         page.wait_for_function(
             f'document.getElementById("{topic}-search-status").innerText === "running"'
         )
         assert not progress.is_visible()
+        assert not loss.is_visible()
 
         def wait_points(count):
             page.wait_for_function(
@@ -406,12 +424,37 @@ def test_search_chart_tracks_every_generation_and_resets(tmp_path, topic, metric
 
         for count in (1, 2):
             snapshot["count"] = count
+            snapshot["history"] = first_fit if count == 1 else second_fit
             wait_points(count)
             assert progress.is_visible()
             assert (
                 page.locator(f"#{topic}-search-metric").inner_text()
                 == f"{metric} (lower is better)"
             )
+            history = snapshot["history"]
+            page.wait_for_function(
+                "([id, count]) => [...document.getElementById(id).querySelectorAll('.chart-line')]"
+                ".length === 2 && [...document.getElementById(id).querySelectorAll('.chart-line')]"
+                ".every(line => line.getAttribute('d').split(' L ').length === count)",
+                arg=[f"{topic}-loss-chart", len(history["training"])],
+            )
+            assert loss.is_visible()
+            label = f"{history['metric']} (lower is better)"
+            if history.get("bucket"):
+                label += " - horizon bucket 1-4"
+            assert page.locator(f"#{topic}-loss-metric").inner_text() == label
+            assert loss.locator(".field-label").last.inner_text() == "boosting round"
+            assert "training loss" in loss_chart.inner_text()
+            assert "validation loss" in loss_chart.inner_text()
+            assert loss_chart.locator(".chart-x-label").all_text_contents() == [
+                str(i + 1) for i in range(len(history["training"]))
+            ]
+            overlay = loss_chart.locator(".chart-overlay").bounding_box()
+            page.mouse.move(overlay["x"] + 1, overlay["y"] + overlay["height"] / 2)
+            assert loss_chart.locator(".chart-tooltip-value").all_text_contents() == [
+                str(history["training"][0]).removesuffix(".0"),
+                str(history["validation"][0]).removesuffix(".0"),
+            ]
             assert chart.locator(".chart-x-label").all_text_contents() == [
                 str(i) for i in range(count)
             ]
@@ -423,13 +466,25 @@ def test_search_chart_tracks_every_generation_and_resets(tmp_path, topic, metric
         with page.expect_response("**/api/forecast-run?**"):
             page.wait_for_timeout(2100)
         wait_points(2)
-        snapshot.update(count=4, state="done")
+        snapshot.update(count=3, history=None)
+        wait_points(3)
+        assert not loss.is_visible()
+        assert loss_chart.locator("svg").count() == 0
+        snapshot.update(count=4, state="done", history=second_fit)
         wait_points(4)
         page.wait_for_function(
             f'document.getElementById("{topic}-search-status").innerText.startsWith("done")'
         )
         assert chart.locator(".chart-x-label").all_text_contents() == ["0", "1", "2", "3"]
         progress.screenshot(path=tmp_path / f"{topic}-search-progress.png")
+        assert loss.is_visible()
+        loss.screenshot(path=tmp_path / f"{topic}-best-fit-loss.png")
+        assert page.evaluate(
+            "topic => { const ids = ['search-progress', 'search-loss', 'leaderboard'];"
+            " const nodes = ids.map(id => document.getElementById(`${topic}-${id}`));"
+            " return nodes[0].nextElementSibling === nodes[1] && nodes[1].nextElementSibling === nodes[2]; }",
+            topic,
+        )
         overlay = chart.locator(".chart-overlay").bounding_box()
         page.mouse.move(overlay["x"] + 1, overlay["y"] + overlay["height"] / 2)
         assert chart.locator(".chart-tooltip-value").inner_text() == "0.8"
@@ -439,16 +494,21 @@ def test_search_chart_tracks_every_generation_and_resets(tmp_path, topic, metric
         show_tab(page, f"{topic}-search")
         wait_points(4)
         assert progress.is_visible()
-        snapshot.update(count=0, state="running")
+        assert loss.is_visible()
+        snapshot.update(count=0, state="running", history=None)
         page.click(f"#{topic}-search-start")
         page.wait_for_function(
             f'document.getElementById("{topic}-search-status").innerText === "running"'
         )
         assert not progress.is_visible()
         assert chart.locator("svg").count() == 0
-        snapshot.update(count=1, state="done")
+        assert not loss.is_visible()
+        assert loss_chart.locator("svg").count() == 0
+        snapshot.update(count=1, state="done", history=first_fit)
         wait_points(1)
         assert chart.locator(".chart-x-label").all_text_contents() == ["0"]
+        assert loss.is_visible()
+        assert loss_chart.locator(".chart-line").count() == 2
         assert run_number == 2
 
 

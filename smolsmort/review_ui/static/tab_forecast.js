@@ -123,6 +123,8 @@ class ForecastTopic {
     this.currentRunId = null;
     this.pollTimer = null;
     this.searchChart = null;
+    this.lossChart = null;
+    this.lossHistoryKey = null;
     this.resultsRunId = null;
     this.resultsSpec = null;
     this.chart = null;
@@ -646,6 +648,11 @@ class ForecastTopic {
           <div id="${this.topic}-search-chart" class="forecast-chart"></div>
           <div class="field-label">generation</div>
         </div>
+        <div id="${this.topic}-search-loss" class="hidden">
+          <div class="field-label" id="${this.topic}-loss-metric"></div>
+          <div id="${this.topic}-loss-chart" class="forecast-chart"></div>
+          <div class="field-label">boosting round</div>
+        </div>
         <div id="${this.topic}-leaderboard" class="hidden">
           <div class="field-label">leaderboard</div>
           <table class="forecast-column-grid" id="${this.topic}-leaderboard-table"></table>
@@ -702,6 +709,7 @@ class ForecastTopic {
     const state = await api(`/api/forecast-run?id=${encodeURIComponent(runId)}`);
     if (runId !== this.currentRunId) return;
     this.paintSearchChart(state.generations || []);
+    this.paintLossChart(state.generations && state.generations.length ? state.eval_history : null);
     const latest = state.generations && state.generations.length
       ? state.generations[state.generations.length - 1] : null;
     if (latest) {
@@ -734,6 +742,7 @@ class ForecastTopic {
     if (this.searchChart) this.searchChart.destroy();
     this.searchChart = null;
     document.getElementById(`${this.topic}-search-progress`).classList.add('hidden');
+    this.paintLossChart(null);
   }
 
   paintSearchChart(generations) {
@@ -750,6 +759,37 @@ class ForecastTopic {
       series: [{id: metric, label: `best ${metric} so far`,
         values: generations.map(entry => Number.isFinite(entry.best) ? entry.best : null)}],
     });
+  }
+
+  paintLossChart(history) {
+    const wrap = document.getElementById(`${this.topic}-search-loss`);
+    const usable = history && history.metric && history.training && history.validation
+      && history.training.length && history.training.length === history.validation.length
+      && history.training.every(Number.isFinite) && history.validation.every(Number.isFinite);
+    if (!usable) {
+      if (this.lossChart) this.lossChart.destroy();
+      this.lossChart = null;
+      this.lossHistoryKey = null;
+      wrap.classList.add('hidden');
+      return;
+    }
+    if (this.lossChart && this.lossHistoryKey === history.key) return;
+    const bucket = history.bucket ? ` - horizon bucket ${history.bucket.join('-')}` : '';
+    setText(`${this.topic}-loss-metric`, `${history.metric} (lower is better)${bucket}`);
+    wrap.classList.remove('hidden');
+    if (!this.lossChart) this.lossChart = timeChart(
+      document.getElementById(`${this.topic}-loss-chart`), {
+        height: 220, yFormat: value => String(Number(value.toPrecision(4))),
+      }
+    );
+    this.lossChart.update({
+      x: history.training.map((_, index) => index + 1),
+      series: [
+        {id: 'training', label: 'training loss', values: history.training},
+        {id: 'validation', label: 'validation loss', values: history.validation},
+      ],
+    });
+    this.lossHistoryKey = history.key;
   }
 
   paintLeaderboard(rows) {
