@@ -154,7 +154,19 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 }
 .forecast-censor-row { flex-wrap: wrap; }
 .forecast-sql { white-space: pre-wrap; max-height: 200px; overflow-y: auto; background: var(--panel-row); padding: 8px; }
-.forecast-run-row { justify-content: flex-start; gap: var(--gap); }
+.forecast-search-layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 14px; min-height: 0; align-items: start; }
+.forecast-run-rail { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
+.forecast-run-rail section > .field-label { margin-bottom: var(--gap); }
+.forecast-run-rail .dropdown-head { width: 100%; }
+.forecast-run-detail { min-width: 0; }
+.forecast-run-row { width: 100%; height: auto; flex-direction: column; align-items: flex-start; gap: var(--gap); padding: 8px; }
+.forecast-run-row > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.forecast-search-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.forecast-search-layout .field-label, .forecast-search-layout th { white-space: nowrap; }
+.forecast-recipe-details { display: flex; flex-direction: column; gap: var(--gap); min-width: 300px; }
+.forecast-recipe-field { display: flex; justify-content: space-between; gap: 24px; }
+.forecast-recipe-field .field-label { white-space: nowrap; }
+.forecast-recipe-field .field-value { overflow-wrap: anywhere; }
 .forecast-verdict { padding: 8px 12px; border: 2px solid var(--grey-border); }
 .forecast-verdict.trusted { border-color: var(--lichen-deep); color: var(--lichen); }
 .forecast-verdict.warn { border-color: var(--stone-red); color: var(--stone-red-lift); }

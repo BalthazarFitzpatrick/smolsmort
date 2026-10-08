@@ -17,8 +17,8 @@ function forecastNode(tag, className, text) {
   return node;
 }
 
-function forecastFamilySummary(families) {
-  if (!Array.isArray(families) || !families.length) return '-';
+function forecastFamilyGroups(families) {
+  if (!Array.isArray(families)) return [];
   const groups = new Map();
   const labels = {
     roll: 'rolling', cal: 'calendar', date: 'calendar', dim: 'dims',
@@ -49,11 +49,19 @@ function forecastFamilySummary(families) {
       }
       return a.localeCompare(b);
     });
-    const detail = kind === 'ewm' && values.length > 1
-      ? `${values[0]}-${values[values.length - 1]}` : values.join(',');
-    return kind === 'other' ? detail : `${kind} ${detail}`;
-  }).join(' · ') || '-';
+    return [kind, values.join(',')];
+  });
 }
+
+function forecastNumber(value) {
+  return Number.isFinite(value) ? String(Number(value.toPrecision(4))) : '-';
+}
+
+const FORECAST_OBJECTIVES = {
+  squared: 'squared error', absolute: 'absolute error', tweedie: 'tweedie loss',
+  poisson: 'poisson loss', aft: 'survival loss', logistic: 'log loss',
+  softprob: 'multiclass log loss',
+};
 
 function forecastDropdown(options, value, onPick, label) {
   const head = forecastNode('button', 'toggle dropdown-head');
@@ -159,6 +167,10 @@ class ForecastTopic {
     this.lastPrep = null;
     this.searchValues = {population: 16, plateau: 5, generations: 60, minutes: 20};
     this.currentRunId = null;
+    this.selectedRunId = null;
+    this.runCache = new Map();
+    this.runOrder = 'date, newest first';
+    this.searchEntered = false;
     this.pollTimer = null;
     this.searchChart = null;
     this.lossChart = null;
@@ -674,14 +686,40 @@ class ForecastTopic {
       {key: 'minutes', label: 'time cap (minutes)', step: 1, min: 1, max: 240, value: this.searchValues.minutes},
     ];
     panel.innerHTML = `
-      <div class="forecast-pane">
-        <div class="field-label">budget</div>
+      <div class="forecast-search-layout">
+        <aside class="panel-inline forecast-run-rail">
+          <button class="toggle adds" id="${this.topic}-new-search">+ new search</button>
+          <div id="${this.topic}-run-sort"></div>
+          <section id="${this.topic}-running-section" class="hidden">
+            <div class="field-label">running</div>
+            <div id="${this.topic}-running-list"></div>
+          </section>
+          <section><div class="field-label">runs</div><div id="${this.topic}-runs-list"></div></section>
+        </aside>
+        <div class="forecast-pane forecast-run-detail">
+        <div id="${this.topic}-new-search-pane" class="panel-inline forecast-pane">
+        <div class="field-label">new search · budget</div>
         <div id="${this.topic}-budget">${budgetRows.map(r => forecastStepperRow(`${this.topic}-budget`, r)).join('')}</div>
         <div class="run-controls">
           <div class="toggle adds" id="${this.topic}-search-start">start</div>
           <div class="toggle removes disabled" id="${this.topic}-search-cancel">cancel</div>
-          <span class="stat" id="${this.topic}-search-status">idle</span>
         </div>
+        </div>
+        <div class="panel-inline forecast-pane">
+          <div class="run-controls">
+            <span class="field-value" id="${this.topic}-run-title">new search</span>
+            <span class="forecast-verdict hidden" id="${this.topic}-run-verdict"></span>
+          </div>
+          <div class="stat" id="${this.topic}-search-status">idle</div>
+          <div class="field-label" id="${this.topic}-run-stop"></div>
+          <div class="field-value" id="${this.topic}-run-stats"></div>
+          <div class="run-controls hidden" id="${this.topic}-run-actions">
+            <button class="toggle" id="${this.topic}-run-warm">warm start</button>
+            <button class="toggle" id="${this.topic}-run-refit">refit</button>
+            <button class="toggle" id="${this.topic}-run-open">open</button>
+          </div>
+        </div>
+        <div class="forecast-search-charts">
         <div id="${this.topic}-search-progress" class="hidden">
           <div class="field-label" id="${this.topic}-search-metric"></div>
           <div id="${this.topic}-search-chart" class="forecast-chart"></div>
@@ -692,23 +730,36 @@ class ForecastTopic {
           <div id="${this.topic}-loss-chart" class="forecast-chart"></div>
           <div class="field-label">boosting round</div>
         </div>
+        </div>
         <div id="${this.topic}-leaderboard" class="hidden">
           <div class="forecast-leaderboard-wrap">
             <table class="forecast-column-grid forecast-leaderboard" id="${this.topic}-leaderboard-table"></table>
           </div>
         </div>
-        <div class="h-divider"></div>
-        <div class="field-label">runs</div>
-        <div id="${this.topic}-runs-list"></div>
+        </div>
       </div>`;
     forecastWireSteppers(panel, `${this.topic}-budget`, budgetRows, this.searchValues, () => {});
     document.getElementById(`${this.topic}-search-start`).onclick = () => this.startSearch();
     document.getElementById(`${this.topic}-search-cancel`).onclick = () => this.cancelSearch();
+    document.getElementById(`${this.topic}-new-search`).onclick = () => this.selectRun(null);
+    document.getElementById(`${this.topic}-run-sort`).append(forecastDropdown(
+      ['date, newest first', 'best performance'], this.runOrder,
+      value => { this.runOrder = value; this.paintRuns(); }, 'sort runs'
+    ));
+    document.getElementById(`${this.topic}-run-warm`).onclick = () => this.warmStartRun(this.selectedRunId);
+    document.getElementById(`${this.topic}-run-refit`).onclick = () => this.refitRun(this.selectedRunId);
+    document.getElementById(`${this.topic}-run-open`).onclick = () => this.openResults(this.selectedRunId);
     return {enter: () => this.enterSearch()};
   }
 
   async enterSearch() {
     await this.loadRuns();
+    if (!this.searchEntered) {
+      this.selectedRunId = this.currentRunId || [...this.runCache.keys()].sort().at(-1) || null;
+      this.searchEntered = true;
+    }
+    await this.selectRun(this.selectedRunId);
+    this.scheduleSearchPoll();
   }
 
   searchSay(text) { setText(`${this.topic}-search-status`, text); }
@@ -723,10 +774,7 @@ class ForecastTopic {
     };
     try {
       const res = await api('/api/forecast-runs', {spec: this.spec, budget});
-      this.currentRunId = res.run_id;
-      this.resetSearchChart();
-      this.searchSay('starting...');
-      this.pollSearch();
+      this.attachRun(res.run_id, 'search');
     } catch (err) {
       this.searchSay(err.message);
     }
@@ -743,42 +791,110 @@ class ForecastTopic {
   }
 
   async pollSearch() {
-    const runId = this.currentRunId;
-    if (!runId) return;
-    document.getElementById(`${this.topic}-search-cancel`).classList.remove('disabled');
-    const state = await api(`/api/forecast-run?id=${encodeURIComponent(runId)}&since_generation=${this.lossGeneration}`);
-    if (runId !== this.currentRunId) return;
-    this.paintSearchChart(state.generations || []);
-    this.paintLossChart(state.generation_curves || []);
-    const latest = state.generations && state.generations.length
-      ? state.generations[state.generations.length - 1] : null;
-    if (latest) {
-      this.searchSay(
-        `generation ${latest.generation} - best ${Number(latest.best).toFixed(4)} - `
-        + `evaluated ${latest.evaluated} - elapsed ${latest.elapsed}s`
-      );
-    } else {
-      this.searchSay(state.state || 'starting');
-    }
-    if (state.state === 'done' || state.state === 'failed') {
-      clearTimeout(this.pollTimer);
-      this.pollTimer = null;
-      document.getElementById(`${this.topic}-search-cancel`).classList.add('disabled');
-      if (state.state === 'failed') {
-        this.searchSay(`failed: ${state.reason || 'unknown error'}`);
-      } else {
-        this.searchSay(`done - ${state.verdict && state.verdict.trusted ? 'trusted' : 'not trusted'}`);
-        this.paintLeaderboard(state.leaderboard || []);
-      }
+    try {
+      const live = [...this.runCache.values()].filter(run => this.isRunning(run));
+      await Promise.all(live.map(run => this.readRun(run)));
       await this.loadRuns();
+    } catch (err) {
+      this.searchSay(err.message);
+    }
+    this.scheduleSearchPoll();
+  }
+
+  scheduleSearchPoll() {
+    clearTimeout(this.pollTimer);
+    this.pollTimer = [...this.runCache.values()].some(run => this.isRunning(run))
+      ? setTimeout(() => this.pollSearch(), 2000) : null;
+  }
+
+  isRunning(run) { return ['starting', 'running'].includes(run.state); }
+
+  attachRun(id, kind) {
+    this.currentRunId = id;
+    this.runCache.set(id, {id, kind, state: 'starting', curves: [], cursor: -1, boardCursor: -1});
+    this.selectedRunId = id;
+    this.resetSearchChart();
+    this.paintRuns();
+    this.paintRunDetail(this.runCache.get(id));
+    this.readRun(this.runCache.get(id)).catch(err => this.searchSay(err.message));
+    this.scheduleSearchPoll();
+  }
+
+  async readRun(run) {
+    const params = new URLSearchParams({id: run.id,
+      since_generation: String(run.cursor), since_leaderboard: String(run.boardCursor)});
+    const state = await api(`/api/forecast-run?${params}`);
+    if (this.runCache.get(run.id) !== run) return;
+    const curves = [...run.curves];
+    let cursor = run.cursor;
+    for (const curve of state.generation_curves || []) {
+      if (!Number.isInteger(curve.generation) || curve.generation <= run.cursor) continue;
+      if (!curve.metric || !Array.isArray(curve.validation) || !curve.validation.length
+          || !curve.validation.every(Number.isFinite)) continue;
+      if (!curves.some(entry => entry.generation === curve.generation)) curves.push(curve);
+      cursor = Math.max(cursor, curve.generation);
+    }
+    Object.assign(run, state, {curves: curves.sort((a, b) => a.generation - b.generation).slice(-60), cursor});
+    if (Number.isInteger(state.leaderboard_generation)) run.boardCursor = state.leaderboard_generation;
+    if (this.currentRunId === run.id && !this.isRunning(run)) this.currentRunId = null;
+    this.paintRuns();
+    if (this.selectedRunId === run.id) this.paintRunDetail(run);
+  }
+
+  async selectRun(id) {
+    this.selectedRunId = id;
+    this.resetSearchChart();
+    this.paintRuns();
+    const run = this.runCache.get(id);
+    this.paintRunDetail(run);
+    if (run) await this.readRun(run);
+  }
+
+  stopReason(run) {
+    if (run.state === 'failed') return `failed: ${run.reason || 'unknown error'}`;
+    const reason = run.stopped || run.latest?.stopped;
+    if (reason === 'plateau') return `no gain larger than the noise for ${run.budget?.plateau ?? 5} generations in a row`;
+    return {time_cap: 'time cap', max_generations: 'generation cap', generation_cap: 'generation cap',
+      cancelled: 'cancelled'}[reason] || (reason || (this.isRunning(run) ? 'search in progress' : '-'));
+  }
+
+  paintRunDetail(run) {
+    document.getElementById(`${this.topic}-new-search-pane`).classList.toggle('hidden', !!run);
+    document.getElementById(`${this.topic}-run-actions`).classList.toggle('hidden', !run);
+    document.getElementById(`${this.topic}-search-cancel`).classList.toggle('disabled', !this.currentRunId);
+    const verdict = document.getElementById(`${this.topic}-run-verdict`);
+    verdict.classList.toggle('hidden', !run?.verdict);
+    if (!run) {
+      setText(`${this.topic}-run-title`, 'new search');
+      setText(`${this.topic}-run-stop`, '');
+      setText(`${this.topic}-run-stats`, '');
+      this.searchSay('idle');
+      this.paintLeaderboard([]);
       return;
     }
-    this.pollTimer = setTimeout(() => this.pollSearch(), 2000);
+    this.displayTask = run.spec?.task || run.task || this.task;
+    setText(`${this.topic}-run-title`, `${run.id.split('-').at(-1)} · ${run.kind || 'search'} · ${run.state}`);
+    setText(`${this.topic}-run-stop`, this.stopReason(run));
+    if (run.verdict) {
+      verdict.textContent = run.verdict.trusted ? 'trusted' : 'not trusted';
+      verdict.classList.toggle('trusted', !!run.verdict.trusted);
+      verdict.classList.toggle('warn', !run.verdict.trusted);
+    }
+    const generations = run.generations || [];
+    const latest = generations.at(-1);
+    const stats = `elapsed ${forecastNumber(run.elapsed ?? latest?.elapsed)}s · generations ${generations.length} · best error ${forecastNumber(run.best_error ?? latest?.best)}`;
+    setText(`${this.topic}-run-stats`, stats);
+    this.searchSay(this.isRunning(run)
+      ? latest ? `generation ${latest.generation} - best ${forecastNumber(latest.best)} - evaluated ${latest.evaluated} - elapsed ${latest.elapsed}s` : run.state
+      : run.state === 'failed' ? this.stopReason(run) : `${run.state} - ${run.verdict?.trusted ? 'trusted' : 'not trusted'}`);
+    this.paintSearchChart(generations);
+    this.lossCurves = [];
+    this.lossGeneration = -1;
+    this.paintLossChart(run.curves);
+    this.paintLeaderboard(run.leaderboard || []);
   }
 
   resetSearchChart() {
-    clearTimeout(this.pollTimer);
-    this.pollTimer = null;
     if (this.searchChart) this.searchChart.destroy();
     this.searchChart = null;
     document.getElementById(`${this.topic}-search-progress`).classList.add('hidden');
@@ -791,7 +907,7 @@ class ForecastTopic {
 
   paintSearchChart(generations) {
     if (!generations.length) return;
-    const metric = this.task === 'classification' ? 'log_loss' : 'wape';
+    const metric = (this.displayTask || this.task) === 'classification' ? 'log_loss' : 'wape';
     setText(`${this.topic}-search-metric`, `${metric} (lower is better)`);
     document.getElementById(`${this.topic}-search-progress`).classList.remove('hidden');
     const el = document.getElementById(`${this.topic}-search-chart`);
@@ -856,20 +972,13 @@ class ForecastTopic {
     wrap.classList.toggle('hidden', !rows.length);
     if (!rows.length) return;
     const entries = rows.slice(0, 10);
-    const metric = this.task === 'classification' ? 'log_loss' : 'wape';
+    const metric = (this.displayTask || this.task) === 'classification' ? 'log_loss' : 'wape';
     const errorOf = entry => Number.isFinite(entry.fitness) ? entry.fitness : entry.metrics?.[metric];
     const best = errorOf(entries[0]);
     const number = value => Number.isFinite(value) ? String(Number(value.toPrecision(4))) : '-';
     const integer = value => Number.isInteger(value) ? String(value) : '-';
-    const objectives = {
-      squared: 'squared error', absolute: 'absolute error', tweedie: 'tweedie loss',
-      poisson: 'poisson loss', aft: 'survival loss', logistic: 'log loss',
-      softprob: 'multiclass log loss',
-    };
-    const hasNote = entries.some(entry => typeof entry.note === 'string' && entry.note.trim());
     const columns = ['rank', 'generation found', `validation error (${metric})`, 'gap to best',
-      'mae', 'objective', 'tree depth', 'learning rate (eta)', 'feature count (families)', 'feature families'];
-    if (hasNote) columns.push('note');
+      'mae', 'objective', 'tree depth', 'learning rate (eta)', 'features'];
     const caption = forecastNode('caption', 'field-label',
       `best ten recipes the search tried, ranked by validation error (${metric}); lower is better; the winner is the first row`);
     table.appendChild(caption);
@@ -894,14 +1003,18 @@ class ForecastTopic {
       const gapText = Number.isFinite(gap) ? `${gap < 0 ? '-' : '+'}${Math.abs(gap).toFixed(1)}%` : '-';
       const count = Array.isArray(genome.families) ? new Set(genome.families).size : entry.families;
       const values = [String(index + 1), integer(entry.generation), number(error), gapText,
-        number(entry.metrics?.mae), objectives[genome.objective] || '-',
-        integer(params.max_depth), number(params.eta), integer(count), forecastFamilySummary(genome.families)];
-      if (hasNote) values.push(typeof entry.note === 'string' && entry.note.trim() ? entry.note : '-');
+        number(entry.metrics?.mae), FORECAST_OBJECTIVES[genome.objective] || '-',
+        integer(params.max_depth), number(params.eta)];
       values.forEach(value => {
         const td = document.createElement('td');
         td.textContent = value;
         row.appendChild(td);
       });
+      const features = forecastNode('td');
+      const head = forecastNode('button', 'toggle dropdown-head', `${integer(count)} features`);
+      head.onclick = () => this.openRecipeMenu(head, entry, index + 1);
+      features.append(head);
+      row.append(features);
       tbody.appendChild(row);
     });
     table.appendChild(tbody);
@@ -909,45 +1022,77 @@ class ForecastTopic {
 
   async loadRuns() {
     const data = await api('/api/forecast-runs');
-    const box = document.getElementById(`${this.topic}-runs-list`);
-    if (!box) return;
-    box.innerHTML = '';
-    if (!data.runs.length) {
-      box.appendChild(textSpan('stat', 'no runs yet'));
-      return;
+    for (const summary of data.runs || []) {
+      const cached = this.runCache.get(summary.id);
+      if (cached) Object.assign(cached, summary);
+      else this.runCache.set(summary.id, {...summary, curves: [], cursor: -1, boardCursor: -1});
     }
-    data.runs.forEach(run => {
-      const row = document.createElement('div');
-      row.className = 'run-controls forecast-run-row';
-      const label = document.createElement('span');
-      label.className = 'field-value';
-      label.textContent = `${run.id} - ${run.state}`;
-      row.appendChild(label);
-      row.appendChild(textSpan('spacer', ''));
-      const open = document.createElement('div');
-      open.className = 'toggle';
-      open.textContent = 'open results';
-      open.onclick = () => this.openResults(run.id);
-      const refit = document.createElement('div');
-      refit.className = 'toggle';
-      refit.textContent = 'refit';
-      refit.onclick = () => this.refitRun(run.id);
-      const warm = document.createElement('div');
-      warm.className = 'toggle';
-      warm.textContent = 'warm-start';
-      warm.onclick = () => this.warmStartRun(run.id);
-      row.append(open, refit, warm);
-      box.appendChild(row);
+    const live = [...this.runCache.values()].find(run => this.isRunning(run));
+    this.currentRunId = live?.id || null;
+    this.paintRuns();
+  }
+
+  paintRuns() {
+    const box = document.getElementById(`${this.topic}-runs-list`);
+    const running = document.getElementById(`${this.topic}-running-list`);
+    box.replaceChildren();
+    running.replaceChildren();
+    const runs = [...this.runCache.values()].sort((a, b) => {
+      if (this.runOrder === 'best performance') {
+        const left = Number.isFinite(a.test_error) ? a.test_error : Infinity;
+        const right = Number.isFinite(b.test_error) ? b.test_error : Infinity;
+        if (left !== right) return left - right;
+      }
+      return b.id.localeCompare(a.id);
     });
+    for (const run of runs) {
+      const row = forecastNode('button', 'toggle forecast-run-row' + (run.id === this.selectedRunId ? ' on' : ''));
+      row.dataset.runId = run.id;
+      const latest = run.generations?.at(-1);
+      const error = this.isRunning(run) ? run.best_error ?? latest?.best : run.test_error;
+      row.append(forecastNode('span', 'field-value', `${run.id.split('-').at(-1)} · ${run.kind || 'search'}`));
+      row.append(forecastNode('span', 'field-label', this.isRunning(run)
+        ? `${run.state} · generation ${run.generation ?? latest?.generation ?? '-'} · best ${forecastNumber(error)}`
+        : `${run.state === 'failed' ? 'failed' : run.stopped || run.state} · error ${forecastNumber(error)}`));
+      row.onclick = () => this.selectRun(run.id).catch(err => this.searchSay(err.message));
+      (this.isRunning(run) ? running : box).append(row);
+    }
+    if (!box.childElementCount) box.append(forecastNode('span', 'stat', 'no finished runs yet'));
+    document.getElementById(`${this.topic}-running-section`).classList.toggle('hidden', !running.childElementCount);
+    document.getElementById(`${this.topic}-new-search`).classList.toggle('on', !this.selectedRunId);
+  }
+
+  openRecipeMenu(head, entry, rank) {
+    const genome = entry.genome || {};
+    const params = genome.params || {};
+    const node = forecastNode('div', 'forecast-recipe-details');
+    const add = (label, value) => {
+      const row = forecastNode('div', 'forecast-recipe-field');
+      row.append(forecastNode('span', 'field-label', label), forecastNode('span', 'field-value', value));
+      node.append(row);
+    };
+    node.append(forecastNode('div', 'field-label', 'feature families'));
+    const groups = forecastFamilyGroups(genome.families);
+    if (!groups.length) add('families', '-');
+    groups.forEach(([kind, values]) => add(kind, values));
+    node.append(forecastNode('div', 'h-divider'), forecastNode('div', 'field-label', 'tree params'));
+    [['colsample', 'colsample_bytree'], ['eta', 'eta'], ['lambda', 'reg_lambda'],
+      ['depth', 'max_depth'], ['min child weight', 'min_child_weight'], ['subsample', 'subsample']]
+      .forEach(([label, key]) => add(label, forecastNumber(params[key] ?? params[label])));
+    add('loss function', FORECAST_OBJECTIVES[genome.objective] || '-');
+    add('note', typeof entry.note === 'string' && entry.note.trim() ? entry.note : '-');
+    node.append(forecastNode('div', 'h-divider'), forecastNode('div', 'field-label', 'metrics'));
+    const metrics = Object.entries(entry.metrics || {});
+    if (!metrics.length) add('metrics', '-');
+    metrics.forEach(([key, value]) => add(key, forecastNumber(value)));
+    new Menu({title: `recipe ${rank}`, persistent: true, sections: [{kind: 'node', node}]}).openAt(head);
   }
 
   async refitRun(runId) {
     if (!this.spec) { this.searchSay('prepare the data first'); return; }
     try {
       const res = await api('/api/forecast-refit', {spec: this.spec, run_id: runId});
-      this.currentRunId = res.run_id;
-      this.resetSearchChart();
-      this.pollSearch();
+      this.attachRun(res.run_id, 'refit');
     } catch (err) {
       this.searchSay(err.message);
     }
@@ -963,9 +1108,7 @@ class ForecastTopic {
     };
     try {
       const res = await api('/api/forecast-runs', {spec: this.spec, budget, warm_from: runId});
-      this.currentRunId = res.run_id;
-      this.resetSearchChart();
-      this.pollSearch();
+      this.attachRun(res.run_id, 'warm start');
     } catch (err) {
       this.searchSay(err.message);
     }
