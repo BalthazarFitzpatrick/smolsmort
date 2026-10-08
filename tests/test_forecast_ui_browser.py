@@ -168,7 +168,16 @@ def test_forecast_regression_row_flow(tmp_path):
             timeout=30000,
         )
 
-        run_search(page)
+        page.reload()
+        page.wait_for_selector("#forecast-dataset:not(.hidden)")
+        assert page.locator("#forecast-dataset .field-value").last.inner_text() == "prepared"
+        with page.expect_response(
+            lambda response: (
+                response.request.method == "POST" and response.url.endswith("/api/forecast-runs")
+            )
+        ) as started:
+            run_search(page)
+        assert started.value.json()["prepared"]["reused"] is True
 
         page.click(f"#{TOPIC}-run-open")
         page.wait_for_timeout(300)
@@ -1021,7 +1030,8 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
         assert not page.locator(f"#{TOPIC}-search-loss").is_visible()
 
 
-def test_forecast_controls_follow_the_shared_row_height(tmp_path):
+@pytest.mark.parametrize("width", [1440, 1100])
+def test_forecast_controls_follow_the_shared_row_height(tmp_path, width):
     recorded = json.loads((Path(__file__).parent / "golden/forecast_leaderboard.json").read_text())[
         "regression"
     ]
@@ -1041,7 +1051,8 @@ def test_forecast_controls_follow_the_shared_row_height(tmp_path):
     }
     observations = []
     states = []
-    with session(tmp_path, width=1440) as (page, base):
+    view_mode = ["series"]
+    with session(tmp_path, width=width) as (page, base):
         for run_id in (old, cancelled, refit):
             folder = tmp_path / "forecast_root/.forecast-runs" / run_id
             folder.mkdir(parents=True)
@@ -1089,7 +1100,7 @@ def test_forecast_controls_follow_the_shared_row_height(tmp_path):
             "**/api/forecast-view?**",
             lambda route: route.fulfill(
                 json={
-                    "mode": "series",
+                    "mode": view_mode[0],
                     "x": ["2026-01-01", "2026-01-08"],
                     "series": [{"id": "actual", "label": "actual", "values": [1, 2]}],
                     "bands": [],
@@ -1111,6 +1122,8 @@ def test_forecast_controls_follow_the_shared_row_height(tmp_path):
         )
 
         def capture(state):
+            if state.endswith(("breakdown-menu", "group-menu")):
+                assert page.locator(".forecast-field-menu .menu-item").count() > 0
             measured = page.evaluate(CONTROL_SIZES)
             controls = measured["controls"]
             assert controls, state
@@ -1122,12 +1135,32 @@ def test_forecast_controls_follow_the_shared_row_height(tmp_path):
                 assert control["size"] == page.evaluate(
                     "getComputedStyle(document.body).fontSize"
                 ), (state, control)
+                if control["kind"] == "data-field":
+                    assert control["width"] == pytest.approx(measured["fieldWidth"]), (
+                        state,
+                        control,
+                    )
+            for kind in {control["kind"] for control in controls} - {None}:
+                widths = {
+                    round(control["width"], 4) for control in controls if control["kind"] == kind
+                }
+                assert len(widths) == 1, (state, kind, widths)
+            for text in measured["texts"]:
+                assert text["lines"] <= 1, (state, text)
+                assert text["textHeight"] <= text["lineHeight"] + 1, (state, text)
+                if text["lineBoxHeight"] is not None:
+                    assert text["lineBoxHeight"] <= text["lineHeight"] + 1, (state, text)
             observations.extend({"state": state, **control} for control in controls)
             states.append(state)
             page.screenshot(path=tmp_path / f"audit-{state}.png", full_page=True)
 
         visit_control_states(
-            page, source="panel.csv", targets=["units", "orders"], run_id=old, capture=capture
+            page,
+            source="panel.csv",
+            targets=["units", "orders"],
+            run_id=old,
+            capture=capture,
+            set_results_mode=lambda mode: view_mode.__setitem__(0, mode),
         )
         assert len(observations) > 300
         assert {
@@ -1308,3 +1341,245 @@ def test_series_setup_saves_discards_and_prepares(tmp_path):
         page.wait_for_selector(f"#{TOPIC}-verdict:not(.hidden)")
         page.locator(f"#{TOPIC}-results-table tr").nth(1).wait_for()
         assert page.locator(f"#{TOPIC}-results-table tr").count() > 1
+
+
+def mock_prepared_searches(page):
+    requests = []
+    preparations = []
+    runs = {}
+    prepared = {
+        "summary": {"source_rows": 600, "source_columns": 7, "encoding": "utf-8"},
+        "sql": "select * from source",
+        "reused": True,
+    }
+
+    def prepare(route):
+        preparations.append(route.request.post_data_json["spec"])
+        route.fulfill(json=prepared)
+
+    def list_or_start(route):
+        if route.request.method == "GET":
+            route.fulfill(json={"runs": list(runs.values())})
+            return
+        start(route)
+
+    def start(route):
+        payload = route.request.post_data_json
+        requests.append((urlparse(route.request.url).path, payload))
+        run_id = f"20261008-120000-test{len(requests):02d}"
+        kind = (
+            "refit" if "run_id" in payload else "warm start" if "warm_from" in payload else "search"
+        )
+        runs[run_id] = {
+            "id": run_id,
+            "state": "done",
+            "kind": kind,
+            "spec": payload["spec"],
+            "stopped": "generation cap",
+            "generations": [],
+            "generation_curves": [],
+            "leaderboard": [],
+            "verdict": {"trusted": True},
+        }
+        route.fulfill(json={"run_id": run_id, "prepared": prepared})
+
+    def read(route):
+        run_id = parse_qs(urlparse(route.request.url).query)["id"][0]
+        route.fulfill(json=runs[run_id])
+
+    page.route("**/api/forecast-prep", prepare)
+    page.route("**/api/forecast-runs", list_or_start)
+    page.route("**/api/forecast-refit", start)
+    page.route("**/api/forecast-run?**", read)
+    return requests, preparations
+
+
+def choose_forecast_source(page, source, topic="regression"):
+    show_tab(page, f"{topic}-data")
+    page.click(f"#{topic}-data-source")
+    page.locator(f'.menu-panel .menu-item[data-id="{source}"]').click()
+    page.wait_for_function(
+        "id => /^\\d+ columns/.test(document.getElementById(id).innerText)",
+        arg=f"{topic}-data-status",
+    )
+
+
+def assert_dataset_state(page, state, *, source="rows.csv", topic="regression"):
+    readout = page.locator("#forecast-dataset")
+    assert readout.is_visible()
+    assert readout.locator(".field-value").last.inner_text() == state
+    if source:
+        assert readout.locator(".forecast-dataset-file").inner_text() == source
+        assert readout.locator(".forecast-dataset-file").get_attribute("title") == source
+    for tab in ("data", "search", "results"):
+        show_tab(page, f"{topic}-{tab}")
+        assert readout.is_visible()
+        assert readout.locator(".field-value").last.inner_text() == state
+
+
+def choose_series_target(page, name):
+    show_tab(page, "regression-data")
+    page.click("#regression-setup-predict")
+    option = page.locator(f'.forecast-setup-menu .menu-item[data-id="{name}"]')
+    if "on" not in option.get_attribute("class").split():
+        option.click()
+    page.locator('.forecast-setup-menu .menu-buttons [data-id="save"]').click()
+
+
+def test_forecast_reloaded_setup_started_with_current_picks(tmp_path):
+    with session(tmp_path) as (page, _):
+        requests, preparations = mock_prepared_searches(page)
+        switch_to_regression(page)
+        assert_dataset_state(page, "no dataset selected - pick one on the data tab", source=None)
+        choose_forecast_source(page, "rows.csv")
+        set_role(page, "lead_weeks", "target")
+        assert_dataset_state(page, "not prepared")
+        show_tab(page, "regression-data")
+        page.click("#regression-prepare")
+        page.wait_for_function(
+            "document.getElementById('forecast-dataset').innerText.includes('600 rows')"
+        )
+        assert_dataset_state(page, "prepared")
+        assert "7 columns" in page.locator("#forecast-dataset").inner_text()
+        assert "utf-8" in page.locator("#forecast-dataset").inner_text()
+        initial_spec = preparations[0]
+
+        page.reload()
+        page.wait_for_selector("#forecast-dataset:not(.hidden)")
+        assert_dataset_state(page, "prepared")
+        show_tab(page, "regression-search")
+        page.click("#regression-new-search")
+        page.click("#regression-search-start")
+        page.wait_for_function(
+            "document.getElementById('regression-run-title').innerText.endsWith('· done')"
+        )
+        assert requests[0][1]["spec"] == initial_spec
+        assert len(preparations) == 1
+
+        for index, action in enumerate(("start", "warm", "refit")):
+            show_tab(page, "regression-data")
+            page.locator("#regression-where").fill(f"size > {index}")
+            page.locator("#regression-where").blur()
+            assert_dataset_state(page, "changed since prepare")
+            show_tab(page, "regression-search")
+            if action == "start":
+                page.click("#regression-new-search")
+                page.click("#regression-search-start")
+            else:
+                page.click(f"#regression-run-{action}")
+            page.wait_for_function(
+                "shortId => { const title = document.getElementById('regression-run-title').innerText; "
+                "return title.includes(shortId) && title.endsWith('· done'); }",
+                arg=f"test{index + 2:02d}",
+            )
+            assert requests[-1][1]["spec"]["where"] == f"size > {index}"
+            assert_dataset_state(page, "prepared")
+        assert requests[-2][1]["warm_from"]
+        assert requests[-1][0] == "/api/forecast-refit"
+        assert requests[-1][1]["run_id"]
+        assert len(preparations) == 1
+        choose_forecast_source(page, "panel.csv")
+        assert_dataset_state(page, "changed since prepare", source="panel.csv")
+        assert "600 rows" not in page.locator("#forecast-dataset").inner_text()
+
+
+def test_forecast_prepared_setup_stayed_per_topic_and_flavour(tmp_path):
+    with session(tmp_path) as (page, _):
+        _, preparations = mock_prepared_searches(page)
+        switch_to_regression(page)
+        choose_forecast_source(page, "panel.csv")
+        set_role(page, "units", "target")
+        page.click("#regression-prepare")
+        page.wait_for_function(
+            "document.getElementById('forecast-dataset').innerText.includes('600 rows')"
+        )
+        page.select_option("#topic-flavour", "series")
+        page.wait_for_function(
+            "document.getElementById('regression-data-status').innerText.match(/^\\d+ columns/)"
+        )
+        assert_dataset_state(page, "not prepared", source="panel.csv")
+        choose_series_target(page, "units")
+        page.click("#regression-prepare")
+        page.wait_for_function(
+            "document.getElementById('forecast-dataset').innerText.includes('600 rows')"
+        )
+        assert preparations[-1]["mode"] == "series"
+        page.select_option("#topic-flavour", "row")
+        assert_dataset_state(page, "prepared", source="panel.csv")
+
+        page.click('#topic-switch .topic-tab:has-text("classification")')
+        assert_dataset_state(
+            page,
+            "no dataset selected - pick one on the data tab",
+            source=None,
+            topic="classification",
+        )
+        choose_forecast_source(page, "rows.csv", "classification")
+        assert_dataset_state(page, "not prepared", topic="classification")
+        page.click('#topic-switch .topic-tab:has-text("regression")')
+        assert_dataset_state(page, "prepared", source="panel.csv")
+        page.select_option("#topic-flavour", "series")
+        assert_dataset_state(page, "prepared", source="panel.csv")
+        page.reload()
+        page.wait_for_selector("#forecast-dataset:not(.hidden)")
+        assert page.locator("#topic-flavour").input_value() == "series"
+        assert_dataset_state(page, "prepared", source="panel.csv")
+        saved = page.evaluate(
+            "JSON.parse(localStorage.getItem('smolsmort:forecast:regression')).state"
+        )
+        assert set(saved["preparedByMode"]) == {"row", "series"}
+
+
+def test_forecast_search_named_missing_setup_pieces(tmp_path):
+    with session(tmp_path) as (page, _):
+        requests, preparations = mock_prepared_searches(page)
+        switch_to_regression(page)
+
+        def refused(message):
+            show_tab(page, "regression-search")
+            page.click("#regression-new-search")
+            page.click("#regression-search-start")
+            assert page.locator("#regression-search-status").inner_text() == message
+
+        refused("no dataset selected")
+        choose_forecast_source(page, "rows.csv")
+        refused("pick a variable to predict")
+        (tmp_path / "forecast_root/no_dates.csv").write_text("units,group\n1,a\n2,b\n3,a\n")
+        choose_forecast_source(page, "no_dates.csv")
+        set_role(page, "units", "target")
+        page.select_option("#topic-flavour", "series")
+        page.wait_for_function(
+            "document.getElementById('regression-data-status').innerText.match(/^\\d+ columns/)"
+        )
+        choose_series_target(page, "units")
+        refused("pick a date to extend in time")
+        assert requests == preparations == []
+        assert "prepare the data first" not in page.locator("body").inner_text()
+
+
+@pytest.mark.parametrize("flavour", ["row", "series"])
+def test_forecast_unprepared_saved_setup_started_after_reload(tmp_path, flavour):
+    with session(tmp_path) as (page, _):
+        requests, preparations = mock_prepared_searches(page)
+        switch_to_regression(page)
+        if flavour == "series":
+            page.select_option("#topic-flavour", flavour)
+        source = "panel.csv" if flavour == "series" else "rows.csv"
+        choose_forecast_source(page, source)
+        if flavour == "series":
+            choose_series_target(page, "units")
+        else:
+            set_role(page, "lead_weeks", "target")
+        page.reload()
+        page.wait_for_selector("#forecast-dataset:not(.hidden)")
+        assert_dataset_state(page, "not prepared", source=source)
+        show_tab(page, "regression-search")
+        page.click("#regression-new-search")
+        page.click("#regression-search-start")
+        page.wait_for_function(
+            "document.getElementById('regression-run-title').innerText.endsWith('· done')"
+        )
+        assert requests[0][1]["spec"]["mode"] == flavour
+        assert any(col["role"] == "target" for col in requests[0][1]["spec"]["columns"])
+        assert preparations == []
+        assert_dataset_state(page, "prepared", source=source)

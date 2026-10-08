@@ -14,18 +14,60 @@ CONTROL_SIZES = r"""() => {
     return (node?.id ? '#' + CSS.escape(node.id) + ' > ' : '') + parts.join(' > ');
   };
   const target = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--row-height'));
-  return {target, controls: [...document.querySelectorAll(selector)].flatMap(node => {
+  const fieldWidth = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--forecast-field-width'));
+  const controlKind = node => {
+    if (node.matches('.forecast-setup-slot .dropdown-head, .forecast-agg-row .forecast-field, [id$="-data-source"], [id$="-breakdown-head"], [id$="-group-head"]')) return 'data-field';
+    if (node.matches('.forecast-setup-menu .menu-list .menu-item, .forecast-field-menu .menu-list .menu-item')) return 'data-field';
+    if (node.matches('.forecast-leaderboard .dropdown-head')) return 'recipe-head';
+    if (node.matches('.forecast-column-grid .dropdown-head')) return 'role-head';
+    if (node.matches('.stepper-row .toggle')) return 'stepper-button';
+    if (node.matches('.forecast-pane input[type="date"]')) return 'date-input';
+    if (node.matches('.forecast-pane input.grow')) return 'sql-input';
+    if (node.matches('.forecast-run-row')) return 'run-row';
+    return null;
+  };
+  const visible = node => {
+    const rect = node.getBoundingClientRect();
+    const style = getComputedStyle(node);
+    return rect.width && rect.height && style.visibility !== 'hidden';
+  };
+  const texts = [];
+  const roots = document.querySelectorAll('#topic-bar, #top-bar, #forecast-dataset, .forecast-pane, .forecast-run-rail, .forecast-results, .menu-panel, #settings-popup');
+  const parents = new Set();
+  for (const root of roots) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      const text = walker.currentNode;
+      const node = text.parentElement;
+      if (!text.textContent.trim() || parents.has(node) || !visible(node) || node.closest('svg, canvas, pre, script, style')) continue;
+      parents.add(node);
+      const rects = [...node.childNodes].filter(child => child.nodeType === Node.TEXT_NODE && child.textContent.trim()).flatMap(child => {
+        const range = document.createRange();
+        range.selectNodeContents(child);
+        return [...range.getClientRects()].filter(rect => rect.width && rect.height);
+      });
+      const tops = new Set(rects.map(rect => Math.round(rect.top * 100) / 100));
+      const style = getComputedStyle(node);
+      const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.2;
+      const plainLabel = node.matches('.field-label, .field-value, .stat, .popup-title, summary') && !node.matches(selector) && !node.children.length;
+      texts.push({selector: path(node), text: text.textContent.trim(), lines: tops.size,
+        clientHeight: node.clientHeight, lineHeight,
+        lineBoxHeight: plainLabel ? node.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom) : null,
+        textHeight: rects.length ? Math.max(...rects.map(rect => rect.bottom)) - Math.min(...rects.map(rect => rect.top)) : 0});
+    }
+  }
+  return {target, fieldWidth, texts, controls: [...document.querySelectorAll(selector)].flatMap(node => {
     const rect = node.getBoundingClientRect();
     const style = getComputedStyle(node);
     if (!rect.width || !rect.height || style.visibility === 'hidden') return [];
     return [{selector: path(node), text: (node.innerText || node.getAttribute('aria-label') || node.value || node.type || '').replace(/\s+/g, ' ').trim(),
       height: rect.height, width: rect.width, font: style.fontFamily, size: style.fontSize,
-      padding: style.padding, box: style.boxSizing, classes: node.className}];
+      padding: style.padding, box: style.boxSizing, classes: node.className, kind: controlKind(node)}];
   })};
 }"""
 
 
-def visit_control_states(page, *, source, targets, run_id, capture):
+def visit_control_states(page, *, source, targets, run_id, capture, set_results_mode=None):
     """visit host flavours, forecast panes and their menus without starting a search"""
 
     def tab(name):
@@ -50,6 +92,8 @@ def visit_control_states(page, *, source, targets, run_id, capture):
         capture(f"host-vision-{flavour['id']}")
 
     for name in ("regression", "classification"):
+        if set_results_mode:
+            set_results_mode("series")
         topic(name)
         tab(f"{name}-data")
         page.click(f"#{name}-data-source")
@@ -83,6 +127,18 @@ def visit_control_states(page, *, source, targets, run_id, capture):
         page.locator(".menu-panel").wait_for()
         capture(f"results-{name}-run-menu")
         page.keyboard.press("Escape")
+        for picker in ("breakdown", "group"):
+            if picker == "group" and set_results_mode:
+                set_results_mode("row")
+                page.click(f"#{name}-results-run")
+                page.locator(f'.menu-panel .menu-item[data-id="{run_id}"]').click()
+                page.locator(f"#{name}-group-head").wait_for()
+            if not page.locator(f"#{name}-{picker}-head").is_visible():
+                continue
+            page.click(f"#{name}-{picker}-head")
+            page.locator(".menu-panel").wait_for()
+            capture(f"results-{name}-{picker}-menu")
+            page.keyboard.press("Escape")
 
     topic("regression")
     page.select_option("#topic-flavour", "series")
