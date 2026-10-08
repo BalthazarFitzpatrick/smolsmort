@@ -13,7 +13,7 @@ function todayIso() {
 function forecastNode(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
-  if (text != null) node.textContent = text;
+  if (text != null) { node.textContent = text; node.title = String(text); }
   return node;
 }
 
@@ -120,6 +120,14 @@ class ForecastSetupMenu extends Menu {
   }
 }
 
+class ForecastFieldMenu extends Menu {
+  _build() {
+    const panel = super._build();
+    panel.classList.add('forecast-field-menu');
+    return panel;
+  }
+}
+
 // one row per number, right-aligned buttons - the stepper-row recipe from the train tab
 function forecastStepperRow(prefix, row) {
   return `<div class="run-controls stepper-row" data-stepper="${row.key}">
@@ -165,6 +173,8 @@ class ForecastTopic {
     this.censorUnit = 'week';
     this.censorAsOf = todayIso();
     this.lastPrep = null;
+    this.preparedByMode = {};
+    this.detectedEncoding = null;
     this.searchValues = {population: 16, plateau: 5, generations: 60, minutes: 20};
     this.currentRunId = null;
     this.selectedRunId = null;
@@ -210,15 +220,73 @@ class ForecastTopic {
         step: this.step, horizon: this.horizon, asOf: this.asOf, where: this.where,
         predictWhere: this.predictWhere, censorOn: this.censorOn, censorUnit: this.censorUnit,
         censorAsOf: this.censorAsOf,
+        columnsInfo: this.columnsInfo, detectedEncoding: this.detectedEncoding,
+        preparedByMode: this.preparedByMode,
       };
       localStorage.setItem(this.storageKey, JSON.stringify({state}));
     } catch (err) { /* private window, no matter */ }
+    this.paintDataset();
+  }
+
+  restorePrepared() {
+    const saved = this.preparedByMode[this.mode()];
+    this.spec = saved?.spec || null;
+    this.lastPrep = saved?.prepared || null;
+    this.paintPrepSummary(this.lastPrep || {});
+    this.paintDataset();
+  }
+
+  rememberPrepared(spec, prepared) {
+    this.spec = spec;
+    this.lastPrep = prepared;
+    this.detectedEncoding = prepared.summary?.encoding || this.detectedEncoding;
+    this.preparedByMode[spec.mode] = {spec, prepared};
+    this.saveStored();
+    this.paintPrepSummary(prepared);
+  }
+
+  currentSpec() {
+    const spec = this.buildSpec();
+    if (!spec.source) throw new Error('no dataset selected');
+    if (!spec.columns.some(col => col.role === 'target')) throw new Error('pick a variable to predict');
+    if (spec.mode === 'series' && !spec.columns.some(col => col.role === 'time')) {
+      throw new Error('pick a date to extend in time');
+    }
+    if (spec.mode === 'row' && !spec.columns.some(col => col.role === 'anchor')) {
+      throw new Error('pick an anchor date');
+    }
+    return spec;
+  }
+
+  paintDataset() {
+    if (this.topic !== forecastActiveTopic) return;
+    const box = document.getElementById('forecast-dataset');
+    box.classList.remove('hidden');
+    box.replaceChildren(forecastNode('span', 'field-label', 'dataset'));
+    if (!this.source) {
+      box.append(forecastNode('span', 'field-value', 'no dataset selected - pick one on the data tab'));
+      return;
+    }
+    const saved = this.preparedByMode[this.mode()];
+    const unchanged = saved && JSON.stringify(saved.spec) === JSON.stringify(this.buildSpec());
+    const state = !saved ? 'not prepared' : unchanged ? 'prepared' : 'changed since prepare';
+    const file = forecastNode('span', 'forecast-dataset-file field-value', this.source);
+    file.title = this.source;
+    box.append(file);
+    const summary = unchanged ? saved.prepared.summary || {} : {};
+    const facts = [];
+    if (Number.isFinite(summary.source_rows)) facts.push(`${summary.source_rows} rows`);
+    if (Number.isFinite(summary.source_columns)) facts.push(`${summary.source_columns} columns`);
+    if (this.detectedEncoding) facts.push(this.detectedEncoding);
+    if (facts.length) box.append(forecastNode('span', 'stat', facts.join(' · ')));
+    box.append(forecastNode('span', 'field-value', state));
   }
 
   onFlavourChange() {
     if (this.dataSay) this.dataSay('flavour changed - reloading columns for the new mode');
     if (this.source) this.loadColumns();
     this.paintDataMode();
+    this.restorePrepared();
   }
 
   // ================================================================== data tab
@@ -289,12 +357,15 @@ class ForecastTopic {
     this.wireData(panel);
     this.renderSetupHeads();
     this.paintDataMode();
+    this.restorePrepared();
     return {enter: () => this.enterData()};
   }
 
   async enterData() {
     if (this.source) setHead(document.getElementById(`${this.topic}-data-source`), baseName(this.source));
     if (this.columnsInfo.length) this.renderColumnGrid();
+    this.restorePrepared();
+    if (this.source && !this.columnsInfo.length) await this.loadColumns();
   }
 
   paintDataMode() {
@@ -310,6 +381,7 @@ class ForecastTopic {
     document.getElementById(`${this.topic}-data-source`).onclick = evt => this.openSourcePicker(evt.currentTarget);
     document.getElementById(`${this.topic}-data-encoding`).onchange = evt => {
       this.encoding = evt.currentTarget.value.trim() || 'auto';
+      this.detectedEncoding = null;
       evt.currentTarget.value = this.encoding;
       this.saveStored();
       if (this.source) this.loadColumns();
@@ -357,6 +429,9 @@ class ForecastTopic {
         id: f.path, label: f.path, on: f.path === this.source,
       })), item => {
         this.source = item.id;
+        this.columnsInfo = [];
+        this.detectedEncoding = null;
+        this.seriesSetup = null;
         setHead(head, baseName(item.id));
         this.saveStored();
         this.loadColumns();
@@ -368,12 +443,17 @@ class ForecastTopic {
 
   async loadColumns() {
     if (!this.source) return;
+    const source = this.source;
+    const encoding = this.encoding;
+    const mode = this.mode();
     this.dataSay('reading columns...');
     try {
       const res = await api('/api/forecast-columns', {
-        source: this.source, encoding: this.encoding, mode: this.mode(),
+        source, encoding, mode,
       });
+      if (source !== this.source || encoding !== this.encoding || mode !== this.mode()) return;
       this.columnsInfo = res.columns;
+      this.detectedEncoding = res.encoding;
       // row roles survive flavour changes; series picks have their own saved state
       const roles = FORECAST_ROW_ROLES;
       const next = {};
@@ -578,10 +658,12 @@ class ForecastTopic {
       const row = document.createElement('tr');
       const nameCell = document.createElement('td');
       nameCell.textContent = col.name;
+      nameCell.title = col.name;
       const kindCell = document.createElement('td');
       kindCell.textContent = col.kind;
       const samplesCell = document.createElement('td');
       samplesCell.textContent = col.sample.join(', ');
+      samplesCell.title = samplesCell.textContent;
       const roleCell = document.createElement('td');
       const roleHead = forecastDropdown(FORECAST_ROW_ROLES, state.role, role => {
         this.columnState[col.name] = {...this.columnState[col.name], role};
@@ -646,14 +728,11 @@ class ForecastTopic {
   }
 
   async prepare() {
-    if (!this.source) { this.dataSay('pick a source first'); return; }
     this.dataSay('preparing...');
     try {
-      const spec = this.buildSpec();
+      const spec = this.currentSpec();
       const res = await api('/api/forecast-prep', {spec});
-      this.lastPrep = res;
-      this.spec = spec;
-      this.paintPrepSummary(res);
+      this.rememberPrepared(spec, res);
       this.dataSay(res.reused ? 'prepared (reused cache)' : 'prepared');
     } catch (err) {
       this.dataSay(err.message);
@@ -668,9 +747,11 @@ class ForecastTopic {
       const key = document.createElement('span');
       key.className = 'k';
       key.textContent = k;
+      key.title = k;
       const val = document.createElement('span');
       val.className = 'v';
       val.textContent = String(v);
+      val.title = String(v);
       box.append(key, val);
     });
     setText(`${this.topic}-sql-text`, res.sql || '');
@@ -768,7 +849,6 @@ class ForecastTopic {
   }
 
   async startSearch() {
-    if (!this.spec) { this.searchSay('prepare the data first'); return; }
     const budget = {
       population: this.searchValues.population,
       plateau: this.searchValues.plateau,
@@ -776,7 +856,10 @@ class ForecastTopic {
       time_cap: this.searchValues.minutes * 60,
     };
     try {
-      const res = await api('/api/forecast-runs', {spec: this.spec, budget});
+      if (this.source && !this.columnsInfo.length) await this.loadColumns();
+      const spec = this.currentSpec();
+      const res = await api('/api/forecast-runs', {spec, budget});
+      if (res.prepared) this.rememberPrepared(spec, res.prepared);
       this.attachRun(res.run_id, 'search');
     } catch (err) {
       this.searchSay(err.message);
@@ -1012,6 +1095,7 @@ class ForecastTopic {
       values.forEach(value => {
         const td = document.createElement('td');
         td.textContent = value;
+        td.title = String(value);
         row.appendChild(td);
       });
       const features = forecastNode('td');
@@ -1099,9 +1183,11 @@ class ForecastTopic {
   }
 
   async refitRun(runId) {
-    if (!this.spec) { this.searchSay('prepare the data first'); return; }
     try {
-      const res = await api('/api/forecast-refit', {spec: this.spec, run_id: runId});
+      if (this.source && !this.columnsInfo.length) await this.loadColumns();
+      const spec = this.currentSpec();
+      const res = await api('/api/forecast-refit', {spec, run_id: runId});
+      if (res.prepared) this.rememberPrepared(spec, res.prepared);
       this.attachRun(res.run_id, 'refit');
     } catch (err) {
       this.searchSay(err.message);
@@ -1109,7 +1195,6 @@ class ForecastTopic {
   }
 
   async warmStartRun(runId) {
-    if (!this.spec) { this.searchSay('prepare the data first'); return; }
     const budget = {
       population: this.searchValues.population,
       plateau: this.searchValues.plateau,
@@ -1117,7 +1202,10 @@ class ForecastTopic {
       time_cap: this.searchValues.minutes * 60,
     };
     try {
-      const res = await api('/api/forecast-runs', {spec: this.spec, budget, warm_from: runId});
+      if (this.source && !this.columnsInfo.length) await this.loadColumns();
+      const spec = this.currentSpec();
+      const res = await api('/api/forecast-runs', {spec, budget, warm_from: runId});
+      if (res.prepared) this.rememberPrepared(spec, res.prepared);
       this.attachRun(res.run_id, 'warm start');
     } catch (err) {
       this.searchSay(err.message);
@@ -1251,7 +1339,7 @@ class ForecastTopic {
 
   openBreakdownPicker(head) {
     const dims = this.dims();
-    new Menu({
+    new ForecastFieldMenu({
       title: 'break down by (up to 3)', persistent: true,
       sections: [{
         kind: 'list', multi: true, empty: 'no dimensions to break down by',
@@ -1271,12 +1359,15 @@ class ForecastTopic {
 
   openGroupPicker(head) {
     const dims = this.dims();
-    listMenu('group by', dims.map(d => ({id: d, label: d, on: d === this.tableState.group})), item => {
-      this.tableState.group = this.tableState.group === item.id ? null : item.id;
-      setHead(head, this.tableState.group || 'none');
-      this.tableState.page = 0;
-      this.refreshTable();
-    }, {empty: 'no dimensions'}).openAt(head);
+    new ForecastFieldMenu({title: 'group by', sections: [{kind: 'list',
+      items: dims.map(d => ({id: d, label: d, on: d === this.tableState.group})),
+      empty: 'no dimensions', onPick: item => {
+        this.tableState.group = this.tableState.group === item.id ? null : item.id;
+        setHead(head, this.tableState.group || 'none');
+        this.tableState.page = 0;
+        this.refreshTable();
+      },
+    }]}).openAt(head);
   }
 
   paintVerdict(verdict) {
@@ -1355,6 +1446,7 @@ class ForecastTopic {
       row.forEach(value => {
         const td = document.createElement('td');
         td.textContent = value === null || value === undefined ? '' : String(value);
+        td.title = td.textContent;
         tr.appendChild(td);
       });
       table.appendChild(tr);
@@ -1376,14 +1468,23 @@ function textSpan(className, text) {
   return span;
 }
 
+let forecastActiveTopic = null;
+const forecastTopics = new Map();
+window.addEventListener('smolsmort-topic', event => {
+  forecastActiveTopic = event.detail;
+  document.getElementById('forecast-dataset').classList.toggle('hidden', !forecastTopics.has(event.detail));
+  forecastTopics.get(event.detail)?.paintDataset();
+});
+
 ['regression', 'classification'].forEach(topic => {
   const ctl = new ForecastTopic(topic, topic);
+  forecastTopics.set(topic, ctl);
   smolsmortTabs.register({id: `${topic}-data`, label: 'data', topic, mount: p => ctl.mountData(p)});
   smolsmortTabs.register({id: `${topic}-search`, label: 'search', topic, mount: p => ctl.mountSearch(p)});
   smolsmortTabs.register({id: `${topic}-results`, label: 'results', topic, mount: p => ctl.mountResults(p)});
   const flavours = topic === 'regression'
     ? [{id: 'row', label: 'xgboost - per row'}, {id: 'series', label: 'xgboost - time series'}]
     : [{id: 'row', label: 'xgboost - per row'}];
-  smolsmortTabs.setFlavours(topic, flavours, 'row');
+  smolsmortTabs.setFlavours(topic, flavours);
   smolsmortTabs.onFlavour(topic, () => ctl.onFlavourChange());
 });

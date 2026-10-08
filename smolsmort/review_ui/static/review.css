@@ -10,6 +10,9 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 #topic-switch { display: flex; gap: 4px; margin-top: 10px; }
 .topic-tab { padding: 0 14px; }
 #topic-flavour { margin-top: 10px; }
+#forecast-dataset { display: flex; flex: 0 0 auto; align-items: center; gap: var(--gap); height: var(--row-height); padding: 0 var(--inset-x); white-space: nowrap; }
+#forecast-dataset .forecast-dataset-file { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+#forecast-dataset > :not(.forecast-dataset-file) { flex: 0 0 auto; }
 #top-bar { flex: 0 0 auto; display: flex; align-items: stretch; }
 #nav-bar { flex: 1 1 auto; }
 #top-bar-actions { margin: 10px 14px 0 8px; display: flex; align-items: center; gap: var(--gap); }
@@ -112,12 +115,30 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 
 /* ---- forecast (regression / classification) ---- */
 .forecast-pane { display: flex; flex-direction: column; gap: var(--gap); }
+/* text stays on one line; tables keep wide content inside their own scroll area */
+:root { --forecast-field-width: 260px; }
+#topic-bar, #top-bar, .forecast-pane, .forecast-results, .menu-panel, #settings-popup { white-space: nowrap; }
+.forecast-pane .field-label, .forecast-pane .field-value, .forecast-pane .stat,
+.forecast-pane .train-facts > span,
+.forecast-results .field-label, .forecast-results .field-value, .forecast-results .stat,
+.forecast-verdict-summary, .forecast-verdict-check, .forecast-recipe-field > span {
+  min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.forecast-pane .run-controls > .field-label { flex-shrink: 0; }
+.forecast-pane .run-controls:has(input.grow) > .field-label { flex: 0 0 16ch; }
+.forecast-pane [id$="-data-source"], .forecast-results [id$="-breakdown-head"],
+.forecast-results [id$="-group-head"] {
+  flex: 0 0 var(--forecast-field-width);
+  width: var(--forecast-field-width); min-width: var(--forecast-field-width); max-width: var(--forecast-field-width);
+}
+[id$="-data-columns"] { overflow-x: auto; }
 .forecast-setup-heads { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
 .forecast-setup-slot { display: grid; gap: 6px; min-width: 0; }
 .forecast-setup-slot .dropdown-head,
 .forecast-setup-menu .menu-list,
-.forecast-agg-row .forecast-field { width: 260px; min-width: 260px; max-width: 260px; }
-.forecast-setup-menu .menu-list { padding-inline: 0; margin-inline: 12px; }
+.forecast-field-menu .menu-list,
+.forecast-agg-row .forecast-field { width: var(--forecast-field-width); min-width: var(--forecast-field-width); max-width: var(--forecast-field-width); }
+.forecast-setup-menu .menu-list, .forecast-field-menu .menu-list { padding-inline: 0; margin-inline: 12px; }
 .forecast-setup-slot .field-label,
 .forecast-setup-menu .field-label,
 .forecast-setup-menu .popup-title { white-space: nowrap; }
@@ -144,6 +165,7 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-column-grid { border-collapse: collapse; width: 100%; }
 .forecast-column-grid th, .forecast-column-grid td {
   border: 1px solid var(--grey-border); padding: 4px 8px; text-align: left; font-size: 0.9em;
+  white-space: nowrap;
 }
 .forecast-column-grid th.sortable { cursor: pointer; }
 .forecast-leaderboard-wrap { overflow-x: auto; }
@@ -168,11 +190,11 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-recipe-details { display: flex; flex-direction: column; gap: var(--gap); min-width: 300px; }
 .forecast-recipe-field { display: flex; justify-content: space-between; gap: 24px; }
 .forecast-recipe-field .field-label { white-space: nowrap; }
-.forecast-recipe-field .field-value { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+.forecast-recipe-field .field-value { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .forecast-verdict { padding: 8px 12px; border: 2px solid var(--grey-border); }
 .forecast-verdict.trusted { border-color: var(--lichen-deep); color: var(--lichen); }
 .forecast-verdict.warn { border-color: var(--stone-red); color: var(--stone-red-lift); }
 .forecast-verdict-summary { font-weight: 600; }
 .forecast-results { flex: 1 1 auto; min-height: 0; }
 .forecast-chart { flex: 2 1 0; min-height: 160px; }
-.forecast-table-wrap { flex: 3 1 0; min-height: 0; overflow-y: auto; }
+.forecast-table-wrap { flex: 3 1 0; min-height: 0; overflow: auto; }
