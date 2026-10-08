@@ -21,6 +21,7 @@ pytest.importorskip("duckdb")
 
 import review_world
 from forecast_fixtures import write_panel, write_rows
+from forecast_ui_audit import CONTROL_SIZES, visit_control_states
 from playwright.sync_api import Page, sync_playwright
 
 from smolsmort.forecast.tab import forecast_tab
@@ -36,7 +37,7 @@ def show_tab(page: Page, name: str) -> None:
 
 
 @contextmanager
-def session(tmp_path: Path):
+def session(tmp_path: Path, *, width: int = 1280):
     """the real review server, its forecast root holding the synthetic rows fixture, and a
     headless page on it"""
     errors: list[str] = []
@@ -69,7 +70,7 @@ def session(tmp_path: Path):
             time.sleep(0.2)
             with sync_playwright() as pw:
                 browser = pw.chromium.launch()
-                page = browser.new_page(viewport={"width": 1280, "height": 900})
+                page = browser.new_page(viewport={"width": width, "height": 900})
                 page.on("pageerror", lambda exc: errors.append(str(exc)))
                 page.goto(base + "/")
                 page.wait_for_timeout(400)
@@ -113,12 +114,11 @@ def run_search(page: Page) -> None:
             button.click()
     page.click(f"#{TOPIC}-search-start")
     page.wait_for_function(
-        f'document.getElementById("{TOPIC}-search-status").innerText.startsWith("done")'
-        f' || document.getElementById("{TOPIC}-search-status").innerText.startsWith("failed")',
+        f'/· (done|failed)$/.test(document.getElementById("{TOPIC}-run-title").innerText)',
         timeout=180000,
     )
-    status = page.inner_text(f"#{TOPIC}-search-status")
-    assert status.startswith("done"), status
+    status = page.inner_text(f"#{TOPIC}-run-title")
+    assert status.endswith("· done"), status
 
 
 def test_forecast_regression_row_flow(tmp_path):
@@ -507,7 +507,7 @@ def test_search_charts_accumulate_validation_generations_and_reset(tmp_path, top
         snapshot.update(count=65, state="done", invalid=False)
         wait_points(4)
         page.wait_for_function(
-            f'document.getElementById("{topic}-search-status").innerText.startsWith("done")'
+            f'document.getElementById("{topic}-run-title").innerText.endsWith("· done")'
         )
         assert chart.locator(".chart-x-label").all_text_contents() == ["0", "1", "2", "3"]
         progress.screenshot(path=tmp_path / f"{topic}-search-progress.png")
@@ -703,7 +703,7 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
             "1",
             str(winner["generation"]),
             f"{winner['fitness']:.4g}",
-            "+0.0%",
+            "+0.00%",
             f"{winner['metrics']['mae']:.4g}" if topic == "regression" else "-",
         ]
         assert cells[6:9] == [
@@ -739,7 +739,7 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
         )
         page.keyboard.press("Escape")
         gap = (recorded[1]["fitness"] - winner["fitness"]) / winner["fitness"] * 100
-        assert rows.nth(1).locator("td").nth(3).inner_text() == f"+{gap:.1f}%"
+        assert rows.nth(1).locator("td").nth(3).inner_text() == f"+{gap:.2f}%"
         assert "[object Object]" not in table.inner_text()
         assert not any(entry["key"] in table.inner_text() for entry in recorded)
         page.locator(f"#{topic}-leaderboard").screenshot(path=tmp_path / f"{topic}-leaderboard.png")
@@ -767,9 +767,13 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
             "id => document.getElementById(id).querySelectorAll('tbody tr').length === 3",
             arg=f"{topic}-leaderboard-table",
         )
-        assert rows.first.locator("td").nth(3).inner_text() == "+0.0%"
+        assert rows.first.locator("td").nth(3).inner_text() == "+0.00%"
         assert rows.nth(1).locator("td").nth(3).inner_text() == "-"
         assert table.locator("th").all_text_contents() == headers
+        snapshot["rows"] = [{"fitness": 1}, {"fitness": 1.0002}]
+        page.click(f"#{topic}-new-search")
+        page.click(f"#{topic}-search-start")
+        table.locator('td:text-is("+0.02%")').wait_for()
         snapshot["rows"] = []
         page.click(f"#{topic}-new-search")
         page.click(f"#{topic}-search-start")
@@ -825,6 +829,7 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
                             "state": snapshot["state"],
                             "generation": snapshot["count"] - 1,
                             "best_error": 0.2 / snapshot["count"],
+                            "best_wape": 0.2 / snapshot["count"],
                             "stopped": "plateau" if snapshot["state"] == "done" else None,
                             "test_error": 0.05 if snapshot["state"] == "done" else None,
                         },
@@ -904,7 +909,14 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
         assert rail.locator(".forecast-run-row").evaluate_all(
             "rows => rows.map(row => row.dataset.runId)"
         ) == [missing, recent, best]
-        assert "generation 0" in running.inner_text()
+        assert running.locator(".forecast-run-row > span").all_text_contents() == [
+            "live01",
+            "running",
+            "0.2",
+        ]
+        for row in page.locator(".forecast-run-row").all():
+            assert row.locator("span").count() == 3
+            assert row.evaluate("node => getComputedStyle(node).flexDirection") == "row"
         assert running.locator(".forecast-run-row.on .name").evaluate(
             "node => getComputedStyle(node).color === getComputedStyle(node.parentElement).color"
         )
@@ -931,7 +943,7 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
         assert page.locator(f"#{TOPIC}-loss-chart .chart-line").count() == 2
         snapshot["count"] = 2
         page.wait_for_function(
-            "id => document.getElementById(id).innerText.includes('generation 1')",
+            "id => document.getElementById(id).querySelector('.forecast-run-wape').innerText === '0.1'",
             arg=f"{TOPIC}-running-list",
         )
         assert "warm start" in page.locator(f"#{TOPIC}-run-title").inner_text()
@@ -970,6 +982,11 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
             == "no gain larger than the noise for 2 generations in a row"
         )
         assert page.locator(f"#{TOPIC}-run-verdict").inner_text() == "trusted"
+        assert not page.locator(f"#{TOPIC}-search-status").is_visible()
+        assert (
+            "done - trusted"
+            not in page.locator('.tab-panel[data-panel="regression-search"]').inner_text()
+        )
         assert page.locator(f"#{TOPIC}-search-progress").is_visible()
         assert page.locator(f"#{TOPIC}-search-loss").is_visible()
         page.locator(f"#{TOPIC}-run-sort .dropdown-head").click()
@@ -1002,6 +1019,156 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
         page.click(f"#{TOPIC}-new-search")
         assert page.locator(f"#{TOPIC}-new-search-pane").is_visible()
         assert not page.locator(f"#{TOPIC}-search-loss").is_visible()
+
+
+def test_forecast_controls_follow_the_shared_row_height(tmp_path):
+    recorded = json.loads((Path(__file__).parent / "golden/forecast_leaderboard.json").read_text())[
+        "regression"
+    ]
+    old = "20261001-120000-older1"
+    cancelled = "20261002-120000-stop01"
+    refit = "20261003-120000-refit1"
+    spec = {
+        "mode": "series",
+        "task": "regression",
+        "step": "week",
+        "horizon": 3,
+        "columns": [
+            {"name": "day", "role": "time"},
+            {"name": "project", "role": "dimension"},
+            {"name": "units", "role": "target", "aggregation": "sum"},
+        ],
+    }
+    observations = []
+    states = []
+    with session(tmp_path, width=1440) as (page, base):
+        for run_id in (old, cancelled, refit):
+            folder = tmp_path / "forecast_root/.forecast-runs" / run_id
+            folder.mkdir(parents=True)
+            request = {
+                "spec": spec,
+                "prepared": str(tmp_path),
+                "budget": {"plateau": 2},
+                "recipe": recorded[0]["genome"] if run_id == refit else None,
+            }
+            (folder / "request.json").write_text(json.dumps(request))
+            (folder / "status.json").write_text(
+                json.dumps(
+                    {
+                        "state": "done",
+                        "verdict": {"trusted": True},
+                        "stopped": "cancelled"
+                        if run_id == cancelled
+                        else "refit"
+                        if run_id == refit
+                        else "plateau",
+                    }
+                )
+            )
+            events = [
+                {"event": "generation", "generation": 0, "best": 0.3, "elapsed": 1},
+                {"event": "generation", "generation": 1, "best": 0.2, "elapsed": 2},
+            ]
+            (folder / "events.jsonl").write_text(
+                "" if run_id == refit else "".join(json.dumps(event) + "\n" for event in events)
+            )
+            (folder / "leaderboard.json").write_text(json.dumps(recorded))
+            curves = [
+                {
+                    "generation": index,
+                    "metric": "rmse",
+                    "bucket": [1, 3],
+                    "validation": [2 / (index + 1), 1 / (index + 1)],
+                }
+                for index in range(2)
+            ]
+            (folder / "generation_curves.jsonl").write_text(
+                "".join(json.dumps(curve) + "\n" for curve in curves)
+            )
+        page.route(
+            "**/api/forecast-view?**",
+            lambda route: route.fulfill(
+                json={
+                    "mode": "series",
+                    "x": ["2026-01-01", "2026-01-08"],
+                    "series": [{"id": "actual", "label": "actual", "values": [1, 2]}],
+                    "bands": [],
+                    "markers": [],
+                    "verdict": {"trusted": True},
+                }
+            ),
+        )
+        page.route(
+            "**/api/forecast-table?**",
+            lambda route: route.fulfill(
+                json={
+                    "columns": ["day", "project", "units"],
+                    "rows": [["2026-01-01", "one", 2]],
+                    "page": 0,
+                    "total": 1,
+                }
+            ),
+        )
+
+        def capture(state):
+            measured = page.evaluate(CONTROL_SIZES)
+            controls = measured["controls"]
+            assert controls, state
+            for control in controls:
+                assert control["height"] == pytest.approx(measured["target"], abs=1e-6), (
+                    state,
+                    control,
+                )
+                assert control["size"] == page.evaluate(
+                    "getComputedStyle(document.body).fontSize"
+                ), (state, control)
+            observations.extend({"state": state, **control} for control in controls)
+            states.append(state)
+            page.screenshot(path=tmp_path / f"audit-{state}.png", full_page=True)
+
+        visit_control_states(
+            page, source="panel.csv", targets=["units", "orders"], run_id=old, capture=capture
+        )
+        assert len(observations) > 300
+        assert {
+            "setup-predict",
+            "setup-aggregate",
+            "setup-time",
+            "setup-scaffold",
+            "settings",
+            "search-regression-new",
+            "search-classification-finished",
+            "recipe-regression",
+            "results-classification",
+            "data-regression-row",
+            "data-regression-series",
+        } <= set(states)
+        (tmp_path / "control-sizes.json").write_text(json.dumps(observations, indent=2))
+        show_tab(page, "regression-search")
+        rows = page.locator(f"#{TOPIC}-runs-list .forecast-run-row")
+        assert rows.count() == 3
+        assert page.locator(
+            f'#{TOPIC}-runs-list [data-run-id="{old}"] > span'
+        ).all_text_contents() == ["older1", "done", "0.2"]
+        assert page.locator(
+            f'#{TOPIC}-runs-list [data-run-id="{cancelled}"] > span'
+        ).all_text_contents() == ["stop01", "cancelled", "0.2"]
+        assert page.locator(
+            f'#{TOPIC}-runs-list [data-run-id="{refit}"] > span'
+        ).all_text_contents() == ["refit1", "done", "-"]
+        columns = []
+        for row in rows.all():
+            spans = row.locator("span")
+            assert spans.count() == 3
+            positions = [span.bounding_box() for span in spans.all()]
+            assert len({position["y"] for position in positions}) == 1
+            columns.append(positions[-1])
+            assert spans.last.evaluate("node => getComputedStyle(node).textAlign") == "right"
+        assert len({(column["x"], column["width"]) for column in columns}) == 1
+        assert not page.locator(f"#{TOPIC}-search-status").is_visible()
+        settings = page.locator("#open-settings").bounding_box()
+        nav = page.locator(".nav-tab.active").bounding_box()
+        assert settings["y"] + settings["height"] / 2 == nav["y"] + nav["height"] / 2
 
 
 def test_series_setup_saves_discards_and_prepares(tmp_path):
