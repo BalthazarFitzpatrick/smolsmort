@@ -419,6 +419,7 @@ def test_search_charts_accumulate_validation_generations_and_reset(tmp_path, top
         page.wait_for_function(
             f'/^\\d+ columns/.test(document.getElementById("{topic}-data-status").innerText)'
         )
+        set_role(page, "lead_weeks", "target")
         page.click(f"#{topic}-prepare")
         page.wait_for_function(
             f'document.getElementById("{topic}-data-status").innerText.startsWith("prepared")'
@@ -600,6 +601,7 @@ def test_generation_loss_ignores_response_from_previous_run(tmp_path):
         page.wait_for_function(
             f'/^\\d+ columns/.test(document.getElementById("{TOPIC}-data-status").innerText)'
         )
+        set_role(page, "lead_weeks", "target")
         page.click(f"#{TOPIC}-prepare")
         page.wait_for_function(
             f'document.getElementById("{TOPIC}-data-status").innerText.startsWith("prepared")'
@@ -668,6 +670,7 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
         page.wait_for_function(
             f'/^\\d+ columns/.test(document.getElementById("{topic}-data-status").innerText)'
         )
+        set_role(page, "lead_weeks", "target")
         page.click(f"#{topic}-prepare")
         page.wait_for_function(
             f'document.getElementById("{topic}-data-status").innerText.startsWith("prepared")'

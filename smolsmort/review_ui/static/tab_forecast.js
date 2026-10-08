@@ -428,10 +428,12 @@ class ForecastTopic {
       listMenu('source - ' + data.root, data.files.map(f => ({
         id: f.path, label: f.path, on: f.path === this.source,
       })), item => {
+        if (this.source !== item.id) {
+          this.columnsInfo = [];
+          this.detectedEncoding = null;
+          this.seriesSetup = null;
+        }
         this.source = item.id;
-        this.columnsInfo = [];
-        this.detectedEncoding = null;
-        this.seriesSetup = null;
         setHead(head, baseName(item.id));
         this.saveStored();
         this.loadColumns();
