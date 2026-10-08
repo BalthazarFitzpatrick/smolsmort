@@ -209,9 +209,19 @@ def _run(app, query: dict) -> dict:
             cursor = -1
     state = runs.run_state(_runs_root(app), run_id, since_generation=cursor)
     request = views.read_request(run_dir)
+    board_cursor = -1
+    if "since_leaderboard" in query:
+        try:
+            board_cursor = max(-1, int(query["since_leaderboard"]))
+        except (TypeError, ValueError, OverflowError):
+            board_cursor = -1
     return {
         **state,
-        "leaderboard": views.read_leaderboard(run_dir),
+        **(
+            {"leaderboard": views.read_leaderboard(run_dir)[:10]}
+            if "since_leaderboard" not in query or state["leaderboard_generation"] > board_cursor
+            else {}
+        ),
         "spec": request.get("spec"),
     }
 

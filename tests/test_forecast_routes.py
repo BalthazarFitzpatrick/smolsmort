@@ -276,6 +276,49 @@ def test_run_polling_sends_only_unseen_generation_curves(series_run, cursor):
     )
 
 
+@pytest.mark.parametrize("cursor", [-1, "0", "invalid", None, "inf"])
+def test_run_polling_sends_only_updated_leaderboards(app, tab, cursor):
+    root = _forecast_path(app) / ".forecast-runs" / "fixture"
+    root.mkdir(parents=True)
+    (root / "request.json").write_text(
+        json.dumps({"spec": {"task": "regression"}, "budget": {"plateau": 3}})
+    )
+    (root / "status.json").write_text(json.dumps({"state": "done", "stopped": "plateau"}))
+    (root / "leaderboard_generation.json").write_text("0")
+    board = [{"fitness": 0.3, "genome": {"families": ["lag+1"]}}]
+    (root / "leaderboard.json").write_text(json.dumps(board))
+    complete = _get(app, tab, "/api/forecast-run", {"id": "fixture"})
+    assert complete["leaderboard"] == board
+    assert complete["leaderboard_generation"] == 0
+    assert complete["kind"] == "search" and complete["budget"] == {"plateau": 3}
+    state = _get(app, tab, "/api/forecast-run", {"id": "fixture", "since_leaderboard": cursor})
+    if cursor == "0":
+        assert "leaderboard" not in state
+    else:
+        assert state["leaderboard"] == board
+    (root / "leaderboard_generation.json").write_text("1")
+    board[0]["fitness"] = 0.2
+    (root / "leaderboard.json").write_text(json.dumps(board))
+    state = _get(app, tab, "/api/forecast-run", {"id": "fixture", "since_leaderboard": 0})
+    assert state["leaderboard"] == board and state["leaderboard_generation"] == 1
+
+
+def test_old_runs_infer_the_leaderboard_revision_from_generation_events(app, tab):
+    root = _forecast_path(app) / ".forecast-runs" / "old"
+    root.mkdir(parents=True)
+    (root / "request.json").write_text(json.dumps({"spec": {"task": "regression"}}))
+    (root / "status.json").write_text(json.dumps({"state": "done"}))
+    (root / "events.jsonl").write_text(
+        json.dumps({"event": "generation", "generation": 2, "best": 0.3})
+    )
+    (root / "leaderboard.json").write_text(json.dumps([{"fitness": 0.3}]))
+    state = _get(app, tab, "/api/forecast-run", {"id": "old", "since_leaderboard": 1})
+    assert state["leaderboard_generation"] == 2 and state["leaderboard"]
+    assert "leaderboard" not in _get(
+        app, tab, "/api/forecast-run", {"id": "old", "since_leaderboard": 2}
+    )
+
+
 def test_view_series_mode_has_a_band_within_bounds(series_run):
     app, tab, run_id, _root = series_run
     payload = _get(app, tab, "/api/forecast-view", {"id": run_id})

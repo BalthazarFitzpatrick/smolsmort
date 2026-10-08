@@ -26,6 +26,7 @@ RUN_FILES = (
     "worker.log",
     "profile.json",
     "leaderboard.json",
+    "leaderboard_generation.json",
     "population.json",
     "recipe.json",
     "result.json",
@@ -96,7 +97,12 @@ def run_state(runs_root: Path, run_id: str, *, since_generation: int | None = No
     events = []
     path = folder / "events.jsonl"
     if path.exists():
-        events = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        for line in path.read_text().splitlines():
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                # the worker may still be writing the final line
+                continue
     generations = [e for e in events if e.get("event") == "generation"]
     curve_path = folder / "generation_curves.jsonl"
     cursor = since_generation if since_generation is not None else -1
@@ -119,6 +125,7 @@ def run_state(runs_root: Path, run_id: str, *, since_generation: int | None = No
         "generations": generations,
         "generation_curves": curves,
         "latest": events[-1] if events else None,
+        **_metadata(folder, status, generations, events),
     }
     if since_generation is None:
         history_path = folder / "eval_history.json"
@@ -126,6 +133,35 @@ def run_state(runs_root: Path, run_id: str, *, since_generation: int | None = No
             json.loads(history_path.read_text()) if history_path.exists() else None
         )
     return state
+
+
+def _metadata(folder: Path, status: dict, generations: list[dict], events: list[dict]) -> dict:
+    request_path = folder / "request.json"
+    request = json.loads(request_path.read_text()) if request_path.exists() else {}
+    result_path = folder / "result.json"
+    result = json.loads(result_path.read_text()) if result_path.exists() else {}
+    kind = (
+        "refit" if request.get("recipe") else "warm start" if request.get("warm_from") else "search"
+    )
+    latest = generations[-1] if generations else {}
+    finishing = next((event for event in reversed(events) if event.get("stopped")), {})
+    revision_path = folder / "leaderboard_generation.json"
+    revision = (
+        json.loads(revision_path.read_text())
+        if revision_path.exists()
+        else latest.get("generation", -1)
+    )
+    return {
+        "kind": kind,
+        "task": request.get("spec", {}).get("task"),
+        "budget": request.get("budget", {}),
+        "generation_count": len(generations),
+        "best_error": latest.get("best"),
+        "test_error": result.get("model_error"),
+        "stopped": status.get("stopped") or finishing.get("stopped"),
+        "elapsed": status.get("elapsed") or finishing.get("elapsed") or latest.get("elapsed"),
+        "leaderboard_generation": revision,
+    }
 
 
 def _alive(folder: Path) -> bool:
@@ -167,8 +203,25 @@ def list_runs(runs_root: Path) -> list[dict]:
     out = []
     for folder in sorted(Path(runs_root).glob("*"), reverse=True):
         if (folder / "request.json").exists():
-            status = json.loads((folder / "status.json").read_text())
+            state = run_state(runs_root, folder.name, since_generation=2**63 - 1)
             out.append(
-                {"id": folder.name, "state": status.get("state"), "verdict": status.get("verdict")}
+                {
+                    "id": folder.name,
+                    **{
+                        key: value
+                        for key, value in state.items()
+                        if key
+                        not in (
+                            "generations",
+                            "generation_curves",
+                            "latest",
+                            "trace",
+                            "leaderboard_generation",
+                        )
+                    },
+                    "generation": state["generations"][-1]["generation"]
+                    if state["generations"]
+                    else None,
+                }
             )
     return out

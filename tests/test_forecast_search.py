@@ -13,6 +13,7 @@ import pytest
 from forecast_fixtures import write_panel, write_rows
 
 from smolsmort.forecast import pipeline, worker
+from smolsmort.forecast import runs as run_store
 from smolsmort.forecast.pipeline import Scored, load_workspace, make_genome, score
 from smolsmort.forecast.prep import prepare
 from smolsmort.forecast.runs import cancel_run, run_state, start_run, wait_run
@@ -173,8 +174,12 @@ def test_a_cancelled_run_still_leaves_a_readable_leaderboard(tmp_path):
     runs = tmp_path / "runs"
     run_id = start_run(runs, spec, prepared, budget=budget, nthread=1)
     for _ in range(600):
-        if run_state(runs, run_id)["generations"]:
-            assert run_state(runs, run_id)["eval_history"]["training"]
+        live_state = run_state(runs, run_id)
+        if live_state["generations"]:
+            assert live_state["eval_history"]["training"]
+            live_board = json.loads((runs / run_id / "leaderboard.json").read_text())
+            assert 0 < len(live_board) <= 10
+            assert live_board[0]["fitness"] <= live_state["best_error"]
             break
         time.sleep(0.1)
     cancel_run(runs, run_id)
@@ -363,3 +368,97 @@ def test_search_does_not_record_generations_without_validation_history(series_ws
     curves = []
     search(series_ws[0], Budget(**TINY), on_generation=curves.append)
     assert curves == []
+
+
+def test_worker_publishes_bounded_atomic_leaderboards_before_generation_events(
+    tmp_path, monkeypatch
+):
+    import importlib
+
+    search_module = importlib.import_module("smolsmort.forecast.search")
+    monkeypatch.setattr(worker.signal, "signal", lambda *_: None)
+    job = worker._Run(tmp_path)
+    job.status("done")
+    ws = SimpleNamespace(
+        mode="row",
+        masks={"train": np.ones(20, dtype=bool)},
+        families=["measure:x"],
+        profile={"genes": {"objectives": ["squared"]}},
+    )
+    genomes = [make_genome(ws.families, "squared", {"max_depth": n}) for n in range(12, 0, -1)]
+    monkeypatch.setattr(search_module, "_seed_population", lambda *_: genomes)
+    monkeypatch.setattr(search_module._Variation, "crossover", lambda _self, a, _b: a)
+    monkeypatch.setattr(search_module._Variation, "mutate", lambda _self, genome: genome)
+    monkeypatch.setattr(
+        search_module,
+        "score",
+        lambda _ws, genome, **_kwargs: Scored(
+            float(dict(genome.params)["max_depth"]), np.array([1.0]), {}, None
+        ),
+    )
+    snapshots = []
+
+    def record_event(event):
+        board = json.loads((tmp_path / "leaderboard.json").read_text())
+        revision = json.loads((tmp_path / "leaderboard_generation.json").read_text())
+        assert revision == event["generation"]
+        assert len(board) == 10
+        assert [entry["fitness"] for entry in board] == list(range(1, 11))
+        assert not any("eval_history" in entry for entry in board)
+        assert not list(tmp_path.glob("*.tmp"))
+        snapshots.append(board)
+        job.event(event)
+
+    result = search(
+        ws,
+        Budget(population=12, max_generations=2, plateau=10),
+        on_leaderboard=job.record_leaderboard,
+        on_event=record_event,
+    )
+    assert len(snapshots) == 2
+    assert snapshots[-1] == result["leaderboard"]
+
+
+def test_run_summaries_expose_kind_progress_stop_reason_and_test_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(run_store, "_alive", lambda folder: folder.name == "20260103")
+    requests = [
+        ("20260101", {"recipe": {"objective": "squared"}}, "refit", "done"),
+        ("20260102", {"warm_from": "/previous"}, "warm start", "done"),
+        ("20260103", {}, "search", "running"),
+        ("20260104", {}, "search", "failed"),
+    ]
+    for run_id, extra, _kind, state in requests:
+        folder = tmp_path / run_id
+        folder.mkdir()
+        request = {"spec": {"task": "regression"}, "budget": {"plateau": 5}, **extra}
+        (folder / "request.json").write_text(json.dumps(request))
+        (folder / "status.json").write_text(
+            json.dumps({"state": state, "reason": "bad fit" if state == "failed" else None})
+        )
+        events = [
+            {"event": "generation", "generation": 0, "best": 0.4, "elapsed": 4.0},
+            {"event": "finishing", "stopped": "plateau", "elapsed": 5.0},
+        ]
+        (folder / "events.jsonl").write_text("\n".join(json.dumps(event) for event in events))
+        if state == "done":
+            (folder / "result.json").write_text(json.dumps({"model_error": 0.3}))
+    summaries = run_store.list_runs(tmp_path)
+    assert [summary["id"] for summary in summaries] == [
+        "20260104",
+        "20260103",
+        "20260102",
+        "20260101",
+    ]
+    by_id = {summary["id"]: summary for summary in summaries}
+    for run_id, _extra, kind, _state in requests:
+        summary = by_id[run_id]
+        assert summary["kind"] == kind
+        assert summary["generation_count"] == 1 and summary["generation"] == 0
+        assert summary["best_error"] == 0.4
+        assert summary["budget"] == {"plateau": 5}
+        assert summary["task"] == "regression"
+        assert summary["stopped"] == "plateau" and summary["elapsed"] == 5.0
+        assert "generation_curves" not in summary and "generations" not in summary
+    assert by_id["20260101"]["test_error"] == 0.3
+    assert by_id["20260103"]["test_error"] is None
+    assert by_id["20260104"]["reason"] == "bad fit"

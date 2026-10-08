@@ -213,6 +213,7 @@ def search(
     on_event: Callable[[dict], None] | None = None,
     on_best: Callable[[dict | None], None] | None = None,
     on_generation: Callable[[dict], None] | None = None,
+    on_leaderboard: Callable[[int, list[dict]], None] | None = None,
     stop: Callable[[], bool] | None = None,
 ) -> dict:
     """run until a plateau, the time cap, the generation cap or `stop()`; returns the ranked
@@ -281,6 +282,9 @@ def search(
                 }
         quiet = 0 if gained else quiet + 1
         elapsed = time.monotonic() - started
+        if on_leaderboard:
+            board = sorted((e for e in scored.values() if e.note != "sample"), key=Entry.rank)
+            on_leaderboard(generation, [entry.to_dict() for entry in board[:10]])
         if on_event:
             on_event(
                 {
@@ -321,7 +325,7 @@ def search(
         population = elite + children
     board = sorted((e for e in scored.values() if e.note != "sample"), key=Entry.rank)
     return {
-        "leaderboard": [e.to_dict() for e in board[:25]],
+        "leaderboard": [e.to_dict() for e in board[:10]],
         "best": best.genome.to_dict() if best else None,
         "population": [g.to_dict() for g in population],
         "generations": generation,

@@ -8,6 +8,7 @@ import json
 import os
 import signal
 import sys
+import time
 import traceback
 from dataclasses import asdict
 from pathlib import Path
@@ -42,7 +43,13 @@ class _Run:
         os.replace(tmp, self.folder / "status.json")
 
     def save(self, name: str, data):
-        (self.folder / name).write_text(json.dumps(data, indent=2, default=_plain))
+        tmp = self.folder / f"{name}.tmp"
+        tmp.write_text(json.dumps(data, indent=2, default=_plain))
+        os.replace(tmp, self.folder / name)
+
+    def record_leaderboard(self, generation: int, board: list[dict]):
+        self.save("leaderboard.json", board[:10])
+        self.save("leaderboard_generation.json", generation)
 
     def record_best(self, history: dict | None):
         tmp = self.folder / "eval_history.json.tmp"
@@ -73,6 +80,7 @@ def run(folder: Path) -> int:
         raise SystemExit("the forecast worker must not share a process with torch")
     folder = Path(folder)
     job = _Run(folder)
+    started = time.monotonic()
     request = json.loads((folder / "request.json").read_text())
     job.status("running")
     try:
@@ -102,6 +110,7 @@ def run(folder: Path) -> int:
                 on_event=job.event,
                 on_best=job.record_best,
                 on_generation=job.record_generation,
+                on_leaderboard=job.record_leaderboard,
                 stop=lambda: job.cancelled,
             )
             job.save("leaderboard.json", result["leaderboard"])
@@ -109,10 +118,21 @@ def run(folder: Path) -> int:
         if result["best"] is None:
             job.status("failed", reason="no candidate could be fitted")
             return 1
-        job.event({"event": "finishing", "stopped": result["stopped"]})
+        job.event(
+            {
+                "event": "finishing",
+                "stopped": result["stopped"],
+                "elapsed": round(time.monotonic() - started, 1),
+            }
+        )
         final = finish(ws, genome_from_dict(result["best"]), nthread=budget.nthread)
         _write_result(folder, spec, result, final)
-        job.status("done", stopped=result["stopped"], verdict=final["verdict"])
+        job.status(
+            "done",
+            stopped=result["stopped"],
+            verdict=final["verdict"],
+            elapsed=round(time.monotonic() - started, 1),
+        )
         job.event({"event": "done", "verdict": final["verdict"]})
         return 0
     except Exception as exc:
@@ -130,7 +150,6 @@ def _warm_start(previous) -> list[dict] | None:
 
 def _write_result(folder, spec, result, final):
     recipe = {"genome": result["best"], "spec": asdict(spec), "stopped": result["stopped"]}
-    (folder / "recipe.json").write_text(json.dumps(recipe, indent=2))
     summary = {
         "verdict": final["verdict"],
         "model_error": final["model_error"],
@@ -138,7 +157,10 @@ def _write_result(folder, spec, result, final):
         "band": final.get("band"),
         "bands": final.get("bands"),
     }
-    (folder / "result.json").write_text(json.dumps(summary, indent=2, default=_plain))
+    for name, data in (("recipe.json", recipe), ("result.json", summary)):
+        tmp = folder / f"{name}.tmp"
+        tmp.write_text(json.dumps(data, indent=2, default=_plain))
+        os.replace(tmp, folder / name)
     for name in ("forecast", "validation", "test"):
         columns = final.get(name)
         if (
