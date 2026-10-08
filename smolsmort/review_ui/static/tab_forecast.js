@@ -122,6 +122,7 @@ class ForecastTopic {
     this.searchValues = {population: 16, plateau: 5, generations: 60, minutes: 20};
     this.currentRunId = null;
     this.pollTimer = null;
+    this.searchChart = null;
     this.resultsRunId = null;
     this.resultsSpec = null;
     this.chart = null;
@@ -640,6 +641,11 @@ class ForecastTopic {
           <div class="toggle removes disabled" id="${this.topic}-search-cancel">cancel</div>
           <span class="stat" id="${this.topic}-search-status">idle</span>
         </div>
+        <div id="${this.topic}-search-progress" class="hidden">
+          <div class="field-label" id="${this.topic}-search-metric"></div>
+          <div id="${this.topic}-search-chart" class="forecast-chart"></div>
+          <div class="field-label">generation</div>
+        </div>
         <div id="${this.topic}-leaderboard" class="hidden">
           <div class="field-label">leaderboard</div>
           <table class="forecast-column-grid" id="${this.topic}-leaderboard-table"></table>
@@ -671,6 +677,7 @@ class ForecastTopic {
     try {
       const res = await api('/api/forecast-runs', {spec: this.spec, budget});
       this.currentRunId = res.run_id;
+      this.resetSearchChart();
       this.searchSay('starting...');
       this.pollSearch();
     } catch (err) {
@@ -689,9 +696,12 @@ class ForecastTopic {
   }
 
   async pollSearch() {
-    if (!this.currentRunId) return;
+    const runId = this.currentRunId;
+    if (!runId) return;
     document.getElementById(`${this.topic}-search-cancel`).classList.remove('disabled');
-    const state = await api(`/api/forecast-run?id=${encodeURIComponent(this.currentRunId)}`);
+    const state = await api(`/api/forecast-run?id=${encodeURIComponent(runId)}`);
+    if (runId !== this.currentRunId) return;
+    this.paintSearchChart(state.generations || []);
     const latest = state.generations && state.generations.length
       ? state.generations[state.generations.length - 1] : null;
     if (latest) {
@@ -716,6 +726,30 @@ class ForecastTopic {
       return;
     }
     this.pollTimer = setTimeout(() => this.pollSearch(), 2000);
+  }
+
+  resetSearchChart() {
+    clearTimeout(this.pollTimer);
+    this.pollTimer = null;
+    if (this.searchChart) this.searchChart.destroy();
+    this.searchChart = null;
+    document.getElementById(`${this.topic}-search-progress`).classList.add('hidden');
+  }
+
+  paintSearchChart(generations) {
+    if (!generations.length) return;
+    const metric = this.task === 'classification' ? 'log_loss' : 'wape';
+    setText(`${this.topic}-search-metric`, `${metric} (lower is better)`);
+    document.getElementById(`${this.topic}-search-progress`).classList.remove('hidden');
+    const el = document.getElementById(`${this.topic}-search-chart`);
+    if (!this.searchChart) this.searchChart = timeChart(el, {
+      height: 220, yFormat: value => String(Number(value.toPrecision(4))),
+    });
+    this.searchChart.update({
+      x: generations.map(entry => entry.generation),
+      series: [{id: metric, label: `best ${metric} so far`,
+        values: generations.map(entry => Number.isFinite(entry.best) ? entry.best : null)}],
+    });
   }
 
   paintLeaderboard(rows) {
@@ -782,6 +816,7 @@ class ForecastTopic {
     try {
       const res = await api('/api/forecast-refit', {spec: this.spec, run_id: runId});
       this.currentRunId = res.run_id;
+      this.resetSearchChart();
       this.pollSearch();
     } catch (err) {
       this.searchSay(err.message);
@@ -799,6 +834,7 @@ class ForecastTopic {
     try {
       const res = await api('/api/forecast-runs', {spec: this.spec, budget, warm_from: runId});
       this.currentRunId = res.run_id;
+      this.resetSearchChart();
       this.pollSearch();
     } catch (err) {
       this.searchSay(err.message);

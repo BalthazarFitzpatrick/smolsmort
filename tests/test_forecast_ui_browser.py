@@ -335,6 +335,123 @@ def test_scaffold_defaults_empty_and_preserves_saved_picks(tmp_path):
         assert_empty_scaffold()
 
 
+@pytest.mark.parametrize(
+    ("topic", "metric"), [("regression", "wape"), ("classification", "log_loss")]
+)
+def test_search_chart_tracks_every_generation_and_resets(tmp_path, topic, metric):
+    with session(tmp_path) as (page, base):
+        snapshot = {"count": 0, "state": "running"}
+        run_number = 0
+        best_values = [0.8, 0.6, 0.6, 0.4]
+
+        def start_run(route):
+            nonlocal run_number
+            if route.request.method == "POST":
+                run_number += 1
+                route.fulfill(json={"run_id": f"progress-{run_number}"})
+            else:
+                route.fulfill(json={"runs": []})
+
+        def poll_run(route):
+            generations = [
+                {"generation": index, "best": best, "evaluated": index + 1, "elapsed": index}
+                for index, best in enumerate(best_values[: snapshot["count"]])
+            ]
+            route.fulfill(
+                json={
+                    "state": snapshot["state"],
+                    "generations": generations,
+                    "verdict": {"trusted": True},
+                    "leaderboard": [],
+                }
+            )
+
+        page.route("**/api/forecast-runs", start_run)
+        page.route("**/api/forecast-run?**", poll_run)
+        page.route(
+            "**/api/forecast-prep",
+            lambda route: route.fulfill(json={"summary": {}, "sql": "", "reused": False}),
+        )
+        page.click(f'#topic-switch .topic-tab:has-text("{topic}")')
+        show_tab(page, f"{topic}-data")
+        page.click(f"#{topic}-data-source")
+        page.locator('.menu-panel .menu-item[data-id="rows.csv"]').click()
+        page.wait_for_function(
+            f'/^\\d+ columns/.test(document.getElementById("{topic}-data-status").innerText)'
+        )
+        page.click(f"#{topic}-prepare")
+        page.wait_for_function(
+            f'document.getElementById("{topic}-data-status").innerText.startsWith("prepared")'
+        )
+        show_tab(page, f"{topic}-search")
+        progress = page.locator(f"#{topic}-search-progress")
+        chart = page.locator(f"#{topic}-search-chart")
+        assert not progress.is_visible()
+        page.click(f"#{topic}-search-start")
+        page.wait_for_function(
+            f'document.getElementById("{topic}-search-status").innerText === "running"'
+        )
+        assert not progress.is_visible()
+
+        def wait_points(count):
+            page.wait_for_function(
+                "([id, count]) => {"
+                " const chart = document.getElementById(id);"
+                " const points = chart.querySelectorAll('.chart-point').length;"
+                " const lines = [...chart.querySelectorAll('.chart-line')];"
+                " return points + lines.reduce((n, line) => n + line.getAttribute('d').split(' L ').length, 0) === count;"
+                "}",
+                arg=[f"{topic}-search-chart", count],
+            )
+
+        for count in (1, 2):
+            snapshot["count"] = count
+            wait_points(count)
+            assert progress.is_visible()
+            assert (
+                page.locator(f"#{topic}-search-metric").inner_text()
+                == f"{metric} (lower is better)"
+            )
+            assert chart.locator(".chart-x-label").all_text_contents() == [
+                str(i) for i in range(count)
+            ]
+            assert (
+                f"generation {count - 1} - best"
+                in page.locator(f"#{topic}-search-status").inner_text()
+            )
+
+        with page.expect_response("**/api/forecast-run?**"):
+            page.wait_for_timeout(2100)
+        wait_points(2)
+        snapshot.update(count=4, state="done")
+        wait_points(4)
+        page.wait_for_function(
+            f'document.getElementById("{topic}-search-status").innerText.startsWith("done")'
+        )
+        assert chart.locator(".chart-x-label").all_text_contents() == ["0", "1", "2", "3"]
+        progress.screenshot(path=tmp_path / f"{topic}-search-progress.png")
+        overlay = chart.locator(".chart-overlay").bounding_box()
+        page.mouse.move(overlay["x"] + 1, overlay["y"] + overlay["height"] / 2)
+        assert chart.locator(".chart-tooltip-value").inner_text() == "0.8"
+        page.mouse.move(overlay["x"] + overlay["width"] - 1, overlay["y"] + overlay["height"] / 2)
+        assert chart.locator(".chart-tooltip-value").inner_text() == "0.4"
+        show_tab(page, f"{topic}-data")
+        show_tab(page, f"{topic}-search")
+        wait_points(4)
+        assert progress.is_visible()
+        snapshot.update(count=0, state="running")
+        page.click(f"#{topic}-search-start")
+        page.wait_for_function(
+            f'document.getElementById("{topic}-search-status").innerText === "running"'
+        )
+        assert not progress.is_visible()
+        assert chart.locator("svg").count() == 0
+        snapshot.update(count=1, state="done")
+        wait_points(1)
+        assert chart.locator(".chart-x-label").all_text_contents() == ["0"]
+        assert run_number == 2
+
+
 def test_series_setup_saves_discards_and_prepares(tmp_path):
     with session(tmp_path) as (page, base):
         switch_to_regression(page)
