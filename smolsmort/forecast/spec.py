@@ -12,7 +12,7 @@ from typing import Literal
 Role = Literal["time", "anchor", "dimension", "measure", "target", "ignore"]
 Mode = Literal["row", "series"]
 Task = Literal["regression", "classification"]
-Aggregation = Literal["sum", "mean", "min", "max", "count", "last"]
+Aggregation = Literal["sum", "mean", "median", "min", "max", "count", "last"]
 Step = Literal["day", "week", "month", "quarter", "year"]
 
 ROW = "__row"

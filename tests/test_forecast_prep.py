@@ -132,6 +132,25 @@ def test_series_prep_sums_the_two_weekly_transaction_rows(tmp_path):
     assert first_week_units[1] == pytest.approx(raw_rows[0][1] + raw_rows[1][1])
 
 
+def test_series_median_uses_middle_value_and_leaves_gaps_missing(tmp_path):
+    source = tmp_path / "median.csv"
+    source.write_text("day,units\n2025-01-06,1\n2025-01-07,3\n2025-01-08,100\n2025-01-20,7\n")
+    spec = PrepSpec(
+        str(source),
+        "series",
+        "regression",
+        (Column("day", "time"), Column("units", "target", aggregation="median")),
+        step="week",
+        horizon=3,
+    )
+    prepared = prepare(spec, tmp_path / "cache")
+    values = duckdb.sql(
+        f"SELECT units FROM '{prepared.folder}/panel.parquet' ORDER BY __step"
+    ).fetchall()
+    assert values == [(3.0,), (None,), (7.0,)]
+    assert prepared.summary["scaffold_rows"] == 3
+
+
 def test_series_prep_forward_fills_the_last_aggregation_across_the_hole(tmp_path):
     truth = write_panel(tmp_path)
     prepared = prepare(_panel_spec(truth.path), tmp_path / "cache")

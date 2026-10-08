@@ -16,7 +16,11 @@ async function api(path, body) {
   return res.json();
 }
 
-const setText = (id, text) => { document.getElementById(id).textContent = text; };
+const setText = (id, text) => {
+  const node = document.getElementById(id);
+  node.textContent = text;
+  node.title = String(text);
+};
 
 // a point just under an element, so a menu opened from a menu is not read as a toggle-shut
 function headPoint(anchorId) {
@@ -186,6 +190,7 @@ const smolsmortTabs = (() => {
     paintTopicSwitch();
     paintNav();
     paintFlavourRow();
+    window.dispatchEvent(new CustomEvent('smolsmort-topic', {detail: id}));
   }
 
   function initialTopic() {
@@ -204,6 +209,7 @@ const smolsmortTabs = (() => {
     paintFlavourRow();
     const select = document.getElementById('topic-flavour');
     if (select) select.onchange = () => pickFlavour(activeTopic, select.value);
+    window.dispatchEvent(new CustomEvent('smolsmort-topic', {detail: activeTopic}));
   }
 
   function register(tab) {

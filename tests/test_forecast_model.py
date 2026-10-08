@@ -27,6 +27,57 @@ BASE = np.array([4.0, 7.0, 10.0, 5.5, 14.0])
 FTYPES = ["c", "q"]
 
 
+@pytest.mark.parametrize(
+    ("objective", "metric"),
+    [
+        ("squared", "rmse"),
+        ("absolute", "mae"),
+        ("tweedie", "tweedie-nloglik@1.5"),
+        ("poisson", "poisson-nloglik"),
+        ("aft", "aft-nloglik"),
+        ("logistic", "logloss"),
+        ("softprob", "mlogloss"),
+    ],
+)
+def test_eval_history_records_the_actual_inner_fit(objective, metric, monkeypatch):
+    import xgboost as xgb
+
+    rng = np.random.default_rng(42)
+    x = rng.normal(size=(200, 2)).astype(np.float32)
+    y = np.exp(x[:, 0] * 0.2) + 1
+    recorded = []
+    train = xgb.train
+
+    def record_train(*args, **kwargs):
+        booster = train(*args, **kwargs)
+        recorded.append(kwargs)
+        return booster
+
+    monkeypatch.setattr(xgb, "train", record_train)
+    targets = {"y": y}
+    if objective == "aft":
+        targets = {"lower": y, "upper": y}
+    elif objective in ("logistic", "softprob"):
+        targets = {"labels": np.arange(len(y)) % (3 if objective == "softprob" else 2)}
+    fitted = fit_model(x, objective=objective, max_rounds=8, patience=2, **targets)
+    history = fitted.eval_history
+    assert set(history) == {"metric", "training", "validation"}
+    assert history["metric"] == metric
+    assert history["training"] == recorded[0]["evals_result"]["training"][metric]
+    assert history["validation"] == recorded[0]["evals_result"]["validation"][metric]
+    assert len(history["training"]) == len(history["validation"]) <= 8
+    assert np.isfinite([history["training"], history["validation"]]).all()
+    assert [dm.num_row() for dm, _ in recorded[0]["evals"]] == [170, 30]
+    assert "evals" not in recorded[1]
+
+
+@pytest.mark.parametrize(("rows", "patience"), [(30, 2), (200, 0)])
+def test_eval_history_is_absent_without_an_early_stopping_fit(rows, patience):
+    x = np.arange(rows, dtype=np.float32).reshape(-1, 1)
+    fitted = fit_model(x, objective="squared", y=x[:, 0], max_rounds=3, patience=patience)
+    assert fitted.eval_history is None
+
+
 def _draw(rng, created):
     """rows with a branch effect, a size effect and a right-skewed lead in weeks"""
     branch = rng.integers(0, len(BASE), len(created))

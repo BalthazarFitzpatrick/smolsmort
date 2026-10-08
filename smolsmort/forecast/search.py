@@ -71,6 +71,7 @@ class Entry:
     metrics: dict
     generation: int
     note: str = ""
+    eval_history: dict | None = None
 
     def rank(self):
         # ties go to the smaller recipe
@@ -210,6 +211,9 @@ def search(
     *,
     warm: list[dict] | None = None,
     on_event: Callable[[dict], None] | None = None,
+    on_best: Callable[[dict | None], None] | None = None,
+    on_generation: Callable[[dict], None] | None = None,
+    on_leaderboard: Callable[[int, list[dict]], None] | None = None,
     stop: Callable[[], bool] | None = None,
 ) -> dict:
     """run until a plateau, the time cap, the generation cap or `stop()`; returns the ranked
@@ -234,6 +238,7 @@ def search(
                 result.metrics,
                 generation,
                 "sample" if rows is not None else "",
+                result.eval_history,
             )
         except (ModelError, PipelineError) as exc:
             entry = Entry(genome, float("inf"), None, {}, generation, f"failed: {exc}")
@@ -255,8 +260,31 @@ def search(
         gained = _significant(leader, best)
         if best is None or leader.rank() < best.rank():
             best = leader
+            if on_best:
+                history = best.eval_history
+                on_best({**history, "key": best.genome.key()} if history else None)
+        history = leader.eval_history
+        if on_generation and history and history.get("validation"):
+            on_generation(
+                {
+                    "generation": generation,
+                    "key": leader.genome.key(),
+                    "metric": history["metric"],
+                    "bucket": history.get("bucket"),
+                    "validation": history["validation"],
+                }
+            )
+        for entry in scored.values():
+            if entry is not best and entry.eval_history:
+                # cached candidates can lead later generations; retain only their validation curve
+                entry.eval_history = {
+                    key: value for key, value in entry.eval_history.items() if key != "training"
+                }
         quiet = 0 if gained else quiet + 1
         elapsed = time.monotonic() - started
+        if on_leaderboard:
+            board = sorted((e for e in scored.values() if e.note != "sample"), key=Entry.rank)
+            on_leaderboard(generation, [entry.to_dict() for entry in board[:10]])
         if on_event:
             on_event(
                 {
@@ -297,7 +325,7 @@ def search(
         population = elite + children
     board = sorted((e for e in scored.values() if e.note != "sample"), key=Entry.rank)
     return {
-        "leaderboard": [e.to_dict() for e in board[:25]],
+        "leaderboard": [e.to_dict() for e in board[:10]],
         "best": best.genome.to_dict() if best else None,
         "population": [g.to_dict() for g in population],
         "generations": generation,

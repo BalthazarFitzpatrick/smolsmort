@@ -84,6 +84,8 @@ def test_columns_suggests_roles_from_kind(app, tab):
     assert by_name["day"]["suggested_role"] == "time"
     assert by_name["project"]["kind"] == "text"
     assert by_name["project"]["suggested_role"] == "dimension"
+    assert by_name["project"]["distinct"] == 3
+    assert by_name["product"]["distinct"] == 4
     assert by_name["orders"]["kind"] == "number"
     assert by_name["orders"]["suggested_role"] == "measure"
     assert all(c["suggested_role"] != "target" for c in result["columns"])
@@ -128,6 +130,9 @@ def test_decimal_comma_export_lists_numbers_and_preps(app, tab):
     }
     prepared = _post(app, tab, "/api/forecast-prep", {"spec": spec})
     assert prepared["summary"]["mode"] == "series"
+    assert prepared["summary"]["source_rows"] == 60
+    assert prepared["summary"]["source_columns"] == 3
+    assert prepared["summary"]["encoding"] == "utf-16"
 
 
 def _forecast_path(app):
@@ -178,9 +183,77 @@ def test_prep_summarises_and_reuses_cache(app, tab):
     first = _post(app, tab, "/api/forecast-prep", {"spec": spec})
     assert first["reused"] is False
     assert "sql" in first and first["summary"]["mode"] == "series"
+    assert first["summary"]["source_columns"] == 5
+    assert first["summary"]["encoding"] == "utf-8"
     second = _post(app, tab, "/api/forecast-prep", {"spec": spec})
     assert second["reused"] is True
     assert second["summary"] == first["summary"]
+
+
+def test_prep_reads_known_facts_for_an_old_cache_without_rebuilding(app, tab):
+    write_panel(_forecast_path(app), weeks=60)
+    spec = _series_spec("panel.csv")
+    first = _post(app, tab, "/api/forecast-prep", {"spec": spec})
+    prep_file = next((_forecast_path(app) / ".forecast-cache").glob("*/prep.json"))
+    old_summary = dict(first["summary"])
+    old_summary.pop("source_columns")
+    old_summary.pop("encoding")
+    prep_file.write_text(json.dumps(old_summary))
+    reused = _post(app, tab, "/api/forecast-prep", {"spec": spec})
+    assert reused["reused"] is True
+    assert reused["summary"] == first["summary"]
+    assert reused["sql"] == first["sql"]
+
+
+@pytest.mark.parametrize("action", ["search", "warm", "refit"])
+def test_run_actions_prepare_current_picks_and_report_cache_facts(app, tab, monkeypatch, action):
+    write_panel(_forecast_path(app), weeks=60)
+    captured = []
+
+    def record_run(root, spec, prepared, **kwargs):
+        captured.append((spec, prepared, kwargs))
+        return "new-run"
+
+    monkeypatch.setattr("smolsmort.forecast.tab.runs.start_run", record_run)
+    payload = {"spec": _series_spec("panel.csv"), "budget": TINY_BUDGET}
+    route = "/api/forecast-runs"
+    if action == "warm":
+        payload["warm_from"] = "saved-run"
+    elif action == "refit":
+        saved = _forecast_path(app) / ".forecast-runs" / "saved-run"
+        saved.mkdir(parents=True)
+        (saved / "recipe.json").write_text(json.dumps({"genome": {"params": {"eta": 0.1}}}))
+        payload["run_id"] = "saved-run"
+        route = "/api/forecast-refit"
+
+    first = _post(app, tab, route, payload)
+    assert first["run_id"] == "new-run"
+    assert set(first["prepared"]) == {"summary", "sql", "reused"}
+    assert first["prepared"]["reused"] is False
+    assert first["prepared"]["summary"]["source_rows"] == 60 * 12 * 2
+    assert first["prepared"]["summary"]["source_columns"] == 5
+    assert first["prepared"]["summary"]["encoding"] == "utf-8"
+    assert first["prepared"]["sql"]
+    second = _post(app, tab, route, payload)
+    assert second["prepared"]["reused"] is True
+    assert second["prepared"]["summary"] == first["prepared"]["summary"]
+
+    payload["spec"]["horizon"] = 11
+    changed = _post(app, tab, route, payload)
+    assert changed["prepared"]["reused"] is False
+    assert changed["prepared"]["summary"]["horizon"] == 11
+    assert captured[-1][0].horizon == 11
+    assert captured[-1][1].folder != captured[0][1].folder
+    if action == "warm":
+        assert captured[-1][2]["warm_from"] == "saved-run"
+    elif action == "refit":
+        assert captured[-1][2]["recipe"] == {"params": {"eta": 0.1}}
+
+    write_panel(_forecast_path(app), weeks=61)
+    source_changed = _post(app, tab, route, payload)
+    assert source_changed["prepared"]["reused"] is False
+    assert source_changed["prepared"]["summary"]["source_rows"] == 61 * 12 * 2
+    assert source_changed["prepared"]["summary"]["horizon"] == 11
 
 
 # ---------------------------------------------------------------- runs
@@ -252,6 +325,72 @@ def test_a_search_run_reaches_done_and_reports_a_verdict(app, tab):
     assert set(state["verdict"]) == {"trusted", "summary", "checks"}
     assert state["spec"]["mode"] == "series"
     assert isinstance(state["leaderboard"], list)
+
+
+@pytest.mark.parametrize("cursor", [-1, "0", "invalid", None, "inf"])
+def test_run_polling_sends_only_unseen_generation_curves(series_run, cursor):
+    app, tab, run_id, _root = series_run
+    complete = _get(app, tab, "/api/forecast-run", {"id": run_id})
+    state = _get(app, tab, "/api/forecast-run", {"id": run_id, "since_generation": cursor})
+    parsed = 0 if cursor == "0" else -1
+    assert state["generation_curves"] == [
+        curve for curve in complete["generation_curves"] if curve["generation"] > parsed
+    ]
+    assert state["state"] == "done"
+    assert "eval_history" not in state
+    latest = complete["generations"][-1]["generation"]
+    assert (
+        _get(app, tab, "/api/forecast-run", {"id": run_id, "since_generation": latest})[
+            "generation_curves"
+        ]
+        == []
+    )
+
+
+@pytest.mark.parametrize("cursor", [-1, "0", "invalid", None, "inf"])
+def test_run_polling_sends_only_updated_leaderboards(app, tab, cursor):
+    root = _forecast_path(app) / ".forecast-runs" / "fixture"
+    root.mkdir(parents=True)
+    (root / "request.json").write_text(
+        json.dumps({"spec": {"task": "regression"}, "budget": {"plateau": 3}})
+    )
+    (root / "status.json").write_text(json.dumps({"state": "done", "stopped": "plateau"}))
+    (root / "leaderboard_generation.json").write_text("0")
+    board = [{"fitness": 0.3, "genome": {"families": ["lag+1"]}}]
+    (root / "leaderboard.json").write_text(json.dumps(board))
+    complete = _get(app, tab, "/api/forecast-run", {"id": "fixture"})
+    assert complete["leaderboard"] == board
+    assert complete["leaderboard_generation"] == 0
+    assert complete["kind"] == "search" and complete["budget"] == {"plateau": 3}
+    state = _get(app, tab, "/api/forecast-run", {"id": "fixture", "since_leaderboard": cursor})
+    if cursor == "0":
+        assert "leaderboard" not in state
+    else:
+        assert state["leaderboard"] == board
+    (root / "leaderboard_generation.json").write_text("1")
+    board[0]["fitness"] = 0.2
+    (root / "leaderboard.json").write_text(json.dumps(board))
+    state = _get(app, tab, "/api/forecast-run", {"id": "fixture", "since_leaderboard": 0})
+    assert state["leaderboard"] == board and state["leaderboard_generation"] == 1
+
+
+def test_old_runs_infer_the_leaderboard_revision_from_generation_events(app, tab):
+    root = _forecast_path(app) / ".forecast-runs" / "old"
+    root.mkdir(parents=True)
+    (root / "request.json").write_text(json.dumps({"spec": {"task": "regression"}}))
+    (root / "status.json").write_text(json.dumps({"state": "done"}))
+    (root / "events.jsonl").write_text(
+        json.dumps({"event": "generation", "generation": 2, "best": 0.3})
+    )
+    (root / "leaderboard.json").write_text(json.dumps([{"fitness": 0.3}]))
+    state = _get(app, tab, "/api/forecast-run", {"id": "old", "since_leaderboard": 1})
+    assert state["leaderboard_generation"] == 2 and state["leaderboard"]
+    assert state["best_wape"] == 0.3 and state["test_error"] is None
+    summaries = _get(app, tab, "/api/forecast-runs")
+    assert next(run for run in summaries["runs"] if run["id"] == "old")["best_wape"] == 0.3
+    assert "leaderboard" not in _get(
+        app, tab, "/api/forecast-run", {"id": "old", "since_leaderboard": 2}
+    )
 
 
 def test_view_series_mode_has_a_band_within_bounds(series_run):

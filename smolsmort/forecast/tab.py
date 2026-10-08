@@ -176,7 +176,10 @@ def _start(app, payload: dict) -> dict:
         budget=payload.get("budget"),
         warm_from=payload.get("warm_from"),
     )
-    return {"run_id": run_id}
+    return {
+        "run_id": run_id,
+        "prepared": {"summary": prepared.summary, "sql": prepared.sql, "reused": prepared.reused},
+    }
 
 
 def _refit(app, payload: dict) -> dict:
@@ -191,7 +194,10 @@ def _refit(app, payload: dict) -> dict:
         raise RequestError(str(exc)) from exc
     prepared = prepare(spec, _cache_root(app))
     run_id = runs.start_run(_runs_root(app), spec, prepared, recipe=genome)
-    return {"run_id": run_id}
+    return {
+        "run_id": run_id,
+        "prepared": {"summary": prepared.summary, "sql": prepared.sql, "reused": prepared.reused},
+    }
 
 
 def _list_runs(app, query: dict) -> dict:
@@ -201,11 +207,27 @@ def _list_runs(app, query: dict) -> dict:
 def _run(app, query: dict) -> dict:
     run_id = query.get("id", "")
     run_dir = _run_dir(app, run_id)
-    state = runs.run_state(_runs_root(app), run_id)
+    cursor = None
+    if "since_generation" in query:
+        try:
+            cursor = max(-1, int(query["since_generation"]))
+        except (TypeError, ValueError, OverflowError):
+            cursor = -1
+    state = runs.run_state(_runs_root(app), run_id, since_generation=cursor)
     request = views.read_request(run_dir)
+    board_cursor = -1
+    if "since_leaderboard" in query:
+        try:
+            board_cursor = max(-1, int(query["since_leaderboard"]))
+        except (TypeError, ValueError, OverflowError):
+            board_cursor = -1
     return {
         **state,
-        "leaderboard": views.read_leaderboard(run_dir),
+        **(
+            {"leaderboard": views.read_leaderboard(run_dir)[:10]}
+            if "since_leaderboard" not in query or state["leaderboard_generation"] > board_cursor
+            else {}
+        ),
         "spec": request.get("spec"),
     }
 
