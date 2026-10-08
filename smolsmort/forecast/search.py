@@ -71,6 +71,7 @@ class Entry:
     metrics: dict
     generation: int
     note: str = ""
+    eval_history: dict | None = None
 
     def rank(self):
         # ties go to the smaller recipe
@@ -210,6 +211,7 @@ def search(
     *,
     warm: list[dict] | None = None,
     on_event: Callable[[dict], None] | None = None,
+    on_best: Callable[[dict | None], None] | None = None,
     stop: Callable[[], bool] | None = None,
 ) -> dict:
     """run until a plateau, the time cap, the generation cap or `stop()`; returns the ranked
@@ -234,6 +236,7 @@ def search(
                 result.metrics,
                 generation,
                 "sample" if rows is not None else "",
+                result.eval_history,
             )
         except (ModelError, PipelineError) as exc:
             entry = Entry(genome, float("inf"), None, {}, generation, f"failed: {exc}")
@@ -255,6 +258,12 @@ def search(
         gained = _significant(leader, best)
         if best is None or leader.rank() < best.rank():
             best = leader
+            if on_best:
+                history = best.eval_history
+                on_best({**history, "key": best.genome.key()} if history else None)
+        for entry in scored.values():
+            if entry is not best:
+                entry.eval_history = None
         quiet = 0 if gained else quiet + 1
         elapsed = time.monotonic() - started
         if on_event:

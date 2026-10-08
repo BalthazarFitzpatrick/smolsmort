@@ -21,6 +21,7 @@ RUN_FILES = (
     "request.json",
     "status.json",
     "events.jsonl",
+    "eval_history.json",
     "worker.log",
     "profile.json",
     "leaderboard.json",
@@ -96,6 +97,8 @@ def run_state(runs_root: Path, run_id: str) -> dict:
     if path.exists():
         events = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
     generations = [e for e in events if e.get("event") == "generation"]
+    history_path = folder / "eval_history.json"
+    history = json.loads(history_path.read_text()) if history_path.exists() else None
     alive = _alive(folder)
     if status["state"] in ("starting", "running") and not alive:
         status = {"state": "failed", "reason": "the worker exited without reporting"}
@@ -103,6 +106,7 @@ def run_state(runs_root: Path, run_id: str) -> dict:
         **status,
         "alive": alive,
         "generations": generations,
+        "eval_history": history,
         "latest": events[-1] if events else None,
     }
 

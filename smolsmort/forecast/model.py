@@ -33,6 +33,7 @@ class Fitted:
     rounds: int
     feature_types: list[str] | None
     classes: list[str] | None = None
+    eval_history: dict | None = None
 
 
 def _xgb():
@@ -135,18 +136,32 @@ def fit_model(
         )
 
     rounds = max_rounds
-    if len(tail) >= 10 and len(head) >= 10:
+    history = None
+    if patience and len(tail) >= 10 and len(head) >= 10:
+        evals_result = {}
+        train = pick(head)
         probe = xgb.train(
             config,
-            pick(head),
+            train,
             max_rounds,
-            evals=[(pick(tail), "inner")],
+            evals=[(train, "training"), (pick(tail), "validation")],
+            evals_result=evals_result,
             early_stopping_rounds=patience,
             verbose_eval=False,
         )
         rounds = probe.best_iteration + 1
+        # the last validation metric is the one xgboost uses for early stopping
+        metric = next(reversed(evals_result.get("validation", {})), None)
+        training = evals_result.get("training", {}).get(metric, [])
+        validation = evals_result.get("validation", {}).get(metric, [])
+        if (
+            training
+            and len(training) == len(validation)
+            and np.isfinite([training, validation]).all()
+        ):
+            history = {"metric": metric, "training": training, "validation": validation}
     booster = xgb.train(config, pick(rows), rounds, verbose_eval=False)
-    return Fitted(booster, objective, rounds, feature_types, classes)
+    return Fitted(booster, objective, rounds, feature_types, classes, history)
 
 
 def predict(fitted: Fitted, x) -> np.ndarray:

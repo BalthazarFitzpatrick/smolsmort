@@ -55,6 +55,7 @@ class Scored:
     fitness: float
     contrib: np.ndarray
     metrics: dict
+    eval_history: dict | None = None
 
 
 # ---------------------------------------------------------------- workspace
@@ -176,11 +177,14 @@ def score(
     ws: Workspace, genome: Genome, *, nthread: int = 1, sample: np.ndarray | None = None
 ) -> Scored:
     """validation fitness for one genome; `sample` restricts the training rows (successive halving)"""
+    histories = []
     if ws.mode == "row":
-        pred, truth, periods = _row_phase(ws, genome, "val", nthread, sample)
+        pred, truth, periods = _row_phase(ws, genome, "val", nthread, sample, histories)
     else:
-        pred, truth, periods = _series_phase(ws, genome, "val", nthread, sample)
-    return _fitness(ws, pred, truth, periods)
+        pred, truth, periods = _series_phase(ws, genome, "val", nthread, sample, histories)
+    result = _fitness(ws, pred, truth, periods)
+    result.eval_history = histories[0] if histories else None
+    return result
 
 
 def _fitness(ws, pred, truth, periods) -> Scored:
@@ -241,7 +245,7 @@ def _row_fit(ws, genome, rows, phase, nthread):
     ), x
 
 
-def _row_phase(ws, genome, phase, nthread, sample=None):
+def _row_phase(ws, genome, phase, nthread, sample=None, histories=None):
     """(predictions, truth, period keys) on the phase's evaluation rows"""
     masks = ws.masks
     fit_rows = masks["train"] if phase == "val" else masks["train"] | masks["val"]
@@ -250,6 +254,8 @@ def _row_phase(ws, genome, phase, nthread, sample=None):
     eval_rows = masks["val"] if phase == "val" else masks["test"]
     target = ws.table[ws.spec.named("target")[0]]
     fitted, x = _row_fit(ws, genome, fit_rows, phase, nthread)
+    if histories is not None:
+        histories.append(fitted.eval_history)
     if ws.spec.task == "classification":
         known = eval_rows & np.array([v is not None and v == v and v != "" for v in target])
         classes = fitted.classes
@@ -265,7 +271,7 @@ def _weeks(days) -> np.ndarray:
     return (np.asarray(days).astype("datetime64[D]").astype(int) - 4) // 7
 
 
-def _series_phase(ws, genome, phase, nthread, sample=None):
+def _series_phase(ws, genome, phase, nthread, sample=None, histories=None):
     preds, truths, periods = [], [], []
     for bucket, frame in ws.frames.items():
         masks = ws.series_masks[bucket]
@@ -274,6 +280,10 @@ def _series_phase(ws, genome, phase, nthread, sample=None):
             fit_rows = fit_rows & np.isin(frame.series, sample)
         eval_rows = masks["val"] if phase == "val" else masks["test"]
         fitted, x = _series_fit(ws, genome, frame, fit_rows, nthread)
+        # one actual fit, never a blend of curves from different horizon buckets
+        if histories is not None and not histories:
+            history = fitted.eval_history
+            histories.append({**history, "bucket": list(bucket)} if history else None)
         preds.append(predict(fitted, x[eval_rows]))
         truths.append(frame.y[eval_rows])
         periods.append(frame.step[eval_rows].astype(int))

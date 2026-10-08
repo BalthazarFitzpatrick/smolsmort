@@ -43,6 +43,11 @@ class _Run:
     def save(self, name: str, data):
         (self.folder / name).write_text(json.dumps(data, indent=2, default=_plain))
 
+    def record_best(self, history: dict | None):
+        tmp = self.folder / "eval_history.json.tmp"
+        tmp.write_text(json.dumps(history, default=_plain, allow_nan=False))
+        os.replace(tmp, self.folder / "eval_history.json")
+
 
 def _plain(value):
     if isinstance(value, np.generic):
@@ -79,7 +84,14 @@ def run(folder: Path) -> int:
                 "stopped": "refit",
             }
         else:
-            result = search(ws, budget, warm=warm, on_event=job.event, stop=lambda: job.cancelled)
+            result = search(
+                ws,
+                budget,
+                warm=warm,
+                on_event=job.event,
+                on_best=job.record_best,
+                stop=lambda: job.cancelled,
+            )
             job.save("leaderboard.json", result["leaderboard"])
             job.save("population.json", result["population"])
         if result["best"] is None:

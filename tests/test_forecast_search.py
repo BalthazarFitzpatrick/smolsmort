@@ -6,13 +6,14 @@ from __future__ import annotations
 import json
 import sys
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from forecast_fixtures import write_panel, write_rows
 
-from smolsmort.forecast import worker
-from smolsmort.forecast.pipeline import load_workspace, make_genome, score
+from smolsmort.forecast import pipeline, worker
+from smolsmort.forecast.pipeline import Scored, load_workspace, make_genome, score
 from smolsmort.forecast.prep import prepare
 from smolsmort.forecast.runs import cancel_run, run_state, start_run, wait_run
 from smolsmort.forecast.search import Budget, search
@@ -74,11 +75,32 @@ def row_ws(tmp_path_factory):
     return load_workspace(spec, prepared.folder, prepared.summary), truth
 
 
-def test_a_genome_scores_in_both_modes_and_the_leak_is_never_offered(series_ws, row_ws):
+def test_a_genome_scores_in_both_modes_and_the_leak_is_never_offered(
+    series_ws, row_ws, monkeypatch
+):
+    row_fit, series_fit = pipeline._row_fit, pipeline._series_fit
+
+    def check_row_fit(ws, genome, rows, phase, nthread):
+        assert phase == "val" and np.array_equal(rows, ws.masks["train"])
+        assert not np.any(rows & ws.masks["test"])
+        return row_fit(ws, genome, rows, phase, nthread)
+
+    def check_series_fit(ws, genome, frame, rows, nthread):
+        bucket = next(key for key, value in ws.frames.items() if value is frame)
+        assert np.array_equal(rows, ws.series_masks[bucket]["train"])
+        assert not np.any(rows & ws.series_masks[bucket]["test"])
+        return series_fit(ws, genome, frame, rows, nthread)
+
+    monkeypatch.setattr(pipeline, "_row_fit", check_row_fit)
+    monkeypatch.setattr(pipeline, "_series_fit", check_series_fit)
     for ws, _ in (series_ws, row_ws):
         genome = make_genome(ws.families, "squared", {"max_depth": 4, "eta": 0.1})
         result = score(ws, genome)
         assert np.isfinite(result.fitness) and result.fitness == pytest.approx(result.contrib.sum())
+        assert result.eval_history["metric"] == "rmse"
+        assert len(result.eval_history["training"]) == len(result.eval_history["validation"])
+        if ws.mode == "series":
+            assert result.eval_history["bucket"] == list(next(iter(ws.frames)))
     ws, truth = row_ws
     assert not [f for f in ws.families if truth.leak in f]
     assert "aft" in ws.profile["genes"]["objectives"]
@@ -114,6 +136,12 @@ def test_a_run_ends_with_a_forecast_and_a_verdict(tmp_path):
     state = wait_run(tmp_path / "runs", run_id, timeout=300)
     assert state["state"] == "done", state
     folder = tmp_path / "runs" / run_id
+    history = state["eval_history"]
+    board = json.loads((folder / "leaderboard.json").read_text())
+    assert history["key"] == board[0]["key"]
+    assert history == json.loads((folder / "eval_history.json").read_text())
+    assert len(history["training"]) == len(history["validation"]) > 0
+    assert not any("eval_history" in entry for entry in board + state["generations"])
     result = json.loads((folder / "result.json").read_text())
     assert set(result["verdict"]) == {"trusted", "summary", "checks"}
     forecast = read_table(folder / "forecast.parquet")
@@ -127,6 +155,7 @@ def test_a_row_run_predicts_every_open_row(tmp_path):
     run_id = start_run(tmp_path / "runs", spec, prepared, budget=TINY, nthread=1)
     state = wait_run(tmp_path / "runs", run_id, timeout=300)
     assert state["state"] == "done", state
+    assert state["eval_history"]["training"] and state["eval_history"]["validation"]
     forecast = read_table(tmp_path / "runs" / run_id / "forecast.parquet")
     assert len(forecast["prediction"]) == prepared.summary["predict_rows"]
     assert "predicted_date" in forecast
@@ -139,6 +168,7 @@ def test_a_cancelled_run_still_leaves_a_readable_leaderboard(tmp_path):
     run_id = start_run(runs, spec, prepared, budget=budget, nthread=1)
     for _ in range(600):
         if run_state(runs, run_id)["generations"]:
+            assert run_state(runs, run_id)["eval_history"]["training"]
             break
         time.sleep(0.1)
     cancel_run(runs, run_id)
@@ -170,7 +200,56 @@ def test_a_saved_recipe_refits_on_newer_history_without_a_search(tmp_path):
     state = wait_run(runs, refit, timeout=300)
     assert state["state"] == "done" and state["stopped"] == "refit", state
     assert not state["generations"] and not (runs / refit / "leaderboard.json").exists()
+    assert state["eval_history"] is None
     assert time.monotonic() - started < 60
     forecast = read_table(runs / refit / "forecast.parquet")
     last_old = read_table(runs / first / "forecast.parquet")["step"].max()
     assert forecast["step"].min() > last_old, "the forecast moved forward with the new history"
+
+
+def test_best_history_replaced_before_generation_events_and_cleared_when_unusable(
+    tmp_path, monkeypatch
+):
+    import importlib
+
+    search_module = importlib.import_module("smolsmort.forecast.search")
+    ws = SimpleNamespace(
+        mode="row",
+        masks={"train": np.ones(20, dtype=bool)},
+        families=["measure:x"],
+        profile={"genes": {"objectives": ["squared"]}},
+    )
+    genomes = [
+        make_genome(ws.families, "squared", {"max_depth": depth}) for depth in (6, 7, 8, 9, 4, 2, 1)
+    ]
+    children = iter(genomes[4:])
+    monkeypatch.setattr(search_module, "_seed_population", lambda *_: genomes[:4])
+    monkeypatch.setattr(search_module._Variation, "mutate", lambda *_: next(children))
+
+    def fake_score(_ws, genome, **_kwargs):
+        depth = dict(genome.params)["max_depth"]
+        history = {"metric": "rmse", "training": [float(depth)], "validation": [depth + 0.5]}
+        return Scored(float(depth), np.array([float(depth)]), {}, history if depth > 2 else None)
+
+    monkeypatch.setattr(search_module, "score", fake_score)
+    monkeypatch.setattr(worker.signal, "signal", lambda *_: None)
+    job = worker._Run(tmp_path)
+    job.status("done")
+    snapshots = []
+
+    def record_event(event):
+        job.event(event)
+        snapshots.append(run_state(tmp_path.parent, tmp_path.name)["eval_history"])
+
+    search(
+        ws, Budget(population=4, max_generations=3), on_best=job.record_best, on_event=record_event
+    )
+    assert [snapshot["key"] if snapshot else None for snapshot in snapshots] == [
+        genomes[0].key(),
+        genomes[4].key(),
+        None,
+    ]
+    assert snapshots[0]["training"] == [6.0]
+    assert snapshots[1]["training"] == [4.0]
+    assert json.loads((tmp_path / "eval_history.json").read_text()) is None
+    assert not (tmp_path / "eval_history.json.tmp").exists()
