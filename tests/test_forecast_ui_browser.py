@@ -5,6 +5,7 @@ uv run --with playwright pytest -q tests/test_forecast_ui_browser.py"""
 from __future__ import annotations
 
 import csv
+import json
 import threading
 import time
 import urllib.request
@@ -616,6 +617,145 @@ def test_generation_loss_ignores_response_from_previous_run(tmp_path):
         assert not page.locator(f"#{TOPIC}-search-loss").is_visible()
         assert page.locator(f"#{TOPIC}-loss-chart svg").count() == 0
         assert not page.locator(f"#{TOPIC}-search-progress").is_visible()
+
+
+@pytest.mark.parametrize(
+    ("topic", "metric"), [("regression", "wape"), ("classification", "log_loss")]
+)
+def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
+    recorded = json.loads((Path(__file__).parent / "golden/forecast_leaderboard.json").read_text())[
+        topic
+    ]
+    snapshot = {"rows": recorded}
+    with session(tmp_path) as (page, base):
+        page.route(
+            "**/api/forecast-runs",
+            lambda route: route.fulfill(
+                json={"run_id": "leaderboard"} if route.request.method == "POST" else {"runs": []}
+            ),
+        )
+        page.route(
+            "**/api/forecast-run?**",
+            lambda route: route.fulfill(
+                json={
+                    "state": "done",
+                    "generations": [],
+                    "generation_curves": [],
+                    "verdict": {"trusted": True},
+                    "leaderboard": snapshot["rows"],
+                }
+            ),
+        )
+        page.route(
+            "**/api/forecast-prep",
+            lambda route: route.fulfill(json={"summary": {}, "sql": "", "reused": False}),
+        )
+        page.click(f'#topic-switch .topic-tab:has-text("{topic}")')
+        show_tab(page, f"{topic}-data")
+        page.click(f"#{topic}-data-source")
+        page.locator('.menu-panel .menu-item[data-id="rows.csv"]').click()
+        page.wait_for_function(
+            f'/^\\d+ columns/.test(document.getElementById("{topic}-data-status").innerText)'
+        )
+        page.click(f"#{topic}-prepare")
+        page.wait_for_function(
+            f'document.getElementById("{topic}-data-status").innerText.startsWith("prepared")'
+        )
+        show_tab(page, f"{topic}-search")
+        page.click(f"#{topic}-search-start")
+        table = page.locator(f"#{topic}-leaderboard-table")
+        table.locator("tbody tr").first.wait_for()
+        headers = [
+            "rank",
+            "generation found",
+            f"validation error ({metric})",
+            "gap to best",
+            "mae",
+            "objective",
+            "tree depth",
+            "learning rate (eta)",
+            "feature count (families)",
+            "feature families",
+        ]
+        assert table.locator("th").all_text_contents() == headers
+        caption = table.locator("caption")
+        assert caption.inner_text() == (
+            f"best ten recipes the search tried, ranked by validation error ({metric}); lower is better; the winner is the first row"
+        )
+        assert caption.evaluate("node => getComputedStyle(node).whiteSpace") == "nowrap"
+        rows = table.locator("tbody tr")
+        assert rows.count() == len(recorded)
+        assert table.locator("tbody tr.on").count() == 1
+        assert "on" in rows.first.get_attribute("class").split()
+        selected = rows.first.locator("td").first.evaluate(
+            "node => getComputedStyle(node).backgroundColor"
+        )
+        regular = (
+            rows.nth(1)
+            .locator("td")
+            .first.evaluate("node => getComputedStyle(node).backgroundColor")
+        )
+        assert selected != regular
+        winner = recorded[0]
+        cells = rows.first.locator("td").all_text_contents()
+        assert cells[:5] == [
+            "1",
+            str(winner["generation"]),
+            f"{winner['fitness']:.4g}",
+            "+0.0%",
+            f"{winner['metrics']['mae']:.4g}" if topic == "regression" else "-",
+        ]
+        assert cells[6:9] == [
+            str(winner["genome"]["params"]["max_depth"]),
+            "0.125",
+            str(winner["families"]),
+        ]
+        if topic == "regression":
+            assert cells[5] == "absolute error"
+            assert (
+                cells[9]
+                == "lags 0,1,3 · rolling 8,13,52 · ewm 0.1-0.5 · calendar week,quarter · dims project"
+            )
+        else:
+            assert cells[5] in {"multiclass log loss", "log loss"}
+            assert (
+                cells[9]
+                == "calendar week,quarter · measures planned_offset,size · log measures size"
+            )
+        gap = (recorded[1]["fitness"] - winner["fitness"]) / winner["fitness"] * 100
+        assert rows.nth(1).locator("td").nth(3).inner_text() == f"+{gap:.1f}%"
+        assert "[object Object]" not in table.inner_text()
+        assert not any(entry["key"] in table.inner_text() for entry in recorded)
+        page.locator(f"#{topic}-leaderboard").screenshot(path=tmp_path / f"{topic}-leaderboard.png")
+
+        # missing fields stay readable; notes appear only when a recipe has one
+        snapshot["rows"] = (
+            recorded + [{"note": "failed: too few usable rows"}] + [recorded[-1]] * 12
+        )
+        page.click(f"#{topic}-search-start")
+        table.locator('td:text-is("failed: too few usable rows")').wait_for()
+        assert table.locator("th").all_text_contents() == headers + ["note"]
+        assert table.locator("tbody tr").count() == 10
+        missing = table.locator("tbody tr").nth(len(recorded)).locator("td").all_text_contents()
+        assert missing == [str(len(recorded) + 1)] + ["-"] * 9 + ["failed: too few usable rows"]
+        assert rows.first.locator("td").last.inner_text() == "-"
+        assert "[object Object]" not in table.inner_text()
+
+        snapshot["rows"] = [{"fitness": 0, "metrics": {metric: 0}}, {"fitness": 1}, {}]
+        page.click(f"#{topic}-search-start")
+        page.wait_for_function(
+            "id => document.getElementById(id).querySelectorAll('tbody tr').length === 3",
+            arg=f"{topic}-leaderboard-table",
+        )
+        assert rows.first.locator("td").nth(3).inner_text() == "+0.0%"
+        assert rows.nth(1).locator("td").nth(3).inner_text() == "-"
+        assert table.locator("th").all_text_contents() == headers
+        snapshot["rows"] = []
+        page.click(f"#{topic}-search-start")
+        page.wait_for_function(
+            "id => document.getElementById(id).classList.contains('hidden')",
+            arg=f"{topic}-leaderboard",
+        )
 
 
 def test_series_setup_saves_discards_and_prepares(tmp_path):

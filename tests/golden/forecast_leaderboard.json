@@ -1,0 +1,184 @@
+{
+  "regression": [
+    {
+      "key": "a0bafa1a7c3e",
+      "genome": {
+        "families": [
+          "cal:quarter",
+          "cal:week",
+          "dim:project",
+          "ewm:0.1",
+          "ewm:0.3",
+          "ewm:0.5",
+          "lag+0",
+          "lag+1",
+          "lag+3",
+          "roll:13",
+          "roll:52",
+          "roll:8"
+        ],
+        "objective": "absolute",
+        "params": {
+          "eta": 0.125,
+          "max_depth": 4
+        }
+      },
+      "fitness": 0.1703021872118386,
+      "metrics": {
+        "wape": 0.1703021872118386,
+        "mae": 5.6274035461599174
+      },
+      "generation": 1,
+      "families": 12,
+      "note": ""
+    },
+    {
+      "key": "74d301cd8145",
+      "genome": {
+        "families": [
+          "cal:quarter",
+          "cal:week",
+          "dim:project",
+          "ewm:0.1",
+          "ewm:0.3",
+          "ewm:0.5",
+          "lag+0",
+          "lag+1",
+          "lag+3",
+          "roll:13",
+          "roll:52",
+          "roll:8"
+        ],
+        "objective": "squared",
+        "params": {
+          "eta": 0.125,
+          "max_depth": 3
+        }
+      },
+      "fitness": 0.1999827707755295,
+      "metrics": {
+        "wape": 0.1999827707755295,
+        "mae": 6.608157956499042
+      },
+      "generation": 0,
+      "families": 12,
+      "note": ""
+    },
+    {
+      "key": "1fb901d2b0e0",
+      "genome": {
+        "families": [
+          "cal:quarter",
+          "cal:week",
+          "dim:project",
+          "ewm:0.1",
+          "ewm:0.3",
+          "ewm:0.5",
+          "lag+0",
+          "lag+1",
+          "lag+3",
+          "roll:13",
+          "roll:52",
+          "roll:8"
+        ],
+        "objective": "poisson",
+        "params": {
+          "eta": 0.125,
+          "max_depth": 6
+        }
+      },
+      "fitness": 0.24095980731438943,
+      "metrics": {
+        "wape": 0.24095980731438946,
+        "mae": 7.962188251148571
+      },
+      "generation": 3,
+      "families": 12,
+      "note": ""
+    },
+    {
+      "key": "0234dff14413",
+      "genome": {
+        "families": [
+          "cal:quarter",
+          "cal:week",
+          "dim:project",
+          "ewm:0.1",
+          "ewm:0.3",
+          "ewm:0.5",
+          "lag+0",
+          "lag+1",
+          "lag+3",
+          "roll:13",
+          "roll:52",
+          "roll:8"
+        ],
+        "objective": "tweedie",
+        "params": {
+          "eta": 0.125,
+          "max_depth": 5
+        }
+      },
+      "fitness": 0.32352789236065715,
+      "metrics": {
+        "wape": 0.3235278923606572,
+        "mae": 10.690538028659244
+      },
+      "generation": 2,
+      "families": 12,
+      "note": ""
+    }
+  ],
+  "classification": [
+    {
+      "key": "cb8ed27654b6",
+      "genome": {
+        "families": [
+          "date:quarter",
+          "date:week",
+          "log:size",
+          "measure:planned_offset",
+          "measure:size"
+        ],
+        "objective": "softprob",
+        "params": {
+          "eta": 0.125,
+          "max_depth": 3
+        }
+      },
+      "fitness": 1.610259778359357,
+      "metrics": {
+        "log_loss": 1.6102595329284668,
+        "brier": 0.8002899502664174
+      },
+      "generation": 0,
+      "families": 5,
+      "note": ""
+    },
+    {
+      "key": "d7fd4cff9902",
+      "genome": {
+        "families": [
+          "date:quarter",
+          "date:week",
+          "log:size",
+          "measure:planned_offset",
+          "measure:size"
+        ],
+        "objective": "logistic",
+        "params": {
+          "eta": 0.125,
+          "max_depth": 4
+        }
+      },
+      "fitness": 1.6150763385436115,
+      "metrics": {
+        "log_loss": 1.6150764226913452,
+        "brier": 0.8022041763322215
+      },
+      "generation": 1,
+      "families": 5,
+      "note": ""
+    }
+  ]
+}
