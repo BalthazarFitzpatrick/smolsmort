@@ -110,7 +110,7 @@ class ForecastTopic {
     this.columnsInfo = [];
     this.columnState = {}; // name -> {role, aggregation, known}
     this.seriesSetup = null;
-    this.step = 'auto';
+    this.step = 'week';
     this.horizon = 8;
     this.asOf = todayIso();
     this.where = '';
@@ -129,6 +129,7 @@ class ForecastTopic {
     this.breakdown = [];
     this.tableState = {page: 0, sort: null, desc: false, group: null};
     this.loadStored();
+    if (!FORECAST_UNITS.includes(this.step)) this.step = 'week';
   }
 
   mode() {
@@ -177,14 +178,14 @@ class ForecastTopic {
         <span class="field-label">unit</span>
         <span id="${this.topic}-censor-unit"></span>
         <span class="field-label">as of</span>
-        <input type="date" id="${this.topic}-censor-asof">
+        <input type="date" id="${this.topic}-censor-asof" class="text-field">
       </div>` : '';
     panel.innerHTML = `
       <div class="forecast-pane">
         <div class="run-controls">
           <div class="toggle dropdown-head grow" id="${this.topic}-data-source"><span>source</span></div>
           <span class="field-label">encoding</span>
-          <input type="text" id="${this.topic}-data-encoding" class="forecast-encoding">
+          <input type="text" id="${this.topic}-data-encoding" class="text-field forecast-encoding">
           <span class="stat" id="${this.topic}-data-root"></span>
         </div>
         <div id="${this.topic}-data-columns"></div>
@@ -194,7 +195,7 @@ class ForecastTopic {
           <div class="stat forecast-setup-readout" id="${this.topic}-setup-readout" aria-live="polite"></div>
           <div class="run-controls">
             <span class="field-label">as of</span>
-            <input type="date" id="${this.topic}-asof">
+            <input type="date" id="${this.topic}-asof" class="text-field">
           </div>
         </div>
         <div class="field-label" id="${this.topic}-row-heading">row settings</div>
@@ -203,13 +204,13 @@ class ForecastTopic {
           <div class="run-controls">
             <span class="field-label">rows to predict</span>
             <input type="text" id="${this.topic}-predict-where"
-                   placeholder="sql filter, optional" class="grow">
+                   placeholder="sql filter, optional" class="text-field grow">
           </div>
         </div>
         <div class="run-controls">
           <span class="field-label">filter</span>
           <input type="text" id="${this.topic}-where"
-                 placeholder="sql filter over the source, optional" class="grow">
+                 placeholder="sql filter over the source, optional" class="text-field grow">
         </div>
         <div class="run-controls">
           <div class="toggle adds" id="${this.topic}-prepare">prepare</div>
@@ -353,7 +354,7 @@ class ForecastTopic {
       targets: measures.filter(name => this.columnState[name]?.role === 'target'),
       aggregations: Object.fromEntries(measures.map(name => [name, this.columnState[name]?.aggregation])),
       time: dates.find(name => this.columnState[name]?.role === 'time') || dates[0],
-      dimensions: dimensions.filter(name => !this.columnState[name] || this.columnState[name].role === 'dimension'),
+      dimensions: [],
     };
     const targets = prior.targets.filter(name => measures.includes(name));
     this.seriesSetup = {
@@ -536,12 +537,17 @@ class ForecastTopic {
       }, `role for ${col.name}`);
       roleCell.appendChild(roleHead);
       const lastCell = document.createElement('td');
-      const check = document.createElement('input');
-      check.type = 'checkbox';
-      check.checked = state.known !== false;
-      check.disabled = !['dimension', 'measure'].includes(state.role);
-      check.onchange = () => {
-        this.columnState[col.name] = {...this.columnState[col.name], known: check.checked};
+      const known = state.known !== false;
+      const enabled = ['dimension', 'measure'].includes(state.role);
+      const check = forecastNode('button', 'toggle' + (known ? ' on' : '') +
+        (enabled ? '' : ' disabled'), known ? 'known' : 'not known');
+      check.type = 'button';
+      check.setAttribute('role', 'checkbox');
+      check.setAttribute('aria-checked', String(known));
+      check.disabled = !enabled;
+      check.onclick = () => {
+        this.columnState[col.name] = {...this.columnState[col.name], known: !known};
+        this.renderColumnGrid();
         this.saveStored();
       };
       lastCell.appendChild(check);

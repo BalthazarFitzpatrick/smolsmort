@@ -95,7 +95,7 @@ def set_role(page: Page, column: str, role: str) -> None:
 
 def uncheck_known(page: Page, column: str) -> None:
     row = page.locator("tr", has=page.locator(f"td:text-is('{column}')"))
-    row.locator("input[type=checkbox]").uncheck()
+    row.locator('[role="checkbox"][aria-checked="true"]').click()
 
 
 def run_search(page: Page) -> None:
@@ -150,7 +150,7 @@ def test_forecast_regression_row_flow(tmp_path):
         target = page.locator("tr", has=page.locator('td:text-is("lead_weeks")'))
         assert target.locator(".dropdown-head").inner_text() == "target"
         leak = page.locator("tr", has=page.locator('td:text-is("leak_plus1")'))
-        assert not leak.locator("input[type=checkbox]").is_checked()
+        assert leak.locator('[role="checkbox"]').get_attribute("aria-checked") == "false"
 
         page.click(f"#{TOPIC}-censor-toggle")
         page.click(f"#{TOPIC}-censor-unit .dropdown-head")
@@ -207,6 +207,132 @@ def test_stored_filters_with_quotes_fill_their_fields_intact(tmp_path):
         show_tab(page, "regression-data")
         assert page.locator(f"#{TOPIC}-where").input_value() == where
         assert page.locator(f"#{TOPIC}-predict-where").input_value() == where
+
+
+@pytest.mark.parametrize(
+    ("topic", "flavour"),
+    [("regression", "row"), ("regression", "series"), ("classification", "row")],
+)
+def test_data_controls_use_smortui_styles(tmp_path, topic, flavour):
+    with session(tmp_path) as (page, base):
+        page.click(f'#topic-switch .topic-tab:has-text("{topic}")')
+        page.select_option("#topic-flavour", flavour)
+        show_tab(page, f"{topic}-data")
+        page.click(f"#{topic}-data-source")
+        page.locator('.menu-panel .menu-item[data-id="rows.csv"]').click()
+        page.wait_for_function(
+            f'/^\\d+ columns/.test(document.getElementById("{topic}-data-status").innerText)'
+        )
+        panel = page.locator(f'.tab-panel[data-panel="{topic}-data"]')
+        assert panel.locator("select").count() == 0
+        for field in panel.locator("input").all():
+            assert "text-field" in field.get_attribute("class").split()
+            assert field.evaluate(
+                "el => getComputedStyle(el).backgroundColor === getComputedStyle(document.body).backgroundColor"
+            )
+            assert field.evaluate("el => getComputedStyle(el).borderWidth") == "2px"
+            assert field.evaluate("el => getComputedStyle(el).borderStyle") == "solid"
+            assert field.evaluate(
+                "el => getComputedStyle(el).fontFamily === getComputedStyle(document.body).fontFamily"
+            )
+        for check in panel.locator('[role="checkbox"]').all():
+            assert "toggle" in check.get_attribute("class").split()
+
+
+@pytest.mark.parametrize("stored_step", [None, "auto"])
+def test_unsaved_time_setup_shows_week_and_saved_plural(tmp_path, stored_step):
+    with session(tmp_path) as (page, base):
+        if stored_step is not None:
+            page.evaluate(
+                "step => localStorage.setItem('smolsmort:forecast:regression', JSON.stringify({state: {step}}))",
+                stored_step,
+            )
+            page.reload()
+        switch_to_regression(page)
+        page.select_option("#topic-flavour", "series")
+        show_tab(page, "regression-data")
+        head = page.locator(f"#{TOPIC}-setup-time")
+        readout = page.locator(f"#{TOPIC}-setup-readout")
+        assert head.inner_text() == "choose date · week · +8"
+        assert "8 weeks ahead" in readout.inner_text()
+        assert "auto" not in readout.inner_text()
+        head.click()
+        menu = page.locator(".forecast-setup-menu")
+        assert menu.locator(".dropdown-head").inner_text() == "week"
+        menu.locator(".dropdown-head").click()
+        menu.locator('.forecast-inline-list .menu-item:has-text("month")').click()
+        menu.locator('input[type="number"]').fill("1")
+        menu.locator('.menu-buttons [data-id="save"]').click()
+        assert head.inner_text() == "choose date · month · +1"
+        assert "1 month ahead" in readout.inner_text()
+
+
+def test_scaffold_defaults_empty_and_preserves_saved_picks(tmp_path):
+    with session(tmp_path) as (page, base):
+        switch_to_regression(page)
+        page.select_option("#topic-flavour", "series")
+        show_tab(page, "regression-data")
+
+        def load_source(name):
+            page.click(f"#{TOPIC}-data-source")
+            page.locator(f'.menu-panel .menu-item[data-id="{name}"]').click()
+            page.wait_for_function(
+                f'/^\\d+ columns/.test(document.getElementById("{TOPIC}-data-status").innerText)'
+            )
+
+        def assert_empty_scaffold():
+            assert (
+                page.locator(f"#{TOPIC}-setup-scaffold").inner_text() == "none (one total series)"
+            )
+            assert "total = 1 series" in page.locator(f"#{TOPIC}-setup-readout").inner_text()
+            page.click(f"#{TOPIC}-setup-scaffold")
+            menu = page.locator(".forecast-setup-menu")
+            assert menu.locator(".menu-item.on").count() == 0
+            assert menu.locator(".forecast-series-product").inner_text() == "1 series (the total)"
+            menu.locator('.menu-buttons [data-id="close"]').click()
+
+        assert_empty_scaffold()
+        load_source("panel.csv")
+        assert_empty_scaffold()
+        page.select_option("#topic-flavour", "row")
+        page.wait_for_function(
+            f'/^\\d+ columns/.test(document.getElementById("{TOPIC}-data-status").innerText)'
+        )
+        page.select_option("#topic-flavour", "series")
+        page.wait_for_function(
+            f'/^\\d+ columns/.test(document.getElementById("{TOPIC}-data-status").innerText)'
+        )
+        assert_empty_scaffold()
+        load_source("rows.csv")
+        assert_empty_scaffold()
+        load_source("panel.csv")
+        assert_empty_scaffold()
+
+        page.click(f"#{TOPIC}-setup-scaffold")
+        page.locator('.forecast-setup-menu .menu-item[data-id="project"]').click()
+        page.locator('.forecast-setup-menu .menu-buttons [data-id="save"]').click()
+        page.select_option("#topic-flavour", "row")
+        page.wait_for_function(
+            f'/^\\d+ columns/.test(document.getElementById("{TOPIC}-data-status").innerText)'
+        )
+        page.select_option("#topic-flavour", "series")
+        page.wait_for_function(
+            f'/^\\d+ columns/.test(document.getElementById("{TOPIC}-data-status").innerText)'
+        )
+        load_source("panel.csv")
+        page.click(f"#{TOPIC}-setup-scaffold")
+        menu = page.locator(".forecast-setup-menu")
+        assert menu.locator(".menu-item.on").get_attribute("data-id") == "project"
+        menu.locator('.menu-item[data-id="project"]').click()
+        menu.locator('.menu-buttons [data-id="save"]').click()
+        page.reload()
+        switch_to_regression(page)
+        page.select_option("#topic-flavour", "series")
+        show_tab(page, "regression-data")
+        page.wait_for_function(
+            f'/^\\d+ columns/.test(document.getElementById("{TOPIC}-data-status").innerText)'
+        )
+        assert_empty_scaffold()
 
 
 def test_series_setup_saves_discards_and_prepares(tmp_path):
@@ -299,13 +425,17 @@ def test_series_setup_saves_discards_and_prepares(tmp_path):
         menu = open_picker("scaffold")
         assert menu.locator('.menu-item[data-id="project"] .stats').inner_text() == "[3]"
         assert menu.locator('.menu-item[data-id="product"] .stats').inner_text() == "[4]"
+        assert menu.locator(".menu-item.on").count() == 0
+        assert menu.locator(".forecast-series-product").inner_text() == "1 series (the total)"
+        pick("project")
+        pick("product")
         assert menu.locator(".forecast-series-product").inner_text() == "3 x 4 = 12 series"
         pick("product")
         assert menu.locator(".forecast-series-product").inner_text() == "3 = 3 series"
         finish("close")
         menu = open_picker("scaffold")
-        assert menu.locator(".forecast-series-product").inner_text() == "3 x 4 = 12 series"
-        pick("product")
+        assert menu.locator(".forecast-series-product").inner_text() == "1 series (the total)"
+        pick("project")
         finish("save")
 
         page.reload()
