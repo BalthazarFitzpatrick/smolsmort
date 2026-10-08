@@ -113,6 +113,29 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 
 /* ---- forecast (regression / classification) ---- */
 .forecast-pane { display: flex; flex-direction: column; gap: var(--gap); }
+.forecast-setup-heads { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+.forecast-setup-slot { display: grid; gap: 6px; min-width: 0; }
+.forecast-setup-slot .dropdown-head,
+.forecast-setup-menu .menu-list,
+.forecast-agg-row .forecast-field { width: 260px; min-width: 260px; max-width: 260px; }
+.forecast-setup-menu .menu-list { padding-inline: 0; margin-inline: 12px; }
+.forecast-setup-slot .field-label,
+.forecast-setup-menu .field-label,
+.forecast-setup-menu .popup-title { white-space: nowrap; }
+.forecast-setup-readout { white-space: nowrap; overflow-x: auto; margin-block: 8px; }
+.forecast-setup-pane { display: grid; gap: 8px; padding: 4px 0; }
+.forecast-agg-row { display: flex; align-items: flex-start; gap: 8px; }
+.forecast-agg-row .forecast-field { justify-content: flex-start; }
+.forecast-agg-row .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.forecast-inline-select { display: grid; gap: 4px; align-content: start; }
+.forecast-inline-select .dropdown-head { min-width: 120px; max-width: 120px; }
+.forecast-inline-list { display: grid; gap: 4px; }
+.forecast-time-side { width: 130px; }
+.forecast-time-side .dropdown-head { min-width: 130px; max-width: 130px; }
+.forecast-time-side input[type=number] { width: 100%; }
+.menu-panel.forecast-setup-menu { width: 500px; }
+.menu-panel.forecast-setup-time { width: auto; }
+.forecast-setup-time .menu-column-row > .menu-section { flex: none; min-width: 0; }
 .field-select {
   height: var(--row-height); box-sizing: border-box; background: var(--bg);
   color: var(--text-dim); border: 2px solid var(--grey-border); padding: 0 8px;

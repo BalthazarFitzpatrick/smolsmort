@@ -1,12 +1,8 @@
 // forecast: the regression and classification topics share this one set of tabs, parameterised by
 // topic/task. the flavour dropdown picks spec.mode; the topic itself picks spec.task
 
-const FORECAST_ROLES = {
-  series: ['time', 'dimension', 'measure', 'target', 'ignore'],
-  row: ['anchor', 'dimension', 'measure', 'target', 'ignore'],
-};
-const FORECAST_AGGREGATIONS = ['sum', 'mean', 'min', 'max', 'count', 'last'];
-const FORECAST_STEPS = ['auto', 'day', 'week', 'month', 'quarter', 'year'];
+const FORECAST_ROW_ROLES = ['anchor', 'dimension', 'measure', 'target', 'ignore'];
+const FORECAST_AGGREGATIONS = ['sum', 'mean', 'median', 'min', 'max'];
 const FORECAST_UNITS = ['day', 'week', 'month', 'quarter', 'year'];
 const FORECAST_PAGE_SIZE = 50;
 
@@ -14,14 +10,68 @@ function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
 
-function forecastSelectEl(id, options, selected, extraClass) {
-  const opts = options.map(o => {
-    const value = typeof o === 'string' ? o : o.id;
-    const label = typeof o === 'string' ? o : o.label;
-    const sel = value === selected ? ' selected' : '';
-    return `<option value="${value}"${sel}>${label}</option>`;
-  }).join('');
-  return `<select class="field-select ${extraClass || ''}" id="${id}">${opts}</select>`;
+function forecastNode(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text != null) node.textContent = text;
+  return node;
+}
+
+function forecastDropdown(options, value, onPick, label) {
+  const head = forecastNode('button', 'toggle dropdown-head');
+  head.type = 'button';
+  head.setAttribute('aria-label', label);
+  head.append(forecastNode('span', null, value));
+  head.onclick = () => listMenu(label, options.map(id => ({id, label: id, on: id === value})), item => {
+    value = item.id;
+    setHead(head, value);
+    onPick(value);
+  }).openAt(head);
+  return head;
+}
+
+// choices open inside the parent menu: a second floating menu would dismiss its draft
+function forecastInlineSelect(options, value, onPick, label) {
+  const wrap = forecastNode('div', 'forecast-inline-select');
+  const head = forecastNode('div', 'toggle dropdown-head menu-item');
+  head.tabIndex = 0;
+  head.setAttribute('role', 'button');
+  head.setAttribute('aria-label', label);
+  const text = forecastNode('span', null, value);
+  const list = forecastNode('div', 'forecast-inline-list');
+  head.append(text);
+  const close = () => { list.replaceChildren(); head.classList.remove('open'); };
+  head.onclick = () => {
+    if (list.childElementCount) { close(); return; }
+    head.classList.add('open');
+    options.forEach(option => {
+      const row = forecastNode('div', 'toggle menu-item' + (option === value ? ' on' : ''));
+      row.append(forecastNode('span', 'name', option));
+      row.onclick = () => {
+        value = option;
+        text.textContent = option;
+        close();
+        head.focus();
+        onPick(option);
+      };
+      list.append(row);
+    });
+  };
+  wrap.append(head, list);
+  return wrap;
+}
+
+class ForecastSetupMenu extends Menu {
+  constructor(key, options) {
+    super(options);
+    this.key = key;
+  }
+
+  _build() {
+    const panel = super._build();
+    panel.classList.add('forecast-setup-menu', `forecast-setup-${this.key}`);
+    return panel;
+  }
 }
 
 // one row per number, right-aligned buttons - the stepper-row recipe from the train tab
@@ -59,6 +109,7 @@ class ForecastTopic {
     this.encoding = 'auto';
     this.columnsInfo = [];
     this.columnState = {}; // name -> {role, aggregation, known}
+    this.seriesSetup = null;
     this.step = 'auto';
     this.horizon = 8;
     this.asOf = todayIso();
@@ -100,6 +151,7 @@ class ForecastTopic {
     try {
       const state = {
         source: this.source, encoding: this.encoding, columnState: this.columnState,
+        seriesSetup: this.seriesSetup,
         step: this.step, horizon: this.horizon, asOf: this.asOf, where: this.where,
         predictWhere: this.predictWhere, censorOn: this.censorOn, censorUnit: this.censorUnit,
         censorAsOf: this.censorAsOf,
@@ -123,7 +175,7 @@ class ForecastTopic {
         <span class="field-label">anchor</span>
         <span class="field-value" id="${this.topic}-censor-anchor">-</span>
         <span class="field-label">unit</span>
-        ${forecastSelectEl(`${this.topic}-censor-unit`, FORECAST_UNITS, this.censorUnit)}
+        <span id="${this.topic}-censor-unit"></span>
         <span class="field-label">as of</span>
         <input type="date" id="${this.topic}-censor-asof">
       </div>` : '';
@@ -137,16 +189,13 @@ class ForecastTopic {
         </div>
         <div id="${this.topic}-data-columns"></div>
         <div class="h-divider"></div>
-        <div class="field-label">series settings</div>
-        <div class="run-controls" id="${this.topic}-series-row">
-          <span class="field-label">time step</span>
-          ${forecastSelectEl(`${this.topic}-step`, FORECAST_STEPS, this.step)}
-          <span class="field-label">horizon</span>
-          <span class="field-value" id="${this.topic}-horizon">${this.horizon}</span>
-          <div class="toggle" data-step="-1" data-target="horizon">-</div>
-          <div class="toggle" data-step="1" data-target="horizon">+</div>
-          <span class="field-label">as of</span>
-          <input type="date" id="${this.topic}-asof">
+        <div id="${this.topic}-series-row">
+          <div class="forecast-setup-heads" id="${this.topic}-setup-heads"></div>
+          <div class="stat forecast-setup-readout" id="${this.topic}-setup-readout" aria-live="polite"></div>
+          <div class="run-controls">
+            <span class="field-label">as of</span>
+            <input type="date" id="${this.topic}-asof">
+          </div>
         </div>
         <div class="field-label" id="${this.topic}-row-heading">row settings</div>
         <div id="${this.topic}-row-row">
@@ -183,6 +232,7 @@ class ForecastTopic {
     }
     this.dataSay = text => setText(`${this.topic}-data-status`, text);
     this.wireData(panel);
+    this.renderSetupHeads();
     this.paintDataMode();
     return {enter: () => this.enterData()};
   }
@@ -197,7 +247,8 @@ class ForecastTopic {
     document.getElementById(`${this.topic}-series-row`).classList.toggle('hidden', !series);
     document.getElementById(`${this.topic}-row-row`).classList.toggle('hidden', series);
     const heading = document.getElementById(`${this.topic}-row-heading`);
-    if (heading) heading.textContent = series ? 'series settings' : 'row settings';
+    if (heading) heading.classList.toggle('hidden', series);
+    this.renderColumnGrid();
   }
 
   wireData(panel) {
@@ -208,21 +259,12 @@ class ForecastTopic {
       this.saveStored();
       if (this.source) this.loadColumns();
     };
-    const step = document.getElementById(`${this.topic}-step`);
-    if (step) step.onchange = () => { this.step = step.value; this.saveStored(); };
     const asOf = document.getElementById(`${this.topic}-asof`);
     if (asOf) asOf.onchange = () => { this.asOf = asOf.value; this.saveStored(); };
     const predictWhere = document.getElementById(`${this.topic}-predict-where`);
     if (predictWhere) predictWhere.onchange = () => { this.predictWhere = predictWhere.value; this.saveStored(); };
     const where = document.getElementById(`${this.topic}-where`);
     where.onchange = () => { this.where = where.value; this.saveStored(); };
-    panel.querySelectorAll('[data-target="horizon"]').forEach(btn => {
-      btn.onclick = () => {
-        this.horizon = Math.max(1, this.horizon + Number(btn.dataset.step));
-        setText(`${this.topic}-horizon`, String(this.horizon));
-        this.saveStored();
-      };
-    });
     if (this.task === 'regression') {
       const toggle = document.getElementById(`${this.topic}-censor-toggle`);
       toggle.onclick = () => {
@@ -234,7 +276,10 @@ class ForecastTopic {
       toggle.classList.toggle('on', this.censorOn);
       toggle.textContent = this.censorOn ? 'censoring on' : 'censoring off';
       const unit = document.getElementById(`${this.topic}-censor-unit`);
-      unit.onchange = () => { this.censorUnit = unit.value; this.saveStored(); };
+      unit.replaceChildren(forecastDropdown(FORECAST_UNITS, this.censorUnit, value => {
+        this.censorUnit = value;
+        this.saveStored();
+      }, 'censor unit'));
       const asof2 = document.getElementById(`${this.topic}-censor-asof`);
       asof2.onchange = () => { this.censorAsOf = asof2.value; this.saveStored(); };
       this.updateCensorAnchor();
@@ -274,18 +319,20 @@ class ForecastTopic {
         source: this.source, encoding: this.encoding, mode: this.mode(),
       });
       this.columnsInfo = res.columns;
-      // keep any per-column choice still valid for this mode; suggest for anything new
-      const roles = FORECAST_ROLES[this.mode()];
+      // row roles survive flavour changes; series picks have their own saved state
+      const roles = FORECAST_ROW_ROLES;
       const next = {};
       this.columnsInfo.forEach(col => {
         const prior = this.columnState[col.name];
-        const role = prior && roles.includes(prior.role) ? prior.role : col.suggested_role;
+        const suggested = col.kind === 'date' ? 'anchor' : col.suggested_role;
+        const role = prior && roles.includes(prior.role) ? prior.role : suggested;
         next[col.name] = {
           role,
           aggregation: (prior && prior.aggregation) || FORECAST_AGGREGATIONS[0],
           known: prior ? prior.known !== false : true,
         };
       });
+      this.reconcileSeriesSetup();
       this.columnState = next;
       this.renderColumnGrid();
       this.updateCensorAnchor();
@@ -297,15 +344,174 @@ class ForecastTopic {
     }
   }
 
+  reconcileSeriesSetup() {
+    const fields = kind => this.columnsInfo.filter(col => col.kind === kind).map(col => col.name);
+    const measures = fields('number');
+    const dates = fields('date');
+    const dimensions = fields('text');
+    const prior = this.seriesSetup || {
+      targets: measures.filter(name => this.columnState[name]?.role === 'target'),
+      aggregations: Object.fromEntries(measures.map(name => [name, this.columnState[name]?.aggregation])),
+      time: dates.find(name => this.columnState[name]?.role === 'time') || dates[0],
+      dimensions: dimensions.filter(name => !this.columnState[name] || this.columnState[name].role === 'dimension'),
+    };
+    const targets = prior.targets.filter(name => measures.includes(name));
+    this.seriesSetup = {
+      targets,
+      aggregations: Object.fromEntries(targets.map(name => [name,
+        FORECAST_AGGREGATIONS.includes(prior.aggregations[name]) ? prior.aggregations[name] : 'sum'])),
+      time: dates.includes(prior.time) ? prior.time : (dates[0] || null),
+      dimensions: prior.dimensions.filter(name => dimensions.includes(name)),
+    };
+    if (!FORECAST_UNITS.includes(this.step)) this.step = 'week';
+    this.paintSetupHeads();
+  }
+
+  countSeries(dimensions) {
+    return dimensions.reduce((product, name) => product *
+      (this.columnsInfo.find(col => col.name === name)?.distinct || 0), 1);
+  }
+
+  renderSetupHeads() {
+    const box = document.getElementById(`${this.topic}-setup-heads`);
+    box.replaceChildren();
+    [['predict', 'predict'], ['aggregate', 'aggregate'], ['time', 'extend in time'],
+      ['scaffold', 'scaffold along']].forEach(([key, label]) => {
+      const slot = forecastNode('div', 'forecast-setup-slot');
+      const head = forecastNode('button', 'toggle dropdown-head');
+      head.type = 'button';
+      head.id = `${this.topic}-setup-${key}`;
+      head.append(forecastNode('span'));
+      head.onclick = () => this.openSetupPicker(key, head);
+      slot.append(forecastNode('div', 'field-label', label), head);
+      box.append(slot);
+    });
+    this.paintSetupHeads();
+  }
+
+  paintSetupHeads() {
+    const setup = this.seriesSetup || {targets: [], aggregations: {}, time: null, dimensions: []};
+    const aggregate = setup.targets.map(name => `${setup.aggregations[name]}(${name})`).join(', ');
+    const series = this.countSeries(setup.dimensions).toLocaleString('en');
+    const captions = {
+      predict: setup.targets.join(', ') || 'choose variables',
+      aggregate: aggregate || 'predict something first',
+      time: `${setup.time || 'choose date'} · ${this.step} · +${this.horizon}`,
+      scaffold: setup.dimensions.length ? `${setup.dimensions.join(' x ')} · ${series}` : 'none (one total series)',
+    };
+    Object.entries(captions).forEach(([key, text]) => {
+      const head = document.getElementById(`${this.topic}-setup-${key}`);
+      if (head) { setHead(head, text); head.title = text; }
+    });
+    setText(`${this.topic}-setup-readout`, `${aggregate || 'nothing yet'} · ${setup.time || 'no date'}, ` +
+      `${this.horizon} ${this.step}${this.horizon === 1 ? '' : 's'} ahead · ` +
+      `${setup.dimensions.join(' x ') || 'total'} = ${series} series`);
+  }
+
+  openSetupPicker(key, head) {
+    const saved = this.seriesSetup || {targets: [], aggregations: {}, time: null, dimensions: []};
+    const draft = {
+      ...saved, targets: [...saved.targets], aggregations: {...saved.aggregations},
+      dimensions: [...saved.dimensions], step: this.step === 'auto' ? 'week' : this.step,
+      horizon: this.horizon,
+    };
+    const fields = kind => this.columnsInfo.filter(col => col.kind === kind);
+    const footer = {kind: 'buttons', buttons: [
+      {id: 'save', label: 'save', onClick: menu => {
+        this.seriesSetup = {
+          targets: draft.targets,
+          aggregations: Object.fromEntries(draft.targets.map(name => [name, draft.aggregations[name] || 'sum'])),
+          time: draft.time, dimensions: draft.dimensions,
+        };
+        this.step = draft.step;
+        this.horizon = draft.horizon;
+        this.saveStored();
+        this.paintSetupHeads();
+        menu.close();
+      }},
+      {id: 'close', label: 'close', onClick: menu => menu.close()},
+    ]};
+    let title, sections;
+    if (key === 'predict') {
+      title = 'variables to predict';
+      sections = [{kind: 'list', multi: true, empty: 'no numeric fields',
+        items: fields('number').map(col => ({id: col.name, label: col.name, on: draft.targets.includes(col.name)})),
+        onPick: (item, on) => {
+          const picks = on ? [...draft.targets, item.id] : draft.targets.filter(name => name !== item.id);
+          draft.targets = fields('number').map(col => col.name).filter(name => picks.includes(name));
+          if (on && !draft.aggregations[item.id]) draft.aggregations[item.id] = 'sum';
+        },
+      }];
+    } else if (key === 'aggregate') {
+      title = 'aggregation per variable';
+      const pane = forecastNode('div', 'forecast-setup-pane');
+      if (!draft.targets.length) pane.append(forecastNode('span', 'none', 'pick variables to predict in the first dropdown'));
+      draft.targets.forEach(name => {
+        const row = forecastNode('div', 'forecast-agg-row');
+        const field = forecastNode('div', 'toggle forecast-field');
+        field.append(forecastNode('span', 'name', name));
+        row.append(field, forecastInlineSelect(FORECAST_AGGREGATIONS, draft.aggregations[name], value => {
+          draft.aggregations[name] = value;
+        }, `aggregation for ${name}`));
+        pane.append(row);
+      });
+      sections = [{kind: 'node', node: pane}];
+    } else if (key === 'time') {
+      title = 'time to extend';
+      const right = forecastNode('div', 'forecast-setup-pane forecast-time-side');
+      const aheadLabel = forecastNode('div', 'field-label', `${draft.step}s ahead`);
+      const granularity = forecastInlineSelect(FORECAST_UNITS, draft.step, value => {
+        draft.step = value;
+        aheadLabel.textContent = `${value}s ahead`;
+      }, 'date granularity');
+      const ahead = forecastNode('input', 'text-field');
+      ahead.type = 'number';
+      ahead.min = '1';
+      ahead.max = '366';
+      ahead.value = draft.horizon;
+      ahead.setAttribute('aria-label', 'steps into the future');
+      ahead.oninput = () => { draft.horizon = Math.max(1, Math.min(366, Math.round(+ahead.value) || 1)); };
+      ahead.onkeydown = evt => { if (evt.key !== 'Escape') evt.stopPropagation(); };
+      right.append(forecastNode('div', 'field-label', 'date granularity'), granularity, aheadLabel, ahead);
+      sections = [{kind: 'list', multi: true, label: 'date field', empty: 'no date fields',
+        items: fields('date').map(col => ({id: col.name, label: col.name, on: draft.time === col.name})),
+        onPick: (item, on, menu) => {
+          draft.time = item.id;
+          menu.el.querySelectorAll('.menu-list .menu-item').forEach(row => row.classList.toggle('on', row.dataset.id === item.id));
+        },
+      }, {kind: 'node', node: right}];
+    } else {
+      title = 'dimensions to scaffold along';
+      const note = forecastNode('div', 'stat forecast-series-product');
+      const paint = () => {
+        note.textContent = draft.dimensions.length ?
+          `${draft.dimensions.map(name => this.columnsInfo.find(col => col.name === name).distinct).join(' x ')} = ` +
+          `${this.countSeries(draft.dimensions).toLocaleString('en')} series` : '1 series (the total)';
+      };
+      paint();
+      sections = [{kind: 'list', multi: true, empty: 'no dimensions',
+        items: fields('text').map(col => ({id: col.name, label: col.name, stats: `[${col.distinct}]`, on: draft.dimensions.includes(col.name)})),
+        onPick: (item, on) => {
+          const picks = on ? [...draft.dimensions, item.id] : draft.dimensions.filter(name => name !== item.id);
+          draft.dimensions = fields('text').map(col => col.name).filter(name => picks.includes(name));
+          paint();
+        },
+      }, {kind: 'node', node: note}];
+    }
+    const menu = new ForecastSetupMenu(key, {
+      title, columns: key === 'time', sections: [...sections, footer], onDismiss: () => head.focus(),
+    });
+    menu.openAt(head);
+  }
+
   renderColumnGrid() {
     const box = document.getElementById(`${this.topic}-data-columns`);
     box.innerHTML = '';
-    if (!this.columnsInfo.length) return;
-    const series = this.mode() === 'series';
+    if (!this.columnsInfo.length || this.mode() === 'series') return;
     const table = document.createElement('table');
     table.className = 'forecast-column-grid';
     const head = document.createElement('tr');
-    ['name', 'kind', 'samples', 'role', series ? 'aggregation' : 'known when predicting']
+    ['name', 'kind', 'samples', 'role', 'known when predicting']
       .forEach(label => {
         const th = document.createElement('th');
         th.textContent = label;
@@ -322,50 +528,23 @@ class ForecastTopic {
       const samplesCell = document.createElement('td');
       samplesCell.textContent = col.sample.join(', ');
       const roleCell = document.createElement('td');
-      const roleSelect = document.createElement('select');
-      roleSelect.className = 'field-select';
-      FORECAST_ROLES[this.mode()].forEach(role => {
-        const opt = document.createElement('option');
-        opt.value = role;
-        opt.textContent = role;
-        opt.selected = role === state.role;
-        roleSelect.appendChild(opt);
-      });
-      roleSelect.onchange = () => {
-        this.columnState[col.name] = {...this.columnState[col.name], role: roleSelect.value};
+      const roleHead = forecastDropdown(FORECAST_ROW_ROLES, state.role, role => {
+        this.columnState[col.name] = {...this.columnState[col.name], role};
         this.updateCensorAnchor();
+        this.renderColumnGrid();
+        this.saveStored();
+      }, `role for ${col.name}`);
+      roleCell.appendChild(roleHead);
+      const lastCell = document.createElement('td');
+      const check = document.createElement('input');
+      check.type = 'checkbox';
+      check.checked = state.known !== false;
+      check.disabled = !['dimension', 'measure'].includes(state.role);
+      check.onchange = () => {
+        this.columnState[col.name] = {...this.columnState[col.name], known: check.checked};
         this.saveStored();
       };
-      roleCell.appendChild(roleSelect);
-      const lastCell = document.createElement('td');
-      if (series) {
-        const aggSelect = document.createElement('select');
-        aggSelect.className = 'field-select';
-        const relevant = ['measure', 'target'].includes(state.role);
-        aggSelect.disabled = !relevant;
-        FORECAST_AGGREGATIONS.forEach(agg => {
-          const opt = document.createElement('option');
-          opt.value = agg;
-          opt.textContent = agg;
-          opt.selected = agg === state.aggregation;
-          aggSelect.appendChild(opt);
-        });
-        aggSelect.onchange = () => {
-          this.columnState[col.name] = {...this.columnState[col.name], aggregation: aggSelect.value};
-          this.saveStored();
-        };
-        lastCell.appendChild(aggSelect);
-      } else {
-        const check = document.createElement('input');
-        check.type = 'checkbox';
-        check.checked = state.known !== false;
-        check.disabled = !['dimension', 'measure'].includes(state.role);
-        check.onchange = () => {
-          this.columnState[col.name] = {...this.columnState[col.name], known: check.checked};
-          this.saveStored();
-        };
-        lastCell.appendChild(check);
-      }
+      lastCell.appendChild(check);
       row.append(nameCell, kindCell, samplesCell, roleCell, lastCell);
       table.appendChild(row);
     });
@@ -375,11 +554,18 @@ class ForecastTopic {
   buildSpec() {
     const mode = this.mode();
     const series = mode === 'series';
-    const columns = Object.entries(this.columnState).map(([name, state]) => ({
+    const setup = this.seriesSetup;
+    const columns = series ? this.columnsInfo.map(col => ({
+      name: col.name,
+      role: setup?.targets.includes(col.name) ? 'target' : setup?.time === col.name ? 'time' :
+        setup?.dimensions.includes(col.name) ? 'dimension' : 'ignore',
+      aggregation: setup?.targets.includes(col.name) ? setup.aggregations[col.name] : null,
+      known: true,
+    })) : Object.entries(this.columnState).map(([name, state]) => ({
       name,
       role: state.role,
-      aggregation: series && ['measure', 'target'].includes(state.role) ? state.aggregation : null,
-      known: series ? true : state.known !== false,
+      aggregation: null,
+      known: state.known !== false,
     }));
     const anchorEntry = columns.find(c => c.role === 'anchor');
     return {
