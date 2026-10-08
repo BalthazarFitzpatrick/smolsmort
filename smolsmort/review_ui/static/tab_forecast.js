@@ -1050,7 +1050,7 @@ class ForecastTopic {
       row.dataset.runId = run.id;
       const latest = run.generations?.at(-1);
       const error = this.isRunning(run) ? run.best_error ?? latest?.best : run.test_error;
-      row.append(forecastNode('span', 'field-value', `${run.id.split('-').at(-1)} · ${run.kind || 'search'}`));
+      row.append(forecastNode('span', 'name', `${run.id.split('-').at(-1)} · ${run.kind || 'search'}`));
       row.append(forecastNode('span', 'field-label', this.isRunning(run)
         ? `${run.state} · generation ${run.generation ?? latest?.generation ?? '-'} · best ${forecastNumber(error)}`
         : `${run.state === 'failed' ? 'failed' : run.stopped || run.state} · error ${forecastNumber(error)}`));

@@ -905,6 +905,9 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
             "rows => rows.map(row => row.dataset.runId)"
         ) == [missing, recent, best]
         assert "generation 0" in running.inner_text()
+        assert running.locator(".forecast-run-row.on .name").evaluate(
+            "node => getComputedStyle(node).color === getComputedStyle(node.parentElement).color"
+        )
         assert page.locator(f"#{TOPIC}-run-title").inner_text().endswith("search · running")
         assert table.locator("tbody tr").count() == len(recipes)
         assert not page.locator(f"#{TOPIC}-run-verdict").is_visible()
@@ -990,6 +993,9 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
             arg=f"{TOPIC}-loss-chart",
         )
         assert page.locator(f"#{TOPIC}-loss-chart .chart-line").count() == 2
+        page.locator(f"#{TOPIC}-leaderboard .forecast-leaderboard-wrap").evaluate(
+            "node => { node.scrollLeft = 0; }"
+        )
         page.locator('.tab-panel[data-panel="regression-search"]').screenshot(
             path=tmp_path / "runs-first.png"
         )
