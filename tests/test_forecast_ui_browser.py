@@ -102,6 +102,7 @@ def uncheck_known(page: Page, column: str) -> None:
 
 def run_search(page: Page) -> None:
     show_tab(page, "regression-search")
+    page.click(f"#{TOPIC}-new-search")
     for key, value in (("population", 6), ("plateau", 1), ("generations", 2)):
         head = page.locator(f'#{TOPIC}-budget [data-stepper="{key}"]')
         current = int(head.locator(".field-value").inner_text())
@@ -169,8 +170,7 @@ def test_forecast_regression_row_flow(tmp_path):
 
         run_search(page)
 
-        page.wait_for_selector(f'#{TOPIC}-runs-list .toggle:has-text("open results")')
-        page.click(f'#{TOPIC}-runs-list .toggle:has-text("open results")')
+        page.click(f"#{TOPIC}-run-open")
         page.wait_for_timeout(300)
 
         page.wait_for_selector(f"#{TOPIC}-verdict:not(.hidden)")
@@ -525,7 +525,7 @@ def test_search_charts_accumulate_validation_generations_and_reset(tmp_path, top
         assert page.evaluate(
             "topic => { const ids = ['search-progress', 'search-loss', 'leaderboard'];"
             " const nodes = ids.map(id => document.getElementById(`${topic}-${id}`));"
-            " return nodes[0].nextElementSibling === nodes[1] && nodes[1].nextElementSibling === nodes[2]; }",
+            " return nodes[0].nextElementSibling === nodes[1] && nodes[1].parentElement.nextElementSibling === nodes[2]; }",
             topic,
         )
         overlay = chart.locator(".chart-overlay").bounding_box()
@@ -539,6 +539,7 @@ def test_search_charts_accumulate_validation_generations_and_reset(tmp_path, top
         assert progress.is_visible()
         assert loss.is_visible()
         snapshot.update(count=0, state="running")
+        page.click(f"#{topic}-new-search")
         page.click(f"#{topic}-search-start")
         page.wait_for_function(
             f'document.getElementById("{topic}-search-status").innerText === "running"'
@@ -599,6 +600,7 @@ def test_generation_loss_ignores_response_from_previous_run(tmp_path):
             page.click(f"#{TOPIC}-search-start")
         page.wait_for_timeout(100)
         assert len(delayed) == 1
+        page.click(f"#{TOPIC}-new-search")
         page.click(f"#{TOPIC}-search-start")
         page.wait_for_function(
             f'document.getElementById("{TOPIC}-search-status").innerText === "running"'
@@ -674,8 +676,7 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
             "objective",
             "tree depth",
             "learning rate (eta)",
-            "feature count (families)",
-            "feature families",
+            "features",
         ]
         assert table.locator("th").all_text_contents() == headers
         caption = table.locator("caption")
@@ -708,40 +709,59 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
         assert cells[6:9] == [
             str(winner["genome"]["params"]["max_depth"]),
             "0.125",
-            str(winner["families"]),
+            f"{winner['families']} features",
         ]
+        rows.first.locator(".dropdown-head").click()
+        details = page.locator(".menu-panel")
+        assert details.locator(".popup-title").inner_text() == "recipe 1"
         if topic == "regression":
             assert cells[5] == "absolute error"
-            assert (
-                cells[9]
-                == "lags 0,1,3 · rolling 8,13,52 · ewm 0.1-0.5 · calendar week,quarter · dims project"
-            )
+            assert details.locator(".forecast-recipe-field").all_text_contents()[:5] == [
+                "lags0,1,3",
+                "rolling8,13,52",
+                "ewm0.1,0.3,0.5",
+                "calendarweek,quarter",
+                "dimsproject",
+            ]
         else:
             assert cells[5] in {"multiclass log loss", "log loss"}
-            assert (
-                cells[9]
-                == "calendar week,quarter · measures planned_offset,size · log measures size"
-            )
+            assert details.locator(".forecast-recipe-field").all_text_contents()[:3] == [
+                "calendarweek,quarter",
+                "measuresplanned_offset,size",
+                "log measuressize",
+            ]
+        assert "tree params" in details.inner_text()
+        assert "metrics" in details.inner_text()
+        labels = details.locator(".forecast-recipe-field .field-label").all_text_contents()
+        assert all(
+            label in labels
+            for label in ["colsample", "eta", "lambda", "depth", "min child weight", "subsample"]
+        )
+        page.keyboard.press("Escape")
         gap = (recorded[1]["fitness"] - winner["fitness"]) / winner["fitness"] * 100
         assert rows.nth(1).locator("td").nth(3).inner_text() == f"+{gap:.1f}%"
         assert "[object Object]" not in table.inner_text()
         assert not any(entry["key"] in table.inner_text() for entry in recorded)
         page.locator(f"#{topic}-leaderboard").screenshot(path=tmp_path / f"{topic}-leaderboard.png")
 
-        # missing fields stay readable; notes appear only when a recipe has one
+        # missing fields stay readable; notes belong to the recipe menu
         snapshot["rows"] = (
             recorded + [{"note": "failed: too few usable rows"}] + [recorded[-1]] * 12
         )
+        page.click(f"#{topic}-new-search")
         page.click(f"#{topic}-search-start")
-        table.locator('td:text-is("failed: too few usable rows")').wait_for()
-        assert table.locator("th").all_text_contents() == headers + ["note"]
+        table.locator("tbody tr").nth(9).wait_for()
+        assert table.locator("th").all_text_contents() == headers
         assert table.locator("tbody tr").count() == 10
         missing = table.locator("tbody tr").nth(len(recorded)).locator("td").all_text_contents()
-        assert missing == [str(len(recorded) + 1)] + ["-"] * 9 + ["failed: too few usable rows"]
-        assert rows.first.locator("td").last.inner_text() == "-"
+        assert missing == [str(len(recorded) + 1)] + ["-"] * 7 + ["- features"]
+        table.locator("tbody tr").nth(len(recorded)).locator(".dropdown-head").click()
+        assert "failed: too few usable rows" in page.locator(".menu-panel").inner_text()
+        page.keyboard.press("Escape")
         assert "[object Object]" not in table.inner_text()
 
         snapshot["rows"] = [{"fitness": 0, "metrics": {metric: 0}}, {"fitness": 1}, {}]
+        page.click(f"#{topic}-new-search")
         page.click(f"#{topic}-search-start")
         page.wait_for_function(
             "id => document.getElementById(id).querySelectorAll('tbody tr').length === 3",
@@ -751,11 +771,231 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
         assert rows.nth(1).locator("td").nth(3).inner_text() == "-"
         assert table.locator("th").all_text_contents() == headers
         snapshot["rows"] = []
+        page.click(f"#{topic}-new-search")
         page.click(f"#{topic}-search-start")
         page.wait_for_function(
             "id => document.getElementById(id).classList.contains('hidden')",
             arg=f"{topic}-leaderboard",
         )
+
+
+def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
+    recipes = json.loads((Path(__file__).parent / "golden/forecast_leaderboard.json").read_text())[
+        "regression"
+    ]
+    best = "20261001-120000-best01"
+    recent = "20261003-120000-later1"
+    missing = "20261004-120000-noerr1"
+    live = "20261005-120000-live01"
+    snapshot = {"count": 1, "state": "running"}
+    board_cursors = []
+    with session(tmp_path) as (page, base):
+        summaries = [
+            {
+                "id": best,
+                "kind": "search",
+                "state": "done",
+                "stopped": "plateau",
+                "test_error": 0.1,
+            },
+            {
+                "id": recent,
+                "kind": "warm start",
+                "state": "done",
+                "stopped": "time cap",
+                "test_error": 0.3,
+            },
+            {
+                "id": missing,
+                "kind": "refit",
+                "state": "failed",
+                "reason": "too few usable rows",
+                "test_error": None,
+            },
+        ]
+
+        def list_runs(route):
+            route.fulfill(
+                json={
+                    "runs": [
+                        *summaries,
+                        {
+                            "id": live,
+                            "kind": "search",
+                            "state": snapshot["state"],
+                            "generation": snapshot["count"] - 1,
+                            "best_error": 0.2 / snapshot["count"],
+                            "stopped": "plateau" if snapshot["state"] == "done" else None,
+                            "test_error": 0.05 if snapshot["state"] == "done" else None,
+                        },
+                    ]
+                }
+            )
+
+        def read_run(route):
+            query = parse_qs(urlparse(route.request.url).query)
+            run_id = query["id"][0]
+            count = snapshot["count"] if run_id == live else 2
+            cursor = int(query.get("since_generation", ["-1"])[0])
+            revision = count - 1
+            board_cursor = int(query.get("since_leaderboard", ["-1"])[0])
+            if run_id == live:
+                board_cursors.append(board_cursor)
+            run = next((row for row in summaries if row["id"] == run_id), {})
+            state = snapshot["state"] if run_id == live else run["state"]
+            board = [dict(row) for row in recipes]
+            if run_id == live and count > 1:
+                board.reverse()
+                board[0]["fitness"] = 0.09
+            board[0]["note"] = "recorded best recipe"
+            board[0]["genome"] = {
+                **board[0]["genome"],
+                "params": {
+                    "colsample_bytree": 0.75,
+                    "eta": 0.125,
+                    "lambda": 2,
+                    "max_depth": 4,
+                    "min_child_weight": 5,
+                    "subsample": 0.8,
+                },
+            }
+            response = {
+                **run,
+                "state": state,
+                "kind": run.get("kind", "search"),
+                "spec": {"task": "regression"},
+                "budget": {"plateau": 2},
+                "stopped": "plateau" if state == "done" and run_id == live else run.get("stopped"),
+                "verdict": {"trusted": True} if state == "done" else None,
+                "generations": [
+                    {
+                        "generation": index,
+                        "best": 0.2 / (index + 1),
+                        "evaluated": 4 + index,
+                        "elapsed": index + 1,
+                    }
+                    for index in range(count)
+                ],
+                "generation_curves": [
+                    {
+                        "generation": index,
+                        "metric": "rmse",
+                        "bucket": [1, 4],
+                        "validation": [2 / (index + 1), 1 / (index + 1)],
+                    }
+                    for index in range(count)
+                    if index > cursor
+                ],
+                "leaderboard_generation": revision,
+            }
+            if board_cursor < revision:
+                response["leaderboard"] = board
+            route.fulfill(json=response)
+
+        page.route("**/api/forecast-runs", list_runs)
+        page.route("**/api/forecast-run?**", read_run)
+        switch_to_regression(page)
+        show_tab(page, "regression-search")
+        rail = page.locator(f"#{TOPIC}-runs-list")
+        running = page.locator(f"#{TOPIC}-running-list")
+        table = page.locator(f"#{TOPIC}-leaderboard-table")
+        table.locator("tbody tr").first.wait_for()
+        assert running.locator(".forecast-run-row").count() == 1
+        assert rail.locator(".forecast-run-row").evaluate_all(
+            "rows => rows.map(row => row.dataset.runId)"
+        ) == [missing, recent, best]
+        assert "generation 0" in running.inner_text()
+        assert page.locator(f"#{TOPIC}-run-title").inner_text().endswith("search · running")
+        assert table.locator("tbody tr").count() == len(recipes)
+        assert not page.locator(f"#{TOPIC}-run-verdict").is_visible()
+        assert page.locator('.tab-panel[data-panel="regression-search"] select').count() == 0
+        page.locator(f"#{TOPIC}-run-sort .dropdown-head").click()
+        page.locator('.menu-panel .menu-item[data-id="best performance"]').click()
+        assert rail.locator(".forecast-run-row").evaluate_all(
+            "rows => rows.map(row => row.dataset.runId)"
+        ) == [best, recent, missing]
+
+        rail.locator(f'[data-run-id="{recent}"]').click()
+        page.wait_for_function(
+            "id => document.getElementById(id).innerText.includes('warm start')",
+            arg=f"{TOPIC}-run-title",
+        )
+        assert page.locator(f"#{TOPIC}-run-stop").inner_text() == "time cap"
+        page.wait_for_function(
+            "id => document.getElementById(id).querySelectorAll('.chart-line').length === 2",
+            arg=f"{TOPIC}-loss-chart",
+        )
+        assert page.locator(f"#{TOPIC}-loss-chart .chart-line").count() == 2
+        snapshot["count"] = 2
+        page.wait_for_function(
+            "id => document.getElementById(id).innerText.includes('generation 1')",
+            arg=f"{TOPIC}-running-list",
+        )
+        assert "warm start" in page.locator(f"#{TOPIC}-run-title").inner_text()
+        running.locator(f'[data-run-id="{live}"]').click()
+        table.locator('td:text-is("0.09")').wait_for()
+        assert page.locator(f"#{TOPIC}-loss-chart .chart-line").count() == 2
+        assert table.locator("tbody tr.on td").nth(1).inner_text() == str(recipes[-1]["generation"])
+        assert 0 in board_cursors and 1 in board_cursors
+        table.locator("tbody tr").first.locator(".dropdown-head").click()
+        menu = page.locator(".menu-panel")
+        fields = menu.locator(".forecast-recipe-field").all_text_contents()
+        assert all(
+            field in fields
+            for field in [
+                "colsample0.75",
+                "eta0.125",
+                "lambda2",
+                "depth4",
+                "min child weight5",
+                "subsample0.8",
+            ]
+        )
+        assert "recorded best recipe" in menu.inner_text()
+        assert "loss function" in menu.inner_text() and "wape" in menu.inner_text()
+        assert "[object Object]" not in menu.inner_text()
+        page.keyboard.press("Escape")
+
+        snapshot["state"] = "done"
+        page.locator(f"#{TOPIC}-running-section").wait_for(state="hidden")
+        assert running.locator(".forecast-run-row").count() == 0
+        assert rail.locator(".forecast-run-row").evaluate_all(
+            "rows => rows.map(row => row.dataset.runId)"
+        ) == [live, best, recent, missing]
+        assert (
+            page.locator(f"#{TOPIC}-run-stop").inner_text()
+            == "no gain larger than the noise for 2 generations in a row"
+        )
+        assert page.locator(f"#{TOPIC}-run-verdict").inner_text() == "trusted"
+        assert page.locator(f"#{TOPIC}-search-progress").is_visible()
+        assert page.locator(f"#{TOPIC}-search-loss").is_visible()
+        page.locator(f"#{TOPIC}-run-sort .dropdown-head").click()
+        page.locator('.menu-panel .menu-item[data-id="date, newest first"]').click()
+        assert rail.locator(".forecast-run-row").evaluate_all(
+            "rows => rows.map(row => row.dataset.runId)"
+        ) == [live, missing, recent, best]
+        rail.locator(f'[data-run-id="{missing}"]').click()
+        page.wait_for_function(
+            "id => document.getElementById(id).innerText === 'failed: too few usable rows'",
+            arg=f"{TOPIC}-run-stop",
+        )
+        assert "refit" in page.locator(f"#{TOPIC}-run-title").inner_text()
+        rail.locator(f'[data-run-id="{best}"]').click()
+        page.wait_for_function(
+            "id => document.getElementById(id).innerText.includes('best01')",
+            arg=f"{TOPIC}-run-title",
+        )
+        page.wait_for_function(
+            "id => document.getElementById(id).querySelectorAll('.chart-line').length === 2",
+            arg=f"{TOPIC}-loss-chart",
+        )
+        assert page.locator(f"#{TOPIC}-loss-chart .chart-line").count() == 2
+        page.locator('.tab-panel[data-panel="regression-search"]').screenshot(
+            path=tmp_path / "runs-first.png"
+        )
+        page.click(f"#{TOPIC}-new-search")
+        assert page.locator(f"#{TOPIC}-new-search-pane").is_visible()
+        assert not page.locator(f"#{TOPIC}-search-loss").is_visible()
 
 
 def test_series_setup_saves_discards_and_prepares(tmp_path):
@@ -891,6 +1131,7 @@ def test_series_setup_saves_discards_and_prepares(tmp_path):
         ) as request:
             run_search(page)
         assert request.value.post_data_json["spec"] == spec
-        page.locator(f'#{TOPIC}-runs-list .toggle:has-text("open results")').first.click()
+        page.click(f"#{TOPIC}-run-open")
         page.wait_for_selector(f"#{TOPIC}-verdict:not(.hidden)")
+        page.locator(f"#{TOPIC}-results-table tr").nth(1).wait_for()
         assert page.locator(f"#{TOPIC}-results-table tr").count() > 1

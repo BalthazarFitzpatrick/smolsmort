@@ -1060,6 +1060,7 @@ class ForecastTopic {
     if (!box.childElementCount) box.append(forecastNode('span', 'stat', 'no finished runs yet'));
     document.getElementById(`${this.topic}-running-section`).classList.toggle('hidden', !running.childElementCount);
     document.getElementById(`${this.topic}-new-search`).classList.toggle('on', !this.selectedRunId);
+    document.getElementById(`${this.topic}-search-cancel`).classList.toggle('disabled', !this.currentRunId);
   }
 
   openRecipeMenu(head, entry, rank) {

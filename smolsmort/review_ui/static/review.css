@@ -166,7 +166,7 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-recipe-details { display: flex; flex-direction: column; gap: var(--gap); min-width: 300px; }
 .forecast-recipe-field { display: flex; justify-content: space-between; gap: 24px; }
 .forecast-recipe-field .field-label { white-space: nowrap; }
-.forecast-recipe-field .field-value { overflow-wrap: anywhere; }
+.forecast-recipe-field .field-value { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
 .forecast-verdict { padding: 8px 12px; border: 2px solid var(--grey-border); }
 .forecast-verdict.trusted { border-color: var(--lichen-deep); color: var(--lichen); }
 .forecast-verdict.warn { border-color: var(--stone-red); color: var(--stone-red-lift); }
