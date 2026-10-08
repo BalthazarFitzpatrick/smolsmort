@@ -147,6 +147,11 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
   border: 1px solid var(--grey-border); padding: 4px 8px; text-align: left; font-size: 0.9em;
 }
 .forecast-column-grid th.sortable { cursor: pointer; }
+.forecast-leaderboard-wrap { overflow-x: auto; }
+.forecast-leaderboard caption { text-align: left; white-space: nowrap; padding-bottom: var(--gap); }
+.forecast-leaderboard tr.on td {
+  background: var(--accent-on); color: var(--accent-on-text); border-color: var(--cream);
+}
 .forecast-censor-row { flex-wrap: wrap; }
 .forecast-sql { white-space: pre-wrap; max-height: 200px; overflow-y: auto; background: var(--panel-row); padding: 8px; }
 .forecast-run-row { justify-content: flex-start; gap: var(--gap); }

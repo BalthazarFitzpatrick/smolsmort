@@ -17,6 +17,44 @@ function forecastNode(tag, className, text) {
   return node;
 }
 
+function forecastFamilySummary(families) {
+  if (!Array.isArray(families) || !families.length) return '-';
+  const groups = new Map();
+  const labels = {
+    roll: 'rolling', cal: 'calendar', date: 'calendar', dim: 'dims',
+    measure: 'measures', log: 'log measures', freq: 'frequencies', lead: 'measure lags',
+  };
+  families.forEach(family => {
+    if (typeof family !== 'string') return;
+    const colon = family.indexOf(':');
+    const kind = family.startsWith('lag+') ? 'lags'
+      : (labels[family.slice(0, colon)] || family.slice(0, colon));
+    const label = colon < 0 && !family.startsWith('lag+') ? 'other' : kind;
+    const value = family.startsWith('lag+') ? family.slice(4)
+      : colon < 0 ? (family === 'season' ? 'seasonal lag' : family) : family.slice(colon + 1);
+    if (!groups.has(label)) groups.set(label, new Set());
+    groups.get(label).add(value);
+  });
+  const order = ['lags', 'rolling', 'ewm', 'calendar', 'dims', 'measures',
+    'log measures', 'frequencies', 'measure lags', 'other'];
+  const calendar = ['day', 'weekday', 'week', 'month', 'quarter', 'year', 'trend'];
+  return [...groups].sort(([a], [b]) => {
+    const index = label => order.includes(label) ? order.indexOf(label) : order.length;
+    return index(a) - index(b) || a.localeCompare(b);
+  }).map(([kind, items]) => {
+    const values = [...items].sort((a, b) => {
+      if (['lags', 'rolling', 'ewm'].includes(kind)) return Number(a) - Number(b);
+      if (kind === 'calendar' && calendar.includes(a) && calendar.includes(b)) {
+        return calendar.indexOf(a) - calendar.indexOf(b);
+      }
+      return a.localeCompare(b);
+    });
+    const detail = kind === 'ewm' && values.length > 1
+      ? `${values[0]}-${values[values.length - 1]}` : values.join(',');
+    return kind === 'other' ? detail : `${kind} ${detail}`;
+  }).join(' · ') || '-';
+}
+
 function forecastDropdown(options, value, onPick, label) {
   const head = forecastNode('button', 'toggle dropdown-head');
   head.type = 'button';
@@ -655,8 +693,9 @@ class ForecastTopic {
           <div class="field-label">boosting round</div>
         </div>
         <div id="${this.topic}-leaderboard" class="hidden">
-          <div class="field-label">leaderboard</div>
-          <table class="forecast-column-grid" id="${this.topic}-leaderboard-table"></table>
+          <div class="forecast-leaderboard-wrap">
+            <table class="forecast-column-grid forecast-leaderboard" id="${this.topic}-leaderboard-table"></table>
+          </div>
         </div>
         <div class="h-divider"></div>
         <div class="field-label">runs</div>
@@ -816,23 +855,56 @@ class ForecastTopic {
     table.innerHTML = '';
     wrap.classList.toggle('hidden', !rows.length);
     if (!rows.length) return;
-    const columns = Object.keys(rows[0]);
+    const entries = rows.slice(0, 10);
+    const metric = this.task === 'classification' ? 'log_loss' : 'wape';
+    const errorOf = entry => Number.isFinite(entry.fitness) ? entry.fitness : entry.metrics?.[metric];
+    const best = errorOf(entries[0]);
+    const number = value => Number.isFinite(value) ? String(Number(value.toPrecision(4))) : '-';
+    const integer = value => Number.isInteger(value) ? String(value) : '-';
+    const objectives = {
+      squared: 'squared error', absolute: 'absolute error', tweedie: 'tweedie loss',
+      poisson: 'poisson loss', aft: 'survival loss', logistic: 'log loss',
+      softprob: 'multiclass log loss',
+    };
+    const hasNote = entries.some(entry => typeof entry.note === 'string' && entry.note.trim());
+    const columns = ['rank', 'generation found', `validation error (${metric})`, 'gap to best',
+      'mae', 'objective', 'tree depth', 'learning rate (eta)', 'feature count (families)', 'feature families'];
+    if (hasNote) columns.push('note');
+    const caption = forecastNode('caption', 'field-label',
+      `best ten recipes the search tried, ranked by validation error (${metric}); lower is better; the winner is the first row`);
+    table.appendChild(caption);
+    const thead = document.createElement('thead');
     const head = document.createElement('tr');
     columns.forEach(c => {
       const th = document.createElement('th');
       th.textContent = c;
       head.appendChild(th);
     });
-    table.appendChild(head);
-    rows.slice(0, 10).forEach(entry => {
+    thead.appendChild(head);
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    entries.forEach((entry, index) => {
       const row = document.createElement('tr');
-      columns.forEach(c => {
+      row.classList.toggle('on', index === 0);
+      const genome = entry.genome || {};
+      const params = genome.params || {};
+      const error = errorOf(entry);
+      const gap = Number.isFinite(error) && Number.isFinite(best)
+        ? best === 0 ? (error === 0 ? 0 : null) : (error - best) / Math.abs(best) * 100 : null;
+      const gapText = Number.isFinite(gap) ? `${gap < 0 ? '-' : '+'}${Math.abs(gap).toFixed(1)}%` : '-';
+      const count = Array.isArray(genome.families) ? new Set(genome.families).size : entry.families;
+      const values = [String(index + 1), integer(entry.generation), number(error), gapText,
+        number(entry.metrics?.mae), objectives[genome.objective] || '-',
+        integer(params.max_depth), number(params.eta), integer(count), forecastFamilySummary(genome.families)];
+      if (hasNote) values.push(typeof entry.note === 'string' && entry.note.trim() ? entry.note : '-');
+      values.forEach(value => {
         const td = document.createElement('td');
-        td.textContent = String(entry[c]);
+        td.textContent = value;
         row.appendChild(td);
       });
-      table.appendChild(row);
+      tbody.appendChild(row);
     });
+    table.appendChild(tbody);
   }
 
   async loadRuns() {
