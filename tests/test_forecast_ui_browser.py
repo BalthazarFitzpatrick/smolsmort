@@ -10,6 +10,7 @@ import time
 import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -338,24 +339,23 @@ def test_scaffold_defaults_empty_and_preserves_saved_picks(tmp_path):
 @pytest.mark.parametrize(
     ("topic", "metric"), [("regression", "wape"), ("classification", "log_loss")]
 )
-def test_search_charts_track_generations_replace_best_fit_and_reset(tmp_path, topic, metric):
+def test_search_charts_accumulate_validation_generations_and_reset(tmp_path, topic, metric):
     with session(tmp_path) as (page, base):
-        snapshot = {"count": 0, "state": "running", "history": None}
+        snapshot = {"count": 0, "state": "running", "invalid": False}
         first_fit = {
             "key": "first",
             "metric": "rmse" if topic == "regression" else "logloss",
-            "training": [3.0, 2.0, 1.0, 0.8],
             "validation": [4.0, 3.0, 2.0, 1.0],
         }
         second_fit = {
             "key": "second",
             "metric": "mae" if topic == "regression" else "mlogloss",
-            "training": [0.7, 0.5],
             "validation": [0.9, 0.6],
             "bucket": [1, 4],
         }
         run_number = 0
         best_values = [0.8, 0.6, 0.6, 0.4]
+        cursors = []
 
         def start_run(route):
             nonlocal run_number
@@ -366,17 +366,33 @@ def test_search_charts_track_generations_replace_best_fit_and_reset(tmp_path, to
                 route.fulfill(json={"runs": []})
 
         def poll_run(route):
+            query = parse_qs(urlparse(route.request.url).query)
+            cursor = int(query.get("since_generation", ["-1"])[0])
+            cursors.append(cursor)
             generations = [
                 {"generation": index, "best": best, "evaluated": index + 1, "elapsed": index}
                 for index, best in enumerate(best_values[: snapshot["count"]])
             ]
+            curves = [
+                {"generation": index, **(first_fit if index == 0 else second_fit)}
+                for index in range(snapshot["count"])
+                if index > cursor
+            ]
+            if snapshot["invalid"]:
+                curves.extend(
+                    [
+                        {"generation": "bad", "validation": [1, 2]},
+                        {"generation": 500, "validation": "bad"},
+                        {"generation": 501, "validation": [None, "bad"]},
+                    ]
+                )
             route.fulfill(
                 json={
                     "state": snapshot["state"],
                     "generations": generations,
                     "verdict": {"trusted": True},
                     "leaderboard": [],
-                    "eval_history": snapshot["history"],
+                    "generation_curves": curves,
                 }
             )
 
@@ -402,6 +418,14 @@ def test_search_charts_track_generations_replace_best_fit_and_reset(tmp_path, to
         chart = page.locator(f"#{topic}-search-chart")
         loss = page.locator(f"#{topic}-search-loss")
         loss_chart = page.locator(f"#{topic}-loss-chart")
+        if topic == "classification":
+            page.add_style_tag(
+                content=":root { --kingfisher: rgb(11, 122, 133); --cream: rgb(231, 211, 181); }"
+            )
+        colors = page.evaluate(
+            "() => { const css = getComputedStyle(document.documentElement);"
+            " return ['--cream', '--kingfisher'].map(token => css.getPropertyValue(token).trim()); }"
+        )
         assert not progress.is_visible()
         assert not loss.is_visible()
         page.click(f"#{topic}-search-start")
@@ -424,19 +448,16 @@ def test_search_charts_track_generations_replace_best_fit_and_reset(tmp_path, to
 
         for count in (1, 2):
             snapshot["count"] = count
-            snapshot["history"] = first_fit if count == 1 else second_fit
             wait_points(count)
             assert progress.is_visible()
             assert (
                 page.locator(f"#{topic}-search-metric").inner_text()
                 == f"{metric} (lower is better)"
             )
-            history = snapshot["history"]
+            history = first_fit if count == 1 else second_fit
             page.wait_for_function(
-                "([id, count]) => [...document.getElementById(id).querySelectorAll('.chart-line')]"
-                ".length === 2 && [...document.getElementById(id).querySelectorAll('.chart-line')]"
-                ".every(line => line.getAttribute('d').split(' L ').length === count)",
-                arg=[f"{topic}-loss-chart", len(history["training"])],
+                "([id, count]) => document.getElementById(id).querySelectorAll('.chart-line').length === count",
+                arg=[f"{topic}-loss-chart", count],
             )
             assert loss.is_visible()
             label = f"{history['metric']} (lower is better)"
@@ -444,15 +465,26 @@ def test_search_charts_track_generations_replace_best_fit_and_reset(tmp_path, to
                 label += " - horizon bucket 1-4"
             assert page.locator(f"#{topic}-loss-metric").inner_text() == label
             assert loss.locator(".field-label").last.inner_text() == "boosting round"
-            assert "training loss" in loss_chart.inner_text()
-            assert "validation loss" in loss_chart.inner_text()
-            assert loss_chart.locator(".chart-x-label").all_text_contents() == [
-                str(i + 1) for i in range(len(history["training"]))
+            assert "training loss" not in loss_chart.inner_text()
+            assert loss_chart.locator(".chart-legend-item").all_text_contents() == [
+                f"generation {index}" for index in range(count)
             ]
+            assert loss_chart.locator(".chart-x-label").all_text_contents() == ["1", "2", "3", "4"]
+            lines = loss_chart.locator(".chart-line")
+            assert lines.last.get_attribute("stroke") == colors[1]
+            assert lines.last.get_attribute("opacity") == "1"
+            assert lines.first.get_attribute("d").count(" L ") == 3
+            if count == 2:
+                assert lines.first.get_attribute("stroke") == colors[0]
+                assert float(lines.first.get_attribute("opacity")) == pytest.approx(1 - 1 / 60)
+                assert lines.last.get_attribute("d").count(" L ") == 1
+            assert loss_chart.locator(".chart-legend-swatch").evaluate_all(
+                "swatches => swatches.every(swatch => getComputedStyle(swatch).opacity === '1')"
+            )
             overlay = loss_chart.locator(".chart-overlay").bounding_box()
             page.mouse.move(overlay["x"] + 1, overlay["y"] + overlay["height"] / 2)
             assert loss_chart.locator(".chart-tooltip-value").all_text_contents() == [
-                str(history["training"][0]).removesuffix(".0"),
+                *(["4"] if count == 2 else []),
                 str(history["validation"][0]).removesuffix(".0"),
             ]
             assert chart.locator(".chart-x-label").all_text_contents() == [
@@ -466,11 +498,12 @@ def test_search_charts_track_generations_replace_best_fit_and_reset(tmp_path, to
         with page.expect_response("**/api/forecast-run?**"):
             page.wait_for_timeout(2100)
         wait_points(2)
-        snapshot.update(count=3, history=None)
+        assert cursors[-1] == 1
+        snapshot.update(count=3, invalid=True)
         wait_points(3)
-        assert not loss.is_visible()
-        assert loss_chart.locator("svg").count() == 0
-        snapshot.update(count=4, state="done", history=second_fit)
+        assert loss.is_visible()
+        assert loss_chart.locator(".chart-line").count() == 3
+        snapshot.update(count=65, state="done", invalid=False)
         wait_points(4)
         page.wait_for_function(
             f'document.getElementById("{topic}-search-status").innerText.startsWith("done")'
@@ -478,7 +511,16 @@ def test_search_charts_track_generations_replace_best_fit_and_reset(tmp_path, to
         assert chart.locator(".chart-x-label").all_text_contents() == ["0", "1", "2", "3"]
         progress.screenshot(path=tmp_path / f"{topic}-search-progress.png")
         assert loss.is_visible()
-        loss.screenshot(path=tmp_path / f"{topic}-best-fit-loss.png")
+        assert loss_chart.locator(".chart-line").count() == 60
+        assert loss_chart.locator(".chart-legend-item").first.inner_text() == "generation 5"
+        assert loss_chart.locator(".chart-legend-item").last.inner_text() == "generation 64"
+        assert loss_chart.locator(".chart-line").first.get_attribute("opacity") == "0.2"
+        assert loss_chart.locator(".chart-line").last.get_attribute("stroke") == colors[1]
+        assert loss_chart.locator(".chart-line").evaluate_all(
+            "(lines, cream) => lines.slice(0, -1).every(line => line.getAttribute('stroke') === cream)",
+            colors[0],
+        )
+        loss.screenshot(path=tmp_path / f"{topic}-generation-loss.png")
         assert page.evaluate(
             "topic => { const ids = ['search-progress', 'search-loss', 'leaderboard'];"
             " const nodes = ids.map(id => document.getElementById(`${topic}-${id}`));"
@@ -495,7 +537,7 @@ def test_search_charts_track_generations_replace_best_fit_and_reset(tmp_path, to
         wait_points(4)
         assert progress.is_visible()
         assert loss.is_visible()
-        snapshot.update(count=0, state="running", history=None)
+        snapshot.update(count=0, state="running")
         page.click(f"#{topic}-search-start")
         page.wait_for_function(
             f'document.getElementById("{topic}-search-status").innerText === "running"'
@@ -504,12 +546,76 @@ def test_search_charts_track_generations_replace_best_fit_and_reset(tmp_path, to
         assert chart.locator("svg").count() == 0
         assert not loss.is_visible()
         assert loss_chart.locator("svg").count() == 0
-        snapshot.update(count=1, state="done", history=first_fit)
+        snapshot.update(count=1, state="done")
         wait_points(1)
         assert chart.locator(".chart-x-label").all_text_contents() == ["0"]
         assert loss.is_visible()
-        assert loss_chart.locator(".chart-line").count() == 2
+        assert loss_chart.locator(".chart-line").count() == 1
+        assert loss_chart.locator(".chart-line").first.get_attribute("stroke") == colors[1]
+        assert cursors[-1] == -1
         assert run_number == 2
+
+
+def test_generation_loss_ignores_response_from_previous_run(tmp_path):
+    with session(tmp_path) as (page, base):
+        run_number = 0
+        delayed = []
+
+        def start_run(route):
+            nonlocal run_number
+            if route.request.method == "POST":
+                run_number += 1
+                route.fulfill(json={"run_id": f"delayed-{run_number}"})
+            else:
+                route.fulfill(json={"runs": []})
+
+        def poll_run(route):
+            query = parse_qs(urlparse(route.request.url).query)
+            if query["id"] == ["delayed-1"]:
+                delayed.append(route)
+            else:
+                route.fulfill(json={"state": "running", "generations": [], "generation_curves": []})
+
+        page.route("**/api/forecast-runs", start_run)
+        page.route("**/api/forecast-run?**", poll_run)
+        page.route(
+            "**/api/forecast-prep",
+            lambda route: route.fulfill(json={"summary": {}, "sql": "", "reused": False}),
+        )
+        switch_to_regression(page)
+        show_tab(page, "regression-data")
+        page.click(f"#{TOPIC}-data-source")
+        page.locator('.menu-panel .menu-item[data-id="rows.csv"]').click()
+        page.wait_for_function(
+            f'/^\\d+ columns/.test(document.getElementById("{TOPIC}-data-status").innerText)'
+        )
+        page.click(f"#{TOPIC}-prepare")
+        page.wait_for_function(
+            f'document.getElementById("{TOPIC}-data-status").innerText.startsWith("prepared")'
+        )
+        show_tab(page, "regression-search")
+        with page.expect_request("**/api/forecast-run?**"):
+            page.click(f"#{TOPIC}-search-start")
+        page.wait_for_timeout(100)
+        assert len(delayed) == 1
+        page.click(f"#{TOPIC}-search-start")
+        page.wait_for_function(
+            f'document.getElementById("{TOPIC}-search-status").innerText === "running"'
+        )
+        delayed[0].fulfill(
+            json={
+                "state": "done",
+                "generations": [{"generation": 99, "best": 0.1, "evaluated": 1, "elapsed": 1}],
+                "generation_curves": [
+                    {"generation": 99, "key": "stale", "metric": "rmse", "validation": [2, 1]}
+                ],
+            }
+        )
+        page.wait_for_timeout(100)
+        assert page.locator(f"#{TOPIC}-search-status").inner_text() == "running"
+        assert not page.locator(f"#{TOPIC}-search-loss").is_visible()
+        assert page.locator(f"#{TOPIC}-loss-chart svg").count() == 0
+        assert not page.locator(f"#{TOPIC}-search-progress").is_visible()
 
 
 def test_series_setup_saves_discards_and_prepares(tmp_path):

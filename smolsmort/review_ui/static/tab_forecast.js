@@ -124,7 +124,8 @@ class ForecastTopic {
     this.pollTimer = null;
     this.searchChart = null;
     this.lossChart = null;
-    this.lossHistoryKey = null;
+    this.lossCurves = [];
+    this.lossGeneration = -1;
     this.resultsRunId = null;
     this.resultsSpec = null;
     this.chart = null;
@@ -706,10 +707,10 @@ class ForecastTopic {
     const runId = this.currentRunId;
     if (!runId) return;
     document.getElementById(`${this.topic}-search-cancel`).classList.remove('disabled');
-    const state = await api(`/api/forecast-run?id=${encodeURIComponent(runId)}`);
+    const state = await api(`/api/forecast-run?id=${encodeURIComponent(runId)}&since_generation=${this.lossGeneration}`);
     if (runId !== this.currentRunId) return;
     this.paintSearchChart(state.generations || []);
-    this.paintLossChart(state.generations && state.generations.length ? state.eval_history : null);
+    this.paintLossChart(state.generation_curves || []);
     const latest = state.generations && state.generations.length
       ? state.generations[state.generations.length - 1] : null;
     if (latest) {
@@ -742,7 +743,11 @@ class ForecastTopic {
     if (this.searchChart) this.searchChart.destroy();
     this.searchChart = null;
     document.getElementById(`${this.topic}-search-progress`).classList.add('hidden');
-    this.paintLossChart(null);
+    if (this.lossChart) this.lossChart.destroy();
+    this.lossChart = null;
+    this.lossCurves = [];
+    this.lossGeneration = -1;
+    document.getElementById(`${this.topic}-search-loss`).classList.add('hidden');
   }
 
   paintSearchChart(generations) {
@@ -761,19 +766,24 @@ class ForecastTopic {
     });
   }
 
-  paintLossChart(history) {
+  paintLossChart(curves) {
     const wrap = document.getElementById(`${this.topic}-search-loss`);
-    const usable = history && history.metric && history.training && history.validation
-      && history.training.length && history.training.length === history.validation.length
-      && history.training.every(Number.isFinite) && history.validation.every(Number.isFinite);
-    if (!usable) {
-      if (this.lossChart) this.lossChart.destroy();
-      this.lossChart = null;
-      this.lossHistoryKey = null;
-      wrap.classList.add('hidden');
-      return;
+    const previousGeneration = this.lossGeneration;
+    let added = false;
+    // malformed records must not advance the cursor past later usable curves
+    for (const curve of curves) {
+      if (!Number.isInteger(curve.generation) || curve.generation <= previousGeneration) continue;
+      const usable = curve.metric && Array.isArray(curve.validation) && curve.validation.length
+        && curve.validation.every(Number.isFinite);
+      if (!usable || this.lossCurves.some(entry => entry.generation === curve.generation)) continue;
+      this.lossCurves.push(curve);
+      this.lossGeneration = Math.max(this.lossGeneration, curve.generation);
+      added = true;
     }
-    if (this.lossChart && this.lossHistoryKey === history.key) return;
+    if (!added) return;
+    this.lossCurves.sort((a, b) => a.generation - b.generation);
+    this.lossCurves = this.lossCurves.slice(-60);
+    const history = this.lossCurves[this.lossCurves.length - 1];
     const bucket = history.bucket ? ` - horizon bucket ${history.bucket.join('-')}` : '';
     setText(`${this.topic}-loss-metric`, `${history.metric} (lower is better)${bucket}`);
     wrap.classList.remove('hidden');
@@ -782,14 +792,22 @@ class ForecastTopic {
         height: 220, yFormat: value => String(Number(value.toPrecision(4))),
       }
     );
+    const style = getComputedStyle(document.documentElement);
+    const kingfisher = style.getPropertyValue('--kingfisher').trim();
+    const cream = style.getPropertyValue('--cream').trim();
+    const rounds = Math.max(...this.lossCurves.map(curve => curve.validation.length));
     this.lossChart.update({
-      x: history.training.map((_, index) => index + 1),
-      series: [
-        {id: 'training', label: 'training loss', values: history.training},
-        {id: 'validation', label: 'validation loss', values: history.validation},
-      ],
+      x: Array.from({length: rounds}, (_, index) => index + 1),
+      series: this.lossCurves.map(curve => {
+        const age = history.generation - curve.generation;
+        return {
+          id: `generation-${curve.generation}`, label: `generation ${curve.generation}`,
+          values: Array.from({length: rounds}, (_, index) => curve.validation[index] ?? null),
+          color: age === 0 ? kingfisher : cream,
+          opacity: Math.max(0.2, 1 - age / 60),
+        };
+      }),
     });
-    this.lossHistoryKey = history.key;
   }
 
   paintLeaderboard(rows) {
