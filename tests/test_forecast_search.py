@@ -142,6 +142,12 @@ def test_a_run_ends_with_a_forecast_and_a_verdict(tmp_path):
     assert history == json.loads((folder / "eval_history.json").read_text())
     assert len(history["training"]) == len(history["validation"]) > 0
     assert not any("eval_history" in entry for entry in board + state["generations"])
+    curves = state["generation_curves"]
+    assert [curve["generation"] for curve in curves] == [
+        event["generation"] for event in state["generations"]
+    ]
+    assert all(curve["validation"] and "training" not in curve for curve in curves)
+    assert run_state(tmp_path / "runs", run_id)["generation_curves"] == curves
     result = json.loads((folder / "result.json").read_text())
     assert set(result["verdict"]) == {"trusted", "summary", "checks"}
     forecast = read_table(folder / "forecast.parquet")
@@ -201,6 +207,7 @@ def test_a_saved_recipe_refits_on_newer_history_without_a_search(tmp_path):
     assert state["state"] == "done" and state["stopped"] == "refit", state
     assert not state["generations"] and not (runs / refit / "leaderboard.json").exists()
     assert state["eval_history"] is None
+    assert state["generation_curves"] == []
     assert time.monotonic() - started < 60
     forecast = read_table(runs / refit / "forecast.parquet")
     last_old = read_table(runs / first / "forecast.parquet")["step"].max()
@@ -253,3 +260,106 @@ def test_best_history_replaced_before_generation_events_and_cleared_when_unusabl
     assert snapshots[1]["training"] == [4.0]
     assert json.loads((tmp_path / "eval_history.json").read_text()) is None
     assert not (tmp_path / "eval_history.json.tmp").exists()
+
+
+def test_generation_curves_use_the_generation_winner_even_without_a_new_best(monkeypatch):
+    import importlib
+
+    search_module = importlib.import_module("smolsmort.forecast.search")
+    ws = SimpleNamespace(
+        mode="row",
+        masks={"train": np.ones(20, dtype=bool)},
+        families=["measure:x"],
+        profile={"genes": {"objectives": ["squared"]}},
+    )
+    genomes = [make_genome(ws.families, "squared", {"max_depth": depth}) for depth in range(6, 14)]
+    children = iter(genomes[4:] * 2)
+    monkeypatch.setattr(search_module, "ELITE", 0)
+    monkeypatch.setattr(search_module, "_seed_population", lambda *_: genomes[:4])
+    monkeypatch.setattr(search_module._Variation, "mutate", lambda *_: next(children))
+
+    def fake_score(_ws, genome, **_kwargs):
+        depth = dict(genome.params)["max_depth"]
+        history = {
+            "metric": "rmse",
+            "bucket": [1, 3],
+            "training": [float(depth)],
+            "validation": [depth + 0.5],
+        }
+        return Scored(float(depth), np.array([float(depth)]), {}, history)
+
+    monkeypatch.setattr(search_module, "score", fake_score)
+    curves, events = [], []
+    search(
+        ws,
+        Budget(population=4, max_generations=3, plateau=2),
+        on_generation=curves.append,
+        on_event=events.append,
+    )
+    assert [event["best"] for event in events] == [6.0, 6.0, 6.0]
+    assert curves == [
+        {
+            "generation": generation,
+            "key": genomes[index].key(),
+            "metric": "rmse",
+            "bucket": [1, 3],
+            "validation": [value],
+        }
+        for generation, index, value in [(0, 0, 6.5), (1, 4, 10.5), (2, 4, 10.5)]
+    ]
+
+
+def test_cached_generation_winners_keep_their_validation_curves(series_ws):
+    ws, _ = series_ws
+    curves = []
+    search(ws, Budget(**TINY), on_generation=curves.append)
+    assert len(curves) >= 2
+    assert all(curve["validation"] for curve in curves)
+    assert len({curve["generation"] for curve in curves}) == len(curves)
+
+
+def test_worker_records_generation_curves_once_and_polling_returns_only_unseen(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(worker.signal, "signal", lambda *_: None)
+    job = worker._Run(tmp_path)
+    job.status("done")
+    job.record_best({"training": [2.0], "validation": [3.0]})
+    curves = [
+        {
+            "generation": generation,
+            "key": str(generation),
+            "metric": "rmse",
+            "bucket": None,
+            "validation": [float(generation)],
+        }
+        for generation in range(3)
+    ]
+    for curve in curves:
+        job.record_generation(curve)
+        job.record_generation(curve)
+    path = tmp_path / "generation_curves.jsonl"
+    assert len(path.read_text().splitlines()) == 3
+    state = run_state(tmp_path.parent, tmp_path.name, since_generation=0)
+    assert state["state"] == "done"
+    assert state["generation_curves"] == curves[1:]
+    assert "eval_history" not in state
+    assert run_state(tmp_path.parent, tmp_path.name, since_generation=2)["generation_curves"] == []
+    with path.open("a") as stream:
+        stream.write('{"generation":3')
+    assert (
+        run_state(tmp_path.parent, tmp_path.name, since_generation=0)["generation_curves"]
+        == curves[1:]
+    )
+
+
+def test_search_does_not_record_generations_without_validation_history(series_ws, monkeypatch):
+    import importlib
+
+    search_module = importlib.import_module("smolsmort.forecast.search")
+    monkeypatch.setattr(
+        search_module, "score", lambda *_args, **_kwargs: Scored(1.0, np.array([1.0]), {}, None)
+    )
+    curves = []
+    search(series_ws[0], Budget(**TINY), on_generation=curves.append)
+    assert curves == []

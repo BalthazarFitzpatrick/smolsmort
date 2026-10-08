@@ -256,6 +256,26 @@ def test_a_search_run_reaches_done_and_reports_a_verdict(app, tab):
     assert isinstance(state["leaderboard"], list)
 
 
+@pytest.mark.parametrize("cursor", [-1, "0", "invalid", None, "inf"])
+def test_run_polling_sends_only_unseen_generation_curves(series_run, cursor):
+    app, tab, run_id, _root = series_run
+    complete = _get(app, tab, "/api/forecast-run", {"id": run_id})
+    state = _get(app, tab, "/api/forecast-run", {"id": run_id, "since_generation": cursor})
+    parsed = 0 if cursor == "0" else -1
+    assert state["generation_curves"] == [
+        curve for curve in complete["generation_curves"] if curve["generation"] > parsed
+    ]
+    assert state["state"] == "done"
+    assert "eval_history" not in state
+    latest = complete["generations"][-1]["generation"]
+    assert (
+        _get(app, tab, "/api/forecast-run", {"id": run_id, "since_generation": latest})[
+            "generation_curves"
+        ]
+        == []
+    )
+
+
 def test_view_series_mode_has_a_band_within_bounds(series_run):
     app, tab, run_id, _root = series_run
     payload = _get(app, tab, "/api/forecast-view", {"id": run_id})

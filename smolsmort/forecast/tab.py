@@ -201,7 +201,13 @@ def _list_runs(app, query: dict) -> dict:
 def _run(app, query: dict) -> dict:
     run_id = query.get("id", "")
     run_dir = _run_dir(app, run_id)
-    state = runs.run_state(_runs_root(app), run_id)
+    cursor = None
+    if "since_generation" in query:
+        try:
+            cursor = max(-1, int(query["since_generation"]))
+        except (TypeError, ValueError, OverflowError):
+            cursor = -1
+    state = runs.run_state(_runs_root(app), run_id, since_generation=cursor)
     request = views.read_request(run_dir)
     return {
         **state,

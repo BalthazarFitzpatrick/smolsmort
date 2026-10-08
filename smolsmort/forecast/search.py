@@ -212,6 +212,7 @@ def search(
     warm: list[dict] | None = None,
     on_event: Callable[[dict], None] | None = None,
     on_best: Callable[[dict | None], None] | None = None,
+    on_generation: Callable[[dict], None] | None = None,
     stop: Callable[[], bool] | None = None,
 ) -> dict:
     """run until a plateau, the time cap, the generation cap or `stop()`; returns the ranked
@@ -261,9 +262,23 @@ def search(
             if on_best:
                 history = best.eval_history
                 on_best({**history, "key": best.genome.key()} if history else None)
+        history = leader.eval_history
+        if on_generation and history and history.get("validation"):
+            on_generation(
+                {
+                    "generation": generation,
+                    "key": leader.genome.key(),
+                    "metric": history["metric"],
+                    "bucket": history.get("bucket"),
+                    "validation": history["validation"],
+                }
+            )
         for entry in scored.values():
-            if entry is not best:
-                entry.eval_history = None
+            if entry is not best and entry.eval_history:
+                # cached candidates can lead later generations; retain only their validation curve
+                entry.eval_history = {
+                    key: value for key, value in entry.eval_history.items() if key != "training"
+                }
         quiet = 0 if gained else quiet + 1
         elapsed = time.monotonic() - started
         if on_event:

@@ -22,6 +22,7 @@ RUN_FILES = (
     "status.json",
     "events.jsonl",
     "eval_history.json",
+    "generation_curves.jsonl",
     "worker.log",
     "profile.json",
     "leaderboard.json",
@@ -88,7 +89,7 @@ def run_folder(runs_root: Path, run_id: str) -> Path:
     return folder
 
 
-def run_state(runs_root: Path, run_id: str) -> dict:
+def run_state(runs_root: Path, run_id: str, *, since_generation: int | None = None) -> dict:
     """status, the latest generation event, and whether the process is still alive"""
     folder = run_folder(runs_root, run_id)
     status = json.loads((folder / "status.json").read_text())
@@ -97,18 +98,34 @@ def run_state(runs_root: Path, run_id: str) -> dict:
     if path.exists():
         events = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
     generations = [e for e in events if e.get("event") == "generation"]
-    history_path = folder / "eval_history.json"
-    history = json.loads(history_path.read_text()) if history_path.exists() else None
+    curve_path = folder / "generation_curves.jsonl"
+    cursor = since_generation if since_generation is not None else -1
+    curves = []
+    if curve_path.exists():
+        for line in curve_path.read_text().splitlines():
+            try:
+                curve = json.loads(line)
+            except json.JSONDecodeError:
+                # the worker may still be writing the final line
+                continue
+            if curve["generation"] > cursor:
+                curves.append(curve)
     alive = _alive(folder)
     if status["state"] in ("starting", "running") and not alive:
         status = {"state": "failed", "reason": "the worker exited without reporting"}
-    return {
+    state = {
         **status,
         "alive": alive,
         "generations": generations,
-        "eval_history": history,
+        "generation_curves": curves,
         "latest": events[-1] if events else None,
     }
+    if since_generation is None:
+        history_path = folder / "eval_history.json"
+        state["eval_history"] = (
+            json.loads(history_path.read_text()) if history_path.exists() else None
+        )
+    return state
 
 
 def _alive(folder: Path) -> bool:

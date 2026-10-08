@@ -24,6 +24,7 @@ class _Run:
     def __init__(self, folder: Path):
         self.folder = folder
         self.cancelled = False
+        self.recorded_generations: set[int] = set()
         signal.signal(signal.SIGTERM, self._cancel)
 
     def _cancel(self, *_):
@@ -47,6 +48,16 @@ class _Run:
         tmp = self.folder / "eval_history.json.tmp"
         tmp.write_text(json.dumps(history, default=_plain, allow_nan=False))
         os.replace(tmp, self.folder / "eval_history.json")
+
+    def record_generation(self, curve: dict):
+        generation = curve["generation"]
+        if generation in self.recorded_generations:
+            return
+        text = json.dumps(curve, default=_plain, allow_nan=False)
+        with (self.folder / "generation_curves.jsonl").open("a") as stream:
+            stream.write(text + "\n")
+            stream.flush()
+        self.recorded_generations.add(generation)
 
 
 def _plain(value):
@@ -90,6 +101,7 @@ def run(folder: Path) -> int:
                 warm=warm,
                 on_event=job.event,
                 on_best=job.record_best,
+                on_generation=job.record_generation,
                 stop=lambda: job.cancelled,
             )
             job.save("leaderboard.json", result["leaderboard"])
