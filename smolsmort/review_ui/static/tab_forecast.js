@@ -116,6 +116,7 @@ class ForecastSetupMenu extends Menu {
   _build() {
     const panel = super._build();
     panel.classList.add('forecast-setup-menu', `forecast-setup-${this.key}`);
+    panel.querySelectorAll('.menu-item').forEach(row => { row.title = row.textContent; });
     return panel;
   }
 }
@@ -124,6 +125,7 @@ class ForecastFieldMenu extends Menu {
   _build() {
     const panel = super._build();
     panel.classList.add('forecast-field-menu');
+    panel.querySelectorAll('.menu-item').forEach(row => { row.title = row.textContent; });
     return panel;
   }
 }

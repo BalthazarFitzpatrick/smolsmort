@@ -96,6 +96,7 @@ const baseName = path => path.replace(/\/$/, '').split('/').pop();
 // a dropdown head shows one line of text. as text: a set, recording or checkpoint name comes
 // from a folder on disk, and a name is never markup
 function setHead(el, text) {
+  el.title = String(text);
   const span = document.createElement('span');
   span.textContent = text;
   el.replaceChildren(span);
