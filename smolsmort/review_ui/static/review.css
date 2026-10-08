@@ -1,19 +1,18 @@
 /* the review page's own layout, on top of base.css: only what the shared kit does not provide */
 body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+/* keep controls on the shared row grid, including focused controls and table cells */
+.toggle, .text-field, .range-slider, .nav-tab { --focus-lift: 1; font-size: var(--font-size); }
+.range-slider { height: var(--row-height); box-sizing: border-box; font: inherit; }
 /* the row above the tabs: which topic (vision, regression, ...) and which flavour it runs as.
    the top margin sits on each child, not the row, so an empty row (nothing to show yet) takes
    no vertical space at all and the page looks exactly as it did before topics existed */
 #topic-bar { flex: 0 0 auto; display: flex; align-items: center; gap: var(--gap); padding: 0 var(--inset-x); }
 #topic-switch { display: flex; gap: 4px; margin-top: 10px; }
 .topic-tab { padding: 0 14px; }
-#topic-flavour {
-  height: var(--row-height); box-sizing: border-box; background: var(--bg);
-  color: var(--text-dim); border: 2px solid var(--grey-border); padding: 0 8px; margin-top: 10px;
-}
-#topic-flavour:hover, #topic-flavour:focus { color: var(--cream); border-color: var(--cream); }
-#top-bar { flex: 0 0 auto; display: flex; align-items: flex-end; }
+#topic-flavour { margin-top: 10px; }
+#top-bar { flex: 0 0 auto; display: flex; align-items: stretch; }
 #nav-bar { flex: 1 1 auto; }
-#top-bar-actions { margin: 0 14px 0 8px; display: flex; gap: var(--gap); }
+#top-bar-actions { margin: 10px 14px 0 8px; display: flex; align-items: center; gap: var(--gap); }
 #tab-panels { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
 .tab-panel {
   flex: 1 1 auto; min-height: 0; overflow-y: auto;
@@ -78,7 +77,7 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .train-pane { display: flex; flex-direction: column; gap: var(--gap); max-width: 640px; }
 .train-loaders { display: flex; gap: var(--gap); }
 #train-steppers { display: flex; flex-direction: column; gap: var(--gap); }
-.stepper-row .toggle { padding: 0 10px; min-width: var(--row-height); }
+.stepper-row .toggle { min-width: var(--row-height); }
 .stepper-row .field-value { min-width: 46px; text-align: right; }
 #train-buttons { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--gap); }
 .train-facts { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px; }
@@ -159,7 +158,10 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-run-rail section > .field-label { margin-bottom: var(--gap); }
 .forecast-run-rail .dropdown-head { width: 100%; }
 .forecast-run-detail { min-width: 0; }
-.forecast-run-row { width: 100%; height: auto; flex-direction: column; align-items: flex-start; gap: var(--gap); padding: 8px; }
+.forecast-run-row { width: 100%; justify-content: flex-start; gap: var(--gap); }
+.forecast-run-row .name { flex: 1 1 auto; text-align: left; }
+.forecast-run-row .forecast-run-status { flex: 0 0 9ch; text-align: left; }
+.forecast-run-row .forecast-run-wape { flex: 0 0 7ch; text-align: right; font-variant-numeric: tabular-nums; }
 .forecast-run-row > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .forecast-search-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .forecast-search-layout .field-label, .forecast-search-layout th { white-space: nowrap; }

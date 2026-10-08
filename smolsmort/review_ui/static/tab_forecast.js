@@ -762,7 +762,10 @@ class ForecastTopic {
     this.scheduleSearchPoll();
   }
 
-  searchSay(text) { setText(`${this.topic}-search-status`, text); }
+  searchSay(text) {
+    setText(`${this.topic}-search-status`, text);
+    document.getElementById(`${this.topic}-search-status`).classList.toggle('hidden', !text);
+  }
 
   async startSearch() {
     if (!this.spec) { this.searchSay('prepare the data first'); return; }
@@ -859,6 +862,7 @@ class ForecastTopic {
   }
 
   paintRunDetail(run) {
+    document.getElementById(`${this.topic}-search-status`).classList.toggle('hidden', run?.state === 'done');
     document.getElementById(`${this.topic}-new-search-pane`).classList.toggle('hidden', !!run);
     document.getElementById(`${this.topic}-run-actions`).classList.toggle('hidden', !run);
     document.getElementById(`${this.topic}-search-cancel`).classList.toggle('disabled', !this.currentRunId);
@@ -886,7 +890,7 @@ class ForecastTopic {
     setText(`${this.topic}-run-stats`, stats);
     this.searchSay(this.isRunning(run)
       ? latest ? `generation ${latest.generation} - best ${forecastNumber(latest.best)} - evaluated ${latest.evaluated} - elapsed ${latest.elapsed}s` : run.state
-      : run.state === 'failed' ? this.stopReason(run) : `${run.state} - ${run.verdict?.trusted ? 'trusted' : 'not trusted'}`);
+      : run.state === 'failed' ? this.stopReason(run) : '');
     this.paintSearchChart(generations);
     this.lossCurves = [];
     this.lossGeneration = -1;
@@ -1000,7 +1004,7 @@ class ForecastTopic {
       const error = errorOf(entry);
       const gap = Number.isFinite(error) && Number.isFinite(best)
         ? best === 0 ? (error === 0 ? 0 : null) : (error - best) / Math.abs(best) * 100 : null;
-      const gapText = Number.isFinite(gap) ? `${gap < 0 ? '-' : '+'}${Math.abs(gap).toFixed(1)}%` : '-';
+      const gapText = Number.isFinite(gap) ? `${gap < 0 ? '-' : '+'}${Math.abs(gap).toFixed(2)}%` : '-';
       const count = Array.isArray(genome.families) ? new Set(genome.families).size : entry.families;
       const values = [String(index + 1), integer(entry.generation), number(error), gapText,
         number(entry.metrics?.mae), FORECAST_OBJECTIVES[genome.objective] || '-',
@@ -1049,11 +1053,16 @@ class ForecastTopic {
       const row = forecastNode('button', 'toggle forecast-run-row' + (run.id === this.selectedRunId ? ' on' : ''));
       row.dataset.runId = run.id;
       const latest = run.generations?.at(-1);
-      const error = this.isRunning(run) ? run.best_error ?? latest?.best : run.test_error;
-      row.append(forecastNode('span', 'name', `${run.id.split('-').at(-1)} · ${run.kind || 'search'}`));
-      row.append(forecastNode('span', 'field-label', this.isRunning(run)
-        ? `${run.state} · generation ${run.generation ?? latest?.generation ?? '-'} · best ${forecastNumber(error)}`
-        : `${run.state === 'failed' ? 'failed' : run.stopped || run.state} · error ${forecastNumber(error)}`));
+      const task = run.spec?.task || run.task || this.task;
+      const wape = run.kind === 'refit' ? null : run.best_wape
+        ?? latest?.metrics?.wape ?? (task === 'regression' ? latest?.best : null);
+      const status = this.isRunning(run) ? 'running' : run.state === 'failed' ? 'failed'
+        : run.stopped === 'cancelled' ? 'cancelled' : 'done';
+      row.append(forecastNode('span', 'name', run.id.split('-').at(-1)));
+      row.append(forecastNode('span', 'field-label forecast-run-status', status));
+      const value = forecastNode('span', 'field-label forecast-run-wape', forecastNumber(wape));
+      value.setAttribute('aria-label', 'validation wape');
+      row.append(value);
       row.onclick = () => this.selectRun(run.id).catch(err => this.searchSay(err.message));
       (this.isRunning(run) ? running : box).append(row);
     }
