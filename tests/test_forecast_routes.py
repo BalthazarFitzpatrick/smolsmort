@@ -130,6 +130,9 @@ def test_decimal_comma_export_lists_numbers_and_preps(app, tab):
     }
     prepared = _post(app, tab, "/api/forecast-prep", {"spec": spec})
     assert prepared["summary"]["mode"] == "series"
+    assert prepared["summary"]["source_rows"] == 60
+    assert prepared["summary"]["source_columns"] == 3
+    assert prepared["summary"]["encoding"] == "utf-16"
 
 
 def _forecast_path(app):
@@ -180,9 +183,77 @@ def test_prep_summarises_and_reuses_cache(app, tab):
     first = _post(app, tab, "/api/forecast-prep", {"spec": spec})
     assert first["reused"] is False
     assert "sql" in first and first["summary"]["mode"] == "series"
+    assert first["summary"]["source_columns"] == 5
+    assert first["summary"]["encoding"] == "utf-8"
     second = _post(app, tab, "/api/forecast-prep", {"spec": spec})
     assert second["reused"] is True
     assert second["summary"] == first["summary"]
+
+
+def test_prep_reads_known_facts_for_an_old_cache_without_rebuilding(app, tab):
+    write_panel(_forecast_path(app), weeks=60)
+    spec = _series_spec("panel.csv")
+    first = _post(app, tab, "/api/forecast-prep", {"spec": spec})
+    prep_file = next((_forecast_path(app) / ".forecast-cache").glob("*/prep.json"))
+    old_summary = dict(first["summary"])
+    old_summary.pop("source_columns")
+    old_summary.pop("encoding")
+    prep_file.write_text(json.dumps(old_summary))
+    reused = _post(app, tab, "/api/forecast-prep", {"spec": spec})
+    assert reused["reused"] is True
+    assert reused["summary"] == first["summary"]
+    assert reused["sql"] == first["sql"]
+
+
+@pytest.mark.parametrize("action", ["search", "warm", "refit"])
+def test_run_actions_prepare_current_picks_and_report_cache_facts(app, tab, monkeypatch, action):
+    write_panel(_forecast_path(app), weeks=60)
+    captured = []
+
+    def record_run(root, spec, prepared, **kwargs):
+        captured.append((spec, prepared, kwargs))
+        return "new-run"
+
+    monkeypatch.setattr("smolsmort.forecast.tab.runs.start_run", record_run)
+    payload = {"spec": _series_spec("panel.csv"), "budget": TINY_BUDGET}
+    route = "/api/forecast-runs"
+    if action == "warm":
+        payload["warm_from"] = "saved-run"
+    elif action == "refit":
+        saved = _forecast_path(app) / ".forecast-runs" / "saved-run"
+        saved.mkdir(parents=True)
+        (saved / "recipe.json").write_text(json.dumps({"genome": {"params": {"eta": 0.1}}}))
+        payload["run_id"] = "saved-run"
+        route = "/api/forecast-refit"
+
+    first = _post(app, tab, route, payload)
+    assert first["run_id"] == "new-run"
+    assert set(first["prepared"]) == {"summary", "sql", "reused"}
+    assert first["prepared"]["reused"] is False
+    assert first["prepared"]["summary"]["source_rows"] == 60 * 12 * 2
+    assert first["prepared"]["summary"]["source_columns"] == 5
+    assert first["prepared"]["summary"]["encoding"] == "utf-8"
+    assert first["prepared"]["sql"]
+    second = _post(app, tab, route, payload)
+    assert second["prepared"]["reused"] is True
+    assert second["prepared"]["summary"] == first["prepared"]["summary"]
+
+    payload["spec"]["horizon"] = 11
+    changed = _post(app, tab, route, payload)
+    assert changed["prepared"]["reused"] is False
+    assert changed["prepared"]["summary"]["horizon"] == 11
+    assert captured[-1][0].horizon == 11
+    assert captured[-1][1].folder != captured[0][1].folder
+    if action == "warm":
+        assert captured[-1][2]["warm_from"] == "saved-run"
+    elif action == "refit":
+        assert captured[-1][2]["recipe"] == {"params": {"eta": 0.1}}
+
+    write_panel(_forecast_path(app), weeks=61)
+    source_changed = _post(app, tab, route, payload)
+    assert source_changed["prepared"]["reused"] is False
+    assert source_changed["prepared"]["summary"]["source_rows"] == 61 * 12 * 2
+    assert source_changed["prepared"]["summary"]["horizon"] == 11
 
 
 # ---------------------------------------------------------------- runs

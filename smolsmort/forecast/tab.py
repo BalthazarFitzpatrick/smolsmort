@@ -176,7 +176,10 @@ def _start(app, payload: dict) -> dict:
         budget=payload.get("budget"),
         warm_from=payload.get("warm_from"),
     )
-    return {"run_id": run_id}
+    return {
+        "run_id": run_id,
+        "prepared": {"summary": prepared.summary, "sql": prepared.sql, "reused": prepared.reused},
+    }
 
 
 def _refit(app, payload: dict) -> dict:
@@ -191,7 +194,10 @@ def _refit(app, payload: dict) -> dict:
         raise RequestError(str(exc)) from exc
     prepared = prepare(spec, _cache_root(app))
     run_id = runs.start_run(_runs_root(app), spec, prepared, recipe=genome)
-    return {"run_id": run_id}
+    return {
+        "run_id": run_id,
+        "prepared": {"summary": prepared.summary, "sql": prepared.sql, "reused": prepared.reused},
+    }
 
 
 def _list_runs(app, query: dict) -> dict:

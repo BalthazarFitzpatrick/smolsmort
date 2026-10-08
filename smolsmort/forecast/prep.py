@@ -64,7 +64,16 @@ def prepare(spec: PrepSpec, cache_root: Path) -> Prepared:
     folder = cache_root / key
 
     if _is_complete(spec, folder):
-        return _load_cached(folder)
+        prepared = _load_cached(folder)
+        if "source_columns" not in prepared.summary or "encoding" not in prepared.summary:
+            with tempfile.TemporaryDirectory(dir=cache_root, prefix=".facts-") as facts_dir:
+                con = connect()
+                try:
+                    read_expr = _load_source(spec, source_path, source_bytes, Path(facts_dir))
+                    prepared.summary.update(_source_facts(con, read_expr, spec, source_bytes))
+                finally:
+                    con.close()
+        return prepared
 
     cache_root.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(dir=cache_root, prefix=".tmp-")).resolve()
@@ -77,6 +86,7 @@ def prepare(spec: PrepSpec, cache_root: Path) -> Prepared:
             sql, summary = _prep_row(con, spec, read_expr, tmp)
         else:
             sql, summary = _prep_series(con, spec, read_expr, tmp)
+        summary.update(_source_facts(con, read_expr, spec, source_bytes))
         con.close()
         # runs on absolute temp paths, stored relative: the text replays from inside the cache
         # folder, and the process never changes directory (the server serves other threads)
@@ -91,6 +101,14 @@ def prepare(spec: PrepSpec, cache_root: Path) -> Prepared:
         shutil.rmtree(folder)
     os.replace(tmp, folder)
     return Prepared(folder, sql, summary, reused=False)
+
+
+def _source_facts(con, read_expr: str, spec: PrepSpec, source_bytes: bytes) -> dict:
+    columns = con.execute(f"DESCRIBE SELECT * FROM {read_expr}").fetchall()
+    return {
+        "source_columns": len(columns),
+        "encoding": resolve_encoding(source_bytes, spec.encoding),
+    }
 
 
 def _is_complete(spec: PrepSpec, folder: Path) -> bool:
