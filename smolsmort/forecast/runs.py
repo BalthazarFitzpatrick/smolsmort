@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import os
 import signal
 import subprocess
@@ -157,11 +158,27 @@ def _metadata(folder: Path, status: dict, generations: list[dict], events: list[
         "budget": request.get("budget", {}),
         "generation_count": len(generations),
         "best_error": latest.get("best"),
+        "best_wape": _validation_wape(request, latest, kind),
         "test_error": result.get("model_error"),
         "stopped": status.get("stopped") or finishing.get("stopped"),
         "elapsed": status.get("elapsed") or finishing.get("elapsed") or latest.get("elapsed"),
         "leaderboard_generation": revision,
     }
+
+
+def _validation_wape(request: dict, generation: dict, kind: str) -> float | None:
+    if kind == "refit":
+        return None
+    metrics = generation.get("metrics") or {}
+    wape = metrics.get("wape")
+    if not isinstance(wape, (int, float)) or isinstance(wape, bool) or not math.isfinite(wape):
+        # older regression events recorded their validation wape as best
+        wape = (
+            generation.get("best") if request.get("spec", {}).get("task") == "regression" else None
+        )
+    if isinstance(wape, (int, float)) and not isinstance(wape, bool) and math.isfinite(wape):
+        return wape
+    return None
 
 
 def _alive(folder: Path) -> bool:

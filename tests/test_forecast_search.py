@@ -462,3 +462,38 @@ def test_run_summaries_expose_kind_progress_stop_reason_and_test_error(tmp_path,
     assert by_id["20260101"]["test_error"] == 0.3
     assert by_id["20260103"]["test_error"] is None
     assert by_id["20260104"]["reason"] == "bad fit"
+
+
+@pytest.mark.parametrize(
+    ("task", "recipe", "events", "expected"),
+    [
+        ("regression", None, [{"best": 0.3}], 0.3),
+        ("regression", None, [{"best": 0.3}, {"best": 0.2, "metrics": {"wape": 0.15}}], 0.15),
+        ("regression", None, [{"best": 0.3}, {"best": 0.0, "metrics": {"wape": 0.0}}], 0.0),
+        ("regression", None, [], None),
+        ("regression", {"objective": "squared"}, [{"best": 0.3}], None),
+        ("classification", None, [{"best": 0.3, "metrics": {"log_loss": 0.3}}], None),
+        ("classification", None, [{"best": 0.3, "metrics": {"wape": 0.2}}], 0.2),
+        ("regression", None, [{"best": None, "metrics": {"wape": None}}], None),
+    ],
+)
+def test_run_summaries_read_latest_validation_wape_from_events(
+    tmp_path, monkeypatch, task, recipe, events, expected
+):
+    monkeypatch.setattr(run_store, "_alive", lambda folder: True)
+    folder = tmp_path / "old-run"
+    folder.mkdir()
+    (folder / "request.json").write_text(json.dumps({"spec": {"task": task}, "recipe": recipe}))
+    (folder / "events.jsonl").write_text(
+        "\n".join(
+            json.dumps({"event": "generation", "generation": generation, **event})
+            for generation, event in enumerate(events)
+        )
+    )
+    for status in ("running", "done"):
+        (folder / "status.json").write_text(json.dumps({"state": status}))
+        state = run_store.run_state(tmp_path, folder.name)
+        assert state["best_wape"] == expected
+        assert state["test_error"] is None
+        summary = run_store.list_runs(tmp_path)[0]
+        assert summary["best_wape"] == expected and summary["state"] == status

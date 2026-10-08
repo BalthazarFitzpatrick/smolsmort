@@ -314,6 +314,9 @@ def test_old_runs_infer_the_leaderboard_revision_from_generation_events(app, tab
     (root / "leaderboard.json").write_text(json.dumps([{"fitness": 0.3}]))
     state = _get(app, tab, "/api/forecast-run", {"id": "old", "since_leaderboard": 1})
     assert state["leaderboard_generation"] == 2 and state["leaderboard"]
+    assert state["best_wape"] == 0.3 and state["test_error"] is None
+    summaries = _get(app, tab, "/api/forecast-runs")
+    assert next(run for run in summaries["runs"] if run["id"] == "old")["best_wape"] == 0.3
     assert "leaderboard" not in _get(
         app, tab, "/api/forecast-run", {"id": "old", "since_leaderboard": 2}
     )
