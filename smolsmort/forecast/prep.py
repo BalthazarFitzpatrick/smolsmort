@@ -267,6 +267,7 @@ def _agg_expr(col: str, aggregation: str, time_col_q: str) -> str:
     return {
         "sum": f"SUM({q})",
         "mean": f"AVG({q})",
+        "median": f"MEDIAN({q})",
         "min": f"MIN({q})",
         "max": f"MAX({q})",
         "count": f"COUNT({q})",
@@ -284,7 +285,7 @@ def _fill_expr(col: str, aggregation: str) -> str:
             f"PARTITION BY {_quote(SERIES)} ORDER BY {_quote(STEP)} "
             "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"
         )
-    return q  # mean/min/max: a gap stays null, nothing to fill
+    return q  # mean/median/min/max: a gap stays null, nothing to fill
 
 
 def _prep_series(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[str, dict]:

@@ -84,6 +84,8 @@ def test_columns_suggests_roles_from_kind(app, tab):
     assert by_name["day"]["suggested_role"] == "time"
     assert by_name["project"]["kind"] == "text"
     assert by_name["project"]["suggested_role"] == "dimension"
+    assert by_name["project"]["distinct"] == 3
+    assert by_name["product"]["distinct"] == 4
     assert by_name["orders"]["kind"] == "number"
     assert by_name["orders"]["suggested_role"] == "measure"
     assert all(c["suggested_role"] != "target" for c in result["columns"])
