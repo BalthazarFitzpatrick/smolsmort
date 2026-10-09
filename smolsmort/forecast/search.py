@@ -399,11 +399,8 @@ def search(
         checkpoint()
         return entry
 
-    warm = [
-        data
-        for data in warm or []
-        if data.get("family", "xgboost") == (family.name if family else "xgboost")
-    ]
+    if family is not None:
+        warm = [data for data in warm or [] if data.get("family", "xgboost") == family.name]
     population = (
         _seed_population(ws, var, budget.population, warm)
         if legacy
@@ -537,7 +534,7 @@ def search(
         population = elite + children
         checkpoint()
     board = sorted((e for e in scored.values() if e.note != "sample"), key=Entry.rank)
-    if board and (best is None or board[0].rank() < best.rank()):
+    if (resume or family) and board and (best is None or board[0].rank() < best.rank()):
         best = board[0]
         if on_best:
             history = best.eval_history
