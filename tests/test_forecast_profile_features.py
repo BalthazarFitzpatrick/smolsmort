@@ -9,7 +9,14 @@ import numpy as np
 import pytest
 from forecast_fixtures import write_panel, write_rows
 
-from smolsmort.forecast.features import buckets_for, row_features, series_features, step_index
+from smolsmort.forecast.features import (
+    ALPHAS,
+    WINDOWS,
+    buckets_for,
+    row_features,
+    series_features,
+    step_index,
+)
 from smolsmort.forecast.prep import prepare
 from smolsmort.forecast.profile import build_profile
 from smolsmort.forecast.spec import ANCHOR, LOWER, SERIES, STEP, UPPER, Censor, Column, PrepSpec
@@ -156,3 +163,148 @@ def test_a_lag_column_is_the_target_that_many_steps_back(panel):
         - step_index(table[STEP][table[SERIES] == "A|p1"], "week")[0]
     )
     assert np.allclose(column, series[index - 4].astype(np.float32))
+
+
+def make_seasonal_table(unit, count, periods):
+    rng = np.random.default_rng(17)
+    index = np.arange(count)
+    values = 100 + rng.normal(0, 0.5, count)
+    for period in periods:
+        values += 20 * np.sin(2 * np.pi * index / period)
+    if unit in ("day", "week"):
+        steps = np.datetime64("2020-01-06") + index * (1 if unit == "day" else 7)
+    else:
+        months = {"month": 1, "quarter": 3, "year": 12}[unit]
+        steps = (np.datetime64("2020-01", "M") + index * months).astype("datetime64[D]")
+    spec = PrepSpec(
+        "synthetic.csv",
+        "series",
+        "regression",
+        (Column("day", "time"), Column("units", "target", "sum")),
+        step=unit,
+        horizon=30,
+    )
+    return spec, {STEP: steps, SERIES: np.full(count, "daily"), "units": values}
+
+
+@pytest.mark.parametrize(
+    "unit,count,periods,expected",
+    [
+        ("day", 100, (7,), [7]),
+        ("day", 729, (365,), []),
+        ("day", 730, (365,), [365]),
+        ("day", 900, (7, 365), [7, 365]),
+        ("day", 900, (7,), [7]),
+        ("week", 103, (52,), []),
+        ("week", 104, (52,), [52]),
+        ("month", 60, (12,), [12]),
+        ("quarter", 40, (4,), [4]),
+    ],
+)
+def test_calendar_periods_need_two_training_cycles(unit, count, periods, expected):
+    spec, table = make_seasonal_table(unit, count + 40, periods)
+    train = np.arange(count + 40) < count
+    profile = build_profile(spec, table, train)
+    assert profile["periods"] == expected
+    assert profile["period"] == (expected[0] if expected else None)
+    table["units"][~train] = 1e9
+    assert build_profile(spec, table, train) == profile
+
+
+@pytest.fixture(scope="module")
+def daily():
+    spec, table = make_seasonal_table("day", 1000, (7, 365))
+    scaffold = {STEP: table[STEP][-1] + np.arange(1, 31), SERIES: np.full(30, "daily")}
+    train = np.arange(1000) < 910
+    return spec, table, scaffold, train
+
+
+@pytest.mark.parametrize("bucket", buckets_for(60))
+def test_each_daily_feature_uses_only_positions_through_origin(daily, bucket):
+    spec, table, scaffold, train = daily
+    before = series_features(spec, table, scaffold, bucket, "day", train, period=7)
+    names, families = before.features.names, before.features.families
+    assert {f"lag+{j}" for j in range(4)} <= set(families)
+    new = [i for i, family in enumerate(families) if family.startswith(("lag:", "roll:"))]
+    assert new
+    for row in np.flatnonzero(~before.future):
+        target = int((before.step[row] - table[STEP][0]).astype(int))
+        origin = target - bucket[1]
+        for col in new:
+            name, family = names[col], families[col]
+            if family.startswith("lag:"):
+                lag = int(family.split(":")[1])
+                assert lag >= bucket[1]
+                expected = table["units"][target - lag] if target >= lag else np.nan
+            else:
+                window = int(family.split(":")[1])
+                seen = table["units"][max(0, origin - window + 1) : origin + 1]
+                stat = name.rsplit("_", 1)[1]
+                expected = (
+                    {
+                        "mean": seen.mean(),
+                        "std": seen.std(),
+                        "max": seen.max(),
+                        "zeros": (seen == 0).mean(),
+                    }[stat]
+                    if len(seen) >= max(window // 2, 1)
+                    else np.nan
+                )
+            np.testing.assert_allclose(before.features.x[row, col], expected, rtol=1e-6, atol=1e-5)
+    changed = {name: values.copy() for name, values in table.items()}
+    # change a held-out future value; training-derived columns and earlier origins must be fixed
+    changed["units"][920] = 1e9
+    after = series_features(spec, changed, scaffold, bucket, "day", train, period=7)
+    safe = before.origin < table[STEP][920]
+    np.testing.assert_array_equal(before.features.x[safe], after.features.x[safe])
+    assert not np.array_equal(before.features.x[~safe], after.features.x[~safe], equal_nan=True)
+
+
+@pytest.mark.parametrize(
+    "unit,windows,lags",
+    [
+        ("day", (7, 14, 28, 91, 182), (7, 14, 28, 364, 365)),
+        ("month", (3, 6, 12), (12,)),
+        ("quarter", (2, 4, 8), (4,)),
+        ("year", (2, 3, 5), (2, 3)),
+    ],
+)
+def test_step_families_and_missing_genome_families(daily, unit, windows, lags):
+    spec, table, scaffold, train = daily
+    if unit != "day":
+        spec, table = make_seasonal_table(unit, 100, ())
+        train = np.arange(100) < 80
+        scaffold = {STEP: np.array([], dtype="datetime64[D]"), SERIES: np.array([], dtype=str)}
+    frame = series_features(spec, table, scaffold, (1, 1), unit, train)
+    families = set(frame.features.families)
+    assert {f"roll:{w}" for w in windows} == {f for f in families if f.startswith("roll:")}
+    assert {f"lag:{k}" for k in lags} == {f for f in families if f.startswith("lag:")}
+    assert frame.features.pick({"lag+0", "absent", "roll:999"})[1] == ["lag_1"]
+
+
+def test_daily_families_are_capped_by_training_history(daily):
+    spec, table, scaffold, _ = daily
+    train = np.arange(len(table[STEP])) < 20
+    frame = series_features(spec, table, scaffold, (2, 4), "day", train)
+    families = set(frame.features.families)
+    assert {f for f in families if f.startswith("roll:")} == {"roll:7", "roll:14"}
+    assert {f for f in families if f.startswith("lag:")} == {"lag:7", "lag:14"}
+
+
+def test_weekly_columns_families_and_values_stayed_identical(panel):
+    spec, table, scaffold, train, _ = panel
+    for bucket in buckets_for(spec.horizon):
+        frame = series_features(spec, table, scaffold, bucket, "week", train, period=52)
+        assert not any(f.startswith("lag:") for f in frame.features.families)
+        assert {f for f in frame.features.families if f.startswith("roll:")} == {
+            f"roll:{w}" for w in WINDOWS
+        }
+        assert {f for f in frame.features.families if f.startswith("ewm:")} == {
+            f"ewm:{a}" for a in ALPHAS
+        }
+        expected = [f"lag_{bucket[1] + j}" for j in range(4)] + ["lag_52"]
+        expected += [f"roll{w}_{stat}" for w in WINDOWS for stat in ("mean", "std", "max", "zeros")]
+        expected += [f"ewm{a}" for a in ALPHAS]
+        expected += [f"orders_lag_{bucket[1] + j}" for j in range(4)]
+        expected += ["cal_week", "cal_month", "cal_quarter", "project", "product"]
+        assert frame.features.names == expected
