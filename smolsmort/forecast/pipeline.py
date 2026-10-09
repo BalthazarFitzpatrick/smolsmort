@@ -98,6 +98,7 @@ class Workspace:
     frames: dict | None = None
     series_masks: dict | None = None
     test_steps: int = 0
+    panel: dict | None = None
 
     @property
     def mode(self) -> str:
@@ -178,6 +179,7 @@ def _series_workspace(spec, folder, summary) -> Workspace:
         }
     ws = Workspace(spec, folder, summary, profile, [], unit)
     ws.frames, ws.series_masks = frames, masks
+    ws.panel = panel
     ws.test_steps = int(cuts.steps - cuts.test_start)
     families = set().union(*(set(f.features.families) for f in frames.values()))
     ws.families = sorted(families - _excluded_families(profile))
@@ -202,6 +204,10 @@ def score(
     else:
         pred, truth, periods = _series_phase(ws, genome, "val", nthread, sample, histories)
     result = _fitness(ws, pred, truth, periods)
+    if ws.mode == "series" and get_family(genome.family).needs == "raw_series":
+        from smolsmort.forecast.families.stats import season_length
+
+        result.metrics["season_length"] = season_length(ws.profile)
     result.eval_history = histories[0] if histories else None
     return result
 
@@ -298,12 +304,17 @@ def _series_phase(ws, genome, phase, nthread, sample=None, histories=None):
         if sample is not None:
             fit_rows = fit_rows & np.isin(frame.series, sample)
         eval_rows = masks["val"] if phase == "val" else masks["test"]
-        fitted, x = _series_fit(ws, genome, frame, fit_rows, nthread)
+        if get_family(genome.family).needs == "raw_series":
+            fitted, x = _series_raw_fit(ws, genome, frame, eval_rows, bucket, nthread)
+            prediction = fitted.predict(x)
+        else:
+            fitted, x = _series_fit(ws, genome, frame, fit_rows, nthread)
+            prediction = fitted.predict(x[eval_rows])
         # one actual fit, never a blend of curves from different horizon buckets
         if histories is not None and not histories:
             history = fitted.eval_history
             histories.append({**history, "bucket": list(bucket)} if history else None)
-        preds.append(fitted.predict(x[eval_rows]))
+        preds.append(prediction)
         truths.append(frame.y[eval_rows])
         periods.append(frame.step[eval_rows].astype(int))
     return np.concatenate(preds), np.concatenate(truths), np.concatenate(periods)
@@ -328,6 +339,32 @@ def _series_fit(ws, genome, frame, rows, nthread):
         nthread=nthread,
     )
     return fitted, x
+
+
+def _series_raw_fit(ws, genome, frame, rows, bucket, nthread):
+    from smolsmort.forecast.families.stats import RawSeriesTask, season_length
+
+    task = RawSeriesTask(
+        ws.panel,
+        ws.spec.named("target")[0],
+        ws.unit,
+        frame,
+        rows,
+        bucket,
+        season_length(ws.profile),
+    )
+    fitted = get_family(genome.family).fit(
+        task, objective=genome.objective, params=dict(genome.params), nthread=nthread
+    )
+    return fitted, task
+
+
+def _series_predict(ws, genome, frame, fit_rows, eval_rows, bucket, nthread):
+    if get_family(genome.family).needs == "raw_series":
+        fitted, task = _series_raw_fit(ws, genome, frame, eval_rows, bucket, nthread)
+        return fitted.predict(task)
+    fitted, x = _series_fit(ws, genome, frame, fit_rows, nthread)
+    return fitted.predict(x[eval_rows])
 
 
 # ---------------------------------------------------------------- the frozen winner
@@ -445,13 +482,13 @@ def _finish_series(ws, genome, nthread) -> dict:
     test_lo, test_hi = [], []
     for bucket, frame in ws.frames.items():
         masks = ws.series_masks[bucket]
-        fitted, x = _series_fit(ws, genome, frame, masks["train"], nthread)
-        val_pred = fitted.predict(x[masks["val"]])
+        val_pred = _series_predict(ws, genome, frame, masks["train"], masks["val"], bucket, nthread)
         band = ev.fit_band(frame.y[masks["val"]], val_pred)
         bands[f"{bucket[0]}-{bucket[1]}"] = None if band is None else band.__dict__
         val_rows.append(_series_rows(frame, masks["val"], val_pred, bucket))
-        fitted, x = _series_fit(ws, genome, frame, masks["train"] | masks["val"], nthread)
-        test_pred = fitted.predict(x[masks["test"]])
+        test_pred = _series_predict(
+            ws, genome, frame, masks["train"] | masks["val"], masks["test"], bucket, nthread
+        )
         lo, hi = ev.apply_band(band, test_pred, nonnegative=True)
         test_pred_all.append(test_pred)
         test_truth_all.append(frame.y[masks["test"]])
@@ -459,10 +496,15 @@ def _finish_series(ws, genome, nthread) -> dict:
         test_hi.append(hi)
         base_all.append(_series_baseline(frame, masks["test"], bucket, period))
         test_rows.append(_series_rows(frame, masks["test"], test_pred, bucket))
-        fitted, x = _series_fit(
-            ws, genome, frame, masks["train"] | masks["val"] | masks["test"], nthread
+        future_pred = _series_predict(
+            ws,
+            genome,
+            frame,
+            masks["train"] | masks["val"] | masks["test"],
+            masks["future"],
+            bucket,
+            nthread,
         )
-        future_pred = fitted.predict(x[masks["future"]])
         lo, hi = ev.apply_band(band, future_pred, nonnegative=True)
         rows = _series_rows(frame, masks["future"], future_pred, bucket)
         rows.update(lower=lo, upper=hi)
@@ -480,7 +522,13 @@ def _finish_series(ws, genome, nthread) -> dict:
         band_width=_median_width(np.concatenate(test_lo), np.concatenate(test_hi)),
         spread=_spread(ws.frames[first].y[seen]),
     )
+    metadata = {}
+    if get_family(genome.family).needs == "raw_series":
+        from smolsmort.forecast.families.stats import season_length
+
+        metadata["season_length"] = season_length(ws.profile)
     return {
+        **metadata,
         "verdict": verdict,
         "bands": bands,
         "validation": _stack(val_rows),
