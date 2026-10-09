@@ -8,7 +8,7 @@ import numpy as np
 from smolsmort.forecast.spec import LOWER, SERIES, STEP, UPPER, PrepSpec
 from smolsmort.forecast.tables import is_text
 
-# acf above this at a lag of 4+ steps counts as a season - unmeasured first guess
+# minimum evidence for a seasonal peak
 SEASON_ACF = 0.3
 MAX_LAG = 26
 # an input this close to the target is the target in disguise, e.g. a value set only afterwards
@@ -63,23 +63,46 @@ def _acf(values: np.ndarray, lags: range) -> dict[int, float]:
     return {k: float((values[k:] * values[:-k]).sum() / denom) for k in lags if k < len(values)}
 
 
-def _season(acf: dict[int, float]) -> tuple[int | None, float]:
-    """the strongest acf peak after the first dip; a smooth series is most alike at its shortest
-    lags, so the plain maximum finds smoothness rather than a season"""
-    lags = sorted(acf)
-    values = [acf[k] for k in lags]
-    dip = next((i for i in range(1, len(values) - 1) if values[i] <= values[i + 1]), None)
-    if dip is None:
-        return None, 0.0
-    peaks = [
-        (values[i], lags[i])
-        for i in range(dip + 1, len(values) - 1)
-        if values[i] >= values[i - 1] and values[i] >= values[i + 1] and lags[i] >= 4
-    ]
-    if not peaks:
-        return None, 0.0
-    strength, period = max(peaks)
-    return period, strength
+def _detect_periods(values, unit):
+    """calendar periods supported by nearby acf peaks, with two full cycles of history"""
+    candidates = {"day": (7, 365), "week": (52,), "month": (12,), "quarter": (4,), "year": ()}
+    detected = {}
+    residual = np.asarray(values, dtype=float).copy()
+    for period in candidates[unit]:
+        if len(values) < 2 * period:
+            continue
+        radius = max(1, period // 26)
+        acf = _acf(residual, range(max(1, period - radius - 1), period + radius + 2))
+        peaks = [
+            acf[k]
+            for k in range(period - radius, period + radius + 1)
+            if k in acf and acf[k] >= acf.get(k - 1, 0) and acf[k] >= acf.get(k + 1, 0)
+        ]
+        strength = max(peaks, default=0.0)
+        if strength >= SEASON_ACF:
+            detected[period] = strength
+            # remove shorter cycles before testing a yearly cycle, so their harmonics do not qualify
+            phase = np.arange(len(residual)) % period
+            means = np.array([residual[phase == i].mean() for i in range(period)])
+            residual -= means[phase]
+    return detected
+
+
+def _step_unit(spec, steps):
+    if spec.step:
+        return spec.step
+    spacing = np.median(np.diff(steps.astype("datetime64[D]")).astype(int)) if len(steps) > 1 else 7
+    return next(
+        unit
+        for limit, unit in (
+            (2, "day"),
+            (14, "week"),
+            (45, "month"),
+            (120, "quarter"),
+            (float("inf"), "year"),
+        )
+        if spacing <= limit
+    )
 
 
 def _series_arrays(table, name, train):
@@ -139,15 +162,24 @@ def build_profile(spec: PrepSpec, table: dict, train: np.ndarray) -> dict:
     return profile
 
 
-def _series_profile(spec, table, train, target) -> dict:
-    target_series = _series_arrays(table, target, train)
+def _series_totals(table, train, target):
+    """training totals in step order, shared by profiling and feature-period selection"""
     steps = np.unique(table[STEP][train])
     totals = np.zeros(len(steps))
     for key in np.unique(table[SERIES][train]):
         mine = train & (table[SERIES] == key)
         index = np.searchsorted(steps, table[STEP][mine])
         np.add.at(totals, index, np.nan_to_num(table[target][mine]))
-    period, strength = _season(_acf(totals, range(1, min(60, len(totals) // 2))))
+    return steps, totals
+
+
+def _series_profile(spec, table, train, target) -> dict:
+    target_series = _series_arrays(table, target, train)
+    steps, totals = _series_totals(table, train, target)
+    unit = _step_unit(spec, steps)
+    detected = _detect_periods(totals, unit)
+    period = next(iter(detected), None)
+    strength = detected.get(period, 0.0)
     zeros = [float((s == 0).mean()) for s in target_series if len(s)]
     slope = np.polyfit(np.arange(len(totals)), totals, 1)[0] if len(totals) > 2 else 0.0
     leads = {}
@@ -159,6 +191,7 @@ def _series_profile(spec, table, train, target) -> dict:
         "steps": int(len(steps)),
         "series": int(len(target_series)),
         "period": int(period) if period is not None and strength >= SEASON_ACF else None,
+        "periods": list(detected),
         "period_acf": float(strength),
         "zero_share": {"median": float(np.median(zeros)), "max": float(max(zeros))}
         if zeros
