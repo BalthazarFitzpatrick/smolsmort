@@ -65,6 +65,16 @@ def launch_families(folder: Path, request: dict, job) -> dict:
     finally:
         for process in processes.values():
             stop_process(process)
+    states = {
+        name: read_json(folder / "families" / name / "status.json", {"state": "starting"})
+        for name in names
+    }
+    if job.cancelled:
+        for name, state in states.items():
+            if state["state"] in ("running", "starting"):
+                states[name] = {**state, "state": "cancelled"}
+                job.save(f"families/{name}/status.json", states[name])
+        job.status("running", started_at=started_at, families=states)
     board = []
     for name in names:
         for entry in read_json(folder / "families" / name / "leaderboard.json", []):

@@ -85,6 +85,8 @@ def run(folder: Path, name: str) -> int:
             Path(request["warm_from"]) / "families" / name if request.get("warm_from") else None
         )
         warm = _warm_start(warm_path) if warm_path else None
+        if warm is None and name == "xgboost":
+            warm = _warm_start(request.get("warm_from"))
         result = search(
             ws,
             Budget(time_cap=request["time_budget_s"], nthread=nthread, max_generations=2**31 - 1),

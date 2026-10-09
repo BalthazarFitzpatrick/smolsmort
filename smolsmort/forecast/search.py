@@ -104,6 +104,8 @@ class _Variation:
         self.objectives = list(ws.profile["genes"]["objectives"])
         self.rng = rng
         family = get_family("xgboost")
+        task = getattr(getattr(ws, "spec", None), "task", "regression")
+        self.objectives = [name for name in self.objectives if name in family.objectives(task)]
         catalog = {param.name: param for param in family.space()}
         self.space = {}
         self.defaults = {}
@@ -201,16 +203,23 @@ class _FamilyVariation(_Variation):
                 raise ValueError(f"invalid space override {name!r}")
             self.space[name] = tuple(values)
             self.choices.add(name)
+            if self.defaults[name] not in values:
+                self.defaults[name] = values[0]
         self.overrides = overrides or {}
         objectives = getattr(family, "objectives", lambda _task: ("squared",))
         self.objectives = list(objectives(ws.spec.task))
         if family.name == "xgboost":
-            self.objectives = list(ws.profile["genes"]["objectives"])
+            self.objectives = [
+                name for name in ws.profile["genes"]["objectives"] if name in self.objectives
+            ]
         if family.needs == "raw_series":
             self.families = []
 
     def params_for(self, objective, base=None):
         params = {**self.defaults, **(base or {})}
+        for name, values in self.overrides.items():
+            if params.get(name) not in values:
+                params[name] = self.defaults[name]
         if self.family.name == "xgboost":
             active = {**SPACE, **OBJECTIVE_SPACE.get(objective, {})}
             params = {name: value for name, value in params.items() if name in active}
@@ -218,13 +227,14 @@ class _FamilyVariation(_Variation):
 
     def random(self):
         objective = str(self.rng.choice(self.objectives))
+        keep = [name for name in self.families if self.rng.random() < 0.7]
+        if self.families and not keep:
+            keep = [str(self.rng.choice(self.families))]
         params = {
             name: self._draw(spec) if name not in self.choices else self.rng.choice(spec).item()
             for name, spec in self.space.items()
         }
-        return make_genome(
-            self.families, objective, self.params_for(objective, params), self.family.name
-        )
+        return make_genome(keep, objective, self.params_for(objective, params), self.family.name)
 
     def crossover(self, a, b):
         pa, pb = dict(a.params), dict(b.params)
@@ -233,10 +243,23 @@ class _FamilyVariation(_Variation):
             for name in self.space
         }
         params = self.params_for(a.objective, params)
-        return make_genome(self.families, a.objective, params, self.family.name)
+        mine, theirs = set(a.families), set(b.families)
+        keep = [
+            name for name in self.families if name in (mine if self.rng.random() < 0.5 else theirs)
+        ]
+        return make_genome(keep or a.families, a.objective, params, self.family.name)
 
     def mutate(self, genome):
         params = dict(genome.params)
+        keep = set(genome.families)
+        for name in self.families:
+            if self.rng.random() < 1 / len(self.families):
+                keep ^= {name}
+        objective = genome.objective
+        if len(self.objectives) > 1 and self.rng.random() < 0.1:
+            objective = str(
+                self.rng.choice([name for name in self.objectives if name != objective])
+            )
         for name, spec in self.space.items():
             if self.rng.random() < 0.3:
                 params[name] = (
@@ -245,9 +268,9 @@ class _FamilyVariation(_Variation):
                     else self._nudge(params.get(name), spec)
                 )
         return make_genome(
-            self.families,
-            genome.objective,
-            self.params_for(genome.objective, params),
+            keep or genome.families,
+            objective,
+            self.params_for(objective, params),
             self.family.name,
         )
 
@@ -353,10 +376,12 @@ def search(
     """run until a plateau, the time cap, the generation cap or `stop()`; returns the ranked
     leaderboard, the final population (the next search's warm start) and why it stopped"""
     rng = np.random.default_rng(budget.seed)
+    if isinstance(family, str):
+        family = get_family(family)
     legacy = family is None or (family.name == "xgboost" and not space and method == "genetic")
     var = _Variation(ws, rng) if legacy else _FamilyVariation(ws, rng, family, space)
     started = time.monotonic()
-    sample = _sample(ws, rng)
+    sample = None if family and not family.space() else _sample(ws, rng)
     scored: dict[str, Entry] = {}
     prior_elapsed = (resume or {}).get("elapsed", 0)
 
@@ -505,7 +530,8 @@ def search(
             )
         generation += 1
         if not legacy and (not var.space or method == "grid"):
-            reason = "single candidate" if not var.space else "grid complete"
+            if reason != "time cap":
+                reason = "single candidate" if not var.space else "grid complete"
             break
         if stop and stop():
             reason = "cancelled"
