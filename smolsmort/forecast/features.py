@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from smolsmort.forecast.profile import _detect_periods, _series_totals
 from smolsmort.forecast.spec import ANCHOR, SERIES, STEP, PrepSpec
 from smolsmort.forecast.tables import is_text
 
@@ -207,6 +208,7 @@ def series_features(
     train,
     *,
     period: int | None = None,
+    periods: tuple[int, ...] | None = None,
     measure_lags: dict[str, int] | None = None,
 ) -> SeriesFrame:
     """the rows one bucket's model trains, is judged and predicts on. a target at step d with
@@ -217,6 +219,14 @@ def series_features(
     measures = [m for m in spec.named("measure") if m in panel]
     dims = [d for d in spec.named("dimension") if d in panel]
     train = np.asarray(train, dtype=bool)
+    history = len(np.unique(panel[STEP][train]))
+    if unit != "week" and periods is None:
+        _, totals = _series_totals(panel, train, target)
+        periods = tuple(_detect_periods(totals, unit))
+    detected = set(periods or ())
+    if period:
+        detected.add(period)
+    absolute_lags, windows = _step_features(unit, history, detected)
     dim_codes = {d: _codes(panel[d], train) for d in dims}
     last = step_index(panel[STEP], unit).max()
     parts = []
@@ -230,7 +240,17 @@ def series_features(
             name: _extend(panel[name][mine], length, aggregation.get(name))
             for name in [target, *measures]
         }
-        base = _series_base(series_values, target, measures, b, period, measure_lags or {})
+        base = _series_base(
+            series_values,
+            target,
+            measures,
+            b,
+            period,
+            measure_lags or {},
+            absolute_lags,
+            windows,
+            preserve_relative=unit != "week",
+        )
         rows = [(p, panel[target][mine][p], False) for p in range(len(mine)) if p - b >= 0]
         future = np.flatnonzero(scaffold[SERIES] == key)
         f_index = step_index(scaffold[STEP][future], unit)
@@ -282,15 +302,49 @@ def _unit_days(unit: str) -> int:
     return {"day": 1, "week": 7, "month": 30, "quarter": 91, "year": 365}[unit]
 
 
-def _series_base(values, target, measures, b, period, measure_lags) -> dict:
+def _step_features(unit, history, periods):
+    """weekly families stay fixed; other units expose only history-supported windows and lags"""
+    if unit == "week":
+        return (), WINDOWS
+    lags, windows = {
+        "day": ((7, 14, 28, 364), (7, 14, 28, 91, 182)),
+        "month": ((12,), (3, 6, 12)),
+        "quarter": ((4,), (2, 4, 8)),
+        "year": ((2, 3), (2, 3, 5)),
+    }[unit]
+    return (
+        tuple(sorted(k for k in set(lags) | set(periods) if k < history)),
+        tuple(w for w in windows if w <= history),
+    )
+
+
+def _series_base(
+    values,
+    target,
+    measures,
+    b,
+    period,
+    measure_lags,
+    absolute_lags=(),
+    windows=WINDOWS,
+    *,
+    preserve_relative=False,
+) -> dict:
     """name -> (family, values) at every origin position g, built from positions <= g only.
     families are relative to the bucket (lag+0 is the freshest lag any bucket may read), so one
     genome means the same thing in every bucket's model"""
     y = values[target]
     base = {f"lag_{b + j}": (f"lag+{j}", _shift(y, j)) for j in LAGS}
     if period and period >= b:
-        base[f"lag_{period}"] = ("season", _shift(y, period - b))
-    for w in WINDOWS:
+        name = f"lag_{period}"
+        if preserve_relative and name in base:
+            name = f"season_lag_{period}"
+        base[name] = ("season", _shift(y, period - b))
+    for k in absolute_lags:
+        if k >= b:
+            # separate columns retain relative-lag and season families when their offsets coincide
+            base[f"absolute_lag_{k}"] = (f"lag:{k}", _shift(y, k - b))
+    for w in windows:
         for stat, col in zip(("mean", "std", "max", "zeros"), _rolling(y, w), strict=True):
             base[f"roll{w}_{stat}"] = (f"roll:{w}", col)
     for a in ALPHAS:
