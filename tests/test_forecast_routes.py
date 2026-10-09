@@ -11,7 +11,7 @@ import time
 
 import pytest
 import review_world
-from forecast_fixtures import write_panel, write_rows
+from forecast_fixtures import write_bike_daily, write_panel, write_rows
 
 from smolsmort.forecast.tab import forecast_tab
 from smolsmort.review import routes
@@ -188,6 +188,41 @@ def test_prep_summarises_and_reuses_cache(app, tab):
     second = _post(app, tab, "/api/forecast-prep", {"spec": spec})
     assert second["reused"] is True
     assert second["summary"] == first["summary"]
+
+
+def test_prep_scaffolded_numeric_bike_dimensions(app, tab):
+    write_bike_daily(_forecast_path(app))
+    columns = _post(app, tab, "/api/forecast-columns", {"source": "bike_daily.csv"})
+    assert columns["row_count"] == 364
+    by_name = {col["name"]: col for col in columns["columns"]}
+    assert by_name["instant"]["distinct"] == columns["row_count"]
+    assert by_name["workingday"]["kind"] == "number"
+    assert by_name["workingday"]["distinct"] == 2
+    assert by_name["dteday"]["kind"] == "date"
+    spec = {
+        "source": "bike_daily.csv",
+        "mode": "series",
+        "task": "regression",
+        "step": "week",
+        "horizon": 3,
+        "columns": [
+            {"name": "dteday", "role": "time"},
+            {"name": "workingday", "role": "dimension"},
+            {"name": "cnt", "role": "target", "aggregation": "sum"},
+        ],
+    }
+    prepared = _post(app, tab, "/api/forecast-prep", {"spec": spec})
+    assert prepared["summary"]["series"] == 2
+    assert prepared["summary"]["scaffold_rows"] == 6
+    import duckdb
+
+    scaffold = next((_forecast_path(app) / ".forecast-cache").glob("*/scaffold.parquet"))
+    with duckdb.connect() as con:
+        rows = con.execute(
+            "SELECT workingday, count(*) FROM read_parquet(?) GROUP BY workingday ORDER BY workingday",
+            [str(scaffold)],
+        ).fetchall()
+    assert rows == [("0", 3), ("1", 3)]
 
 
 def test_prep_reads_known_facts_for_an_old_cache_without_rebuilding(app, tab):

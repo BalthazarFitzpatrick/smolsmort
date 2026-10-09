@@ -118,6 +118,7 @@ def _columns(app, payload: dict) -> dict:
         )
     read_expr = type_source(con, read_expr)
     described = con.execute(f"DESCRIBE SELECT * FROM {read_expr}").fetchall()
+    row_count = con.execute(f"SELECT count(*) FROM {read_expr}").fetchone()[0]
     mode = payload.get("mode") or "series"
     out = []
     for name, duckdb_type, *_rest in described:
@@ -148,7 +149,7 @@ def _columns(app, payload: dict) -> dict:
                 "suggested_role": suggested,
             }
         )
-    return {"columns": out, "encoding": encoding}
+    return {"columns": out, "encoding": encoding, "row_count": row_count}
 
 
 def _prep(app, payload: dict) -> dict:
