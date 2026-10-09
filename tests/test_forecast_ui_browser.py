@@ -471,7 +471,7 @@ def test_search_charts_accumulate_validation_generations_and_reset(tmp_path, top
             history = first_fit if count == 1 else second_fit
             page.wait_for_function(
                 "([id, count]) => document.getElementById(id).querySelectorAll('.chart-line').length === count",
-                arg=[f"{topic}-loss-chart", count],
+                arg=[f"{topic}-loss-chart", 1],
             )
             assert loss.is_visible()
             label = f"{history['metric']} (lower is better)"
@@ -480,17 +480,21 @@ def test_search_charts_accumulate_validation_generations_and_reset(tmp_path, top
             assert page.locator(f"#{topic}-loss-metric").inner_text() == label
             assert loss.locator(".field-label").last.inner_text() == "boosting round"
             assert "training loss" not in loss_chart.inner_text()
-            assert loss_chart.locator(".chart-legend-item").all_text_contents() == [
-                f"generation {index}" for index in range(count)
+            assert loss.locator(".chart-legend-item:visible").all_text_contents() == [
+                "current generation",
+                "previous generations",
             ]
-            assert loss_chart.locator(".chart-x-label").all_text_contents() == ["1", "2", "3", "4"]
+            assert loss_chart.locator(".chart-x-label").all_text_contents() == (
+                ["1", "2", "3", "4"] if count == 1 else ["1", "2"]
+            )
             lines = loss_chart.locator(".chart-line")
             assert lines.last.get_attribute("stroke") == colors[1]
             assert lines.last.get_attribute("opacity") == "1"
-            assert lines.first.get_attribute("d").count(" L ") == 3
+            assert lines.first.get_attribute("d").count(" L ") == (3 if count == 1 else 1)
             if count == 2:
-                assert lines.first.get_attribute("stroke") == colors[0]
-                assert float(lines.first.get_attribute("opacity")) == pytest.approx(1 - 1 / 60)
+                assert page.locator(f"#{topic}-loss-hidden").inner_text() == (
+                    "1 earlier generations used a different metric and are hidden"
+                )
                 assert lines.last.get_attribute("d").count(" L ") == 1
             assert loss_chart.locator(".chart-legend-swatch").evaluate_all(
                 "swatches => swatches.every(swatch => getComputedStyle(swatch).opacity === '1')"
@@ -498,7 +502,6 @@ def test_search_charts_accumulate_validation_generations_and_reset(tmp_path, top
             overlay = loss_chart.locator(".chart-overlay").bounding_box()
             page.mouse.move(overlay["x"] + 1, overlay["y"] + overlay["height"] / 2)
             assert loss_chart.locator(".chart-tooltip-value").all_text_contents() == [
-                *(["4"] if count == 2 else []),
                 str(history["validation"][0]).removesuffix(".0"),
             ]
             assert chart.locator(".chart-x-label").all_text_contents() == [
@@ -516,7 +519,8 @@ def test_search_charts_accumulate_validation_generations_and_reset(tmp_path, top
         snapshot.update(count=3, invalid=True)
         wait_points(3)
         assert loss.is_visible()
-        assert loss_chart.locator(".chart-line").count() == 3
+        assert loss_chart.locator(".chart-line").count() == 1
+        assert loss_chart.locator(".chart-line").first.get_attribute("stroke") == colors[0]
         snapshot.update(count=65, state="done", invalid=False)
         wait_points(4)
         page.wait_for_function(
@@ -525,11 +529,13 @@ def test_search_charts_accumulate_validation_generations_and_reset(tmp_path, top
         assert chart.locator(".chart-x-label").all_text_contents() == ["0", "1", "2", "3"]
         progress.screenshot(path=tmp_path / f"{topic}-search-progress.png")
         assert loss.is_visible()
-        assert loss_chart.locator(".chart-line").count() == 60
-        assert loss_chart.locator(".chart-legend-item").first.inner_text() == "generation 5"
-        assert loss_chart.locator(".chart-legend-item").last.inner_text() == "generation 64"
+        assert loss_chart.locator(".chart-line").count() == 1
+        assert loss.locator(".chart-legend-item:visible").all_text_contents() == [
+            "current generation",
+            "previous generations",
+        ]
         assert loss_chart.locator(".chart-line").first.get_attribute("opacity") == "0.2"
-        assert loss_chart.locator(".chart-line").last.get_attribute("stroke") == colors[1]
+        assert loss_chart.locator(".chart-line").last.get_attribute("stroke") == colors[0]
         assert loss_chart.locator(".chart-line").evaluate_all(
             "(lines, cream) => lines.slice(0, -1).every(line => line.getAttribute('stroke') === cream)",
             colors[0],
@@ -1133,8 +1139,38 @@ def test_forecast_controls_follow_the_shared_row_height(tmp_path, width):
             measured = page.evaluate(CONTROL_SIZES)
             controls = measured["controls"]
             assert controls, state
+            containers = measured["containers"]
+            assert any(row["selector"] == "#nav-bar" for row in containers), state
+            assert any(row["selector"] == "#top-bar-actions" for row in containers), state
+            for container in containers:
+                assert container["height"] == pytest.approx(measured["target"], abs=1e-6), (
+                    state,
+                    container,
+                )
+            header = {row["selector"]: row for row in measured["headerControls"]}
+            for edge in ("top", "bottom"):
+                assert header["#open-settings"][edge] == pytest.approx(
+                    header["#nav-bar"][edge], abs=1e-6
+                ), (state, edge, header)
+                if "#topic-flavour" in header:
+                    assert header["#topic-flavour"][edge] == pytest.approx(
+                        header["#topic-switch"][edge], abs=1e-6
+                    ), (state, edge, header)
+            rows = measured["headerRows"]
+            for row in rows:
+                inset = (
+                    row["contentLeft"] if row["selector"] == "#forecast-dataset" else row["left"]
+                )
+                assert inset == pytest.approx(header["#topic-switch"]["left"], abs=1e-6), (
+                    state,
+                    row,
+                )
+            for previous, row in zip(rows, rows[1:], strict=False):
+                assert row["top"] - previous["bottom"] == pytest.approx(
+                    measured["gap"], abs=1e-6
+                ), (state, previous, row)
             for control in controls:
-                assert control["height"] == pytest.approx(measured["target"], abs=1e-6), (
+                assert control["height"] == pytest.approx(control["targetHeight"], abs=1e-6), (
                     state,
                     control,
                 )

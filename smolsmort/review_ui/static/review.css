@@ -7,15 +7,15 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
    the top margin sits on each child, not the row, so an empty row (nothing to show yet) takes
    no vertical space at all and the page looks exactly as it did before topics existed */
 #topic-bar { flex: 0 0 auto; display: flex; align-items: center; gap: var(--gap); padding: 0 var(--inset-x); }
-#topic-switch { display: flex; gap: 4px; margin-top: 10px; }
+#topic-switch { display: flex; gap: var(--gap); margin-top: var(--gap); }
 .topic-tab { padding: 0 14px; }
-#topic-flavour { margin-top: 10px; }
-#forecast-dataset { display: flex; flex: 0 0 auto; align-items: center; gap: var(--gap); height: var(--row-height); padding: 0 var(--inset-x); white-space: nowrap; }
+#topic-flavour { margin-top: var(--gap); }
+#forecast-dataset { display: flex; flex: 0 0 auto; align-items: center; gap: var(--gap); height: var(--row-height); box-sizing: border-box; margin-top: var(--gap); padding: 0 var(--inset-x); white-space: nowrap; }
 #forecast-dataset .forecast-dataset-file { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 #forecast-dataset > :not(.forecast-dataset-file) { flex: 0 0 auto; }
-#top-bar { flex: 0 0 auto; display: flex; align-items: stretch; }
-#nav-bar { flex: 1 1 auto; }
-#top-bar-actions { margin: 10px 14px 0 8px; display: flex; align-items: center; gap: var(--gap); }
+#top-bar { flex: 0 0 auto; display: flex; align-items: center; margin-top: var(--gap); }
+#nav-bar { flex: 1 1 auto; margin: 0 var(--inset-x); }
+#top-bar-actions { margin: 0 var(--inset-x) 0 0; display: flex; align-items: center; gap: var(--gap); height: var(--row-height); box-sizing: border-box; }
 #tab-panels { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
 .tab-panel {
   flex: 1 1 auto; min-height: 0; overflow-y: auto;
@@ -180,12 +180,15 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-run-rail section > .field-label { margin-bottom: var(--gap); }
 .forecast-run-rail .dropdown-head { width: 100%; }
 .forecast-run-detail { min-width: 0; }
-.forecast-run-row { width: 100%; justify-content: flex-start; gap: var(--gap); }
+.forecast-run-row { position: relative; width: 100%; justify-content: flex-start; gap: var(--gap); }
+.forecast-run-bar { position: absolute; inset-inline: 0; bottom: 0; height: var(--row-border-width); display: block; }
+.forecast-run-bar .bar-fill { display: block; }
 .forecast-run-row .name { flex: 1 1 auto; text-align: left; }
 .forecast-run-row .forecast-run-status { flex: 0 0 9ch; text-align: left; }
 .forecast-run-row .forecast-run-wape { flex: 0 0 7ch; text-align: right; font-variant-numeric: tabular-nums; }
 .forecast-run-row > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .forecast-search-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.forecast-loss-chart .chart-legend { display: none; }
 .forecast-search-layout .field-label, .forecast-search-layout th { white-space: nowrap; }
 .forecast-recipe-details { display: flex; flex-direction: column; gap: var(--gap); min-width: 300px; }
 .forecast-recipe-field { display: flex; justify-content: space-between; gap: 24px; }

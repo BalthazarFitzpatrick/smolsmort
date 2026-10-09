@@ -39,6 +39,14 @@ class _Run:
             self.save("progress.json", {**payload, "updated_at": time.time()})
 
     def status(self, state: str, **extra):
+        progress_path = self.folder / "progress.json"
+        if state in ("done", "cancelled", "failed") and progress_path.exists():
+            progress = json.loads(progress_path.read_text())
+            progress["elapsed"] = round(
+                progress.get("elapsed", 0) + max(0, time.time() - progress["updated_at"]), 1
+            )
+            progress["updated_at"] = time.time()
+            self.save("progress.json", progress)
         text = json.dumps({"state": state, "pid": os.getpid(), **extra}, indent=2, default=_plain)
         tmp = self.folder / "status.json.tmp"
         tmp.write_text(text)

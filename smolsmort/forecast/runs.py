@@ -92,7 +92,13 @@ def run_folder(runs_root: Path, run_id: str) -> Path:
     return folder
 
 
-def run_state(runs_root: Path, run_id: str, *, since_generation: int | None = None) -> dict:
+def run_state(
+    runs_root: Path,
+    run_id: str,
+    *,
+    since_generation: int | None = None,
+    since_events: int | None = None,
+) -> dict:
     """status, the latest generation event, and whether the process is still alive"""
     folder = run_folder(runs_root, run_id)
     status = json.loads((folder / "status.json").read_text())
@@ -108,6 +114,7 @@ def run_state(runs_root: Path, run_id: str, *, since_generation: int | None = No
     generations = [e for e in events if e.get("event") == "generation"]
     curve_path = folder / "generation_curves.jsonl"
     cursor = since_generation if since_generation is not None else -1
+    event_cursor = since_events if since_events is not None else cursor
     curves = []
     revision_path = folder / "leaderboard_generation.json"
     revision = (
@@ -134,7 +141,7 @@ def run_state(runs_root: Path, run_id: str, *, since_generation: int | None = No
     state = {
         **status,
         "alive": alive,
-        "generations": [event for event in generations if event["generation"] > cursor],
+        "generations": [event for event in generations if event["generation"] > event_cursor],
         "generation_curves": curves,
         "latest": events[-1] if events else None,
         **_metadata(folder, status, generations, events),

@@ -571,7 +571,7 @@ def test_progress_polls_advance_elapsed_and_terminal_states_freeze_it(tmp_path, 
     }
     for terminal in ("done", "cancelled", "failed"):
         job.status(terminal)
-        assert run_state(tmp_path.parent, tmp_path.name)["progress"]["elapsed"] == 54.0
+        assert run_state(tmp_path.parent, tmp_path.name)["progress"]["elapsed"] == 57.0
 
 
 @pytest.mark.parametrize("sampled", [False, True])

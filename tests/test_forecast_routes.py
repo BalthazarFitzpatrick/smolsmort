@@ -463,6 +463,28 @@ def test_unchanged_run_poll_omits_generation_history_curves_and_leaderboard(app,
     assert len(json.dumps(state).encode()) < 1000
 
 
+def test_generation_event_arriving_after_its_curve_is_not_lost(app, tab):
+    root = _forecast_path(app) / ".forecast-runs" / "late-event"
+    root.mkdir(parents=True)
+    (root / "request.json").write_text(json.dumps({"spec": {"task": "regression"}}))
+    (root / "status.json").write_text(json.dumps({"state": "done"}))
+    (root / "leaderboard_generation.json").write_text("0")
+    (root / "generation_curves.jsonl").write_text(
+        json.dumps({"generation": 0, "metric": "mae", "validation": [1.0]}) + "\n"
+    )
+    first = _get(app, tab, "/api/forecast-run", {"id": root.name, "since_generation": -1})
+    assert len(first["generation_curves"]) == 1 and first["generations"] == []
+    event = {"event": "generation", "generation": 0, "best": 0.3}
+    (root / "events.jsonl").write_text(json.dumps(event) + "\n")
+    second = _get(
+        app,
+        tab,
+        "/api/forecast-run",
+        {"id": root.name, "since_generation": 0, "since_events": -1},
+    )
+    assert second["generations"] == [event] and second["generation_curves"] == []
+
+
 def test_view_series_mode_has_a_band_within_bounds(series_run):
     app, tab, run_id, _root = series_run
     payload = _get(app, tab, "/api/forecast-view", {"id": run_id})

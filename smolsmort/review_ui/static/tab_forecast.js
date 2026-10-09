@@ -6,6 +6,44 @@ const FORECAST_AGGREGATIONS = ['sum', 'mean', 'median', 'min', 'max'];
 const FORECAST_UNITS = ['day', 'week', 'month', 'quarter', 'year'];
 const FORECAST_PAGE_SIZE = 50;
 
+function forecastSearchProgress(run) {
+  const progress = run.progress || {};
+  const budget = run.budget || {};
+  const elapsed = Math.max(0, progress.elapsed ?? run.elapsed ?? 0);
+  const generation = progress.generation ?? 0;
+  const candidate = progress.candidate ?? 0;
+  const population = progress.population || budget.population || 16;
+  const flat = progress.flat_generations ?? 0;
+  const timeCap = budget.time_cap || 1200;
+  const plateau = budget.plateau || 5;
+  const generations = budget.max_generations || 60;
+  const done = run.state === 'done' && run.stopped !== 'cancelled';
+  const fill = done ? 1 : Math.min(1, Math.max(0, elapsed / timeCap,
+    (generation + candidate / population) / generations, flat / plateau));
+  let label = `generation ${generation} - candidate ${candidate} of ${population} - ${Math.floor(elapsed)}s of ${timeCap / 60} min - ${flat} of ${plateau} flat generations`;
+  if (done) label += ' - done';
+  else if (run.state === 'failed' || run.state === 'cancelled' || run.stopped === 'cancelled') {
+    label += run.state === 'failed' ? ' - failed' : ' - cancelled';
+  }
+  return {fill, label, done};
+}
+
+function forecastLossSeries(curves) {
+  const current = curves.at(-1);
+  if (!current) return {curves: [], hidden: 0};
+  const visible = [];
+  for (const curve of curves) {
+    if (curve.metric !== current.metric) continue;
+    const previous = visible.at(-1);
+    if (previous && curve.key && previous.key === curve.key
+        && previous.lastGeneration + 1 === curve.generation) {
+      previous.lastGeneration = curve.generation;
+      previous.repeated = true;
+    } else visible.push({...curve, lastGeneration: curve.generation, repeated: false});
+  }
+  return {curves: visible, hidden: curves.filter(curve => curve.metric !== current.metric).length};
+}
+
 function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -814,6 +852,10 @@ class ForecastTopic {
             <span class="forecast-verdict hidden" id="${this.topic}-run-verdict"></span>
           </div>
           <div class="stat" id="${this.topic}-search-status">idle</div>
+          <div id="${this.topic}-run-progress" class="hidden">
+            <div class="progress-row"><div class="bar"><div class="bar-fill" id="${this.topic}-run-bar-fill"></div></div></div>
+            <div class="stat" id="${this.topic}-run-progress-label"></div>
+          </div>
           <div class="field-label" id="${this.topic}-run-stop"></div>
           <div class="field-value" id="${this.topic}-run-stats"></div>
           <div class="run-controls hidden" id="${this.topic}-run-actions">
@@ -830,7 +872,12 @@ class ForecastTopic {
         </div>
         <div id="${this.topic}-search-loss" class="hidden">
           <div class="field-label" id="${this.topic}-loss-metric"></div>
-          <div id="${this.topic}-loss-chart" class="forecast-chart"></div>
+          <div id="${this.topic}-loss-chart" class="forecast-chart forecast-loss-chart"></div>
+          <div class="chart-legend">
+            <div class="chart-legend-item"><span class="chart-legend-swatch" style="border-color:var(--kingfisher)"></span>current generation</div>
+            <div class="chart-legend-item"><span class="chart-legend-swatch" style="border-color:var(--cream)"></span>previous generations</div>
+          </div>
+          <div class="stat hidden" id="${this.topic}-loss-hidden"></div>
           <div class="field-label">boosting round</div>
         </div>
         </div>
@@ -902,7 +949,6 @@ class ForecastTopic {
     try {
       const live = [...this.runCache.values()].filter(run => this.isRunning(run));
       await Promise.all(live.map(run => this.readRun(run)));
-      await this.loadRuns();
     } catch (err) {
       this.searchSay(err.message);
     }
@@ -912,7 +958,7 @@ class ForecastTopic {
   scheduleSearchPoll() {
     clearTimeout(this.pollTimer);
     this.pollTimer = [...this.runCache.values()].some(run => this.isRunning(run))
-      ? setTimeout(() => this.pollSearch(), 2000) : null;
+      ? setTimeout(() => this.pollSearch(), 1000) : null;
   }
 
   isRunning(run) { return ['starting', 'running'].includes(run.state); }
@@ -930,6 +976,7 @@ class ForecastTopic {
 
   async readRun(run) {
     const params = new URLSearchParams({id: run.id,
+      since_events: String(run.generations?.at(-1)?.generation ?? -1),
       since_generation: String(run.cursor), since_leaderboard: String(run.boardCursor)});
     const state = await api(`/api/forecast-run?${params}`);
     if (this.runCache.get(run.id) !== run) return;
@@ -942,7 +989,11 @@ class ForecastTopic {
       if (!curves.some(entry => entry.generation === curve.generation)) curves.push(curve);
       cursor = Math.max(cursor, curve.generation);
     }
-    Object.assign(run, state, {curves: curves.sort((a, b) => a.generation - b.generation).slice(-60), cursor});
+    const generations = [...(run.generations || [])];
+    for (const entry of state.generations || []) {
+      if (!generations.some(saved => saved.generation === entry.generation)) generations.push(entry);
+    }
+    Object.assign(run, state, {generations, curves: curves.sort((a, b) => a.generation - b.generation).slice(-60), cursor});
     if (Number.isInteger(state.leaderboard_generation)) run.boardCursor = state.leaderboard_generation;
     if (this.currentRunId === run.id && !this.isRunning(run)) this.currentRunId = null;
     this.paintRuns();
@@ -967,6 +1018,15 @@ class ForecastTopic {
   }
 
   paintRunDetail(run) {
+    const progressWrap = document.getElementById(`${this.topic}-run-progress`);
+    progressWrap.classList.toggle('hidden', !run);
+    if (run) {
+      const progress = forecastSearchProgress(run);
+      const fill = document.getElementById(`${this.topic}-run-bar-fill`);
+      fill.style.width = `${progress.fill * 100}%`;
+      fill.classList.toggle('good', progress.done);
+      setText(`${this.topic}-run-progress-label`, progress.label);
+    }
     document.getElementById(`${this.topic}-search-status`).classList.toggle('hidden', run?.state === 'done');
     document.getElementById(`${this.topic}-new-search-pane`).classList.toggle('hidden', !!run);
     document.getElementById(`${this.topic}-run-actions`).classList.toggle('hidden', !run);
@@ -996,14 +1056,24 @@ class ForecastTopic {
     this.searchSay(this.isRunning(run)
       ? latest ? `generation ${latest.generation} - best ${forecastNumber(latest.best)} - evaluated ${latest.evaluated} - elapsed ${latest.elapsed}s` : run.state
       : run.state === 'failed' ? this.stopReason(run) : '');
-    this.paintSearchChart(generations);
-    this.lossCurves = [];
-    this.lossGeneration = -1;
-    this.paintLossChart(run.curves);
-    this.paintLeaderboard(run.leaderboard || []);
+    const chartVersion = `${run.id}:${generations.length}:${run.cursor}`;
+    if (this.paintedChartVersion !== chartVersion) {
+      this.paintSearchChart(generations);
+      this.lossCurves = [];
+      this.lossGeneration = -1;
+      this.paintLossChart(run.curves);
+      this.paintedChartVersion = chartVersion;
+    }
+    const boardVersion = `${run.id}:${run.boardCursor}:${run.leaderboard?.length || 0}`;
+    if (this.paintedBoardVersion !== boardVersion) {
+      this.paintLeaderboard(run.leaderboard || []);
+      this.paintedBoardVersion = boardVersion;
+    }
   }
 
   resetSearchChart() {
+    this.paintedChartVersion = null;
+    this.paintedBoardVersion = null;
     if (this.searchChart) this.searchChart.destroy();
     this.searchChart = null;
     document.getElementById(`${this.topic}-search-progress`).classList.add('hidden');
@@ -1059,15 +1129,19 @@ class ForecastTopic {
     const style = getComputedStyle(document.documentElement);
     const kingfisher = style.getPropertyValue('--kingfisher').trim();
     const cream = style.getPropertyValue('--cream').trim();
-    const rounds = Math.max(...this.lossCurves.map(curve => curve.validation.length));
+    const filtered = forecastLossSeries(this.lossCurves);
+    const hidden = document.getElementById(`${this.topic}-loss-hidden`);
+    hidden.textContent = `${filtered.hidden} earlier generations used a different metric and are hidden`;
+    hidden.classList.toggle('hidden', !filtered.hidden);
+    const rounds = Math.max(...filtered.curves.map(curve => curve.validation.length));
     this.lossChart.update({
       x: Array.from({length: rounds}, (_, index) => index + 1),
-      series: this.lossCurves.map(curve => {
+      series: filtered.curves.map(curve => {
         const age = history.generation - curve.generation;
         return {
           id: `generation-${curve.generation}`, label: `generation ${curve.generation}`,
           values: Array.from({length: rounds}, (_, index) => curve.validation[index] ?? null),
-          color: age === 0 ? kingfisher : cream,
+          color: age === 0 && !curve.repeated ? kingfisher : cream,
           opacity: Math.max(0.2, 1 - age / 60),
         };
       }),
@@ -1169,6 +1243,14 @@ class ForecastTopic {
       const value = forecastNode('span', 'field-label forecast-run-wape', forecastNumber(wape));
       value.setAttribute('aria-label', 'validation wape');
       row.append(value);
+      if (this.isRunning(run) || run.progress) {
+        const progress = forecastSearchProgress(run);
+        const bar = forecastNode('span', 'bar forecast-run-bar');
+        const fill = forecastNode('span', 'bar-fill' + (progress.done ? ' good' : ''));
+        fill.style.width = `${progress.fill * 100}%`;
+        bar.append(fill);
+        row.append(bar);
+      }
       row.onclick = () => this.selectRun(run.id).catch(err => this.searchSay(err.message));
       (this.isRunning(run) ? running : box).append(row);
     }
