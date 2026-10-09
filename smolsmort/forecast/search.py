@@ -120,7 +120,9 @@ class _Variation:
         pa, pb, pd = dict(a.params), dict(b.params), dict(donor.params)
         params = {k: (pa if self.rng.random() < 0.5 else pb).get(k, DEFAULTS[k]) for k in SPACE}
         params.update({k: pd[k] for k in OBJECTIVE_SPACE.get(donor.objective, {}) if k in pd})
-        return make_genome(families or list(donor.families), donor.objective, params)
+        return make_genome(
+            families or list(donor.families), donor.objective, params, family=donor.family
+        )
 
     def mutate(self, genome: Genome) -> Genome:
         families = set(genome.families)
@@ -136,7 +138,9 @@ class _Variation:
         for name, spec in {**SPACE, **OBJECTIVE_SPACE.get(objective, {})}.items():
             if self.rng.random() < 0.3:
                 params[name] = self._nudge(params.get(name), spec)
-        return make_genome(families or [self.rng.choice(self.families)], objective, params)
+        return make_genome(
+            families or [self.rng.choice(self.families)], objective, params, family=genome.family
+        )
 
     def _draw(self, spec):
         if isinstance(spec[0], str):
@@ -170,7 +174,15 @@ def _seed_population(ws, var: _Variation, size: int, warm) -> list[Genome]:
     for data in warm or []:
         families = [f for f in data["families"] if f in ws.families]
         if families and data["objective"] in var.objectives:
-            seeds.insert(0, make_genome(families, data["objective"], data["params"]))
+            seeds.insert(
+                0,
+                make_genome(
+                    families,
+                    data["objective"],
+                    data["params"],
+                    family=data.get("family", "xgboost"),
+                ),
+            )
     unique = list({g.key(): g for g in seeds}.values())
     while len(unique) < size:
         genome = var.random()

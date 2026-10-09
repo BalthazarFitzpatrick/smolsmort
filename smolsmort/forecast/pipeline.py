@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 
 from smolsmort.forecast import evaluate as ev
+from smolsmort.forecast.families import get_family
 from smolsmort.forecast.features import buckets_for, row_features, series_features
 from smolsmort.forecast.model import CLASSIFIERS, NONNEGATIVE, fit_model, predict
 from smolsmort.forecast.profile import build_profile
@@ -30,24 +31,48 @@ class Genome:
     families: tuple[str, ...]
     objective: str
     params: tuple[tuple[str, object], ...]
+    family: str = "xgboost"
+
+    def __post_init__(self):
+        try:
+            family = get_family(self.family)
+        except KeyError as exc:
+            raise PipelineError(
+                f"unknown family {self.family!r}; install its provider with "
+                f"uv sync --extra {self.family} and register it"
+            ) from exc
+        available, reason = family.available()
+        if not available:
+            raise PipelineError(
+                f"family {self.family!r} is unavailable; "
+                f"install with uv sync --extra {family.pip_extra}: {reason}"
+            )
 
     def to_dict(self) -> dict:
-        return {
+        data = {
             "families": list(self.families),
             "objective": self.objective,
             "params": dict(self.params),
         }
+        if self.family != "xgboost":
+            data["family"] = self.family
+        return data
 
     def key(self) -> str:
         return hashlib.sha1(json.dumps(self.to_dict(), sort_keys=True).encode()).hexdigest()[:12]
 
 
-def make_genome(families, objective: str, params: dict) -> Genome:
-    return Genome(tuple(sorted(set(families))), objective, tuple(sorted(params.items())))
+def make_genome(families, objective: str, params: dict, family: str = "xgboost") -> Genome:
+    return Genome(tuple(sorted(set(families))), objective, tuple(sorted(params.items())), family)
 
 
-def genome_from_dict(data: dict) -> Genome:
-    return make_genome(data["families"], data["objective"], data["params"])
+def genome_from_dict(data: dict, family: str | None = None) -> Genome:
+    return make_genome(
+        data["families"],
+        data["objective"],
+        data["params"],
+        family=data.get("family", "xgboost") if family is None else family,
+    )
 
 
 @dataclass
@@ -284,7 +309,7 @@ def _series_phase(ws, genome, phase, nthread, sample=None, histories=None):
         if histories is not None and not histories:
             history = fitted.eval_history
             histories.append({**history, "bucket": list(bucket)} if history else None)
-        preds.append(predict(fitted, x[eval_rows]))
+        preds.append(fitted.predict(x[eval_rows]))
         truths.append(frame.y[eval_rows])
         periods.append(frame.step[eval_rows].astype(int))
     return np.concatenate(preds), np.concatenate(truths), np.concatenate(periods)
@@ -296,7 +321,7 @@ def _series_fit(ws, genome, frame, rows, nthread):
         raise PipelineError("a genome with no feature families cannot be fitted")
     # oldest first, so the early-stopping slice is the newest steps rather than the last series
     order = np.flatnonzero(rows)[np.argsort(frame.step[rows], kind="stable")]
-    fitted = fit_model(
+    fitted = get_family(genome.family).fit(
         x[order],
         objective=genome.objective,
         y=frame.y[order],
@@ -423,12 +448,12 @@ def _finish_series(ws, genome, nthread) -> dict:
     for bucket, frame in ws.frames.items():
         masks = ws.series_masks[bucket]
         fitted, x = _series_fit(ws, genome, frame, masks["train"], nthread)
-        val_pred = predict(fitted, x[masks["val"]])
+        val_pred = fitted.predict(x[masks["val"]])
         band = ev.fit_band(frame.y[masks["val"]], val_pred)
         bands[f"{bucket[0]}-{bucket[1]}"] = None if band is None else band.__dict__
         val_rows.append(_series_rows(frame, masks["val"], val_pred, bucket))
         fitted, x = _series_fit(ws, genome, frame, masks["train"] | masks["val"], nthread)
-        test_pred = predict(fitted, x[masks["test"]])
+        test_pred = fitted.predict(x[masks["test"]])
         lo, hi = ev.apply_band(band, test_pred, nonnegative=True)
         test_pred_all.append(test_pred)
         test_truth_all.append(frame.y[masks["test"]])
@@ -439,7 +464,7 @@ def _finish_series(ws, genome, nthread) -> dict:
         fitted, x = _series_fit(
             ws, genome, frame, masks["train"] | masks["val"] | masks["test"], nthread
         )
-        future_pred = predict(fitted, x[masks["future"]])
+        future_pred = fitted.predict(x[masks["future"]])
         lo, hi = ev.apply_band(band, future_pred, nonnegative=True)
         rows = _series_rows(frame, masks["future"], future_pred, bucket)
         rows.update(lower=lo, upper=hi)
