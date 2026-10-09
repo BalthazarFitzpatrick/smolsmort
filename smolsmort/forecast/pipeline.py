@@ -35,18 +35,12 @@ class Genome:
 
     def __post_init__(self):
         try:
-            family = get_family(self.family)
+            get_family(self.family)
         except KeyError as exc:
             raise PipelineError(
                 f"unknown family {self.family!r}; install its provider with "
                 f"uv sync --extra {self.family} and register it"
             ) from exc
-        available, reason = family.available()
-        if not available:
-            raise PipelineError(
-                f"family {self.family!r} is unavailable; "
-                f"install with uv sync --extra {family.pip_extra}: {reason}"
-            )
 
     def to_dict(self) -> dict:
         data = {
@@ -316,12 +310,16 @@ def _series_phase(ws, genome, phase, nthread, sample=None, histories=None):
 
 
 def _series_fit(ws, genome, frame, rows, nthread):
+    family = get_family(genome.family)
+    available, reason = family.available()
+    if not available:
+        raise PipelineError(f"family {genome.family!r} is unavailable; {reason}")
     x, _, types = frame.features.pick(set(genome.families))
     if not x.shape[1]:
         raise PipelineError("a genome with no feature families cannot be fitted")
     # oldest first, so the early-stopping slice is the newest steps rather than the last series
     order = np.flatnonzero(rows)[np.argsort(frame.step[rows], kind="stable")]
-    fitted = get_family(genome.family).fit(
+    fitted = family.fit(
         x[order],
         objective=genome.objective,
         y=frame.y[order],

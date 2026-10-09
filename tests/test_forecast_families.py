@@ -110,10 +110,35 @@ def test_unknown_family_names_the_family_and_install_command():
 
 
 def test_unavailable_family_names_its_install_extra(other_family):
-    other_family.available = lambda: (False, "missing dependency")
+    other_family.available = lambda: (False, "uv sync --extra test-extra (missing dependency)")
     assert other_family not in available_families()
+    genome = Genome(("lag+0",), "squared", (), family=other_family.name)
+    assert genome_from_dict(genome.to_dict()) == genome
     with pytest.raises(PipelineError, match="test-family.*uv sync --extra test-extra"):
-        Genome(("lag+0",), "squared", (), family=other_family.name)
+        _series_fit(None, genome, None, None, 1)
+
+
+def test_genome_construction_and_search_never_probe_availability(other_family):
+    def refuse_probe():
+        raise AssertionError("recipe operations must not probe optional libraries")
+
+    other_family.available = refuse_probe
+    genome = make_genome(["lag+0"], "squared", DEFAULTS, family=other_family.name)
+    assert genome_from_dict(genome.to_dict()) == genome
+    ws = SimpleNamespace(families=["lag+0"], profile={"genes": {"objectives": ["squared"]}})
+    variation = _Variation(ws, np.random.default_rng(0))
+    assert variation.mutate(genome).family == other_family.name
+    assert variation.crossover(genome, genome).family == other_family.name
+    assert _seed_population(ws, variation, 1, [genome.to_dict()]) == [genome]
+
+
+def test_missing_xgboost_is_reported_only_at_fit_with_one_install_command(monkeypatch):
+    monkeypatch.setitem(sys.modules, "xgboost", None)
+    genome = make_genome(["lag+0"], "squared", {})
+    assert genome_from_dict(genome.to_dict()) == genome
+    with pytest.raises(PipelineError, match="family 'xgboost' is unavailable") as error:
+        _series_fit(None, genome, None, None, 1)
+    assert str(error.value).count("uv sync --extra forecast") == 1
 
 
 def test_registry_refuses_duplicate_names():
