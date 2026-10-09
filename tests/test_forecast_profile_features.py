@@ -225,15 +225,19 @@ def test_each_daily_feature_uses_only_positions_through_origin(daily, bucket):
     before = series_features(spec, table, scaffold, bucket, "day", train, period=7)
     names, families = before.features.names, before.features.families
     assert {f"lag+{j}" for j in range(4)} <= set(families)
-    new = [i for i, family in enumerate(families) if family.startswith(("lag:", "roll:"))]
+    new = [
+        i
+        for i, family in enumerate(families)
+        if family.startswith(("lag:", "roll:")) or family == "season"
+    ]
     assert new
     for row in np.flatnonzero(~before.future):
         target = int((before.step[row] - table[STEP][0]).astype(int))
         origin = target - bucket[1]
         for col in new:
             name, family = names[col], families[col]
-            if family.startswith("lag:"):
-                lag = int(family.split(":")[1])
+            if family.startswith("lag:") or family == "season":
+                lag = int(family.split(":")[1]) if family != "season" else 7
                 assert lag >= bucket[1]
                 expected = table["units"][target - lag] if target >= lag else np.nan
             else:
@@ -289,6 +293,16 @@ def test_daily_families_are_capped_by_training_history(daily):
     families = set(frame.features.families)
     assert {f for f in families if f.startswith("roll:")} == {"roll:7", "roll:14"}
     assert {f for f in families if f.startswith("lag:")} == {"lag:7", "lag:14"}
+
+
+def test_supplied_periods_become_independent_absolute_families(daily):
+    spec, table, scaffold, train = daily
+    frame = series_features(spec, table, scaffold, (2, 4), "day", train, period=7, periods=(7, 52))
+    families = set(frame.features.families)
+    assert {"lag+3", "season", "lag:7", "lag:52"} <= families
+    for family in ("lag+3", "season", "lag:7"):
+        column = frame.features.pick({family})[0][:, 0]
+        np.testing.assert_array_equal(column, frame.features.pick({"lag:7"})[0][:, 0])
 
 
 def test_weekly_columns_families_and_values_stayed_identical(panel):

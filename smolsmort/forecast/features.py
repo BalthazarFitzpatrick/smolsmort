@@ -223,7 +223,10 @@ def series_features(
     if unit != "week" and periods is None:
         _, totals = _series_totals(panel, train, target)
         periods = tuple(_detect_periods(totals, unit))
-    absolute_lags, windows = _step_features(unit, history, periods or ())
+    detected = set(periods or ())
+    if period:
+        detected.add(period)
+    absolute_lags, windows = _step_features(unit, history, detected)
     dim_codes = {d: _codes(panel[d], train) for d in dims}
     last = step_index(panel[STEP], unit).max()
     parts = []
