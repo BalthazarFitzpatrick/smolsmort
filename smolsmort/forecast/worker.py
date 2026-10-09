@@ -171,6 +171,8 @@ def _write_result(folder, spec, result, final):
         "band": final.get("band"),
         "bands": final.get("bands"),
     }
+    if "season_length" in final:
+        recipe["season_length"] = summary["season_length"] = final["season_length"]
     for name, data in (("recipe.json", recipe), ("result.json", summary)):
         tmp = folder / f"{name}.tmp"
         tmp.write_text(json.dumps(data, indent=2, default=_plain))
