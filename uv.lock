@@ -1064,7 +1064,7 @@ requires-dist = [
     { name = "pillow", specifier = ">=11.0" },
     { name = "torch", marker = "extra == 'coreml'", specifier = ">=2.0" },
     { name = "torch", marker = "extra == 'vision'", specifier = ">=2.0" },
-    { name = "ui-base", git = "https://github.com/BalthazarFitzpatrick/smortui.git?rev=8c3e4e4c69af026768ce1b3824fe5c14cb5b9af4" },
+    { name = "ui-base", git = "https://github.com/BalthazarFitzpatrick/smortui.git?rev=cde0f6b14a2ef2f68eacf10b9d76f50e61e4e0ee" },
     { name = "xgboost", marker = "extra == 'forecast'", specifier = ">=3.2.0" },
     { name = "xgboost", marker = "extra == 'tabular'", specifier = ">=3.2.0" },
 ]
@@ -1173,7 +1173,7 @@ wheels = [
 [[package]]
 name = "ui-base"
 version = "0.3.0"
-source = { git = "https://github.com/BalthazarFitzpatrick/smortui.git?rev=8c3e4e4c69af026768ce1b3824fe5c14cb5b9af4#8c3e4e4c69af026768ce1b3824fe5c14cb5b9af4" }
+source = { git = "https://github.com/BalthazarFitzpatrick/smortui.git?rev=cde0f6b14a2ef2f68eacf10b9d76f50e61e4e0ee#cde0f6b14a2ef2f68eacf10b9d76f50e61e4e0ee" }
 
 [[package]]
 name = "xgboost"
