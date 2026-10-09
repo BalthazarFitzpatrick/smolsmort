@@ -51,6 +51,9 @@ class XgboostFamily:
     def defaults(self) -> dict:
         return {param.name: param.default for param in self.space()}
 
+    def objectives(self, task: str) -> tuple[str, ...]:
+        return ("logistic",) if task == "classification" else ("absolute", "squared")
+
     def cost(self, shape: tuple[int, int], params: dict) -> float:
         """relative work hint from rows, columns and depth; not a runtime estimate"""
         rows, columns = shape

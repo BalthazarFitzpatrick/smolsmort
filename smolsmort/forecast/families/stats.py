@@ -145,6 +145,11 @@ class StatsFamily:
     def defaults(self) -> dict:
         return {}
 
+    def objectives(self, task: str) -> tuple[str, ...]:
+        if task != "regression":
+            raise ValueError(f"family {self.name!r} requires regression")
+        return ("squared",)
+
     def cost(self, shape: tuple[int, int], params: dict) -> float:
         rows, series = shape
         return float(rows * series * (20 if self.name == "arima" else 1))
