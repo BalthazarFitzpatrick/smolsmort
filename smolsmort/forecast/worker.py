@@ -35,8 +35,18 @@ class _Run:
         with (self.folder / "events.jsonl").open("a") as f:
             f.write(json.dumps(payload, default=_plain) + "\n")
             f.flush()
+        if payload.get("event") == "progress":
+            self.save("progress.json", {**payload, "updated_at": time.time()})
 
     def status(self, state: str, **extra):
+        progress_path = self.folder / "progress.json"
+        if state in ("done", "cancelled", "failed") and progress_path.exists():
+            progress = json.loads(progress_path.read_text())
+            progress["elapsed"] = round(
+                progress.get("elapsed", 0) + max(0, time.time() - progress["updated_at"]), 1
+            )
+            progress["updated_at"] = time.time()
+            self.save("progress.json", progress)
         text = json.dumps({"state": state, "pid": os.getpid(), **extra}, indent=2, default=_plain)
         tmp = self.folder / "status.json.tmp"
         tmp.write_text(text)
@@ -82,7 +92,7 @@ def run(folder: Path) -> int:
     job = _Run(folder)
     started = time.monotonic()
     request = json.loads((folder / "request.json").read_text())
-    job.status("running")
+    job.status("running", started_at=time.time())
     try:
         spec = spec_from_dict(request["spec"])
         ws = load_workspace(spec, Path(request["prepared"]), request["summary"])
@@ -115,6 +125,10 @@ def run(folder: Path) -> int:
             )
             job.save("leaderboard.json", result["leaderboard"])
             job.save("population.json", result["population"])
+        if job.cancelled or result["stopped"] == "cancelled":
+            job.status("cancelled", stopped="cancelled", elapsed=result.get("elapsed", 0))
+            job.event({"event": "cancelled", "stopped": "cancelled"})
+            return 0
         if result["best"] is None:
             job.status("failed", reason="no candidate could be fitted")
             return 1

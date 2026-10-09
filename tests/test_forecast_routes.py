@@ -298,7 +298,7 @@ def _wait_done(app, tab, run_id, timeout=300):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         state = _get(app, tab, "/api/forecast-run", {"id": run_id})
-        if state["state"] in ("done", "failed"):
+        if state["state"] in ("done", "failed", "cancelled"):
             return state
         time.sleep(0.2)
     raise TimeoutError(f"run {run_id} still going after {timeout}s")
@@ -428,6 +428,63 @@ def test_old_runs_infer_the_leaderboard_revision_from_generation_events(app, tab
     )
 
 
+def test_unchanged_run_poll_omits_generation_history_curves_and_leaderboard(app, tab):
+    root = _forecast_path(app) / ".forecast-runs" / "poll-cost"
+    root.mkdir(parents=True)
+    (root / "request.json").write_text(json.dumps({"spec": {"task": "regression"}}))
+    (root / "status.json").write_text(json.dumps({"state": "done"}))
+    (root / "events.jsonl").write_text(
+        "\n".join(
+            json.dumps({"event": "generation", "generation": generation, "best": 0.3})
+            for generation in range(60)
+        )
+    )
+    (root / "leaderboard_generation.json").write_text("59")
+    (root / "leaderboard.json").write_text(json.dumps([{"fitness": 0.3}] * 10))
+    (root / "generation_curves.jsonl").write_text(
+        "\n".join(
+            json.dumps({"generation": generation, "metric": "rmse", "validation": [0.3] * 1000})
+            for generation in range(60)
+        )
+    )
+    state = _get(
+        app,
+        tab,
+        "/api/forecast-run",
+        {
+            "id": root.name,
+            "since_generation": 59,
+            "since_leaderboard": 59,
+        },
+    )
+    assert state["generations"] == [] and state["generation_curves"] == []
+    assert "leaderboard" not in state and "eval_history" not in state
+    assert state["generation_count"] == 60 and state["generation"] == 59
+    assert len(json.dumps(state).encode()) < 1000
+
+
+def test_generation_event_arriving_after_its_curve_is_not_lost(app, tab):
+    root = _forecast_path(app) / ".forecast-runs" / "late-event"
+    root.mkdir(parents=True)
+    (root / "request.json").write_text(json.dumps({"spec": {"task": "regression"}}))
+    (root / "status.json").write_text(json.dumps({"state": "done"}))
+    (root / "leaderboard_generation.json").write_text("0")
+    (root / "generation_curves.jsonl").write_text(
+        json.dumps({"generation": 0, "metric": "mae", "validation": [1.0]}) + "\n"
+    )
+    first = _get(app, tab, "/api/forecast-run", {"id": root.name, "since_generation": -1})
+    assert len(first["generation_curves"]) == 1 and first["generations"] == []
+    event = {"event": "generation", "generation": 0, "best": 0.3}
+    (root / "events.jsonl").write_text(json.dumps(event) + "\n")
+    second = _get(
+        app,
+        tab,
+        "/api/forecast-run",
+        {"id": root.name, "since_generation": 0, "since_events": -1},
+    )
+    assert second["generations"] == [event] and second["generation_curves"] == []
+
+
 def test_view_series_mode_has_a_band_within_bounds(series_run):
     app, tab, run_id, _root = series_run
     payload = _get(app, tab, "/api/forecast-view", {"id": run_id})
@@ -509,7 +566,7 @@ def test_cancel_stops_a_run(app, tab):
     result = _post(app, tab, "/api/forecast-cancel", {"id": run_id})
     assert result == {"ok": True}
     state = _wait_done(app, tab, run_id)
-    assert state["state"] == "done"
+    assert state["state"] == "cancelled"
     assert state.get("stopped") == "cancelled"
 
 

@@ -22,6 +22,7 @@ RUN_FILES = (
     "request.json",
     "status.json",
     "events.jsonl",
+    "progress.json",
     "eval_history.json",
     "generation_curves.jsonl",
     "worker.log",
@@ -91,7 +92,13 @@ def run_folder(runs_root: Path, run_id: str) -> Path:
     return folder
 
 
-def run_state(runs_root: Path, run_id: str, *, since_generation: int | None = None) -> dict:
+def run_state(
+    runs_root: Path,
+    run_id: str,
+    *,
+    since_generation: int | None = None,
+    since_events: int | None = None,
+) -> dict:
     """status, the latest generation event, and whether the process is still alive"""
     folder = run_folder(runs_root, run_id)
     status = json.loads((folder / "status.json").read_text())
@@ -107,8 +114,19 @@ def run_state(runs_root: Path, run_id: str, *, since_generation: int | None = No
     generations = [e for e in events if e.get("event") == "generation"]
     curve_path = folder / "generation_curves.jsonl"
     cursor = since_generation if since_generation is not None else -1
+    event_cursor = since_events if since_events is not None else cursor
     curves = []
-    if curve_path.exists():
+    revision_path = folder / "leaderboard_generation.json"
+    revision = (
+        json.loads(revision_path.read_text())
+        if revision_path.exists()
+        else generations[-1]["generation"]
+        if generations
+        else -1
+    )
+    if curve_path.exists() and (
+        since_generation is None or not revision_path.exists() or cursor < revision
+    ):
         for line in curve_path.read_text().splitlines():
             try:
                 curve = json.loads(line)
@@ -123,7 +141,7 @@ def run_state(runs_root: Path, run_id: str, *, since_generation: int | None = No
     state = {
         **status,
         "alive": alive,
-        "generations": generations,
+        "generations": [event for event in generations if event["generation"] > event_cursor],
         "generation_curves": curves,
         "latest": events[-1] if events else None,
         **_metadata(folder, status, generations, events),
@@ -152,17 +170,37 @@ def _metadata(folder: Path, status: dict, generations: list[dict], events: list[
         if revision_path.exists()
         else latest.get("generation", -1)
     )
+    progress_path = folder / "progress.json"
+    progress = (
+        json.loads(progress_path.read_text())
+        if progress_path.exists()
+        else next((event for event in reversed(events) if event.get("event") == "progress"), {})
+    )
+    progress = {key: value for key, value in progress.items() if key != "event"}
+    if latest.get("generation") == progress.get("generation"):
+        progress["flat_generations"] = latest.get(
+            "flat_generations", progress.get("flat_generations", 0)
+        )
+    if status["state"] in ("starting", "running"):
+        updated_at = progress.get("updated_at", status.get("started_at"))
+        if updated_at is not None:
+            progress["elapsed"] = round(
+                progress.get("elapsed", 0) + max(0, time.time() - updated_at), 1
+            )
+    progress.pop("updated_at", None)
     return {
         "kind": kind,
         "task": request.get("spec", {}).get("task"),
         "budget": request.get("budget", {}),
         "generation_count": len(generations),
+        "generation": latest.get("generation"),
         "best_error": latest.get("best"),
         "best_wape": _validation_wape(request, latest, kind),
         "test_error": result.get("model_error"),
         "stopped": status.get("stopped") or finishing.get("stopped"),
         "elapsed": status.get("elapsed") or finishing.get("elapsed") or latest.get("elapsed"),
         "leaderboard_generation": revision,
+        "progress": progress,
     }
 
 
@@ -199,7 +237,7 @@ def _alive(folder: Path) -> bool:
 
 
 def cancel_run(runs_root: Path, run_id: str) -> None:
-    """ask the worker to stop after its current generation; it still writes what it found"""
+    """ask the worker to stop after its current candidate; it still writes what it found"""
     folder = run_folder(runs_root, run_id)
     with contextlib.suppress(FileNotFoundError, ProcessLookupError, ValueError):
         os.kill(int((folder / "pid").read_text()), signal.SIGTERM)
@@ -210,7 +248,7 @@ def wait_run(runs_root: Path, run_id: str, timeout: float = 600) -> dict:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         state = run_state(runs_root, run_id)
-        if state["state"] in ("done", "failed") or not state["alive"]:
+        if state["state"] in ("done", "failed", "cancelled") or not state["alive"]:
             return run_state(runs_root, run_id)
         time.sleep(0.2)
     raise RunError(f"run {run_id} still going after {timeout}s")
@@ -236,9 +274,6 @@ def list_runs(runs_root: Path) -> list[dict]:
                             "leaderboard_generation",
                         )
                     },
-                    "generation": state["generations"][-1]["generation"]
-                    if state["generations"]
-                    else None,
                 }
             )
     return out

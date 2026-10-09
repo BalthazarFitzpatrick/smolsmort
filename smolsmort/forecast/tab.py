@@ -214,7 +214,15 @@ def _run(app, query: dict) -> dict:
             cursor = max(-1, int(query["since_generation"]))
         except (TypeError, ValueError, OverflowError):
             cursor = -1
-    state = runs.run_state(_runs_root(app), run_id, since_generation=cursor)
+    event_cursor = None
+    if "since_events" in query:
+        try:
+            event_cursor = max(-1, int(query["since_events"]))
+        except (TypeError, ValueError, OverflowError):
+            event_cursor = -1
+    state = runs.run_state(
+        _runs_root(app), run_id, since_generation=cursor, since_events=event_cursor
+    )
     request = views.read_request(run_dir)
     board_cursor = -1
     if "since_leaderboard" in query:

@@ -247,13 +247,36 @@ def search(
 
     population = _seed_population(ws, var, budget.population, warm)
     best, quiet, generation, reason = None, 0, 0, "generation cap"
+
+    def record_progress(candidate: int):
+        if on_event:
+            on_event(
+                {
+                    "event": "progress",
+                    "generation": generation,
+                    "candidate": candidate,
+                    "population": len(population),
+                    "flat_generations": quiet,
+                    "elapsed": round(time.monotonic() - started, 1),
+                }
+            )
+
     while generation < budget.max_generations:
-        entries = [evaluate(g, generation, sample) for g in population]
-        if sample is not None:
+        entries = []
+        for candidate, genome in enumerate(population, 1):
+            entries.append(evaluate(genome, generation, sample))
+            record_progress(candidate)
+            if stop and stop():
+                break
+        if sample is not None and not (stop and stop()):
             # successive halving: the best third is rescored on every training row
             entries.sort(key=Entry.rank)
             top = len(entries) // 3 or 1
-            entries[:top] = [evaluate(e.genome, generation) for e in entries[:top]]
+            for index in range(top):
+                entries[index] = evaluate(entries[index].genome, generation)
+                record_progress(len(entries))
+                if stop and stop():
+                    break
         entries.sort(key=Entry.rank)
         full = [e for e in entries if e.note != "sample"]
         leader = full[0] if full else entries[0]
@@ -280,7 +303,8 @@ def search(
                 entry.eval_history = {
                     key: value for key, value in entry.eval_history.items() if key != "training"
                 }
-        quiet = 0 if gained else quiet + 1
+        if not (stop and stop()):
+            quiet = 0 if gained else quiet + 1
         elapsed = time.monotonic() - started
         if on_leaderboard:
             board = sorted((e for e in scored.values() if e.note != "sample"), key=Entry.rank)
@@ -294,6 +318,7 @@ def search(
                     "metrics": best.metrics,
                     "evaluated": len(scored),
                     "gain": gained,
+                    "flat_generations": quiet,
                     "elapsed": round(elapsed, 1),
                 }
             )

@@ -14,6 +14,7 @@ CONTROL_SIZES = r"""() => {
     return (node?.id ? '#' + CSS.escape(node.id) + ' > ' : '') + parts.join(' > ');
   };
   const target = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--row-height'));
+  const borderWidth = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--row-border-width'));
   const fieldWidth = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--forecast-field-width'));
   const controlKind = node => {
     if (node.matches('.forecast-setup-slot .dropdown-head, .forecast-agg-row .forecast-field, [id$="-data-source"], [id$="-breakdown-head"], [id$="-group-head"]')) return 'data-field';
@@ -31,6 +32,20 @@ CONTROL_SIZES = r"""() => {
     const style = getComputedStyle(node);
     return rect.width && rect.height && style.visibility !== 'hidden';
   };
+  const bounds = node => {
+    const rect = node.getBoundingClientRect();
+    const style = getComputedStyle(node);
+    return {selector: path(node), height: rect.height, left: rect.left,
+      contentLeft: rect.left + parseFloat(style.paddingLeft) + parseFloat(style.borderLeftWidth),
+      top: rect.top, bottom: rect.bottom};
+  };
+  const containers = [...document.querySelectorAll('#nav-bar, .nav-bar, .strip, #forecast-dataset, #top-bar-actions, .forecast-run-rail .toggle, .forecast-run-rail .dropdown-head')]
+    .filter(visible).map(bounds);
+  const headerRows = [...document.querySelectorAll('#topic-switch, #forecast-dataset, #nav-bar')]
+    .filter(visible).map(bounds);
+  const headerControls = [...document.querySelectorAll('#topic-switch, #topic-flavour, #nav-bar, #open-settings')]
+    .filter(visible).map(bounds);
+  const gap = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--gap'));
   const texts = [];
   const roots = document.querySelectorAll('#topic-bar, #top-bar, #forecast-dataset, .forecast-pane, .forecast-run-rail, .forecast-results, .menu-panel, #settings-popup');
   const parents = new Set();
@@ -56,12 +71,13 @@ CONTROL_SIZES = r"""() => {
         textHeight: rects.length ? Math.max(...rects.map(rect => rect.bottom)) - Math.min(...rects.map(rect => rect.top)) : 0});
     }
   }
-  return {target, fieldWidth, texts, controls: [...document.querySelectorAll(selector)].flatMap(node => {
+  return {target, fieldWidth, gap, containers, headerRows, headerControls, texts, controls: [...document.querySelectorAll(selector)].flatMap(node => {
     const rect = node.getBoundingClientRect();
     const style = getComputedStyle(node);
     if (!rect.width || !rect.height || style.visibility === 'hidden') return [];
     return [{selector: path(node), text: (node.innerText || node.getAttribute('aria-label') || node.value || node.type || '').replace(/\s+/g, ' ').trim(),
-      height: rect.height, width: rect.width, font: style.fontFamily, size: style.fontSize,
+      height: rect.height, targetHeight: node.matches('.nav-tab') ? target - 2 * borderWidth : target,
+      width: rect.width, font: style.fontFamily, size: style.fontSize,
       padding: style.padding, box: style.boxSizing, classes: node.className, kind: controlKind(node)}];
   })};
 }"""
