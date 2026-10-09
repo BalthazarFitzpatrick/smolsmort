@@ -164,6 +164,7 @@ class ForecastTopic {
     this.source = null;
     this.encoding = 'auto';
     this.columnsInfo = [];
+    this.sourceRows = null;
     this.columnState = {}; // name -> {role, aggregation, known}
     this.seriesSetup = null;
     this.step = 'week';
@@ -222,7 +223,7 @@ class ForecastTopic {
         step: this.step, horizon: this.horizon, asOf: this.asOf, where: this.where,
         predictWhere: this.predictWhere, censorOn: this.censorOn, censorUnit: this.censorUnit,
         censorAsOf: this.censorAsOf,
-        columnsInfo: this.columnsInfo, detectedEncoding: this.detectedEncoding,
+        columnsInfo: this.columnsInfo, sourceRows: this.sourceRows, detectedEncoding: this.detectedEncoding,
         preparedByMode: this.preparedByMode,
       };
       localStorage.setItem(this.storageKey, JSON.stringify({state}));
@@ -432,8 +433,8 @@ class ForecastTopic {
       })), item => {
         if (this.source !== item.id) {
           this.columnsInfo = [];
+          this.sourceRows = null;
           this.detectedEncoding = null;
-          this.seriesSetup = null;
         }
         this.source = item.id;
         setHead(head, baseName(item.id));
@@ -457,6 +458,7 @@ class ForecastTopic {
       });
       if (source !== this.source || encoding !== this.encoding || mode !== this.mode()) return;
       this.columnsInfo = res.columns;
+      this.sourceRows = res.row_count;
       this.detectedEncoding = res.encoding;
       // row roles survive flavour changes; series picks have their own saved state
       const roles = FORECAST_ROW_ROLES;
@@ -487,7 +489,6 @@ class ForecastTopic {
     const fields = kind => this.columnsInfo.filter(col => col.kind === kind).map(col => col.name);
     const measures = fields('number');
     const dates = fields('date');
-    const dimensions = fields('text');
     const prior = this.seriesSetup || {
       targets: measures.filter(name => this.columnState[name]?.role === 'target'),
       aggregations: Object.fromEntries(measures.map(name => [name, this.columnState[name]?.aggregation])),
@@ -495,11 +496,13 @@ class ForecastTopic {
       dimensions: [],
     };
     const targets = prior.targets.filter(name => measures.includes(name));
+    const time = dates.includes(prior.time) ? prior.time : (dates[0] || null);
+    const dimensions = this.scaffoldFields({targets, time}).map(col => col.name);
     this.seriesSetup = {
       targets,
       aggregations: Object.fromEntries(targets.map(name => [name,
         FORECAST_AGGREGATIONS.includes(prior.aggregations[name]) ? prior.aggregations[name] : 'sum'])),
-      time: dates.includes(prior.time) ? prior.time : (dates[0] || null),
+      time,
       dimensions: prior.dimensions.filter(name => dimensions.includes(name)),
     };
     if (!FORECAST_UNITS.includes(this.step)) this.step = 'week';
@@ -509,6 +512,16 @@ class ForecastTopic {
   countSeries(dimensions) {
     return dimensions.reduce((product, name) => product *
       (this.columnsInfo.find(col => col.name === name)?.distinct || 0), 1);
+  }
+
+  scaffoldFields(setup) {
+    return this.columnsInfo.filter(col => col.name !== setup.time &&
+      !setup.targets.includes(col.name) && col.distinct !== this.sourceRows)
+      .sort((a, b) => (a.kind !== 'text') - (b.kind !== 'text'));
+  }
+
+  seriesWarning(dimensions) {
+    return this.countSeries(dimensions) > 500 ? ' · warning: more than 500 series' : '';
   }
 
   renderSetupHeads() {
@@ -544,7 +557,8 @@ class ForecastTopic {
     });
     setText(`${this.topic}-setup-readout`, `${aggregate || 'nothing yet'} · ${setup.time || 'no date'}, ` +
       `${this.horizon} ${this.step}${this.horizon === 1 ? '' : 's'} ahead · ` +
-      `${setup.dimensions.join(' x ') || 'total'} = ${series} series`);
+      `${setup.dimensions.join(' x ') || 'total'} = ${series} series${this.seriesWarning(setup.dimensions)}`);
+    document.getElementById(`${this.topic}-setup-readout`)?.classList.toggle('warn', this.countSeries(setup.dimensions) > 500);
   }
 
   openSetupPicker(key, head) {
@@ -555,6 +569,7 @@ class ForecastTopic {
       horizon: this.horizon,
     };
     const fields = kind => this.columnsInfo.filter(col => col.kind === kind);
+    const targets = fields('number').filter(col => !draft.dimensions.includes(col.name));
     const footer = {kind: 'buttons', buttons: [
       {id: 'save', label: 'save', onClick: menu => {
         this.seriesSetup = {
@@ -574,10 +589,10 @@ class ForecastTopic {
     if (key === 'predict') {
       title = 'variables to predict';
       sections = [{kind: 'list', multi: true, empty: 'no numeric fields',
-        items: fields('number').map(col => ({id: col.name, label: col.name, on: draft.targets.includes(col.name)})),
+        items: targets.map(col => ({id: col.name, label: col.name, on: draft.targets.includes(col.name)})),
         onPick: (item, on) => {
           const picks = on ? [...draft.targets, item.id] : draft.targets.filter(name => name !== item.id);
-          draft.targets = fields('number').map(col => col.name).filter(name => picks.includes(name));
+          draft.targets = targets.map(col => col.name).filter(name => picks.includes(name));
           if (on && !draft.aggregations[item.id]) draft.aggregations[item.id] = 'sum';
         },
       }];
@@ -616,23 +631,26 @@ class ForecastTopic {
         items: fields('date').map(col => ({id: col.name, label: col.name, on: draft.time === col.name})),
         onPick: (item, on, menu) => {
           draft.time = item.id;
+          draft.dimensions = draft.dimensions.filter(name => name !== item.id);
           menu.el.querySelectorAll('.menu-list .menu-item').forEach(row => row.classList.toggle('on', row.dataset.id === item.id));
         },
       }, {kind: 'node', node: right}];
     } else {
       title = 'dimensions to scaffold along';
+      const dimensions = this.scaffoldFields(draft);
       const note = forecastNode('div', 'stat forecast-series-product');
       const paint = () => {
         note.textContent = draft.dimensions.length ?
           `${draft.dimensions.map(name => this.columnsInfo.find(col => col.name === name).distinct).join(' x ')} = ` +
-          `${this.countSeries(draft.dimensions).toLocaleString('en')} series` : '1 series (the total)';
+          `${this.countSeries(draft.dimensions).toLocaleString('en')} series${this.seriesWarning(draft.dimensions)}` : '1 series (the total)';
+        note.classList.toggle('warn', this.countSeries(draft.dimensions) > 500);
       };
       paint();
       sections = [{kind: 'list', multi: true, empty: 'no dimensions',
-        items: fields('text').map(col => ({id: col.name, label: col.name, stats: `[${col.distinct}]`, on: draft.dimensions.includes(col.name)})),
+        items: dimensions.map(col => ({id: col.name, label: col.name, stats: `[${col.distinct}]`, on: draft.dimensions.includes(col.name)})),
         onPick: (item, on) => {
           const picks = on ? [...draft.dimensions, item.id] : draft.dimensions.filter(name => name !== item.id);
-          draft.dimensions = fields('text').map(col => col.name).filter(name => picks.includes(name));
+          draft.dimensions = dimensions.map(col => col.name).filter(name => picks.includes(name));
           paint();
         },
       }, {kind: 'node', node: note}];

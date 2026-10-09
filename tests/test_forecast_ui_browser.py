@@ -20,7 +20,7 @@ pytest.importorskip("xgboost")
 pytest.importorskip("duckdb")
 
 import review_world
-from forecast_fixtures import write_panel, write_rows
+from forecast_fixtures import write_bike_daily, write_panel, write_rows
 from forecast_ui_audit import CONTROL_SIZES, visit_control_states
 from playwright.sync_api import Page, sync_playwright
 
@@ -37,7 +37,7 @@ def show_tab(page: Page, name: str) -> None:
 
 
 @contextmanager
-def session(tmp_path: Path, *, width: int = 1280):
+def session(tmp_path: Path, *, width: int = 1280, numeric: bool = False):
     """the real review server, its forecast root holding the synthetic rows fixture, and a
     headless page on it"""
     errors: list[str] = []
@@ -45,6 +45,9 @@ def session(tmp_path: Path, *, width: int = 1280):
     root = tmp_path / "forecast_root"
     root.mkdir()
     write_rows(root, n=600)
+    if numeric:
+        write_bike_daily(root)
+        write_bike_daily(root, name="bike_new.csv")
     panel = write_panel(root, weeks=60)
     with panel.path.open(newline="") as source:
         rows = list(csv.reader(source))
@@ -1205,6 +1208,95 @@ def test_forecast_controls_follow_the_shared_row_height(tmp_path, width):
         settings = page.locator("#open-settings").bounding_box()
         nav = page.locator(".nav-tab.active").bounding_box()
         assert settings["y"] + settings["height"] / 2 == nav["y"] + nav["height"] / 2
+
+
+def test_numeric_scaffold_saved_prepared_and_searched(tmp_path):
+    with session(tmp_path, numeric=True) as (page, base):
+        switch_to_regression(page)
+        page.select_option("#topic-flavour", "series")
+        show_tab(page, "regression-data")
+
+        def load_source(name):
+            page.click(f"#{TOPIC}-data-source")
+            page.locator(f'.menu-panel .menu-item[data-id="{name}"]').click()
+            page.wait_for_function(
+                f'/^\\d+ columns/.test(document.getElementById("{TOPIC}-data-status").innerText)'
+            )
+
+        def open_picker(key):
+            page.click(f"#{TOPIC}-setup-{key}")
+            return page.locator(".forecast-setup-menu")
+
+        def finish(menu):
+            menu.locator('.menu-buttons [data-id="save"]').click()
+
+        load_source("bike_daily.csv")
+        menu = open_picker("time")
+        assert menu.locator(".menu-list .menu-item").count() == 1
+        assert menu.locator('.menu-item[data-id="dteday"]').count() == 1
+        menu.locator('input[type="number"]').fill("3")
+        finish(menu)
+        menu = open_picker("predict")
+        menu.locator('.menu-item[data-id="cnt"]').click()
+        finish(menu)
+        menu = open_picker("scaffold")
+        assert menu.locator(".menu-list .menu-item").evaluate_all(
+            "rows => rows.map(row => row.dataset.id)"
+        ) == ["season", "mnth", "weekday", "workingday", "weathersit"]
+        assert menu.locator('.menu-item[data-id="workingday"] .stats').inner_text() == "[2]"
+        for name in ("season", "mnth", "weekday", "workingday"):
+            menu.locator(f'.menu-item[data-id="{name}"]').click()
+        assert menu.locator(".forecast-series-product.warn").inner_text() == (
+            "4 x 12 x 7 x 2 = 672 series · warning: more than 500 series"
+        )
+        finish(menu)
+        assert (
+            "warning: more than 500 series"
+            in page.locator(f"#{TOPIC}-setup-readout.warn").inner_text()
+        )
+        menu = open_picker("scaffold")
+        for name in ("season", "mnth", "weekday"):
+            menu.locator(f'.menu-item[data-id="{name}"]').click()
+        assert menu.locator(".forecast-series-product.warn").count() == 0
+        finish(menu)
+        menu = open_picker("predict")
+        assert menu.locator('.menu-item[data-id="workingday"]').count() == 0
+        assert menu.locator('.menu-item[data-id="weathersit"]').count() == 1
+        finish(menu)
+
+        load_source("bike_new.csv")
+        assert "workingday" in page.locator(f"#{TOPIC}-setup-scaffold").inner_text()
+        page.reload()
+        switch_to_regression(page)
+        page.select_option("#topic-flavour", "series")
+        show_tab(page, "regression-data")
+        page.wait_for_function(
+            f'/^\\d+ columns/.test(document.getElementById("{TOPIC}-data-status").innerText)'
+        )
+        assert "workingday = 2 series" in page.locator(f"#{TOPIC}-setup-readout").inner_text()
+        with page.expect_response("**/api/forecast-prep") as prepared:
+            page.click(f"#{TOPIC}-prepare")
+        summary = prepared.value.json()["summary"]
+        assert summary["series"] == 2
+        assert summary["scaffold_rows"] == 6
+        with page.expect_response(
+            lambda response: (
+                response.request.method == "POST" and response.url.endswith("/api/forecast-runs")
+            )
+        ) as started:
+            run_search(page)
+        assert started.value.json()["prepared"]["reused"] is True
+
+        show_tab(page, "regression-data")
+        load_source("panel.csv")
+        assert page.locator(f"#{TOPIC}-setup-scaffold").inner_text() == "none (one total series)"
+        menu = open_picker("scaffold")
+        names = menu.locator(".menu-list .menu-item").evaluate_all(
+            "rows => rows.map(row => row.dataset.id)"
+        )
+        assert names[:2] == ["project", "product"]
+        assert "orders" in names and "units" in names
+        finish(menu)
 
 
 def test_series_setup_saves_discards_and_prepares(tmp_path):

@@ -14,6 +14,35 @@ BRANCHES = {"north": 4.0, "south": 7.0, "east": 10.0, "west": 5.5, "large": 14.0
 AS_OF = dt.date(2026, 6, 29)
 
 
+def write_bike_daily(folder: Path, days: int = 364, name: str = "bike_daily.csv") -> Path:
+    """daily counts and numeric category codes, shaped like a bike sharing export"""
+    path = folder / name
+    start = dt.date(2024, 1, 1)
+    with path.open("w", newline="") as source:
+        writer = csv.writer(source)
+        writer.writerow(
+            ["instant", "dteday", "season", "mnth", "weekday", "workingday", "weathersit", "cnt"]
+        )
+        for index in range(days):
+            day = start + dt.timedelta(days=index)
+            workingday = int(day.weekday() < 5)
+            weather = index % 3 + 1
+            count = 100 + 40 * workingday + 8 * weather + index % 11
+            writer.writerow(
+                [
+                    index + 1,
+                    day.isoformat(),
+                    (day.month - 1) // 3 + 1,
+                    day.month,
+                    day.weekday(),
+                    workingday,
+                    weather,
+                    count,
+                ]
+            )
+    return path
+
+
 @dataclass
 class RowTruth:
     path: Path
