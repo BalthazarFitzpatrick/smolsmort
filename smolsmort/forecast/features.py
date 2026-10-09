@@ -4,6 +4,7 @@ horizon bucket, every feature read at the origin d - b, so nothing after the ori
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
 
@@ -64,6 +65,65 @@ def _calendar(days: np.ndarray) -> dict[str, np.ndarray]:
         # 1970-01-01 was a thursday; monday = 0
         "weekday": (days.astype(int) + 3) % 7,
     }
+
+
+@lru_cache(maxsize=32)
+def _holiday_dates(country: str, first_year: int, last_year: int) -> np.ndarray:
+    try:
+        import holidays
+    except ImportError as exc:
+        raise ImportError(
+            "holiday features need the holidays library; run uv sync --extra holidays"
+        ) from exc
+    calendar = holidays.country_holidays(country, years=range(first_year - 1, last_year + 2))
+    return np.array(sorted(calendar), dtype="datetime64[D]").astype(int)
+
+
+def _series_calendar(days: np.ndarray, unit: str, country: str | None = None) -> dict:
+    """additional families read only the target calendar, including known future dates"""
+    days = days.astype("datetime64[D]")
+    if unit == "week":
+        days = days - ((_calendar(days)["weekday"]).astype("timedelta64[D]"))
+    parts = _calendar(days)
+    years = days.astype("datetime64[Y]")
+    next_year = years + np.timedelta64(1, "Y")
+    year_days = (next_year.astype("datetime64[D]") - years.astype("datetime64[D]")).astype(int)
+    day_of_year = (days - years).astype(int)
+    cycles = {"month": (parts["month"] - 1) / 12, "day_of_year": day_of_year / year_days}
+    if unit == "day":
+        cycles = {"weekday": parts["weekday"] / 7, **cycles}
+    cols = {}
+    for part, cycle in cycles.items():
+        angle = 2 * np.pi * cycle
+        cols[f"cal_{part}_sin"] = ("cal:cyclic", np.sin(angle))
+        cols[f"cal_{part}_cos"] = ("cal:cyclic", np.cos(angle))
+    if unit == "day":
+        months = days.astype("datetime64[M]")
+        dom = (days - months).astype(int) + 1
+        next_month = months + np.timedelta64(1, "M")
+        month_end = next_month.astype("datetime64[D]") - np.timedelta64(1, "D")
+        for name, values in {
+            "day_of_month": dom,
+            "month_start": dom == 1,
+            "month_end": days == month_end,
+            "week_of_month": (dom - 1) // 7 + 1,
+        }.items():
+            cols[f"cal_{name}"] = ("cal:dom", values)
+    if country is not None:
+        year_numbers = years.astype(int) + 1970
+        dates = _holiday_dates(country, int(year_numbers.min()), int(year_numbers.max()))
+        ordinal = days.astype(int)
+        bounds = np.concatenate((ordinal, dates))
+        padded = np.concatenate(([bounds.min() - 31], dates, [bounds.max() + 31]))
+        next_index = np.searchsorted(padded, ordinal, side="left")
+        last_index = np.searchsorted(padded, ordinal, side="right") - 1
+        for name, values in {
+            "holiday": np.isin(ordinal, dates),
+            "days_to_holiday": np.minimum(padded[next_index] - ordinal, 30),
+            "days_since_holiday": np.minimum(ordinal - padded[last_index], 30),
+        }.items():
+            cols[f"cal_{name}"] = ("cal:holiday", values)
+    return cols
 
 
 def buckets_for(horizon: int) -> list[tuple[int, int]]:
@@ -271,6 +331,7 @@ def series_features(
                 cols[f"cal_{part}"] = (f"cal:{part}", values)
         for d in dims:
             cols[d] = (f"dim:{d}", np.full(len(rows), dim_codes[d][mine[0]]))
+        cols.update(_series_calendar(step, unit, spec.holidays_country))
         parts.append(
             {
                 "cols": cols,
