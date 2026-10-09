@@ -184,7 +184,9 @@ def test_a_cancelled_run_still_leaves_a_readable_leaderboard(tmp_path):
         time.sleep(0.1)
     cancel_run(runs, run_id)
     state = wait_run(runs, run_id, timeout=300)
-    assert state["state"] == "done" and state["stopped"] == "cancelled", state
+    assert state["state"] == "cancelled" and state["stopped"] == "cancelled", state
+    assert state["progress"]["candidate"] > 0
+    assert not (runs / run_id / "forecast.parquet").exists()
     board = json.loads((runs / run_id / "leaderboard.json").read_text())
     assert board and board[0]["fitness"] is not None
 
@@ -251,7 +253,8 @@ def test_best_history_replaced_before_generation_events_and_cleared_when_unusabl
 
     def record_event(event):
         job.event(event)
-        snapshots.append(run_state(tmp_path.parent, tmp_path.name)["eval_history"])
+        if event["event"] == "generation":
+            snapshots.append(run_state(tmp_path.parent, tmp_path.name)["eval_history"])
 
     search(
         ws, Budget(population=4, max_generations=3), on_best=job.record_best, on_event=record_event
@@ -301,7 +304,7 @@ def test_generation_curves_use_the_generation_winner_even_without_a_new_best(mon
         on_generation=curves.append,
         on_event=events.append,
     )
-    assert [event["best"] for event in events] == [6.0, 6.0, 6.0]
+    assert [event["best"] for event in events if event["event"] == "generation"] == [6.0] * 3
     assert curves == [
         {
             "generation": generation,
@@ -343,6 +346,7 @@ def test_worker_records_generation_curves_once_and_polling_returns_only_unseen(
     for curve in curves:
         job.record_generation(curve)
         job.record_generation(curve)
+    job.save("leaderboard_generation.json", 2)
     path = tmp_path / "generation_curves.jsonl"
     assert len(path.read_text().splitlines()) == 3
     state = run_state(tmp_path.parent, tmp_path.name, since_generation=0)
@@ -399,6 +403,9 @@ def test_worker_publishes_bounded_atomic_leaderboards_before_generation_events(
     snapshots = []
 
     def record_event(event):
+        if event["event"] != "generation":
+            job.event(event)
+            return
         board = json.loads((tmp_path / "leaderboard.json").read_text())
         revision = json.loads((tmp_path / "leaderboard_generation.json").read_text())
         assert revision == event["generation"]
@@ -497,3 +504,123 @@ def test_run_summaries_read_latest_validation_wape_from_events(
         assert state["test_error"] is None
         summary = run_store.list_runs(tmp_path)[0]
         assert summary["best_wape"] == expected and summary["state"] == status
+
+
+def test_progress_events_follow_each_candidate_and_stop_at_cancellation(monkeypatch):
+    import importlib
+
+    search_module = importlib.import_module("smolsmort.forecast.search")
+    ws = SimpleNamespace(
+        mode="row",
+        masks={"train": np.ones(20, dtype=bool)},
+        families=["measure:x"],
+        profile={"genes": {"objectives": ["squared"]}},
+    )
+    genomes = [make_genome(ws.families, "squared", {"max_depth": n}) for n in range(1, 5)]
+    monkeypatch.setattr(search_module, "_seed_population", lambda *_: genomes)
+    scored = []
+
+    def score_candidate(_ws, genome, **_kwargs):
+        scored.append(genome.key())
+        if len(scored) == 2:
+            raise search_module.ModelError("bad candidate")
+        return Scored(1.0, np.array([1.0]), {}, None)
+
+    monkeypatch.setattr(search_module, "score", score_candidate)
+    events = []
+    result = search(
+        ws,
+        Budget(population=4, max_generations=2),
+        on_event=events.append,
+        stop=lambda: len(scored) >= 3,
+    )
+    progress = [event for event in events if event["event"] == "progress"]
+    assert [event["candidate"] for event in progress] == [1, 2, 3]
+    assert all(event["generation"] == 0 and event["population"] == 4 for event in progress)
+    assert all(event["flat_generations"] == 0 for event in progress)
+    assert all(
+        set(event)
+        == {"event", "generation", "candidate", "population", "flat_generations", "elapsed"}
+        for event in progress
+    )
+    assert result["stopped"] == "cancelled" and result["best"] is not None
+    assert events[-1]["flat_generations"] == 0
+
+
+def test_progress_polls_advance_elapsed_and_terminal_states_freeze_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(worker.signal, "signal", lambda *_: None)
+    monkeypatch.setattr(run_store, "_alive", lambda _folder: True)
+    monkeypatch.setattr(worker.time, "time", lambda: 100.0)
+    job = worker._Run(tmp_path)
+    job.status("running", started_at=90.0)
+    event = {
+        "event": "progress",
+        "generation": 2,
+        "candidate": 7,
+        "population": 10,
+        "flat_generations": 2,
+        "elapsed": 54.0,
+    }
+    job.event(event)
+    assert json.loads((tmp_path / "events.jsonl").read_text()) == event
+    assert json.loads((tmp_path / "progress.json").read_text())["updated_at"] == 100.0
+    monkeypatch.setattr(run_store.time, "time", lambda: 103.0)
+    state = run_state(tmp_path.parent, tmp_path.name, since_generation=2)
+    assert state["progress"] == {key: value for key, value in event.items() if key != "event"} | {
+        "elapsed": 57.0,
+    }
+    for terminal in ("done", "cancelled", "failed"):
+        job.status(terminal)
+        assert run_state(tmp_path.parent, tmp_path.name)["progress"]["elapsed"] == 54.0
+
+
+@pytest.mark.parametrize("sampled", [False, True])
+def test_progress_includes_cached_candidates_and_full_sample_rescores(monkeypatch, sampled):
+    import importlib
+
+    search_module = importlib.import_module("smolsmort.forecast.search")
+    ws = SimpleNamespace(
+        mode="row",
+        masks={"train": np.ones(20, dtype=bool)},
+        families=["measure:x"],
+        profile={"genes": {"objectives": ["squared"]}},
+    )
+    genomes = [make_genome(ws.families, "squared", {"max_depth": n}) for n in range(1, 5)]
+    monkeypatch.setattr(search_module, "ELITE", 4)
+    monkeypatch.setattr(search_module, "_seed_population", lambda *_: genomes)
+    monkeypatch.setattr(search_module, "_sample", lambda *_: ws.masks["train"] if sampled else None)
+    scores = []
+
+    def score_candidate(_ws, genome, **kwargs):
+        scores.append((genome.key(), kwargs["sample"] is not None))
+        return Scored(1.0, np.array([1.0]), {}, None)
+
+    monkeypatch.setattr(search_module, "score", score_candidate)
+    events = []
+    search(ws, Budget(population=4, max_generations=2), on_event=events.append)
+    progress = [event for event in events if event["event"] == "progress"]
+    candidates = [1, 2, 3, 4, 4] if sampled else [1, 2, 3, 4]
+    assert [event["candidate"] for event in progress] == candidates * 2
+    assert [event["generation"] for event in progress] == [0] * len(candidates) + [1] * len(
+        candidates
+    )
+    assert len(scores) == (5 if sampled else 4)
+
+
+def test_unchanged_poll_does_not_read_generation_curves(tmp_path, monkeypatch):
+    monkeypatch.setattr(worker.signal, "signal", lambda *_: None)
+    job = worker._Run(tmp_path)
+    job.status("done")
+    job.save("leaderboard_generation.json", 2)
+    job.record_generation({"generation": 2, "validation": [0.3], "metric": "rmse"})
+    from pathlib import Path
+
+    read_text = Path.read_text
+
+    def read_without_curves(path, *args, **kwargs):
+        assert path.name != "generation_curves.jsonl"
+        return read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_without_curves)
+    state = run_state(tmp_path.parent, tmp_path.name, since_generation=2)
+    assert state["generation_curves"] == []
