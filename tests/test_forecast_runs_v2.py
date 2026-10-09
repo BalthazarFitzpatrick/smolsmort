@@ -359,3 +359,25 @@ def test_statistical_search_fits_one_real_candidate(tmp_path, monkeypatch, name)
     result = search(ws, Budget(), family=name)
     assert len(calls) == 1 and result["stopped"] == "single candidate"
     assert result["leaderboard"][0]["fitness"] is not None, result
+
+
+def test_expired_checkpoint_keeps_cached_winner_and_progress(tmp_path):
+    request, _, _ = make_request(tmp_path, [{"name": "snaive"}])
+    (tmp_path / "request.json").write_text(json.dumps(request))
+    command = [sys.executable, "-m", "smolsmort.forecast.family_worker", str(tmp_path), "snaive"]
+    first = subprocess.run(command, capture_output=True, text=True, timeout=40)
+    assert first.returncode == 0, first.stderr
+    target = tmp_path / "families" / "snaive"
+    checkpoint = json.loads((target / "checkpoint.json").read_text())
+    checkpoint["elapsed"] = request["time_budget_s"]
+    (target / "checkpoint.json").write_text(json.dumps(checkpoint))
+    (target / "status.json").write_text(json.dumps({"state": "running"}))
+    winner = (target / "winner.json").read_bytes()
+    cached = (target / "checkpoint.json").read_bytes()
+    restarted = subprocess.run(command, capture_output=True, text=True, timeout=40)
+    assert restarted.returncode == 0, restarted.stderr
+    status = json.loads((target / "status.json").read_text())
+    assert status["state"] == "done" and status["reason"] == "time cap"
+    assert status["candidates_done"] == 1 and status["best_error"] is not None
+    assert (target / "winner.json").read_bytes() == winner
+    assert (target / "checkpoint.json").read_bytes() == cached

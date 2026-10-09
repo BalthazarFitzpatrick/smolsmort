@@ -37,6 +37,14 @@ def run(folder: Path, name: str) -> int:
     job = _Run(target)
     started_at = time.time()
     progress = {"generation": 0, "best_error": None, "candidates_done": 0}
+    resume = read_json(target / "checkpoint.json")
+    if resume:
+        errors = [entry["fitness"] for entry in resume["entries"] if entry["fitness"] is not None]
+        progress.update(
+            generation=resume["generation"],
+            candidates_done=len(resume["entries"]),
+            best_error=min(errors, default=None),
+        )
     for filename, default in (
         ("leaderboard.json", []),
         ("eval_history.json", None),
@@ -94,7 +102,7 @@ def run(folder: Path, name: str) -> int:
             method=selection.get("method", "genetic"),
             space=selection.get("space"),
             warm=warm,
-            resume=read_json(target / "checkpoint.json"),
+            resume=resume,
             on_checkpoint=checkpoint,
             on_event=event,
             on_best=job.record_best,
