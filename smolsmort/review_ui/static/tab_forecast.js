@@ -829,8 +829,10 @@ class ForecastTopic {
     panel.innerHTML = `
       <div class="forecast-search-layout">
         <aside class="panel-inline forecast-run-rail">
-          <button class="toggle adds" id="${this.topic}-new-search">+ new search</button>
-          <div id="${this.topic}-run-sort"></div>
+          <div class="forecast-run-controls">
+            <button class="toggle adds" id="${this.topic}-new-search">+ new search</button>
+            <div class="forecast-run-sort" id="${this.topic}-run-sort"></div>
+          </div>
           <section id="${this.topic}-running-section" class="hidden">
             <div class="field-label">running</div>
             <div id="${this.topic}-running-list"></div>

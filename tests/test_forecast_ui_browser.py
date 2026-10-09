@@ -1720,3 +1720,26 @@ def test_forecast_unprepared_saved_setup_started_after_reload(tmp_path, flavour)
         assert any(col["role"] == "target" for col in requests[0][1]["spec"]["columns"])
         assert preparations == []
         assert_dataset_state(page, "prepared", source=source)
+
+
+def test_search_rail_puts_new_search_and_sort_side_by_side(tmp_path):
+    with session(tmp_path) as (page, _base):
+        switch_to_regression(page)
+        show_tab(page, "regression-search")
+        for sort in ("date, newest first", "best performance"):
+            if sort == "best performance":
+                page.locator(f"#{TOPIC}-run-sort .dropdown-head").click()
+                page.locator('.menu-panel .menu-item[data-id="best performance"]').click()
+            button = page.locator(f"#{TOPIC}-new-search").bounding_box()
+            head = page.locator(f"#{TOPIC}-run-sort .dropdown-head").bounding_box()
+            assert abs(button["y"] - head["y"]) < 0.5, (sort, button, head)
+            assert abs(button["height"] - head["height"]) < 0.5, (sort, button, head)
+            assert button["x"] + button["width"] <= head["x"] + 0.5, (sort, button, head)
+            rail = (
+                page.locator(f"#{TOPIC}-new-search").locator("xpath=ancestor::aside").bounding_box()
+            )
+            assert head["x"] + head["width"] <= rail["x"] + rail["width"] + 0.5, (sort, head, rail)
+            text = page.locator(f"#{TOPIC}-run-sort .dropdown-head > span:first-child")
+            assert text.inner_text() == sort
+            widths = text.evaluate("node => [node.scrollWidth, node.clientWidth]")
+            assert widths[0] <= widths[1], (sort, widths, button, head)
