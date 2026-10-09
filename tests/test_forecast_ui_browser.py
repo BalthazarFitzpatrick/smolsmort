@@ -914,6 +914,10 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
                 ],
                 "leaderboard_generation": revision,
             }
+            if run_id == live:
+                # the real route carries the live run's current errors, as the run list does
+                response["best_error"] = response["best_wape"] = 0.2 / count
+                response["test_error"] = 0.05 if state == "done" else None
             if board_cursor < revision:
                 response["leaderboard"] = board
             route.fulfill(json=response)
@@ -930,13 +934,15 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
         assert rail.locator(".forecast-run-row").evaluate_all(
             "rows => rows.map(row => row.dataset.runId)"
         ) == [missing, recent, best]
-        assert running.locator(".forecast-run-row > span").all_text_contents() == [
+        assert running.locator(
+            ".forecast-run-row > span:not(.forecast-run-bar)"
+        ).all_text_contents() == [
             "live01",
             "running",
             "0.2",
         ]
         for row in page.locator(".forecast-run-row").all():
-            assert row.locator("span").count() == 3
+            assert row.locator(":scope > span:not(.forecast-run-bar)").count() == 3
             assert row.evaluate("node => getComputedStyle(node).flexDirection") == "row"
         assert running.locator(".forecast-run-row.on .name").evaluate(
             "node => getComputedStyle(node).color === getComputedStyle(node.parentElement).color"
@@ -1223,17 +1229,17 @@ def test_forecast_controls_follow_the_shared_row_height(tmp_path, width):
         rows = page.locator(f"#{TOPIC}-runs-list .forecast-run-row")
         assert rows.count() == 3
         assert page.locator(
-            f'#{TOPIC}-runs-list [data-run-id="{old}"] > span'
+            f'#{TOPIC}-runs-list [data-run-id="{old}"] > span:not(.forecast-run-bar)'
         ).all_text_contents() == ["older1", "done", "0.2"]
         assert page.locator(
-            f'#{TOPIC}-runs-list [data-run-id="{cancelled}"] > span'
+            f'#{TOPIC}-runs-list [data-run-id="{cancelled}"] > span:not(.forecast-run-bar)'
         ).all_text_contents() == ["stop01", "cancelled", "0.2"]
         assert page.locator(
-            f'#{TOPIC}-runs-list [data-run-id="{refit}"] > span'
+            f'#{TOPIC}-runs-list [data-run-id="{refit}"] > span:not(.forecast-run-bar)'
         ).all_text_contents() == ["refit1", "done", "-"]
         columns = []
         for row in rows.all():
-            spans = row.locator("span")
+            spans = row.locator(":scope > span:not(.forecast-run-bar)")
             assert spans.count() == 3
             positions = [span.bounding_box() for span in spans.all()]
             assert len({position["y"] for position in positions}) == 1
