@@ -321,4 +321,5 @@ def test_weekly_columns_families_and_values_stayed_identical(panel):
         expected += [f"ewm{a}" for a in ALPHAS]
         expected += [f"orders_lag_{bucket[1] + j}" for j in range(4)]
         expected += ["cal_week", "cal_month", "cal_quarter", "project", "product"]
-        assert frame.features.names == expected
+        old_families = set(frame.features.families) - {"cal:cyclic", "cal:dom", "cal:holiday"}
+        assert frame.features.pick(old_families)[1] == expected
