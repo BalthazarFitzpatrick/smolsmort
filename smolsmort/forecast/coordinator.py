@@ -26,6 +26,22 @@ def stop_process(process):
             process.wait(timeout=0.5)
 
 
+def stop_processes(processes):
+    """terminate together so cleanup time does not multiply by family count"""
+    active = [process for process in processes if process.poll() is None]
+    for process in active:
+        process.terminate()
+    cleanup_deadline = time.monotonic() + 0.5
+    for process in active:
+        try:
+            process.wait(timeout=max(0, cleanup_deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            process.kill()
+    cleanup_deadline = time.monotonic() + 0.5
+    for process in active:
+        process.wait(timeout=max(0, cleanup_deadline - time.monotonic()))
+
+
 def best_entry(folder, name):
     entries = read_json(folder / "families" / name / "checkpoint.json", {}).get("entries", [])
     viable = [e for e in entries if e["fitness"] is not None and e.get("note") != "sample"]
@@ -129,13 +145,14 @@ def launch_families(folder, request, job):
                         {k: v for k, v in status.items() if k not in ("state", "phase", "pid")}
                     )
                 save()
-                if job.cancelled or time.time() >= min(slice_end, deadline) + GRACE_S:
+                if job.cancelled or time.time() >= min(slice_end, deadline) + GRACE_S - 1:
                     break
                 time.sleep(0.05)
         finally:
+            interrupted = {name for name, process in processes.items() if process.poll() is None}
+            stop_processes(processes.values())
             for name, process in processes.items():
-                terminated = process.poll() is None
-                stop_process(process)
+                terminated = name in interrupted
                 status = read_json(folder / "families" / name / "status.json", {})
                 states[name].update(
                     {k: v for k, v in status.items() if k not in ("state", "phase", "pid")}
@@ -256,7 +273,11 @@ def launch_families(folder, request, job):
         state["finish_pid"] = process.pid
         save()
         try:
-            while process.poll() is None and not job.cancelled and time.time() < deadline + GRACE_S:
+            while (
+                process.poll() is None
+                and not job.cancelled
+                and time.time() < deadline + GRACE_S - 1
+            ):
                 time.sleep(0.05)
         finally:
             terminated = process.poll() is None
