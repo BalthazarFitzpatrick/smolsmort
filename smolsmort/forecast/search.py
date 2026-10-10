@@ -377,6 +377,7 @@ def search(
     resume: dict | None = None,
     on_checkpoint: Callable[[dict], None] | None = None,
     deadline: float | None = None,
+    defaults_only: bool = False,
 ) -> dict:
     """run until a plateau, the time cap, the generation cap or `stop()`; returns the ranked
     leaderboard, the final population (the next search's warm start) and why it stopped"""
@@ -442,6 +443,11 @@ def search(
         if legacy
         else _family_population(var, budget.population, warm, method)
     )
+    if defaults_only and family and family.space() and not resume:
+        default = make_genome(
+            var.families, var.objectives[0], var.params_for(var.objectives[0]), family.name
+        )
+        population = [default, *[genome for genome in population if genome.key() != default.key()]]
     best, quiet, generation, reason = None, 0, 0, "generation cap"
     if resume:
         population = [genome_from_dict(data) for data in resume["population"]]
@@ -485,6 +491,9 @@ def search(
                 break
             entries.append(evaluate(genome, generation, sample))
             record_progress(candidate)
+            if defaults_only and family and family.space():
+                reason = "broad defaults"
+                break
             if stop and stop():
                 break
         if not entries:
@@ -547,6 +556,8 @@ def search(
                 }
             )
         generation += 1
+        if reason == "broad defaults":
+            break
         if not legacy and (not var.space or method == "grid"):
             if reason != "time cap":
                 reason = "single candidate" if not var.space else "grid complete"

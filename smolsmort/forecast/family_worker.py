@@ -140,6 +140,7 @@ def run(folder: Path, name: str) -> int:
             on_leaderboard=job.record_leaderboard,
             stop=cancelled,
             deadline=allocation["deadline"] if allocation else None,
+            defaults_only=bool(allocation and allocation["phase"] == "broad"),
         )
         job.save("leaderboard.json", result["leaderboard"])
         job.save("population.json", result["population"])

@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import time
+from copy import deepcopy
 from dataclasses import asdict
 from types import SimpleNamespace
 
@@ -201,7 +202,7 @@ def test_late_broad_resume_uses_remaining_deep_slice(tmp_path, monkeypatch):
         def poll(self):
             return 0
 
-    monkeypatch.setattr(coordinator.time, "time", lambda: 120)
+    monkeypatch.setattr(coordinator.time, "time", lambda: 130)
     monkeypatch.setattr(coordinator.subprocess, "Popen", CompletedProcess)
     job = SimpleNamespace(cancelled=False, save=save_json, status=lambda *args, **kwargs: None)
     result = coordinator.launch_families(
@@ -213,6 +214,61 @@ def test_late_broad_resume_uses_remaining_deep_slice(tmp_path, monkeypatch):
     assert result["families"]["xgboost"]["state"] == "done"
     assert result["families"]["xgboost"]["best_error"] == 0.1
     assert read_json(tmp_path / "coordinator.json")["deadline"] == 160
+
+
+def test_broad_defaults_retains_population_for_deeper_search(monkeypatch):
+    import importlib
+
+    from smolsmort.forecast.families import Param
+    from smolsmort.forecast.pipeline import Scored
+
+    module = importlib.import_module("smolsmort.forecast.search")
+    family = SimpleNamespace(
+        name="lightgbm",
+        needs="lag_features",
+        space=lambda: [Param("alpha", "int", 1, 3, default=2)],
+        objectives=lambda task: ("squared",),
+    )
+    ws = SimpleNamespace(
+        mode="row",
+        spec=SimpleNamespace(task="regression"),
+        masks={"train": np.ones(20, dtype=bool)},
+        families=["lag"],
+        profile={"genes": {"objectives": ["squared"]}},
+    )
+    calls, checkpoints = [], []
+
+    def score_candidate(ws, genome, **kwargs):
+        alpha = dict(genome.params)["alpha"]
+        calls.append(alpha)
+        return Scored(float(alpha), np.array([alpha]), {}, None)
+
+    monkeypatch.setattr(module, "score", score_candidate)
+    result = module.search(
+        ws,
+        module.Budget(population=3, max_generations=2),
+        family=family,
+        method="grid",
+        space={"alpha": [1, 2, 3]},
+        defaults_only=True,
+        on_checkpoint=lambda state: checkpoints.append(deepcopy(state)),
+    )
+    assert calls == [2]
+    assert result["stopped"] == "broad defaults"
+    assert len(result["population"]) == 3
+    assert len(checkpoints[-1]["population"]) == 3
+    calls.clear()
+    deeper = module.search(
+        ws,
+        module.Budget(population=3, max_generations=2),
+        family=family,
+        method="grid",
+        space={"alpha": [1, 2, 3]},
+        resume=checkpoints[-1],
+    )
+    assert set(calls) == {1, 3}
+    assert deeper["stopped"] == "grid complete"
+    assert deeper["leaderboard"][0]["genome"]["params"]["alpha"] == 1
 
 
 @pytest.mark.parametrize("top", [None, 1])

@@ -170,7 +170,7 @@ def launch_families(folder, request, job):
                     if job.cancelled
                     else (
                         "paused"
-                        if terminated or status.get("reason") == "time cap"
+                        if terminated or status.get("reason") in ("time cap", "broad defaults")
                         else status.get("state", "failed")
                     )
                 )
@@ -189,7 +189,7 @@ def launch_families(folder, request, job):
     save()
     if state["phase"] == "broad":
         selected = [name for name in names if states[name]["state"] in ("pending", "running")]
-        broad_end = min(search_deadline, state["started_at"] + request["time_budget_s"] * 0.25)
+        broad_end = min(search_deadline, state["started_at"] + request["time_budget_s"] * 0.4)
         run_slices(selected, broad_end)
         for name in selected:
             if states[name]["state"] in ("pending", "running"):
@@ -201,7 +201,7 @@ def launch_families(folder, request, job):
         selected = [name for name in names if states[name]["state"] == "paused"]
         if (
             len(selected) <= 1
-            or time.time() >= state["started_at"] + request["time_budget_s"] * 0.45
+            or time.time() >= state["started_at"] + request["time_budget_s"] * 0.55
         ):
             state["phase"] = "deep"
             save()
