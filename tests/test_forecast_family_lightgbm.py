@@ -51,8 +51,9 @@ def test_typed_space_and_defaults():
     assert specs["lambda_l2"].kind == "log"
     assert specs["min_child_samples"].kind == "int"
     assert specs["max_depth"].lo == -1
-    assert specs["objective"].choices == ("regression_l1", "regression", "poisson", "tweedie")
-    assert family.defaults()["objective"] == "regression_l1"
+    assert "objective" not in specs
+    assert family.objectives("regression") == ("regression_l1", "regression", "poisson", "tweedie")
+    assert "objective" not in family.defaults()
 
 
 @pytest.fixture
@@ -196,3 +197,17 @@ def test_genome_runs_through_production_score(family, tmp_path):
     result = score(ws, genome)
     assert np.isfinite(result.fitness)
     assert result.fitness == pytest.approx(result.contrib.sum())
+
+
+def test_log_scale_float_counts_are_rounded_to_integers(family):
+    pytest.importorskip("lightgbm")
+    rng = np.random.default_rng(0)
+    x = rng.normal(size=(120, 3)).astype("float32")
+    y = x[:, 0] * 2 + rng.normal(size=120)
+    fitted = family.fit(
+        x,
+        y=y,
+        feature_types=["q", "q", "q"],
+        params={"num_leaves": 10.94, "min_child_samples": 7.6, "max_depth": 4.2},
+    )
+    assert np.isfinite(fitted.predict(x)).all()

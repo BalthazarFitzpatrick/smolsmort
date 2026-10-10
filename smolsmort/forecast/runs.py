@@ -3,11 +3,9 @@ events and results, and cancels it. every file a run leaves behind is listed in 
 
 from __future__ import annotations
 
-import contextlib
 import json
 import math
 import os
-import signal
 import subprocess
 import sys
 import time
@@ -16,6 +14,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from smolsmort.forecast.prep import Prepared
+from smolsmort.forecast.requests import parse_request
 from smolsmort.forecast.spec import PrepSpec
 
 RUN_FILES = (
@@ -37,6 +36,8 @@ RUN_FILES = (
     "test.parquet",
 )
 
+_PROCESSES: dict[int, subprocess.Popen] = {}
+
 
 class RunError(ValueError):
     pass
@@ -51,12 +52,16 @@ def start_run(
     warm_from: str | None = None,
     recipe: dict | None = None,
     nthread: int | None = None,
+    version: int | None = None,
+    families: list[dict] | None = None,
+    time_budget_s: float | None = None,
+    transform: str = "none",
+    ensemble: dict | None = None,
 ) -> str:
     """write the request and start the worker; returns the run id. `recipe` refits a saved
     winner without a search, `warm_from` seeds a search with an earlier run's population"""
     run_id = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
     folder = Path(runs_root) / run_id
-    folder.mkdir(parents=True)
     warm = str(Path(runs_root) / warm_from) if warm_from else None
     request = {
         "spec": asdict(spec),
@@ -67,6 +72,17 @@ def start_run(
         "recipe": recipe,
         "nthread": nthread,
     }
+    if version is not None or families is not None:
+        request.pop("budget")
+        request.update(
+            version=version if version is not None else 2,
+            families=families,
+            time_budget_s=time_budget_s,
+            transform=transform,
+            ensemble=ensemble or {"enabled": False, "top": 3},
+        )
+    request = parse_request(request)
+    folder.mkdir(parents=True)
     (folder / "request.json").write_text(json.dumps(request, indent=2, default=str))
     (folder / "status.json").write_text(json.dumps({"state": "starting"}))
     env = dict(os.environ)
@@ -81,6 +97,8 @@ def start_run(
         env=env,
         start_new_session=True,
     )
+    log.close()
+    _PROCESSES[process.pid] = process
     (folder / "pid").write_text(str(process.pid))
     return run_id
 
@@ -224,6 +242,11 @@ def _alive(folder: Path) -> bool:
         pid = int((folder / "pid").read_text())
     except (FileNotFoundError, ValueError):
         return False
+    process = _PROCESSES.get(pid)
+    if process is not None:
+        return process.poll() is None
+    if sys.platform == "win32":
+        return _windows_alive(pid)
     try:
         finished, _ = os.waitpid(pid, os.WNOHANG)
         return finished == 0
@@ -236,11 +259,30 @@ def _alive(folder: Path) -> bool:
         return True
 
 
+def _windows_alive(pid: int) -> bool:
+    """query a reattached worker without windows' terminating os.kill semantics"""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return False
+    try:
+        code = wintypes.DWORD()
+        return bool(kernel.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259
+    finally:
+        kernel.CloseHandle(handle)
+
+
 def cancel_run(runs_root: Path, run_id: str) -> None:
     """ask the worker to stop after its current candidate; it still writes what it found"""
     folder = run_folder(runs_root, run_id)
-    with contextlib.suppress(FileNotFoundError, ProcessLookupError, ValueError):
-        os.kill(int((folder / "pid").read_text()), signal.SIGTERM)
+    (folder / "cancel").touch()
 
 
 def wait_run(runs_root: Path, run_id: str, timeout: float = 600) -> dict:

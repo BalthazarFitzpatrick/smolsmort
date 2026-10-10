@@ -10,6 +10,14 @@ from smolsmort.forecast.families.base import Param, probe_import
 from smolsmort.forecast.model import ModelError
 
 OBJECTIVES = ("regression_l1", "regression", "poisson", "tweedie")
+INTEGER_PARAMS = ("num_leaves", "min_child_samples", "max_depth")
+# the profile suggests objectives by generic name; this maps lightgbm's names onto them
+OBJECTIVE_ALIASES = {
+    "regression_l1": "absolute",
+    "regression": "squared",
+    "poisson": "poisson",
+    "tweedie": "tweedie",
+}
 
 
 @dataclass
@@ -29,6 +37,7 @@ class LightgbmFitted:
 
 
 class LightgbmFamily:
+    objective_aliases = OBJECTIVE_ALIASES
     name = "lightgbm"
     label = "lightgbm"
     needs = "lag_features"
@@ -46,11 +55,14 @@ class LightgbmFamily:
             Param("bagging_fraction", "float", 0.5, 1.0, default=1.0),
             Param("lambda_l2", "log", 1e-8, 100.0, default=1e-8),
             Param("max_depth", "int", -1, 16, default=-1),
-            Param("objective", "choice", choices=OBJECTIVES, default="regression_l1"),
         ]
 
     def defaults(self) -> dict:
         return {param.name: param.default for param in self.space()}
+
+    def objectives(self, task: str) -> tuple[str, ...]:
+        # regression only; the search filters these through the profile's generic names
+        return OBJECTIVES if task == "regression" else ()
 
     def cost(self, shape: tuple[int, int], params: dict) -> float:
         """relative work hint from rows, columns and leaves"""
@@ -96,6 +108,10 @@ class LightgbmFamily:
         }
         # lightgbm ignores bagging_fraction unless bagging is enabled
         config["bagging_freq"] = 1 if config["bagging_fraction"] < 1 else 0
+        # a log-scale search draws floats; lightgbm refuses non-integer counts
+        for name in INTEGER_PARAMS:
+            if name in config:
+                config[name] = int(round(float(config[name])))
 
         def pick(index, reference=None):
             return lgb.Dataset(
