@@ -106,6 +106,17 @@ def run(folder: Path) -> int:
     job.status("running", started_at=time.time())
     try:
         request = parse_request(request)
+        if request.get("version") == 2 and not (folder / "coordinator.json").exists():
+            started_at = time.time()
+            job.save(
+                "coordinator.json",
+                {
+                    "started_at": started_at,
+                    "deadline": started_at + request["time_budget_s"],
+                    "phase": "broad",
+                    "families": {},
+                },
+            )
         spec = spec_from_dict(request["spec"])
         ws = load_workspace(spec, Path(request["prepared"]), request["summary"])
         job.save("profile.json", ws.profile)
@@ -170,7 +181,7 @@ def run(folder: Path) -> int:
             "done",
             stopped=result["stopped"],
             verdict=final["verdict"],
-            elapsed=round(time.monotonic() - started, 1),
+            elapsed=result.get("elapsed", round(time.monotonic() - started, 1)),
             **({"families": result.get("families", {})} if request.get("version") == 2 else {}),
         )
         job.event({"event": "done", "verdict": final["verdict"]})

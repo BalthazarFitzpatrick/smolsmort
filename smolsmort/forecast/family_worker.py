@@ -32,10 +32,9 @@ def watch_parent(parent_pid):
         from smolsmort.forecast.runs import _windows_alive
 
         while True:
-            if sys.platform == "win32":
+            alive = os.getppid() == parent_pid
+            if alive and sys.platform == "win32":
                 alive = _windows_alive(parent_pid)
-            else:
-                alive = os.getppid() == parent_pid
             if not alive:
                 os._exit(1)
             time.sleep(0.1)
@@ -111,6 +110,8 @@ def run(folder: Path, name: str) -> int:
         nthread = max(
             1, (request.get("nthread") or os.cpu_count() or 1) // len(request["families"])
         )
+        if allocation:
+            nthread = allocation.get("nthread", nthread)
         warm_path = (
             Path(request["warm_from"]) / "families" / name if request.get("warm_from") else None
         )

@@ -157,7 +157,68 @@ def test_ensemble_band_uses_stored_validation_average(monkeypatch):
     assert calls == ["xgboost", "lightgbm", "xgboost", "lightgbm"]
 
 
-def test_recipe_selection_uses_validation_even_when_test_error_disagrees(tmp_path, monkeypatch):
+def test_late_broad_resume_uses_remaining_deep_slice(tmp_path, monkeypatch):
+    from smolsmort.forecast import coordinator, pipeline
+
+    started = []
+
+    def save_json(name, value):
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(value))
+
+    save_json(
+        "coordinator.json",
+        {
+            "started_at": 100,
+            "deadline": 160,
+            "phase": "broad",
+            "families": {"xgboost": {"state": "running"}},
+        },
+    )
+    save_json("finish_complete.json", {})
+    save_json(
+        "families/xgboost/checkpoint.json",
+        {
+            "entries": [
+                {
+                    "genome": pipeline.make_genome(["lag"], "squared", {}).to_dict(),
+                    "families": "lag",
+                    "fitness": 0.1,
+                    "generation": 0,
+                }
+            ]
+        },
+    )
+
+    class CompletedProcess:
+        pid = 123
+
+        def __init__(self, command, **kwargs):
+            started.append(read_json(tmp_path / "families" / command[-1] / "slice.json"))
+            save_json(f"families/{command[-1]}/status.json", {"state": "done", "reason": "plateau"})
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(coordinator.time, "time", lambda: 120)
+    monkeypatch.setattr(coordinator.subprocess, "Popen", CompletedProcess)
+    job = SimpleNamespace(cancelled=False, save=save_json, status=lambda *args, **kwargs: None)
+    result = coordinator.launch_families(
+        tmp_path, {"families": [{"name": "xgboost"}], "time_budget_s": 60}, job
+    )
+    assert len(started) == 1
+    assert started[0]["phase"] == "deep"
+    assert started[0]["deadline"] == 142
+    assert result["families"]["xgboost"]["state"] == "done"
+    assert result["families"]["xgboost"]["best_error"] == 0.1
+    assert read_json(tmp_path / "coordinator.json")["deadline"] == 160
+
+
+@pytest.mark.parametrize("top", [None, 1])
+def test_recipe_selection_uses_validation_even_when_test_error_disagrees(
+    tmp_path, monkeypatch, top
+):
     from smolsmort.forecast import ensemble, pipeline
 
     spec = PrepSpec(
@@ -172,6 +233,8 @@ def test_recipe_selection_uses_validation_even_when_test_error_disagrees(tmp_pat
         "summary": {},
         "ensemble": {"enabled": True},
     }
+    if top is not None:
+        request["ensemble"]["top"] = top
     ranked = [
         {
             "family": name,
@@ -206,20 +269,22 @@ def test_recipe_selection_uses_validation_even_when_test_error_disagrees(tmp_pat
         (folder / "result.json").write_text(json.dumps({"model_error": final["model_error"]}))
 
     def score_validation(ws, prediction, truth, periods):
-        np.testing.assert_array_equal(prediction, [10, 11])
-        return SimpleNamespace(fitness=0.1)
+        np.testing.assert_array_equal(prediction, [9, 13] if top == 1 else [10, 11])
+        return SimpleNamespace(fitness=0.2 if top == 1 else 0.1)
 
     monkeypatch.setattr(ensemble, "finish", finish_candidate)
     monkeypatch.setattr(ensemble, "_write_result", write_result)
     monkeypatch.setattr(ensemble, "_fitness", score_validation)
     ensemble.run(tmp_path, 123)
     recipe = read_json(tmp_path / "recipe.json")
-    assert recipe["family"] == "ensemble"
-    assert recipe["members"] == ["xgboost", "lightgbm"]
+    assert recipe["family"] == ("xgboost" if top == 1 else "ensemble")
+    if top != 1:
+        assert recipe["members"] == ["xgboost", "lightgbm"]
     result = read_json(tmp_path / "result.json")
-    assert result["model_error"] == 0.9
+    assert result["model_error"] == (0.01 if top == 1 else 0.9)
     assert result["winner"]["model_error"] == 0.01
-    np.testing.assert_array_equal(validations[1], [10, 11])
+    assert result["ensemble"]["members"] == (["xgboost"] if top == 1 else ["xgboost", "lightgbm"])
+    np.testing.assert_array_equal(validations[1], [9, 13] if top == 1 else [10, 11])
 
 
 def read_json(path):

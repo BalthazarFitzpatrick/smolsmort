@@ -86,7 +86,13 @@ def launch_families(folder, request, job):
 
     def save():
         job.save("coordinator.json", state)
-        job.status("running", started_at=state["started_at"], phase=state["phase"], families=states)
+        job.status(
+            "running",
+            started_at=state["started_at"],
+            phase=state["phase"],
+            families=states,
+            elapsed=round(max(0, time.time() - state["started_at"]), 1),
+        )
 
     def prune_families():
         viable = {name: entry for name in names if (entry := best_entry(folder, name)) is not None}
@@ -102,6 +108,7 @@ def launch_families(folder, request, job):
 
     def run_slices(selected, slice_end):
         processes = {}
+        nthread = max(1, (request.get("nthread") or os.cpu_count() or 1) // max(1, len(selected)))
         try:
             for name in selected:
                 if job.cancelled or time.time() >= min(slice_end, deadline):
@@ -117,12 +124,11 @@ def launch_families(folder, request, job):
                         "deadline": min(slice_end, deadline),
                         "phase": state["phase"],
                         "parent_pid": os.getpid(),
+                        "nthread": nthread,
                     },
                 )
                 env = dict(os.environ)
-                env["OMP_NUM_THREADS"] = str(
-                    max(1, (request.get("nthread") or os.cpu_count() or 1) // len(names))
-                )
+                env["OMP_NUM_THREADS"] = str(nthread)
                 with (target / "worker.log").open("a") as log:
                     processes[name] = subprocess.Popen(
                         [
@@ -151,7 +157,7 @@ def launch_families(folder, request, job):
         finally:
             interrupted = {name for name, process in processes.items() if process.poll() is None}
             stop_processes(processes.values())
-            for name, process in processes.items():
+            for name in processes:
                 terminated = name in interrupted
                 status = read_json(folder / "families" / name / "status.json", {})
                 states[name].update(
@@ -185,6 +191,9 @@ def launch_families(folder, request, job):
         selected = [name for name in names if states[name]["state"] in ("pending", "running")]
         broad_end = min(search_deadline, state["started_at"] + request["time_budget_s"] * 0.25)
         run_slices(selected, broad_end)
+        for name in selected:
+            if states[name]["state"] in ("pending", "running"):
+                states[name]["state"] = "paused"
         state["phase"] = "halving"
         save()
     while state["phase"] == "halving" and not job.cancelled:
@@ -208,6 +217,10 @@ def launch_families(folder, request, job):
     board = []
     winners = {}
     for name in names:
+        checkpoint_entries = read_json(folder / "families" / name / "checkpoint.json", {}).get(
+            "entries", []
+        )
+        states[name]["candidates_done"] = len(checkpoint_entries)
         winner = best_entry(folder, name)
         if winner:
             winners[name] = {**winner, "family": name}
@@ -228,10 +241,29 @@ def launch_families(folder, request, job):
                     },
                 )
             job.save(f"families/{name}/winner.json", winner["genome"])
-        for entry in read_json(folder / "families" / name / "leaderboard.json", []):
+        elif states[name]["state"] in ("running", "paused", "pending"):
+            states[name].update(
+                state="failed", reason="budget expired without a completed candidate"
+            )
+        family_board = [
+            {
+                key: value
+                for key, value in entry.items()
+                if key not in ("contrib", "prediction", "eval_history")
+            }
+            for entry in checkpoint_entries
+            if entry.get("note") != "sample"
+        ]
+        family_board.sort(
+            key=lambda entry: (
+                entry["fitness"] if entry["fitness"] is not None else float("inf"),
+                entry["families"],
+            )
+        )
+        if family_board:
+            job.save(f"families/{name}/leaderboard.json", family_board[:10])
+        for entry in family_board[:10]:
             board.append({**entry, "family": name})
-        if winner and not any(e["family"] == name for e in board):
-            board.append({**winner, "family": name})
     board.sort(
         key=lambda e: (e["fitness"] if e["fitness"] is not None else float("inf"), e["families"])
     )
@@ -244,6 +276,7 @@ def launch_families(folder, request, job):
         "population": [],
         "families": states,
         "stopped": "cancelled" if job.cancelled else "families complete",
+        "elapsed": round(max(0, time.time() - state["started_at"]), 1),
     }
     if job.cancelled:
         return result
@@ -293,4 +326,5 @@ def launch_families(folder, request, job):
         if process.returncode != 0:
             raise ValueError("final fit failed; see finish.log")
     result["finalized"] = True
+    result["elapsed"] = round(max(0, time.time() - state["started_at"]), 1)
     return result
