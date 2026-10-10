@@ -381,3 +381,27 @@ def test_expired_checkpoint_keeps_cached_winner_and_progress(tmp_path):
     assert status["candidates_done"] == 1 and status["best_error"] is not None
     assert (target / "winner.json").read_bytes() == winner
     assert (target / "checkpoint.json").read_bytes() == cached
+
+
+def test_v2_lightgbm_genetic_search_runs_alongside_xgboost(tmp_path):
+    pytest.importorskip("xgboost")
+    pytest.importorskip("lightgbm")
+    selections = [
+        {"name": "xgboost", "method": "grid", "space": {"max_depth": [3], "eta": [0.1]}},
+        {"name": "lightgbm", "method": "genetic"},
+    ]
+    request, spec, prepared = make_request(tmp_path, selections, 30)
+    run_id = start_run(
+        tmp_path / "runs", spec, prepared, families=selections, time_budget_s=30, nthread=2
+    )
+    state = wait_run(tmp_path / "runs", run_id, timeout=120)
+    run = tmp_path / "runs" / run_id
+    assert state["state"] == "done", state
+    lightgbm = json.loads((run / "families" / "lightgbm" / "status.json").read_text())
+    assert lightgbm["state"] == "done" and lightgbm["candidates_done"] >= 1
+    board = json.loads((run / "leaderboard.json").read_text())
+    assert {"xgboost", "lightgbm"} <= {entry["family"] for entry in board}
+    params = {
+        key for entry in board if entry["family"] == "lightgbm" for key in entry["genome"]["params"]
+    }
+    assert params & {"num_leaves", "learning_rate", "min_child_samples"}

@@ -206,12 +206,15 @@ class _FamilyVariation(_Variation):
             if self.defaults[name] not in values:
                 self.defaults[name] = values[0]
         self.overrides = overrides or {}
-        objectives = getattr(family, "objectives", lambda _task: ("squared",))
-        self.objectives = list(objectives(ws.spec.task))
+        # every family names its own objectives; a silent default sent xgboost names to lightgbm
+        self.objectives = list(family.objectives(ws.spec.task))
+        suggested = set(ws.profile["genes"]["objectives"])
         if family.name == "xgboost":
+            self.objectives = [name for name in self.objectives if name in suggested]
+        elif aliases := getattr(family, "objective_aliases", None):
             self.objectives = [
-                name for name in ws.profile["genes"]["objectives"] if name in self.objectives
-            ]
+                name for name in self.objectives if aliases.get(name) in suggested
+            ] or self.objectives
         if family.needs == "raw_series":
             self.families = []
 
