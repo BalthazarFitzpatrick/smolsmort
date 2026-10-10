@@ -373,12 +373,18 @@ def _series_predict(ws, genome, frame, fit_rows, eval_rows, bucket, nthread):
 
 
 def finish(
-    ws: Workspace, genome: Genome, *, nthread: int = 1, members=None, validation=None
+    ws: Workspace,
+    genome: Genome,
+    *,
+    nthread: int = 1,
+    members=None,
+    validation=None,
+    prediction_cache=None,
 ) -> dict:
     """band from validation, the verdict from the untouched test split, and the forecast itself"""
     if ws.mode == "row":
         return _finish_rows(ws, genome, nthread)
-    return _finish_series(ws, genome, nthread, members, validation)
+    return _finish_series(ws, genome, nthread, members, validation, prediction_cache)
 
 
 def _finish_rows(ws, genome, nthread) -> dict:
@@ -478,7 +484,9 @@ def _row_baseline(ws, target) -> np.ndarray:
     return ev.group_median(keys[known_test], lower_t[known_test], keys[test_rows])
 
 
-def _finish_series(ws, genome, nthread, members=None, validation=None) -> dict:
+def _finish_series(
+    ws, genome, nthread, members=None, validation=None, prediction_cache=None
+) -> dict:
     profile = ws.profile
     period = profile["genes"].get("period")
     bands, val_rows, test_rows, forecast = {}, [], [], []
@@ -488,13 +496,18 @@ def _finish_series(ws, genome, nthread, members=None, validation=None) -> dict:
     members = members or [genome]
 
     def predict_members(frame, fit_rows, eval_rows, bucket):
-        return np.mean(
-            [
-                _series_predict(ws, member, frame, fit_rows, eval_rows, bucket, nthread)
-                for member in members
-            ],
-            axis=0,
-        )
+        predictions = []
+        for member in members:
+            key = (member.key(), bucket, fit_rows.tobytes(), eval_rows.tobytes())
+            prediction = prediction_cache.get(key) if prediction_cache is not None else None
+            if prediction is None:
+                prediction = _series_predict(
+                    ws, member, frame, fit_rows, eval_rows, bucket, nthread
+                )
+                if prediction_cache is not None:
+                    prediction_cache[key] = prediction
+            predictions.append(prediction)
+        return np.mean(predictions, axis=0)
 
     for bucket, frame in ws.frames.items():
         masks = ws.series_masks[bucket]

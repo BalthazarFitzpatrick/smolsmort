@@ -30,7 +30,14 @@ def run(folder, parent_pid):
     winner = ranked[0]
     genome = genome_from_dict(winner["genome"])
     nthread = request.get("nthread") or 1
-    final = finish(ws, genome, nthread=nthread, validation=winner.get("prediction"))
+    prediction_cache = {}
+    final = finish(
+        ws,
+        genome,
+        nthread=nthread,
+        validation=winner.get("prediction"),
+        prediction_cache=prediction_cache,
+    )
     summary = {
         "winner": {"family": winner["family"], "fitness": winner["fitness"], **summarize(final)}
     }
@@ -56,6 +63,7 @@ def run(folder, parent_pid):
             nthread=nthread,
             members=[genome_from_dict(entry["genome"]) for entry in members],
             validation=prediction,
+            prediction_cache=prediction_cache,
         )
         summary["ensemble"] = {
             "members": [entry["family"] for entry in members],

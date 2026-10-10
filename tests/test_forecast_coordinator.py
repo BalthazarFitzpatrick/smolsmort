@@ -117,7 +117,8 @@ def test_allocator_prunes_paired_noise_and_bounds_overrunning_workers(tmp_path, 
     assert read_json(tmp_path / "coordinator.json")["deadline"] == 160
 
 
-def test_ensemble_band_uses_stored_validation_average(monkeypatch):
+@pytest.mark.parametrize("cached_winner", [False, True])
+def test_ensemble_band_uses_stored_validation_average(monkeypatch, cached_winner):
     from smolsmort.forecast import evaluate, pipeline
 
     masks = {
@@ -150,12 +151,23 @@ def test_ensemble_band_uses_stored_validation_average(monkeypatch):
     monkeypatch.setattr(
         pipeline, "_series_baseline", lambda frame, mask, bucket, period: np.full(mask.sum(), 20)
     )
-    result = pipeline.finish(ws, members[0], members=members, validation=stored)
+    prediction_cache = {} if cached_winner else None
+    if cached_winner:
+        pipeline.finish(
+            ws, members[0], validation=[9, 12, 17, 19], prediction_cache=prediction_cache
+        )
+    result = pipeline.finish(
+        ws, members[0], members=members, validation=stored, prediction_cache=prediction_cache
+    )
     expected = evaluate.fit_band(truth[masks["val"]], stored)
     assert result["bands"]["1-1"] == expected.__dict__
     np.testing.assert_array_equal(result["validation"]["prediction"], stored)
     np.testing.assert_array_equal(result["test"]["prediction"], [26, 26])
-    assert calls == ["xgboost", "lightgbm", "xgboost", "lightgbm"]
+    assert calls == (
+        ["xgboost", "xgboost", "lightgbm", "lightgbm"]
+        if cached_winner
+        else ["xgboost", "lightgbm", "xgboost", "lightgbm"]
+    )
 
 
 def test_late_broad_resume_uses_remaining_deep_slice(tmp_path, monkeypatch):
