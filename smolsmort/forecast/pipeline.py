@@ -75,6 +75,7 @@ class Scored:
     contrib: np.ndarray
     metrics: dict
     eval_history: dict | None = None
+    prediction: np.ndarray | None = None
 
 
 # ---------------------------------------------------------------- workspace
@@ -204,6 +205,7 @@ def score(
     else:
         pred, truth, periods = _series_phase(ws, genome, "val", nthread, sample, histories)
     result = _fitness(ws, pred, truth, periods)
+    result.prediction = pred
     if ws.mode == "series" and get_family(genome.family).needs == "raw_series":
         from smolsmort.forecast.families.stats import season_length
 
@@ -370,11 +372,19 @@ def _series_predict(ws, genome, frame, fit_rows, eval_rows, bucket, nthread):
 # ---------------------------------------------------------------- the frozen winner
 
 
-def finish(ws: Workspace, genome: Genome, *, nthread: int = 1) -> dict:
+def finish(
+    ws: Workspace,
+    genome: Genome,
+    *,
+    nthread: int = 1,
+    members=None,
+    validation=None,
+    prediction_cache=None,
+) -> dict:
     """band from validation, the verdict from the untouched test split, and the forecast itself"""
     if ws.mode == "row":
         return _finish_rows(ws, genome, nthread)
-    return _finish_series(ws, genome, nthread)
+    return _finish_series(ws, genome, nthread, members, validation, prediction_cache)
 
 
 def _finish_rows(ws, genome, nthread) -> dict:
@@ -474,21 +484,44 @@ def _row_baseline(ws, target) -> np.ndarray:
     return ev.group_median(keys[known_test], lower_t[known_test], keys[test_rows])
 
 
-def _finish_series(ws, genome, nthread) -> dict:
+def _finish_series(
+    ws, genome, nthread, members=None, validation=None, prediction_cache=None
+) -> dict:
     profile = ws.profile
     period = profile["genes"].get("period")
     bands, val_rows, test_rows, forecast = {}, [], [], []
     test_pred_all, test_truth_all, base_all = [], [], []
     test_lo, test_hi = [], []
+    offset = 0
+    members = members or [genome]
+
+    def predict_members(frame, fit_rows, eval_rows, bucket):
+        predictions = []
+        for member in members:
+            key = (member.key(), bucket, fit_rows.tobytes(), eval_rows.tobytes())
+            prediction = prediction_cache.get(key) if prediction_cache is not None else None
+            if prediction is None:
+                prediction = _series_predict(
+                    ws, member, frame, fit_rows, eval_rows, bucket, nthread
+                )
+                if prediction_cache is not None:
+                    prediction_cache[key] = prediction
+            predictions.append(prediction)
+        return np.mean(predictions, axis=0)
+
     for bucket, frame in ws.frames.items():
         masks = ws.series_masks[bucket]
-        val_pred = _series_predict(ws, genome, frame, masks["train"], masks["val"], bucket, nthread)
+        count = int(masks["val"].sum())
+        val_pred = (
+            np.asarray(validation)[offset : offset + count]
+            if validation is not None
+            else predict_members(frame, masks["train"], masks["val"], bucket)
+        )
+        offset += count
         band = ev.fit_band(frame.y[masks["val"]], val_pred)
         bands[f"{bucket[0]}-{bucket[1]}"] = None if band is None else band.__dict__
         val_rows.append(_series_rows(frame, masks["val"], val_pred, bucket))
-        test_pred = _series_predict(
-            ws, genome, frame, masks["train"] | masks["val"], masks["test"], bucket, nthread
-        )
+        test_pred = predict_members(frame, masks["train"] | masks["val"], masks["test"], bucket)
         lo, hi = ev.apply_band(band, test_pred, nonnegative=True)
         test_pred_all.append(test_pred)
         test_truth_all.append(frame.y[masks["test"]])
@@ -496,14 +529,11 @@ def _finish_series(ws, genome, nthread) -> dict:
         test_hi.append(hi)
         base_all.append(_series_baseline(frame, masks["test"], bucket, period))
         test_rows.append(_series_rows(frame, masks["test"], test_pred, bucket))
-        future_pred = _series_predict(
-            ws,
-            genome,
+        future_pred = predict_members(
             frame,
             masks["train"] | masks["val"] | masks["test"],
             masks["future"],
             bucket,
-            nthread,
         )
         lo, hi = ev.apply_band(band, future_pred, nonnegative=True)
         rows = _series_rows(frame, masks["future"], future_pred, bucket)

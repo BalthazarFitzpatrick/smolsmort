@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -24,6 +25,23 @@ def read_json(path, default=None):
         return default
 
 
+def watch_parent(parent_pid):
+    """exit orphaned fits even when native training blocks the main thread"""
+
+    def watch():
+        from smolsmort.forecast.runs import _windows_alive
+
+        while True:
+            alive = os.getppid() == parent_pid
+            if alive and sys.platform == "win32":
+                alive = _windows_alive(parent_pid)
+            if not alive:
+                os._exit(1)
+            time.sleep(0.1)
+
+    threading.Thread(target=watch, daemon=True).start()
+
+
 def run(folder: Path, name: str) -> int:
     if "torch" in sys.modules:
         raise SystemExit("the forecast worker must not share a process with torch")
@@ -32,7 +50,10 @@ def run(folder: Path, name: str) -> int:
     selection = next(item for item in request["families"] if item["name"] == name)
     target = folder / "families" / name
     target.mkdir(parents=True, exist_ok=True)
-    if read_json(target / "status.json", {}).get("state") == "done":
+    allocation = read_json(target / "slice.json")
+    if allocation:
+        watch_parent(allocation["parent_pid"])
+    if not allocation and read_json(target / "status.json", {}).get("state") == "done":
         return 0
     job = _Run(target)
     started_at = time.time()
@@ -89,6 +110,8 @@ def run(folder: Path, name: str) -> int:
         nthread = max(
             1, (request.get("nthread") or os.cpu_count() or 1) // len(request["families"])
         )
+        if allocation:
+            nthread = allocation.get("nthread", nthread)
         warm_path = (
             Path(request["warm_from"]) / "families" / name if request.get("warm_from") else None
         )
@@ -97,7 +120,14 @@ def run(folder: Path, name: str) -> int:
             warm = _warm_start(request.get("warm_from"))
         result = search(
             ws,
-            Budget(time_cap=request["time_budget_s"], nthread=nthread, max_generations=2**31 - 1),
+            Budget(
+                time_cap=(resume or {}).get("elapsed", 0)
+                + max(0, allocation["deadline"] - time.time())
+                if allocation
+                else request["time_budget_s"],
+                nthread=nthread,
+                max_generations=2**31 - 1,
+            ),
             family=family,
             method=selection.get("method", "genetic"),
             space=selection.get("space"),
@@ -109,6 +139,8 @@ def run(folder: Path, name: str) -> int:
             on_generation=job.record_generation,
             on_leaderboard=job.record_leaderboard,
             stop=cancelled,
+            deadline=allocation["deadline"] if allocation else None,
+            defaults_only=bool(allocation and allocation["phase"] == "broad"),
         )
         job.save("leaderboard.json", result["leaderboard"])
         job.save("population.json", result["population"])

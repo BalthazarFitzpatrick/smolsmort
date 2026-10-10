@@ -79,7 +79,7 @@ def start_run(
             families=families,
             time_budget_s=time_budget_s,
             transform=transform,
-            ensemble=ensemble or {"enabled": False, "top": 3},
+            ensemble=ensemble if ensemble is not None else {"enabled": True, "top": 3},
         )
     request = parse_request(request)
     folder.mkdir(parents=True)
