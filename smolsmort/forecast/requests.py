@@ -38,8 +38,17 @@ def parse_request(request: dict) -> dict:
         type(request["nthread"]) is not int or request["nthread"] < 1
     ):
         raise ValueError("nthread must be a positive integer")
+    ensemble = request.get("ensemble", {"enabled": True, "top": 3})
+    if (
+        not isinstance(ensemble, dict)
+        or type(ensemble.get("top", 3)) is not int
+        or ensemble.get("top", 3) < 1
+    ):
+        raise ValueError("ensemble.top must be a positive integer")
+    if type(ensemble.get("enabled", True)) is not bool:
+        raise ValueError("ensemble.enabled must be a boolean")
     return {
         **request,
         "transform": "none",
-        "ensemble": request.get("ensemble", {"enabled": False, "top": 3}),
+        "ensemble": ensemble,
     }

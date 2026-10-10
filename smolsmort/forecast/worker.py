@@ -48,6 +48,8 @@ class _Run:
             previous = json.loads(path.read_text())
             if "families" in previous and "families" not in extra:
                 extra["families"] = previous["families"]
+            if "phase" in previous and "phase" not in extra:
+                extra["phase"] = previous["phase"]
         progress_path = self.folder / "progress.json"
         if state in ("done", "cancelled", "failed") and progress_path.exists():
             progress = json.loads(progress_path.read_text())
@@ -153,9 +155,12 @@ def run(folder: Path) -> int:
                 "elapsed": round(time.monotonic() - started, 1),
             }
         )
-        final = finish(ws, genome_from_dict(result["best"]), nthread=budget.nthread)
-        _write_result(folder, spec, result, final)
-        if request.get("version") == 2:
+        if result.get("finalized"):
+            final = json.loads((folder / "result.json").read_text())
+        else:
+            final = finish(ws, genome_from_dict(result["best"]), nthread=budget.nthread)
+            _write_result(folder, spec, result, final)
+        if request.get("version") == 2 and not result.get("finalized"):
             recipe = json.loads((folder / "recipe.json").read_text())
             job.save(
                 "recipe.json",

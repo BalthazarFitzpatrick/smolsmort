@@ -81,6 +81,7 @@ class Entry:
     generation: int
     note: str = ""
     eval_history: dict | None = None
+    prediction: np.ndarray | None = None
 
     def rank(self):
         # ties go to the smaller recipe
@@ -375,6 +376,7 @@ def search(
     space: dict | None = None,
     resume: dict | None = None,
     on_checkpoint: Callable[[dict], None] | None = None,
+    deadline: float | None = None,
 ) -> dict:
     """run until a plateau, the time cap, the generation cap or `stop()`; returns the ranked
     leaderboard, the final population (the next search's warm start) and why it stopped"""
@@ -394,7 +396,12 @@ def search(
                 {
                     "population": [g.to_dict() for g in population],
                     "entries": [
-                        {**e.to_dict(), "contrib": e.contrib, "eval_history": e.eval_history}
+                        {
+                            **e.to_dict(),
+                            "contrib": e.contrib,
+                            "eval_history": e.eval_history,
+                            "prediction": e.prediction,
+                        }
                         for e in scored.values()
                     ],
                     "generation": generation,
@@ -420,6 +427,7 @@ def search(
                 generation,
                 "sample" if rows is not None else "",
                 result.eval_history,
+                result.prediction,
             )
         except (ModelError, PipelineError) as exc:
             entry = Entry(genome, float("inf"), None, {}, generation, f"failed: {exc}")
@@ -446,6 +454,7 @@ def search(
                 data["generation"],
                 data["note"],
                 data.get("eval_history"),
+                np.array(data["prediction"]) if data.get("prediction") is not None else None,
             )
             scored[entry.genome.key()] = entry
         best = scored.get(resume.get("best_key"))
@@ -468,6 +477,9 @@ def search(
     while generation < budget.max_generations:
         entries = []
         for candidate, genome in enumerate(population, 1):
+            if deadline is not None and (time.time() >= deadline or (stop and stop())):
+                reason = "time cap" if time.time() >= deadline else "cancelled"
+                break
             if family and scored and prior_elapsed + time.monotonic() - started >= budget.time_cap:
                 reason = "time cap"
                 break
@@ -482,6 +494,9 @@ def search(
             entries.sort(key=Entry.rank)
             top = len(entries) // 3 or 1
             for index in range(top):
+                if deadline is not None and time.time() >= deadline:
+                    reason = "time cap"
+                    break
                 entries[index] = evaluate(entries[index].genome, generation)
                 record_progress(len(entries))
                 if stop and stop():
