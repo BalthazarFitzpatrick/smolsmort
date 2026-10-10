@@ -387,7 +387,7 @@ def search(
     legacy = family is None or (family.name == "xgboost" and not space and method == "genetic")
     var = _Variation(ws, rng) if legacy else _FamilyVariation(ws, rng, family, space)
     started = time.monotonic()
-    sample = None if family and not family.space() else _sample(ws, rng)
+    sample = None if defaults_only or (family and not family.space()) else _sample(ws, rng)
     scored: dict[str, Entry] = {}
     prior_elapsed = (resume or {}).get("elapsed", 0)
 

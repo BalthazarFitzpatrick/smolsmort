@@ -251,11 +251,13 @@ def test_broad_defaults_retains_population_for_deeper_search(monkeypatch):
     calls, checkpoints = [], []
 
     def score_candidate(ws, genome, **kwargs):
+        assert kwargs.get("sample") is None
         alpha = dict(genome.params)["alpha"]
         calls.append(alpha)
         return Scored(float(alpha), np.array([alpha]), {}, None)
 
     monkeypatch.setattr(module, "score", score_candidate)
+    monkeypatch.setattr(module, "_sample", lambda *_: np.ones(20, dtype=bool))
     result = module.search(
         ws,
         module.Budget(population=3, max_generations=2),
@@ -270,6 +272,7 @@ def test_broad_defaults_retains_population_for_deeper_search(monkeypatch):
     assert len(result["population"]) == 3
     assert len(checkpoints[-1]["population"]) == 3
     calls.clear()
+    monkeypatch.setattr(module, "_sample", lambda *_: None)
     deeper = module.search(
         ws,
         module.Budget(population=3, max_generations=2),
