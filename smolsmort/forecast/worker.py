@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import os
-import signal
+import signal as signal
 import sys
 import time
 import traceback
@@ -16,6 +16,7 @@ from pathlib import Path
 import numpy as np
 
 from smolsmort.forecast.pipeline import finish, genome_from_dict, load_workspace
+from smolsmort.forecast.requests import parse_request
 from smolsmort.forecast.search import Budget, search
 from smolsmort.forecast.spec import spec_from_dict
 from smolsmort.forecast.tables import write_table
@@ -24,12 +25,15 @@ from smolsmort.forecast.tables import write_table
 class _Run:
     def __init__(self, folder: Path):
         self.folder = folder
-        self.cancelled = False
+        self._cancelled = False
         self.recorded_generations: set[int] = set()
-        signal.signal(signal.SIGTERM, self._cancel)
+
+    @property
+    def cancelled(self):
+        return self._cancelled or (self.folder / "cancel").exists()
 
     def _cancel(self, *_):
-        self.cancelled = True
+        self._cancelled = True
 
     def event(self, payload: dict):
         with (self.folder / "events.jsonl").open("a") as f:
@@ -39,6 +43,11 @@ class _Run:
             self.save("progress.json", {**payload, "updated_at": time.time()})
 
     def status(self, state: str, **extra):
+        path = self.folder / "status.json"
+        if path.exists():
+            previous = json.loads(path.read_text())
+            if "families" in previous and "families" not in extra:
+                extra["families"] = previous["families"]
         progress_path = self.folder / "progress.json"
         if state in ("done", "cancelled", "failed") and progress_path.exists():
             progress = json.loads(progress_path.read_text())
@@ -94,6 +103,7 @@ def run(folder: Path) -> int:
     request = json.loads((folder / "request.json").read_text())
     job.status("running", started_at=time.time())
     try:
+        request = parse_request(request)
         spec = spec_from_dict(request["spec"])
         ws = load_workspace(spec, Path(request["prepared"]), request["summary"])
         job.save("profile.json", ws.profile)
@@ -112,6 +122,10 @@ def run(folder: Path) -> int:
                 "population": [],
                 "stopped": "refit",
             }
+        elif request.get("version") == 2:
+            from smolsmort.forecast.launcher import launch_families
+
+            result = launch_families(folder, request, job)
         else:
             result = search(
                 ws,
@@ -141,11 +155,18 @@ def run(folder: Path) -> int:
         )
         final = finish(ws, genome_from_dict(result["best"]), nthread=budget.nthread)
         _write_result(folder, spec, result, final)
+        if request.get("version") == 2:
+            recipe = json.loads((folder / "recipe.json").read_text())
+            job.save(
+                "recipe.json",
+                {**recipe, "family": result["best"].get("family", "xgboost"), "transform": "none"},
+            )
         job.status(
             "done",
             stopped=result["stopped"],
             verdict=final["verdict"],
             elapsed=round(time.monotonic() - started, 1),
+            **({"families": result.get("families", {})} if request.get("version") == 2 else {}),
         )
         job.event({"event": "done", "verdict": final["verdict"]})
         return 0

@@ -8,10 +8,12 @@ from smolsmort.forecast.families.base import (
     get_family,
     register,
 )
+from smolsmort.forecast.families.lightgbm import LightgbmFamily
 from smolsmort.forecast.families.stats import StatsFamily
 from smolsmort.forecast.families.xgboost import XgboostFamily
 
 register(XgboostFamily())
+register(LightgbmFamily())
 for name in ("ets", "theta", "arima", "snaive"):
     register(StatsFamily(name))
 
