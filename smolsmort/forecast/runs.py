@@ -124,6 +124,24 @@ def run_state(
     """status, the latest generation event, and whether the process is still alive"""
     folder = run_folder(runs_root, run_id)
     status = json.loads((folder / "status.json").read_text())
+    request_path = folder / "request.json"
+    request = json.loads(request_path.read_text()) if request_path.exists() else {}
+    if request.get("version") == 2:
+        from smolsmort.forecast.views import multi_run_state
+
+        alive = _alive(folder)
+        if status["state"] in ("starting", "running") and not alive:
+            status = {**status, "state": "failed", "reason": "the worker exited without reporting"}
+        return {
+            **multi_run_state(
+                folder,
+                request,
+                status,
+                since_generation=since_generation,
+                since_events=since_events,
+            ),
+            "alive": alive,
+        }
     events = []
     path = folder / "events.jsonl"
     if path.exists():
@@ -284,9 +302,23 @@ def _windows_alive(pid: int) -> bool:
 
 
 def cancel_run(runs_root: Path, run_id: str) -> None:
-    """ask the worker to stop after its current candidate; it still writes what it found"""
+    """stop the run and wait for owned workers before reporting cancellation"""
     folder = run_folder(runs_root, run_id)
     (folder / "cancel").touch()
+    status = json.loads((folder / "status.json").read_text())
+    if status["state"] not in ("starting", "running"):
+        return
+    from smolsmort.forecast.processes import stop_run_processes
+
+    stop_run_processes(folder, alive=lambda: _alive(folder))
+    status = json.loads((folder / "status.json").read_text())
+    families = status.get("families", {})
+    for state in families.values():
+        if state.get("state") in ("running", "paused", "pending"):
+            state.update(state="cancelled", reason="cancelled")
+    tmp = folder / "status.json.tmp"
+    tmp.write_text(json.dumps({**status, "state": "cancelled", "stopped": "cancelled"}))
+    tmp.replace(folder / "status.json")
 
 
 def wait_run(runs_root: Path, run_id: str, timeout: float = 600) -> dict:
@@ -304,7 +336,11 @@ def list_runs(runs_root: Path) -> list[dict]:
     out = []
     for folder in sorted(Path(runs_root).glob("*"), reverse=True):
         if (folder / "request.json").exists():
-            state = run_state(runs_root, folder.name, since_generation=2**63 - 1)
+            state = run_state(
+                runs_root, folder.name, since_generation=2**63 - 1, since_events=2**63 - 1
+            )
+            state.setdefault("families", {"xgboost": {"state": state["state"]}})
+            state.setdefault("winner_family", "xgboost" if state["state"] == "done" else None)
             out.append(
                 {
                     "id": folder.name,
@@ -318,6 +354,9 @@ def list_runs(runs_root: Path) -> list[dict]:
                             "latest",
                             "trace",
                             "leaderboard_generation",
+                            "leaderboard",
+                            "events",
+                            "events_cursor",
                         )
                     },
                 }

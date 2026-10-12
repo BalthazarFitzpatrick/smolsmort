@@ -80,3 +80,7 @@ def get_family(name: str) -> Family:
 
 def available_families() -> list[Family]:
     return [family for family in _REGISTRY.values() if family.available()[0]]
+
+
+def registered_families() -> list[Family]:
+    return list(_REGISTRY.values())
