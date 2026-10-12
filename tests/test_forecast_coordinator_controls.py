@@ -337,6 +337,81 @@ def test_family_queue_fills_freed_slots_and_records_wave_slices(tmp_path, monkey
         assert measured["measured_seconds"] > 0
 
 
+def test_immediate_resume_waits_for_orphan_before_reusing_worker_slot(tmp_path, monkeypatch):
+    from smolsmort.forecast import coordinator
+
+    clock = [100.0]
+    old_pid = 9991
+    old_exits_at = 100.4
+    launched = []
+
+    def save_json(name, value):
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(value))
+
+    def is_process_alive(pid):
+        return pid == old_pid and clock[0] < old_exits_at
+
+    class ResumedProcess:
+        pid = 9992
+
+        def __init__(self, command, **kwargs):
+            assert not is_process_alive(old_pid), (
+                "resumed worker exceeded cap while orphan was still alive"
+            )
+            launched.append(clock[0])
+            genome = make_genome(["lag"], "squared", {})
+            save_json("families/xgboost/status.json", {"state": "done", "reason": "plateau"})
+            save_json(
+                "families/xgboost/checkpoint.json",
+                {
+                    "entries": [
+                        {
+                            "key": genome.key(),
+                            "genome": genome.to_dict(),
+                            "families": 1,
+                            "fitness": 0.1,
+                            "generation": 0,
+                            "note": "",
+                        }
+                    ]
+                },
+            )
+
+        def poll(self):
+            return 0
+
+    save_json(
+        "coordinator.json",
+        {
+            "started_at": 95,
+            "deadline": 185,
+            "phase": "halving",
+            "families": {"xgboost": {"state": "running", "pid": old_pid}},
+        },
+    )
+    save_json("finish_complete.json", {})
+    monkeypatch.setattr(coordinator, "is_process_alive", is_process_alive, raising=False)
+    monkeypatch.setattr(coordinator.time, "time", lambda: clock[0])
+    monkeypatch.setattr(coordinator.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        coordinator.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+    monkeypatch.setattr(coordinator.subprocess, "Popen", ResumedProcess)
+    job = SimpleNamespace(
+        cancelled=False,
+        save=save_json,
+        status=lambda *args, **kwargs: None,
+        event=lambda payload: None,
+    )
+    result = coordinator.launch_families(tmp_path, make_request(max_concurrent_families=1), job)
+    assert result["finalized"]
+    assert len(launched) == 1
+    assert old_exits_at <= launched[0] <= 100 + coordinator.GRACE_S
+    assert read_json(tmp_path / "coordinator.json")["deadline"] == 185
+
+
 def score_slow_candidate(ws, genome, *, nthread=1, sample=None):
     """inject a blocked fit into the same spawn boundary used by real scoring"""
     from smolsmort.forecast.pipeline import Scored

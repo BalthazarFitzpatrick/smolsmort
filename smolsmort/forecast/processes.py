@@ -10,6 +10,20 @@ import time
 from pathlib import Path
 
 
+def is_process_alive(pid):
+    if sys.platform == "win32":
+        from smolsmort.forecast.runs import _windows_alive
+
+        return _windows_alive(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def stop_children():
     children = multiprocessing.active_children()
     for child in children:

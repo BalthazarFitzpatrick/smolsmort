@@ -13,6 +13,7 @@ import numpy as np
 
 from smolsmort.forecast.family_worker import read_json
 from smolsmort.forecast.pipeline import genome_from_dict
+from smolsmort.forecast.processes import is_process_alive
 from smolsmort.forecast.search import Entry, _significant
 
 GRACE_S = 2.0
@@ -143,6 +144,18 @@ def launch_families(folder, request, job):
     cap = request.get("max_concurrent_families", 4)
     total_threads = request.get("nthread") or os.cpu_count() or 1
     calibration = read_json(folder / "cost-calibration.json", {})
+    orphan_pids = {
+        status["pid"]
+        for status in states.values()
+        if status.get("state") == "running" and status.get("pid")
+    }
+    if state.get("finish_pid") and not (folder / "finish_complete.json").exists():
+        orphan_pids.add(state["finish_pid"])
+    until = time.monotonic() + GRACE_S
+    while any(is_process_alive(pid) for pid in orphan_pids):
+        if time.monotonic() >= until:
+            raise ValueError("previous workers still stopping; resume again after cleanup")
+        time.sleep(0.02)
     for name in names:
         states.setdefault(
             name,
