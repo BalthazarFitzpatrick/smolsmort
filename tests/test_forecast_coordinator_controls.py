@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import sys
 import threading
 import time
 from copy import deepcopy
@@ -788,3 +789,89 @@ def test_real_all_family_run_respects_two_worker_cap(tmp_path, monkeypatch):
         checkpoint = read_json(run / "families" / name / "checkpoint.json")
         assert checkpoint["entries"], name
         assert all(1 <= entry["nthread"] <= 4 for entry in checkpoint["entries"])
+
+
+def test_real_worker_uses_released_threads_on_its_next_candidate(tmp_path, monkeypatch):
+    from test_forecast_coordinator import make_trending_panel
+
+    pytest.importorskip("xgboost")
+    from smolsmort.forecast import coordinator
+    from smolsmort.forecast.worker import _Run
+
+    spec, prepared = make_trending_panel(tmp_path)
+    run = tmp_path / "run"
+    run.mkdir()
+    runner = tmp_path / "delayed_snaive_worker.py"
+    runner.write_text(
+        "from pathlib import Path\n"
+        "import sys\n"
+        "import time\n"
+        "from smolsmort.forecast import family_worker\n"
+        "from smolsmort.forecast.families import get_family\n"
+        "family = get_family('snaive')\n"
+        "original_fit = family.fit\n"
+        "def fit_snaive(*args, **kwargs):\n"
+        "    time.sleep(.5)\n"
+        "    return original_fit(*args, **kwargs)\n"
+        "family.fit = fit_snaive\n"
+        "if __name__ == '__main__':\n"
+        "    raise SystemExit(family_worker.run(Path(sys.argv[1]), sys.argv[2]))\n"
+    )
+    request = parse_request(
+        make_request(
+            spec=asdict(spec),
+            prepared=str(prepared.folder),
+            summary=prepared.summary,
+            families=[{"name": "xgboost"}, {"name": "snaive"}],
+            time_budget_s=20,
+            max_concurrent_families=2,
+            nthread=4,
+            ensemble={"enabled": True, "top": 3},
+        )
+    )
+    (run / "request.json").write_text(json.dumps(request))
+    started_at = time.time() - 8
+    job = _Run(run)
+    job.save(
+        "coordinator.json",
+        {
+            "started_at": started_at,
+            "deadline": started_at + 20,
+            "phase": "deep",
+            "families": {
+                name: {
+                    "state": "paused",
+                    "phase": "deep",
+                    "slice_s": 0,
+                    "best_error": None,
+                    "pruned_reason": None,
+                }
+                for name in ("xgboost", "snaive")
+            },
+        },
+    )
+    original_spawn = coordinator.subprocess.Popen
+    original_status = job.status
+    snaive_finished = []
+
+    def spawn_worker(command, **kwargs):
+        if command[2] == "smolsmort.forecast.family_worker":
+            command = [sys.executable, str(runner), command[-2], command[-1]]
+        return original_spawn(command, **kwargs)
+
+    def record_status(state, **kwargs):
+        if kwargs.get("families", {}).get("snaive", {}).get("state") == "done":
+            snaive_finished.append(time.time())
+        original_status(state, **kwargs)
+
+    monkeypatch.setattr(coordinator.subprocess, "Popen", spawn_worker)
+    monkeypatch.setattr(job, "status", record_status)
+    coordinated = coordinator.launch_families(run, request, job)
+    assert coordinated["finalized"]
+    assert snaive_finished
+    candidates = read_json(run / "families" / "xgboost" / "checkpoint.json")["candidate_times"]
+    thread_counts = [candidate["nthread"] for candidate in candidates]
+    assert 2 in thread_counts and 4 in thread_counts, thread_counts
+    assert thread_counts.index(2) < thread_counts.index(4)
+    assert read_json(run / "families" / "xgboost" / "thread.json")["nthread"] == 4
+    assert read_json(run / "families" / "snaive" / "status.json")["reason"] == "single candidate"
