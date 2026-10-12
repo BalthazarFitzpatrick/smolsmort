@@ -72,6 +72,7 @@ class PrepSpec:
     censor: Censor | None = None
     # series mode: the export date; steps from the one holding it onward are scheduled, not history
     as_of: str | None = None
+    holidays_country: str | None = None
 
     def __post_init__(self):
         roles = [c.role for c in self.columns]
@@ -101,7 +102,10 @@ class PrepSpec:
 
     def digest(self) -> str:
         """the spec half of the cache key; prep adds the source file's content hash"""
-        text = json.dumps(asdict(self), sort_keys=True, default=str)
+        data = asdict(self)
+        if self.holidays_country is None:
+            data.pop("holidays_country")
+        text = json.dumps(data, sort_keys=True, default=str)
         return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
