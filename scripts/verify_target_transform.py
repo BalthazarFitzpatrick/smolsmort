@@ -44,7 +44,7 @@ def compare_transform(source, transform, output):
             "winner": result["best"],
             "generations": result["generations"],
             "stopped": result["stopped"],
-            "candidates": len(result["leaderboard"]),
+            "leaderboard_rows": len(result["leaderboard"]),
             "test_rows": len(final["test"]["actual"]),
             "forecast_median": float(np.median(final["forecast"]["prediction"])),
         }
