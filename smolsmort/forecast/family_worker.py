@@ -85,7 +85,12 @@ def run(folder: Path, name: str) -> int:
         spec = spec_from_dict(request["spec"])
         if spec.mode == "row" and name != "xgboost":
             raise ValueError("per-row runs support xgboost only")
-        ws = load_workspace(spec, Path(request["prepared"]), request["summary"])
+        ws = load_workspace(
+            spec,
+            Path(request["prepared"]),
+            request["summary"],
+            transform=request.get("transform", "none"),
+        )
         nthread = max(
             1, (request.get("nthread") or os.cpu_count() or 1) // len(request["families"])
         )
