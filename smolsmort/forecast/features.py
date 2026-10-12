@@ -257,6 +257,7 @@ class SeriesFrame:
     step: np.ndarray
     origin: np.ndarray
     future: np.ndarray
+    base: np.ndarray
 
 
 def series_features(
@@ -340,6 +341,7 @@ def series_features(
                 "step": step,
                 "origin": step - np.array(b * _unit_days(unit), dtype="timedelta64[D]"),
                 "future": np.array([r[2] for r in rows]),
+                "base": series_values[target][origins],
             }
         )
     names = list(parts[0]["cols"]) if parts else []
@@ -355,6 +357,7 @@ def series_features(
         np.concatenate([p["step"] for p in parts]),
         np.concatenate([p["origin"] for p in parts]),
         np.concatenate([p["future"] for p in parts]),
+        np.concatenate([p["base"] for p in parts]),
     )
 
 
