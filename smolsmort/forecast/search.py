@@ -82,13 +82,17 @@ class Entry:
     note: str = ""
     eval_history: dict | None = None
     prediction: np.ndarray | None = None
+    elapsed_s: float | None = None
+    nthread: int | None = None
+    cost_hint: float | None = None
+    phase: str | None = None
 
     def rank(self):
         # ties go to the smaller recipe
         return (self.fitness, len(self.genome.families))
 
     def to_dict(self) -> dict:
-        return {
+        data = {
             "key": self.genome.key(),
             "genome": self.genome.to_dict(),
             "fitness": self.fitness if np.isfinite(self.fitness) else None,
@@ -97,6 +101,14 @@ class Entry:
             "families": len(self.genome.families),
             "note": self.note,
         }
+        if self.elapsed_s is not None:
+            data.update(
+                elapsed_s=self.elapsed_s,
+                nthread=self.nthread,
+                cost_hint=self.cost_hint,
+                phase=self.phase,
+            )
+        return data
 
 
 class _Variation:
@@ -378,6 +390,10 @@ def search(
     on_checkpoint: Callable[[dict], None] | None = None,
     deadline: float | None = None,
     defaults_only: bool = False,
+    evaluate_score: Callable | None = None,
+    read_threads: Callable[[], int] | None = None,
+    cost_hint: Callable[[Genome], float] | None = None,
+    candidate_phase: str | None = None,
 ) -> dict:
     """run until a plateau, the time cap, the generation cap or `stop()`; returns the ranked
     leaderboard, the final population (the next search's warm start) and why it stopped"""
@@ -390,36 +406,45 @@ def search(
     sample = None if defaults_only or (family and not family.space()) else _sample(ws, rng)
     scored: dict[str, Entry] = {}
     prior_elapsed = (resume or {}).get("elapsed", 0)
+    candidate_times = list((resume or {}).get("candidate_times", []))
 
     def checkpoint():
         if on_checkpoint:
-            on_checkpoint(
-                {
-                    "population": [g.to_dict() for g in population],
-                    "entries": [
-                        {
-                            **e.to_dict(),
-                            "contrib": e.contrib,
-                            "eval_history": e.eval_history,
-                            "prediction": e.prediction,
-                        }
-                        for e in scored.values()
-                    ],
-                    "generation": generation,
-                    "quiet": quiet,
-                    "best_key": best.genome.key() if best else None,
-                    "rng": rng.bit_generator.state,
-                    "elapsed": prior_elapsed + time.monotonic() - started,
-                }
-            )
+            state = {
+                "population": [g.to_dict() for g in population],
+                "entries": [
+                    {
+                        **e.to_dict(),
+                        "contrib": e.contrib,
+                        "eval_history": e.eval_history,
+                        "prediction": e.prediction,
+                    }
+                    for e in scored.values()
+                ],
+                "generation": generation,
+                "quiet": quiet,
+                "best_key": best.genome.key() if best else None,
+                "rng": rng.bit_generator.state,
+                "elapsed": prior_elapsed + time.monotonic() - started,
+            }
+            if evaluate_score:
+                state["candidate_times"] = candidate_times
+            on_checkpoint(state)
 
     def evaluate(genome: Genome, generation: int, rows=None) -> Entry:
         cached = scored.get(genome.key())
         # a full score always serves; a sample score only serves another sample request
         if cached and (cached.note != "sample" or rows is not None):
             return cached
+        candidate_started = time.monotonic()
+        nthread = read_threads() if read_threads else budget.nthread
+        elapsed_s = None
         try:
-            result = score(ws, genome, nthread=budget.nthread, sample=rows)
+            result = (
+                evaluate_score(genome, nthread=nthread, sample=rows)
+                if evaluate_score
+                else score(ws, genome, nthread=nthread, sample=rows)
+            )
             entry = Entry(
                 genome,
                 result.fitness,
@@ -430,8 +455,27 @@ def search(
                 result.eval_history,
                 result.prediction,
             )
+            elapsed_s = getattr(result, "elapsed_s", None)
         except (ModelError, PipelineError) as exc:
-            entry = Entry(genome, float("inf"), None, {}, generation, f"failed: {exc}")
+            elapsed_s = getattr(exc, "elapsed_s", None)
+            entry = Entry(
+                genome,
+                float("inf"),
+                None,
+                {},
+                generation,
+                "too slow" if getattr(exc, "too_slow", False) else f"failed: {exc}",
+            )
+        if evaluate_score:
+            entry.elapsed_s = (
+                elapsed_s if elapsed_s is not None else time.monotonic() - candidate_started
+            )
+            entry.nthread = nthread
+            entry.cost_hint = cost_hint(genome) if cost_hint else None
+            entry.phase = candidate_phase
+            candidate_times.append(entry.to_dict())
+            if on_event:
+                on_event({"event": "candidate", **entry.to_dict()})
         scored[genome.key()] = entry
         checkpoint()
         return entry
@@ -461,6 +505,10 @@ def search(
                 data["note"],
                 data.get("eval_history"),
                 np.array(data["prediction"]) if data.get("prediction") is not None else None,
+                data.get("elapsed_s"),
+                data.get("nthread"),
+                data.get("cost_hint"),
+                data.get("phase"),
             )
             scored[entry.genome.key()] = entry
         best = scored.get(resume.get("best_key"))
@@ -491,7 +539,7 @@ def search(
                 break
             entries.append(evaluate(genome, generation, sample))
             record_progress(candidate)
-            if defaults_only and family and family.space():
+            if defaults_only and family and family.space() and np.isfinite(entries[-1].fitness):
                 reason = "broad defaults"
                 break
             if stop and stop():

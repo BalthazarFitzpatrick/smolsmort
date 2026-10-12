@@ -5,13 +5,15 @@ from __future__ import annotations
 import json
 import os
 import sys
-import threading
 import time
 import traceback
+from contextlib import nullcontext
 from pathlib import Path
 
+from smolsmort.forecast.candidate_worker import CandidateScorer, estimate_cost
 from smolsmort.forecast.families import get_family
-from smolsmort.forecast.pipeline import load_workspace
+from smolsmort.forecast.pipeline import genome_from_dict, load_workspace
+from smolsmort.forecast.processes import watch_parent as watch_parent
 from smolsmort.forecast.requests import parse_request
 from smolsmort.forecast.search import Budget, search
 from smolsmort.forecast.spec import spec_from_dict
@@ -23,23 +25,6 @@ def read_json(path, default=None):
         return json.loads(path.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
         return default
-
-
-def watch_parent(parent_pid):
-    """exit orphaned fits even when native training blocks the main thread"""
-
-    def watch():
-        from smolsmort.forecast.runs import _windows_alive
-
-        while True:
-            alive = os.getppid() == parent_pid
-            if alive and sys.platform == "win32":
-                alive = _windows_alive(parent_pid)
-            if not alive:
-                os._exit(1)
-            time.sleep(0.1)
-
-    threading.Thread(target=watch, daemon=True).start()
 
 
 def run(folder: Path, name: str) -> int:
@@ -86,6 +71,11 @@ def run(folder: Path, name: str) -> int:
         return job.cancelled or (folder / "cancel").exists()
 
     def checkpoint(state):
+        if allocation:
+            state["cost_hints"] = {
+                genome.key(): estimate_cost(ws, genome)
+                for genome in map(genome_from_dict, state["population"])
+            }
         job.save("checkpoint.json", state)
         job.save("population.json", state["population"])
         progress["generation"] = state["generation"]
@@ -118,30 +108,51 @@ def run(folder: Path, name: str) -> int:
         warm = _warm_start(warm_path) if warm_path else None
         if warm is None and name == "xgboost":
             warm = _warm_start(request.get("warm_from"))
-        result = search(
-            ws,
-            Budget(
-                time_cap=(resume or {}).get("elapsed", 0)
-                + max(0, allocation["deadline"] - time.time())
-                if allocation
-                else request["time_budget_s"],
-                nthread=nthread,
-                max_generations=2**31 - 1,
-            ),
-            family=family,
-            method=selection.get("method", "genetic"),
-            space=selection.get("space"),
-            warm=warm,
-            resume=resume,
-            on_checkpoint=checkpoint,
-            on_event=event,
-            on_best=job.record_best,
-            on_generation=job.record_generation,
-            on_leaderboard=job.record_leaderboard,
-            stop=cancelled,
-            deadline=allocation["deadline"] if allocation else None,
-            defaults_only=bool(allocation and allocation["phase"] == "broad"),
+
+        def read_threads():
+            return max(1, read_json(target / "thread.json", {}).get("nthread", nthread))
+
+        scorer_context = (
+            CandidateScorer(
+                ws,
+                target,
+                deadline=allocation["deadline"],
+                slice_s=allocation.get("slice_s", max(0, allocation["deadline"] - started_at)),
+                fraction=request["candidate_limit_fraction"],
+                stop=cancelled,
+            )
+            if allocation
+            else nullcontext(None)
         )
+        with scorer_context as scorer:
+            result = search(
+                ws,
+                Budget(
+                    time_cap=(resume or {}).get("elapsed", 0)
+                    + max(0, allocation["deadline"] - time.time())
+                    if allocation
+                    else request["time_budget_s"],
+                    nthread=nthread,
+                    max_generations=2**31 - 1,
+                ),
+                family=family,
+                method=selection.get("method", "genetic"),
+                space=selection.get("space"),
+                warm=warm,
+                resume=resume,
+                on_checkpoint=checkpoint,
+                on_event=event,
+                on_best=job.record_best,
+                on_generation=job.record_generation,
+                on_leaderboard=job.record_leaderboard,
+                stop=cancelled,
+                deadline=allocation["deadline"] if allocation else None,
+                defaults_only=bool(allocation and allocation["phase"] == "broad"),
+                evaluate_score=scorer.score if scorer else None,
+                read_threads=read_threads if scorer else None,
+                cost_hint=lambda genome: estimate_cost(ws, genome),
+                candidate_phase=allocation["phase"] if allocation else None,
+            )
         job.save("leaderboard.json", result["leaderboard"])
         job.save("population.json", result["population"])
         job.save("winner.json", result["best"])

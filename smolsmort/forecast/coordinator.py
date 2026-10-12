@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import math
 import os
 import subprocess
 import sys
 import time
+from collections import deque
 
 import numpy as np
 
@@ -58,6 +60,74 @@ def paired_entry(data):
     )
 
 
+def calibrate_families(folder, states, calibration, remaining_s):
+    for name, status in states.items():
+        checkpoint = read_json(folder / "families" / name / "checkpoint.json", {})
+        entries = checkpoint.get("candidate_times", checkpoint.get("entries", []))
+        measured = [entry for entry in entries if entry.get("elapsed_s", 0) > 0]
+        broad = [
+            entry
+            for entry in measured
+            if entry.get("phase") == "broad"
+            and entry.get("cost_hint", 0) > 0
+            and (entry.get("fitness") is not None or entry.get("note") == "too slow")
+        ]
+        prior = calibration.get(name, {})
+        if broad and (
+            "seconds_per_cost" not in prior
+            or prior.get("estimate_is_lower_bound")
+            and any(entry.get("fitness") is not None for entry in broad)
+        ):
+            prior.update(
+                seconds_per_cost=sum(entry["elapsed_s"] for entry in broad)
+                / sum(entry["cost_hint"] for entry in broad),
+                broad_baseline=min(
+                    (entry["fitness"] for entry in broad if entry.get("fitness") is not None),
+                    default=None,
+                ),
+                broad_cost=sum(entry["cost_hint"] for entry in broad) / len(broad),
+                estimate_is_lower_bound=not any(
+                    entry.get("fitness") is not None for entry in broad
+                ),
+            )
+        total_s = sum(entry["elapsed_s"] for entry in measured)
+        hints = list(checkpoint.get("cost_hints", {}).values())
+        hint = sum(hints) / len(hints) if hints else prior.get("broad_cost")
+        estimate = (
+            prior["seconds_per_cost"] * hint if hint and "seconds_per_cost" in prior else None
+        )
+        best = best_entry(folder, name)
+        baseline = prior.get("broad_baseline")
+        gain = max(0, baseline - best["fitness"]) if best and baseline is not None else 0
+        rate = gain / total_s if total_s else 0
+        prior.update(
+            seconds_per_candidate=estimate,
+            measured_seconds=total_s,
+            improvement_per_second=rate,
+            estimate_is_lower_bound=prior.get("estimate_is_lower_bound", False),
+        )
+        calibration[name] = prior
+        status.update(
+            seconds_per_candidate=estimate,
+            candidates_expected=int(max(0, remaining_s) / estimate) if estimate else 0,
+            improvement_per_second=rate,
+            estimate_is_lower_bound=prior.get("estimate_is_lower_bound", False),
+        )
+
+
+def rank_families(selected, states):
+    return sorted(
+        selected,
+        key=lambda name: (
+            -states[name].get("improvement_per_second", 0),
+            states[name].get("seconds_per_candidate") or float("inf"),
+            states[name].get("best_error")
+            if states[name].get("best_error") is not None
+            else float("inf"),
+        ),
+    )
+
+
 def launch_families(folder, request, job):
     names = [item["name"] for item in request["families"]]
     now = time.time()
@@ -70,6 +140,9 @@ def launch_families(folder, request, job):
     deadline = state["deadline"]
     search_deadline = state["started_at"] + request["time_budget_s"] * 0.7
     states = state["families"]
+    cap = request.get("max_concurrent_families", 4)
+    total_threads = request.get("nthread") or os.cpu_count() or 1
+    calibration = read_json(folder / "cost-calibration.json", {})
     for name in names:
         states.setdefault(
             name,
@@ -85,6 +158,19 @@ def launch_families(folder, request, job):
             states[name]["state"] = "paused"
 
     def save():
+        active_names = [
+            name for name in names if states[name]["state"] in ("paused", "running", "pending")
+        ]
+        share_s = (
+            max(0, search_deadline - time.time())
+            * min(cap, len(active_names))
+            / max(1, len(active_names))
+        )
+        calibrate_families(folder, states, calibration, share_s)
+        for name in names:
+            if states[name]["state"] not in ("paused", "running", "pending"):
+                states[name]["candidates_expected"] = 0
+        job.save("cost-calibration.json", calibration)
         job.save("coordinator.json", state)
         job.status(
             "running",
@@ -107,83 +193,118 @@ def launch_families(folder, request, job):
                 )
 
     def run_slices(selected, slice_end):
-        processes = {}
-        nthread = max(1, (request.get("nthread") or os.cpu_count() or 1) // max(1, len(selected)))
-        try:
-            for name in selected:
-                if job.cancelled or time.time() >= min(slice_end, deadline):
-                    break
-                target = folder / "families" / name
-                target.mkdir(parents=True, exist_ok=True)
+        phase_end = min(slice_end, deadline)
+        waves = max(1, math.ceil(len(selected) / cap))
+        slice_s = max(0, phase_end - time.time()) / waves
+        queue = deque(selected)
+        active = {}
+        allocations = {}
+
+        def complete(name, terminated=False):
+            status = read_json(folder / "families" / name / "status.json", {})
+            states[name].update(
+                {k: v for k, v in status.items() if k not in ("state", "phase", "pid")}
+            )
+            entry = best_entry(folder, name)
+            states[name]["best_error"] = entry["fitness"] if entry else None
+            states[name]["state"] = (
+                "cancelled"
+                if job.cancelled
+                else "paused"
+                if terminated or status.get("reason") in ("time cap", "broad defaults")
+                else status.get("state", "failed")
+            )
+            if terminated:
                 states[name].update(
-                    state="running", phase=state["phase"], slice_s=max(0, slice_end - time.time())
+                    terminated=True,
+                    reason="cancelled"
+                    if job.cancelled
+                    else "slice deadline exceeded grace; worker terminated",
                 )
-                job.save(
-                    f"families/{name}/slice.json",
-                    {
-                        "deadline": min(slice_end, deadline),
+                job.event({"event": "terminated", "family": name, "reason": states[name]["reason"]})
+
+        def split_threads():
+            nthread = max(1, total_threads // max(1, len(active)))
+            for name in active:
+                if states[name].get("nthread") != nthread:
+                    job.save(f"families/{name}/thread.json", {"nthread": nthread})
+                    states[name]["nthread"] = nthread
+
+        try:
+            while queue or active:
+                if job.cancelled:
+                    break
+                expired = []
+                for name, process in list(active.items()):
+                    if process.poll() is not None:
+                        complete(name)
+                        del active[name]
+                    elif time.time() >= allocations[name] + GRACE_S - 1:
+                        expired.append(name)
+                    else:
+                        status = read_json(folder / "families" / name / "status.json", {})
+                        states[name].update(
+                            {
+                                k: v
+                                for k, v in status.items()
+                                if k not in ("state", "phase", "pid", "nthread")
+                            }
+                        )
+                if expired:
+                    stop_processes(active[name] for name in expired)
+                    for name in expired:
+                        complete(name, terminated=True)
+                        del active[name]
+                while queue and len(active) < cap and time.time() < phase_end:
+                    name = queue.popleft()
+                    target = folder / "families" / name
+                    target.mkdir(parents=True, exist_ok=True)
+                    started_at = time.time()
+                    family_end = min(phase_end, started_at + slice_s)
+                    allocation = {
                         "phase": state["phase"],
-                        "parent_pid": os.getpid(),
-                        "nthread": nthread,
-                    },
-                )
-                env = dict(os.environ)
-                env["OMP_NUM_THREADS"] = str(nthread)
-                with (target / "worker.log").open("a") as log:
-                    processes[name] = subprocess.Popen(
-                        [
-                            sys.executable,
-                            "-m",
-                            "smolsmort.forecast.family_worker",
-                            str(folder),
-                            name,
-                        ],
-                        stdout=log,
-                        stderr=subprocess.STDOUT,
-                        env=env,
-                    )
-                states[name]["pid"] = processes[name].pid
-                save()
-            while any(p.poll() is None for p in processes.values()):
-                for name in processes:
-                    status = read_json(folder / "families" / name / "status.json", {})
+                        "started_at": started_at,
+                        "deadline": family_end,
+                        "slice_s": max(0, family_end - started_at),
+                    }
+                    states[name].setdefault("slice_history", []).append(allocation)
                     states[name].update(
-                        {k: v for k, v in status.items() if k not in ("state", "phase", "pid")}
+                        state="running", phase=state["phase"], slice_s=allocation["slice_s"]
                     )
+                    nthread = max(1, total_threads // min(cap, len(active) + len(queue) + 1))
+                    job.save(
+                        f"families/{name}/slice.json",
+                        {**allocation, "parent_pid": os.getpid(), "nthread": nthread},
+                    )
+                    job.save(f"families/{name}/thread.json", {"nthread": nthread})
+                    states[name]["nthread"] = nthread
+                    env = dict(os.environ)
+                    env["OMP_NUM_THREADS"] = str(nthread)
+                    with (target / "worker.log").open("a") as log:
+                        active[name] = subprocess.Popen(
+                            [
+                                sys.executable,
+                                "-m",
+                                "smolsmort.forecast.family_worker",
+                                str(folder),
+                                name,
+                            ],
+                            stdout=log,
+                            stderr=subprocess.STDOUT,
+                            env=env,
+                        )
+                    allocations[name] = family_end
+                    states[name]["pid"] = active[name].pid
+                split_threads()
                 save()
-                if job.cancelled or time.time() >= min(slice_end, deadline) + GRACE_S - 1:
+                if not active and (not queue or time.time() >= phase_end):
                     break
                 time.sleep(0.05)
         finally:
-            interrupted = {name for name, process in processes.items() if process.poll() is None}
-            stop_processes(processes.values())
-            for name in processes:
-                terminated = name in interrupted
-                status = read_json(folder / "families" / name / "status.json", {})
-                states[name].update(
-                    {k: v for k, v in status.items() if k not in ("state", "phase", "pid")}
-                )
-                entry = best_entry(folder, name)
-                states[name]["best_error"] = entry["fitness"] if entry else None
-                states[name]["state"] = (
-                    "cancelled"
-                    if job.cancelled
-                    else (
-                        "paused"
-                        if terminated or status.get("reason") in ("time cap", "broad defaults")
-                        else status.get("state", "failed")
-                    )
-                )
-                if terminated:
-                    states[name]["terminated"] = True
-                    states[name]["reason"] = (
-                        "cancelled"
-                        if job.cancelled
-                        else "slice deadline exceeded grace; worker terminated"
-                    )
-                    job.event(
-                        {"event": "terminated", "family": name, "reason": states[name]["reason"]}
-                    )
+            interrupted = {name for name, process in active.items() if process.poll() is None}
+            stop_processes(active.values())
+            for name in active:
+                complete(name, terminated=name in interrupted)
             save()
 
     save()
@@ -198,7 +319,9 @@ def launch_families(folder, request, job):
         save()
     while state["phase"] == "halving" and not job.cancelled:
         prune_families()
-        selected = [name for name in names if states[name]["state"] == "paused"]
+        selected = rank_families(
+            [name for name in names if states[name]["state"] == "paused"], states
+        )
         if (
             len(selected) <= 1
             or time.time() >= state["started_at"] + request["time_budget_s"] * 0.55
@@ -209,7 +332,9 @@ def launch_families(folder, request, job):
         save()
         run_slices(selected, min(search_deadline, time.time() + request["time_budget_s"] * 0.1))
     if state["phase"] == "deep" and not job.cancelled:
-        selected = [name for name in names if states[name]["state"] == "paused"]
+        selected = rank_families(
+            [name for name in names if states[name]["state"] == "paused"], states
+        )
         run_slices(selected, search_deadline)
         prune_families()
         state["phase"] = "finish"
