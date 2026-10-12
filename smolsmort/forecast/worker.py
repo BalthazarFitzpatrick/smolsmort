@@ -106,6 +106,11 @@ def run(folder: Path) -> int:
         request = parse_request(request)
         spec = spec_from_dict(request["spec"])
         transform = request.get("transform", "none") if request.get("version") == 2 else "none"
+        if request.get("recipe") and request["recipe"].get("transform", "none") != transform:
+            raise ValueError(
+                "recipe transform differs from the requested transform; "
+                "use a v2 request with the saved transform"
+            )
         ws = load_workspace(
             spec, Path(request["prepared"]), request["summary"], transform=transform
         )

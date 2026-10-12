@@ -153,15 +153,20 @@ def test_series_base_matches_every_origin_and_ignores_later_values(workspace):
 
 def test_none_keeps_the_saved_genome_and_golden_key():
     golden_path = Path(__file__).parent / "golden" / "forecast_leaderboard.json"
-    old_data = json.loads(golden_path.read_text())["regression"][0]["genome"]
-    old_key = hashlib.sha1(json.dumps(old_data, sort_keys=True).encode()).hexdigest()[:12]
+    golden = json.loads(golden_path.read_text())
+    for task in ("regression", "classification"):
+        for entry in golden[task]:
+            old_data = entry["genome"]
+            old_key = hashlib.sha1(json.dumps(old_data, sort_keys=True).encode()).hexdigest()[:12]
+            default = genome_from_dict(old_data)
+            explicit = genome_from_dict({**old_data, "transform": "none"})
 
-    default = genome_from_dict(old_data)
-    explicit = genome_from_dict({**old_data, "transform": "none"})
-
-    assert default.transform == explicit.transform == "none"
-    assert default.to_dict() == explicit.to_dict() == old_data
-    assert default.key() == explicit.key() == old_key == "a0bafa1a7c3e"
+            assert default.transform == explicit.transform == "none"
+            assert default.to_dict() == explicit.to_dict() == old_data
+            assert default.key() == explicit.key() == old_key
+            if "key" in entry:
+                assert default.key() == entry["key"]
+    assert genome_from_dict(golden["regression"][0]["genome"]).key() == "a0bafa1a7c3e"
 
 
 @pytest.mark.parametrize("name", ["log1p", "logdiff"])
@@ -440,3 +445,96 @@ def test_v1_worker_ignores_an_unversioned_request_transform(tmp_path):
     expected = finish(ws, genome)
     validation = read_table(run / "validation.parquet")
     np.testing.assert_array_equal(validation["prediction"], expected["validation"]["prediction"])
+
+
+@pytest.mark.parametrize("unit", ["month", "quarter", "year"])
+def test_calendar_base_uses_exact_origin_position(unit):
+    count, horizon = 48, 4
+    stride = {"month": 1, "quarter": 3, "year": 12}[unit]
+    start = np.datetime64("2020-01", "M")
+    steps = (start + np.arange(count) * stride).astype("datetime64[D]")
+    future = (start + (count + np.arange(horizon)) * stride).astype("datetime64[D]")
+    panel = {
+        SERIES: np.repeat(["a", "b"], count),
+        STEP: np.tile(steps, 2),
+        "y": np.concatenate([np.arange(count) + 2.0, np.arange(count) * 3.0 + 5.0]),
+    }
+    scaffold = {SERIES: np.repeat(["a", "b"], horizon), STEP: np.tile(future, 2)}
+    spec = PrepSpec(
+        "calendar.csv",
+        "series",
+        "regression",
+        (Column("day", "time"), Column("y", "target", "sum")),
+        step=unit,
+        horizon=horizon,
+    )
+    lookup = {
+        (key, position): value
+        for key, position, value in zip(
+            panel[SERIES], step_index(panel[STEP], unit), panel["y"], strict=True
+        )
+    }
+    for bucket in buckets_for(horizon):
+        frame = series_features(spec, panel, scaffold, bucket, unit, panel[STEP] < steps[40])
+        origins = step_index(frame.step, unit) - bucket[1]
+        expected = [
+            lookup[(key, position)] for key, position in zip(frame.series, origins, strict=True)
+        ]
+
+        np.testing.assert_array_equal(frame.base, expected)
+        assert frame.future.sum() == (bucket[1] - bucket[0] + 1) * 2
+
+
+@pytest.mark.parametrize("name", ["log1p", "logdiff"])
+@pytest.mark.parametrize("version", [None, 2])
+def test_refit_refuses_recipe_transform_mismatch(tmp_path, name, version):
+    pytest.importorskip("xgboost")
+    _, spec, prepared = make_request(tmp_path, [{"name": "xgboost"}])
+    genome = make_genome(["lag+0"], "squared", {"max_depth": 3}, transform=name)
+    request_options = (
+        {"version": 2, "families": [{"name": "xgboost"}], "time_budget_s": 2}
+        if version == 2
+        else {}
+    )
+    run_id = start_run(
+        tmp_path / "runs", spec, prepared, recipe=genome.to_dict(), nthread=1, **request_options
+    )
+
+    state = wait_run(tmp_path / "runs", run_id, timeout=30)
+
+    assert state["state"] == "failed", state
+    assert "recipe transform differs from the requested transform" in state["reason"]
+    assert "use a v2 request with the saved transform" in state["reason"]
+
+
+@pytest.mark.parametrize("name", ["log1p", "logdiff"])
+def test_v2_refit_preserves_matching_saved_transform(tmp_path, name):
+    pytest.importorskip("xgboost")
+    _, spec, prepared = make_request(tmp_path, [{"name": "xgboost"}])
+    genome = make_genome(["lag+0"], "squared", {"max_depth": 3}, transform=name)
+    run_id = start_run(
+        tmp_path / "runs",
+        spec,
+        prepared,
+        recipe=genome.to_dict(),
+        version=2,
+        families=[{"name": "xgboost"}],
+        time_budget_s=2,
+        transform=name,
+        nthread=1,
+    )
+    state = wait_run(tmp_path / "runs", run_id, timeout=60)
+    run = tmp_path / "runs" / run_id
+
+    assert state["state"] == "done" and state["stopped"] == "refit", state
+    recipe = json.loads((run / "recipe.json").read_text())
+    result = json.loads((run / "result.json").read_text())
+    assert recipe["genome"] == genome.to_dict()
+    assert recipe["transform"] == result["transform"] == name
+    validation = read_table(run / "validation.parquet")
+    ratio = np.median(np.abs(validation["prediction"])) / np.median(validation["actual"])
+    assert 0.2 < ratio < 5
+    for label, band in result["bands"].items():
+        rows = validation["bucket"] == label
+        raw_band = ev.fit_band(validation["actual"][rows], validation["prediction"][rows])
+        assert band == raw_band.__dict__
