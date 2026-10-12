@@ -38,6 +38,17 @@ def parse_request(request: dict) -> dict:
         type(request["nthread"]) is not int or request["nthread"] < 1
     ):
         raise ValueError("nthread must be a positive integer")
+    concurrency = request.get("max_concurrent_families", 4)
+    if type(concurrency) is not int or concurrency < 1:
+        raise ValueError("max_concurrent_families must be a positive integer")
+    fraction = request.get("candidate_limit_fraction", 0.25)
+    if (
+        isinstance(fraction, bool)
+        or not isinstance(fraction, (int, float))
+        or not math.isfinite(fraction)
+        or not 0 < fraction <= 1
+    ):
+        raise ValueError("candidate_limit_fraction must be finite and between zero and one")
     ensemble = request.get("ensemble", {"enabled": True, "top": 3})
     if (
         not isinstance(ensemble, dict)
@@ -51,4 +62,6 @@ def parse_request(request: dict) -> dict:
         **request,
         "transform": "none",
         "ensemble": ensemble,
+        "max_concurrent_families": concurrency,
+        "candidate_limit_fraction": fraction,
     }
