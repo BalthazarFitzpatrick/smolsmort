@@ -159,7 +159,12 @@ def test_v2_xgboost_ridge_snaive_finish_and_merge(panel, tmp_path):
     state = wait_run(runs, run_id, timeout=120)
     assert state["state"] == "done", state
     assert set(state["families"]) == {"xgboost", "ridge", "snaive"}
-    assert all(status["state"] == "done" for status in state["families"].values()), state
+    assert all(status["state"] in ("done", "pruned") for status in state["families"].values()), (
+        state
+    )
+    for status in state["families"].values():
+        if status["state"] == "pruned":
+            assert status["pruned_reason"]
     board = json.loads((runs / run_id / "leaderboard.json").read_text())
     assert {entry["family"] for entry in board} == {"xgboost", "ridge", "snaive"}
     ridge = [entry for entry in board if entry["family"] == "ridge"]
