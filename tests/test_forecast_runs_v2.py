@@ -148,11 +148,13 @@ def test_v2_parallel_workers_finish_and_merge(tmp_path):
             for line in (target / "events.jsonl").read_text().splitlines()
         )
     assert len({state["pid"], *(status["pid"] for status in statuses)}) == 3
-    events = [
-        json.loads(line)
-        for line in (run / "families" / "snaive" / "events.jsonl").read_text().splitlines()
+    coordinator = json.loads((run / "coordinator.json").read_text())
+    first_slices = [
+        coordinator["families"][name]["slice_history"][0] for name in ("xgboost", "snaive")
     ]
-    assert statuses[0]["started_at"] < statuses[1]["started_at"] + events[-2]["elapsed"] + 1
+    assert max(item["started_at"] for item in first_slices) < min(
+        item["deadline"] for item in first_slices
+    )
     board = json.loads((run / "leaderboard.json").read_text())
     assert {entry["family"] for entry in board} == {"xgboost", "snaive"}
     assert board[0]["fitness"] == min(entry["fitness"] for entry in board)

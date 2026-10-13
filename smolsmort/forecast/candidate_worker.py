@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import multiprocessing
 import os
 import time
@@ -80,6 +81,16 @@ class CandidateScorer:
         self.process = None
         self.connection = None
         self.busy = False
+        try:
+            allocation = json.loads((target / "slice.json").read_text())
+            checkpoint = (
+                json.loads((target / "checkpoint.json").read_text())
+                if (target / "checkpoint.json").exists()
+                else {}
+            )
+        except (FileNotFoundError, json.JSONDecodeError):
+            allocation, checkpoint = {}, {}
+        self.default_pending = allocation.get("phase") == "broad" and not checkpoint.get("entries")
 
     def __enter__(self):
         return self
@@ -121,7 +132,7 @@ class CandidateScorer:
                 raise ModelError("candidate process exited without a score")
         return None
 
-    def start(self):
+    def start(self, until=None):
         from smolsmort.forecast.worker import _Run
 
         context = multiprocessing.get_context("spawn")
@@ -133,7 +144,7 @@ class CandidateScorer:
         self.process.start()
         child_connection.close()
         _Run(self.target).save("candidate_pid.json", {"pid": self.process.pid})
-        if self.receive(self.deadline) != "ready":
+        if self.receive(self.deadline if until is None else until) != "ready":
             self.close()
             raise CandidateTimeout(0)
 
@@ -141,13 +152,23 @@ class CandidateScorer:
         if time.time() >= self.deadline or self.stop():
             raise CandidateTimeout(0)
         started = time.monotonic()
+        default = self.default_pending
+        self.default_pending = False
+        if default:
+            from smolsmort.forecast.coordinator import GRACE_S
+
+            # the broad pass starts with the default; reserve one grace second for cleanup
+            until = self.deadline + GRACE_S - 1
+        else:
+            until = min(self.deadline, time.time() + self.limit_s)
         try:
             if self.process is None:
-                self.start()
+                self.start(until=self.deadline + GRACE_S - 1 if default else None)
             started = time.monotonic()
             self.busy = True
             self.connection.send((genome, nthread, sample))
-            until = min(self.deadline, time.time() + self.limit_s)
+            if not default:
+                until = min(self.deadline, time.time() + self.limit_s)
             message = self.receive(until)
         except (OSError, ModelError) as exc:
             self.close()

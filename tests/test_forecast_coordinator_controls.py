@@ -423,6 +423,72 @@ def score_slow_candidate(ws, genome, *, nthread=1, sample=None):
     return Scored(float(alpha), np.array([alpha], dtype=float), {}, None)
 
 
+def test_first_broad_default_exceeds_fractional_limit_but_second_candidate_cannot(tmp_path):
+    from test_forecast_coordinator import process_alive
+
+    from smolsmort.forecast.candidate_worker import CandidateScorer, CandidateTimeout
+
+    (tmp_path / "slice.json").write_text(json.dumps({"phase": "broad"}))
+    default = make_genome(["lag"], "squared", {"alpha": 1})
+    with CandidateScorer(
+        None,
+        tmp_path,
+        deadline=time.time() + 12,
+        slice_s=6,
+        fraction=0.05,
+        score_fn=score_slow_candidate,
+    ) as scorer:
+        scored = scorer.score(default)
+        assert scored.fitness == 1 and scored.elapsed_s >= 4
+        with pytest.raises(CandidateTimeout):
+            scorer.score(default)
+        assert not process_alive(read_json(tmp_path / "candidate_pid.json")["pid"])
+
+
+def test_resumed_broad_default_keeps_candidate_limit(tmp_path):
+    from smolsmort.forecast.candidate_worker import CandidateScorer, CandidateTimeout
+
+    (tmp_path / "slice.json").write_text(json.dumps({"phase": "broad"}))
+    (tmp_path / "checkpoint.json").write_text(json.dumps({"entries": [{"fitness": 0.4}]}))
+    default = make_genome(["lag"], "squared", {"alpha": 1})
+    with (
+        CandidateScorer(
+            None,
+            tmp_path,
+            deadline=time.time() + 12,
+            slice_s=6,
+            fraction=0.05,
+            score_fn=score_slow_candidate,
+        ) as scorer,
+        pytest.raises(CandidateTimeout),
+    ):
+        scorer.score(default)
+
+
+def test_first_broad_default_still_obeys_slice_deadline_and_grace(tmp_path):
+    from test_forecast_coordinator import process_alive
+
+    from smolsmort.forecast.candidate_worker import CandidateScorer, CandidateTimeout
+
+    (tmp_path / "slice.json").write_text(json.dumps({"phase": "broad"}))
+    default = make_genome(["lag"], "squared", {"alpha": 1})
+    started = time.monotonic()
+    with (
+        CandidateScorer(
+            None,
+            tmp_path,
+            deadline=time.time() + 1,
+            slice_s=1,
+            fraction=0.01,
+            score_fn=score_slow_candidate,
+        ) as scorer,
+        pytest.raises(CandidateTimeout),
+    ):
+        scorer.score(default)
+    assert time.monotonic() - started < 4
+    assert not process_alive(read_json(tmp_path / "candidate_pid.json")["pid"])
+
+
 def score_with_slow_family_fit(ws, genome, *, nthread=1, sample=None):
     from smolsmort.forecast.families import get_family
     from smolsmort.forecast.pipeline import score
