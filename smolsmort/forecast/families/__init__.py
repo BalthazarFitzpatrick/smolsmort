@@ -7,6 +7,7 @@ from smolsmort.forecast.families.base import (
     available_families,
     get_family,
     register,
+    registered_families,
 )
 from smolsmort.forecast.families.lightgbm import LightgbmFamily
 from smolsmort.forecast.families.ridge import RidgeFamily
@@ -19,4 +20,12 @@ register(RidgeFamily())
 for name in ("ets", "theta", "arima", "snaive"):
     register(StatsFamily(name))
 
-__all__ = ["Family", "Fitted", "Param", "available_families", "get_family", "register"]
+__all__ = [
+    "Family",
+    "Fitted",
+    "Param",
+    "available_families",
+    "get_family",
+    "register",
+    "registered_families",
+]

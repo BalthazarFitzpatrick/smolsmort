@@ -10,16 +10,24 @@ import csv
 import datetime as dt
 import io
 import json
+import math
+import subprocess
+import sys
+import threading
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
 
 from smolsmort.forecast import evaluate as ev
+from smolsmort.forecast.families import registered_families
+from smolsmort.forecast.spec import spec_from_dict
 from smolsmort.forecast.tables import connect
 
 MAX_LINES = 12
 MC_DRAWS = 200
 MC_SEED = 0
+_POLL_LOCK = threading.Lock()
 
 
 class ViewError(ValueError):
@@ -68,10 +76,321 @@ def read_result(run_dir: Path) -> dict | None:
 
 
 def read_leaderboard(run_dir: Path, top: int = 10) -> list[dict]:
+    if read_request(run_dir).get("version") == 2:
+        board = []
+        for selection in read_request(run_dir)["families"]:
+            name = selection["name"]
+            for entry in _read_json(run_dir / "families" / name / "leaderboard.json", []):
+                board.append({**entry, "family": name})
+        if board:
+            board.sort(
+                key=lambda entry: (
+                    entry["fitness"] if entry.get("fitness") is not None else math.inf,
+                    entry["family"],
+                    str(entry.get("key", "")),
+                )
+            )
+            return board[:top]
     path = run_dir / "leaderboard.json"
     if not path.exists():
         return []
     return json.loads(path.read_text())[:top]
+
+
+def _read_json(path: Path, default=None):
+    try:
+        return json.loads(path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return default
+
+
+def save_prepared_spec(prepared, spec):
+    path = prepared.folder / "spec.json"
+    path.write_text(json.dumps(asdict(spec)), encoding="utf-8")
+
+
+def read_prepared_spec(folder: Path, runs_root: Path):
+    data = _read_json(folder / "spec.json")
+    if data is None:
+        for run in sorted(runs_root.glob("*"), reverse=True):
+            request = _read_json(run / "request.json", {})
+            if request.get("prepared") and Path(request["prepared"]).resolve() == folder:
+                data = request.get("spec")
+                break
+    if not isinstance(data, dict):
+        raise ViewError("prepared folder has no saved spec; provide spec")
+    return spec_from_dict(data)
+
+
+def probe_families() -> dict:
+    """native library probes stay out of the host's torch process"""
+    code = (
+        "import json; from smolsmort.forecast.families import registered_families; "
+        "print(json.dumps({family.name: family.available() for family in registered_families()}))"
+    )
+    try:
+        process = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, timeout=30, check=True
+        )
+        return json.loads(process.stdout)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+        raise ViewError("could not check family libraries in the isolated worker") from exc
+
+
+def family_catalog(runs_root: Path, spec=None, prepared=None, task="regression") -> list[dict]:
+    """suitability uses the worker's split and features, without fitting any models"""
+    from smolsmort.forecast.pipeline import PipelineError, load_workspace
+    from smolsmort.forecast.splits import SplitError
+
+    workspace, history_error = None, None
+    if spec is not None:
+        task = spec.task
+        try:
+            workspace = load_workspace(spec, prepared.folder, prepared.summary)
+        except (PipelineError, SplitError) as exc:
+            history_error = str(exc)
+    estimates = {}
+    for folder in sorted(runs_root.glob("*"), reverse=True):
+        request = _read_json(folder / "request.json", {})
+        if request.get("spec", {}).get("task", "regression") != task:
+            continue
+        calibration = _read_json(folder / "cost-calibration.json", {})
+        for name, data in calibration.items():
+            estimate = data.get("seconds_per_candidate")
+            if (
+                name not in estimates
+                and isinstance(estimate, (int, float))
+                and not isinstance(estimate, bool)
+                and math.isfinite(estimate)
+                and estimate > 0
+            ):
+                estimates[name] = {
+                    "seconds_per_candidate": estimate,
+                    "estimate_is_lower_bound": bool(data.get("estimate_is_lower_bound", False)),
+                }
+    catalog = []
+    availability = probe_families()
+    for family in registered_families():
+        available, install = availability[family.name]
+        try:
+            objectives = list(family.objectives(task))
+        except ValueError:
+            objectives = []
+        reason = None
+        if not available:
+            reason = f"library unavailable; {install}"
+        elif not objectives:
+            reason = f"family {family.name!r} does not support {task}"
+        elif spec is not None and spec.mode == "row" and family.name != "xgboost":
+            reason = "per-row runs support xgboost only"
+        elif history_error:
+            reason = history_error
+        elif workspace is not None:
+            reason = _suitability_reason(family, workspace)
+        catalog.append(
+            {
+                "name": family.name,
+                "label": family.label,
+                "needs": family.needs,
+                "available": available,
+                "install_command": f"uv sync --extra {family.pip_extra}" if not available else None,
+                "space": [asdict(param) for param in family.space()],
+                "objectives": objectives,
+                "suitable": False if reason else True if spec is not None else None,
+                "reason": reason
+                if reason
+                else "provide a spec or prepared folder to check training history"
+                if spec is None
+                else None,
+                **estimates.get(family.name, {}),
+            }
+        )
+    return catalog
+
+
+def _suitability_reason(family, ws):
+    if family.needs == "raw_series":
+        from smolsmort.forecast.spec import SERIES, STEP
+        from smolsmort.forecast.splits import series_cuts
+
+        steps = np.unique(ws.panel[STEP])
+        cut = steps[series_cuts(len(steps), ws.spec.horizon).val_start]
+        target = ws.spec.named("target")[0]
+        counts = [
+            int(
+                (
+                    (ws.panel[SERIES] == key)
+                    & (ws.panel[STEP] < cut)
+                    & np.isfinite(ws.panel[target])
+                ).sum()
+            )
+            for key in np.unique(ws.panel[SERIES])
+        ]
+        period = (
+            ws.profile.get("period")
+            or {"day": 7, "week": 52, "month": 12, "quarter": 4, "year": 1}[ws.unit]
+        )
+        minimum = min(counts, default=0)
+        if minimum < 2 * period:
+            return f"needs two seasons ({2 * period} training steps per series); shortest series has {minimum}"
+    else:
+        if ws.mode == "series":
+            counts = [int(masks["train"].sum()) for masks in ws.series_masks.values()]
+        else:
+            if ws.spec.task == "classification":
+                labels = ws.table[ws.spec.named("target")[0]]
+                usable = np.array(
+                    [value is not None and value == value and value != "" for value in labels]
+                )
+            else:
+                lower = ws.bounds["val"][0]
+                usable = np.isfinite(lower)
+            counts = [int((ws.masks["train"] & usable).sum())]
+        minimum = min(counts, default=0)
+        if minimum < 20:
+            return (
+                f"needs at least 20 usable training rows per bucket; smallest split has {minimum}"
+            )
+    return None
+
+
+def winning_genome(run_dir: Path) -> dict:
+    recipe = _read_json(run_dir / "recipe.json", {})
+    genome = dict(recipe.get("genome") or {})
+    if not genome:
+        raise ViewError(f"run {run_dir.name!r} has no saved winner")
+    result = _read_json(run_dir / "result.json", {})
+    family = (
+        result.get("winner", {}).get("family")
+        or genome.get("family")
+        or recipe.get("family", "xgboost")
+    )
+    genome["family"] = genome.get("family", "xgboost") if family == "ensemble" else family
+    return genome
+
+
+def multi_run_state(run_dir, request, status, *, since_generation=None, since_events=None):
+    """durable cursors keep late events from slower families visible across reattachment"""
+    with _POLL_LOCK:
+        changed = not (run_dir / "route-cursors.json").exists()
+        snapshot = _read_json(
+            run_dir / "route-cursors.json",
+            {
+                "counts": {},
+                "events": [],
+                "curves": [],
+                "board": [],
+                "board_revision": -1,
+            },
+        )
+        sources = [
+            (selection["name"], run_dir / "families" / selection["name"])
+            for selection in request["families"]
+        ]
+        sources.append((None, run_dir))
+        for name, target in sources:
+            for filename, collection in (
+                ("events.jsonl", "events"),
+                ("generation_curves.jsonl", "curves"),
+            ):
+                path = target / filename
+                lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+                source = f"{name or 'coordinator'}/{filename}"
+                offset = snapshot["counts"].get(source, 0)
+                for index, line in enumerate(lines[offset:], offset):
+                    try:
+                        item = json.loads(line)
+                    except json.JSONDecodeError:
+                        if index == len(lines) - 1:
+                            break
+                        offset += 1
+                        changed = True
+                        continue
+                    item = {**item, "family": name if name is not None else item.get("family")}
+                    if "generation" in item:
+                        item["family_generation"] = item["generation"]
+                    if collection == "curves":
+                        item["generation"] = len(snapshot["curves"])
+                    else:
+                        item["sequence"] = len(snapshot["events"])
+                    snapshot[collection].append(item)
+                    offset += 1
+                    changed = True
+                snapshot["counts"][source] = offset
+        board = read_leaderboard(run_dir)
+        if board != snapshot["board"]:
+            snapshot["board"] = board
+            snapshot["board_revision"] += 1
+            changed = True
+        if changed:
+            tmp = run_dir / "route-cursors.json.tmp"
+            tmp.write_text(json.dumps(snapshot), encoding="utf-8")
+            tmp.replace(run_dir / "route-cursors.json")
+    families = {}
+    for selection in request["families"]:
+        name = selection["name"]
+        coordinator = status.get("families", {}).get(name, {})
+        worker = _read_json(run_dir / "families" / name / "status.json", {})
+        families[name] = {
+            "state": status["state"] if request.get("recipe") else "pending",
+            "phase": "refit" if request.get("recipe") else "broad",
+            "slice_s": 0,
+            "best_error": None,
+            "pruned_reason": None,
+            "seconds_per_candidate": None,
+            "candidates_done": 0,
+            "candidates_expected": 0,
+            "nthread": 0,
+            **worker,
+            **coordinator,
+        }
+        families[name].pop("trace", None)
+        families[name].pop("slice_history", None)
+        families[name]["threads"] = families[name]["nthread"]
+    events = snapshot["events"]
+    generations = [event for event in events if event.get("event") == "generation"]
+    event_cursor = since_events if since_events is not None else -1
+    curve_cursor = since_generation if since_generation is not None else -1
+    unseen_events = [event for event in events if event["sequence"] > event_cursor][:200]
+    delivered_cursor = unseen_events[-1]["sequence"] if unseen_events else event_cursor
+    result = _read_json(run_dir / "result.json", {})
+    recipe = _read_json(run_dir / "recipe.json", {})
+    kind = (
+        "refit" if request.get("recipe") else "warm start" if request.get("warm_from") else "multi"
+    )
+    winner = recipe.get("family") or result.get("winner", {}).get("family")
+    best = min(
+        (data["best_error"] for data in families.values() if data.get("best_error") is not None),
+        default=None,
+    )
+    out = {
+        **status,
+        "families": families,
+        "kind": kind,
+        "task": request["spec"].get("task"),
+        "winner_family": winner,
+        "time_budget_s": request["time_budget_s"],
+        "budget": {},
+        "generation_count": len(generations),
+        "generation": len(snapshot["curves"]) - 1,
+        "events_cursor": delivered_cursor,
+        "leaderboard_generation": snapshot["board_revision"],
+        "leaderboard": board,
+        "events": unseen_events,
+        "generations": [event for event in unseen_events if event.get("event") == "generation"],
+        "generation_curves": [
+            curve for curve in snapshot["curves"] if curve["generation"] > curve_cursor
+        ],
+        "latest": events[-1] if events else None,
+        "best_error": best,
+        "best_wape": best
+        if request["spec"].get("task") == "regression" and kind != "refit"
+        else None,
+        "test_error": result.get("model_error"),
+    }
+    if since_generation is None:
+        out["eval_history"] = _read_json(run_dir / "eval_history.json")
+    return out
 
 
 def _spec_dims(spec: dict) -> list[str]:

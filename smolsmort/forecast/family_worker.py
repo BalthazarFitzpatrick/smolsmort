@@ -102,11 +102,13 @@ def run(folder: Path, name: str) -> int:
         )
         if allocation:
             nthread = allocation.get("nthread", nthread)
-        warm_path = (
-            Path(request["warm_from"]) / "families" / name if request.get("warm_from") else None
-        )
+        previous = Path(request["warm_from"]) if request.get("warm_from") else None
+        recipe = read_json(previous / "recipe.json", {}) if previous else {}
+        winner_family = recipe.get("genome", {}).get("family", "xgboost")
+        matching = previous is not None and name == winner_family
+        warm_path = previous / "families" / name if matching else None
         warm = _warm_start(warm_path) if warm_path else None
-        if warm is None and name == "xgboost":
+        if warm is None and matching and name == "xgboost":
             warm = _warm_start(request.get("warm_from"))
 
         def read_threads():
