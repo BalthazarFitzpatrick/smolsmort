@@ -550,7 +550,7 @@ def test_warm_worker_seeds_only_the_winner_family(tmp_path, monkeypatch, name, s
             "summary": {},
         },
     )
-    monkeypatch.setattr(family_worker, "load_workspace", lambda *args: SimpleNamespace())
+    monkeypatch.setattr(family_worker, "load_workspace", lambda *args, **kwargs: SimpleNamespace())
     calls = []
 
     def record_search(ws, budget, **kwargs):

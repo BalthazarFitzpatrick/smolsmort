@@ -11,8 +11,9 @@ def parse_request(request: dict) -> dict:
         return request
     if request["version"] != 2:
         raise ValueError("unsupported forecast request version")
-    if request.get("transform", "none") != "none":
-        raise ValueError("u6 supports transform 'none' only")
+    transform = request.get("transform", "none")
+    if transform not in ("none", "log1p", "logdiff"):
+        raise ValueError("transform must be none, log1p or logdiff")
     duration = request.get("time_budget_s")
     if (
         isinstance(duration, bool)
@@ -60,7 +61,7 @@ def parse_request(request: dict) -> dict:
         raise ValueError("ensemble.enabled must be a boolean")
     return {
         **request,
-        "transform": "none",
+        "transform": transform,
         "ensemble": ensemble,
         "max_concurrent_families": concurrency,
         "candidate_limit_fraction": fraction,

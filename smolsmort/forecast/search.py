@@ -20,6 +20,7 @@ from smolsmort.forecast.pipeline import (
     make_genome,
     score,
 )
+from smolsmort.forecast.transform import TransformError
 
 # budget defaults: the design review's population and plateau, a 20 minute cap - unmeasured
 POPULATION = 16
@@ -113,12 +114,15 @@ class Entry:
 
 class _Variation:
     def __init__(self, ws: Workspace, rng: np.random.Generator):
+        self.transform = getattr(ws, "transform", "none")
         self.families = list(ws.families)
         self.objectives = list(ws.profile["genes"]["objectives"])
         self.rng = rng
         family = get_family("xgboost")
         task = getattr(getattr(ws, "spec", None), "task", "regression")
         self.objectives = [name for name in self.objectives if name in family.objectives(task)]
+        if self.transform == "logdiff":
+            self.objectives = [name for name in self.objectives if name in ("squared", "absolute")]
         catalog = {param.name: param for param in family.space()}
         self.space = {}
         self.defaults = {}
@@ -126,6 +130,9 @@ class _Variation:
             param = catalog[name]
             self.space[name] = (param.lo, param.hi, "lin" if param.kind == "float" else param.kind)
             self.defaults[name] = param.default
+
+    def make_genome(self, families, objective, params, family="xgboost"):
+        return make_genome(families, objective, params, family, self.transform)
 
     def params_for(self, objective: str, base: dict | None = None) -> dict:
         params = {k: v for k, v in (base or self.defaults).items() if k in self.space}
@@ -139,7 +146,7 @@ class _Variation:
         objective = str(self.rng.choice(self.objectives))
         params = {name: self._draw(spec) for name, spec in self.space.items()}
         params.update({n: self._draw(s) for n, s in OBJECTIVE_SPACE.get(objective, {}).items()})
-        return make_genome(keep, objective, params)
+        return self.make_genome(keep, objective, params)
 
     def crossover(self, a: Genome, b: Genome) -> Genome:
         """whole blocks swap: each family from either parent, the objective with its own settings
@@ -154,7 +161,7 @@ class _Variation:
             k: (pa if self.rng.random() < 0.5 else pb).get(k, self.defaults[k]) for k in self.space
         }
         params.update({k: pd[k] for k in OBJECTIVE_SPACE.get(donor.objective, {}) if k in pd})
-        return make_genome(
+        return self.make_genome(
             families or list(donor.families), donor.objective, params, family=donor.family
         )
 
@@ -172,7 +179,7 @@ class _Variation:
         for name, spec in {**self.space, **OBJECTIVE_SPACE.get(objective, {})}.items():
             if self.rng.random() < 0.3:
                 params[name] = self._nudge(params.get(name), spec)
-        return make_genome(
+        return self.make_genome(
             families or [self.rng.choice(self.families)], objective, params, family=genome.family
         )
 
@@ -230,6 +237,13 @@ class _FamilyVariation(_Variation):
             ] or self.objectives
         if family.needs == "raw_series":
             self.families = []
+        if self.transform == "logdiff":
+            aliases = getattr(family, "objective_aliases", {})
+            self.objectives = [
+                name
+                for name in self.objectives
+                if aliases.get(name, name) in ("squared", "absolute")
+            ]
 
     def params_for(self, objective, base=None):
         params = {**self.defaults, **(base or {})}
@@ -250,7 +264,9 @@ class _FamilyVariation(_Variation):
             name: self._draw(spec) if name not in self.choices else self.rng.choice(spec).item()
             for name, spec in self.space.items()
         }
-        return make_genome(keep, objective, self.params_for(objective, params), self.family.name)
+        return self.make_genome(
+            keep, objective, self.params_for(objective, params), self.family.name
+        )
 
     def crossover(self, a, b):
         pa, pb = dict(a.params), dict(b.params)
@@ -263,7 +279,7 @@ class _FamilyVariation(_Variation):
         keep = [
             name for name in self.families if name in (mine if self.rng.random() < 0.5 else theirs)
         ]
-        return make_genome(keep or a.families, a.objective, params, self.family.name)
+        return self.make_genome(keep or a.families, a.objective, params, self.family.name)
 
     def mutate(self, genome):
         params = dict(genome.params)
@@ -283,7 +299,7 @@ class _FamilyVariation(_Variation):
                     if name in self.choices
                     else self._nudge(params.get(name), spec)
                 )
-        return make_genome(
+        return self.make_genome(
             keep or genome.families,
             objective,
             self.params_for(objective, params),
@@ -293,11 +309,11 @@ class _FamilyVariation(_Variation):
 
 def _family_population(var, size, warm, method):
     if not var.space:
-        return [make_genome(var.families, var.objectives[0], {}, var.family.name)]
+        return [var.make_genome(var.families, var.objectives[0], {}, var.family.name)]
     if method == "grid":
         choices = [var.overrides.get(name, [var.defaults[name]]) for name in var.space]
         return [
-            make_genome(
+            var.make_genome(
                 var.families,
                 objective,
                 var.params_for(objective, dict(zip(var.space, values, strict=True))),
@@ -312,7 +328,7 @@ def _family_population(var, size, warm, method):
         if data.get("family", "xgboost") == var.family.name
     ]
     seeds.extend(
-        make_genome(var.families, o, var.params_for(o), var.family.name) for o in var.objectives
+        var.make_genome(var.families, o, var.params_for(o), var.family.name) for o in var.objectives
     )
     while len(seeds) < size:
         seeds.append(var.random())
@@ -321,18 +337,18 @@ def _family_population(var, size, warm, method):
 
 def _seed_population(ws, var: _Variation, size: int, warm) -> list[Genome]:
     everything = list(ws.families)
-    seeds = [make_genome(everything, o, var.params_for(o)) for o in var.objectives]
+    seeds = [var.make_genome(everything, o, var.params_for(o)) for o in var.objectives]
     first = var.objectives[0]
     for depth in (3, 8):
         for eta in (0.05, 0.2):
             params = {**var.params_for(first), "max_depth": depth, "eta": eta}
-            seeds.append(make_genome(everything, first, params))
+            seeds.append(var.make_genome(everything, first, params))
     for data in warm or []:
         families = [f for f in data["families"] if f in ws.families]
         if families and data["objective"] in var.objectives:
             seeds.insert(
                 0,
-                make_genome(
+                var.make_genome(
                     families,
                     data["objective"],
                     data["params"],
@@ -456,7 +472,7 @@ def search(
                 result.prediction,
             )
             elapsed_s = getattr(result, "elapsed_s", None)
-        except (ModelError, PipelineError) as exc:
+        except (ModelError, PipelineError, TransformError) as exc:
             elapsed_s = getattr(exc, "elapsed_s", None)
             entry = Entry(
                 genome,
@@ -482,18 +498,24 @@ def search(
 
     if family is not None:
         warm = [data for data in warm or [] if data.get("family", "xgboost") == family.name]
+    warm = [data for data in warm or [] if data.get("transform", "none") == var.transform]
     population = (
         _seed_population(ws, var, budget.population, warm)
         if legacy
         else _family_population(var, budget.population, warm, method)
     )
     if defaults_only and family and family.space() and not resume:
-        default = make_genome(
+        default = var.make_genome(
             var.families, var.objectives[0], var.params_for(var.objectives[0]), family.name
         )
         population = [default, *[genome for genome in population if genome.key() != default.key()]]
     best, quiet, generation, reason = None, 0, 0, "generation cap"
     if resume:
+        if any(
+            data.get("transform", "none") != var.transform
+            for data in [*resume["population"], *(entry["genome"] for entry in resume["entries"])]
+        ):
+            raise PipelineError("checkpoint transform differs from the requested transform")
         population = [genome_from_dict(data) for data in resume["population"]]
         for data in resume["entries"]:
             entry = Entry(
