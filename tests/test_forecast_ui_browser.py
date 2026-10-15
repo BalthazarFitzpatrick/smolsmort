@@ -124,6 +124,94 @@ def run_search(page: Page) -> None:
     assert status.endswith("· done"), status
 
 
+def test_forecast_results_warned_about_excluded_series(tmp_path):
+    spec = {
+        "mode": "series",
+        "columns": [
+            {"name": "day", "role": "time"},
+            {"name": "project", "role": "dimension"},
+            {"name": "product", "role": "dimension"},
+            {"name": "units", "role": "target"},
+        ],
+    }
+    excluded = [
+        {
+            "series": "C|p1",
+            "dims": {"project": "C", "product": "p1"},
+            "last_seen": "2025-10-13",
+        },
+        {
+            "series": "html|p2",
+            "dims": {"project": '<img src="x">', "product": "p2 & more"},
+            "last_seen": None,
+        },
+    ]
+    snapshots = {
+        "ended": {"excluded_series": excluded},
+        "missing": {},
+        "empty": {"excluded_series": []},
+    }
+    with session(tmp_path, width=800) as (page, _base):
+        page.route(
+            "**/api/forecast-runs",
+            lambda route: route.fulfill(
+                json={"runs": [{"id": key, "state": "done"} for key in snapshots]}
+            ),
+        )
+
+        def read_run(route):
+            run_id = parse_qs(urlparse(route.request.url).query)["id"][0]
+            route.fulfill(json={"spec": spec, **snapshots[run_id]})
+
+        page.route("**/api/forecast-run?**", read_run)
+        page.route(
+            "**/api/forecast-view?**",
+            lambda route: route.fulfill(
+                json={
+                    "mode": "series",
+                    "x": ["2026-06-29"],
+                    "series": [],
+                    "bands": [],
+                    "markers": [],
+                    "verdict": {"trusted": True},
+                }
+            ),
+        )
+        page.route(
+            "**/api/forecast-table?**",
+            lambda route: route.fulfill(
+                json={"columns": ["day"], "rows": [], "page": 0, "total": 0}
+            ),
+        )
+        switch_to_regression(page)
+        page.select_option("#topic-flavour", "series")
+        show_tab(page, "regression-results")
+        warning = page.locator(f"#{TOPIC}-excluded-series")
+        assert not warning.is_visible()
+        expected = (
+            "excluded from the forecast, no data before the forecast start: "
+            "[project=C, product=p1] (last seen 2025-10-13), "
+            '[project=<img src="x">, product=p2 & more] (last seen unknown)'
+        )
+        for run_id in ("ended", "missing", "ended", "empty"):
+            page.click(f"#{TOPIC}-results-run")
+            page.locator(f'.menu-panel .menu-item[data-id="{run_id}"]').click()
+            text = expected if run_id == "ended" else ""
+            page.wait_for_function(
+                "([id, text]) => document.getElementById(id).textContent === text",
+                arg=[f"{TOPIC}-excluded-series", text],
+            )
+            assert warning.is_visible() == (run_id == "ended")
+            if run_id != "ended":
+                continue
+            assert warning.inner_text() == expected
+            assert "warn" in warning.get_attribute("class").split()
+            assert warning.locator("*").count() == 0
+            assert warning.evaluate("node => getComputedStyle(node).whiteSpace") == "nowrap"
+            assert warning.evaluate("node => getComputedStyle(node).overflowX") == "auto"
+            assert warning.evaluate("node => node.scrollWidth > node.clientWidth")
+
+
 def test_forecast_regression_row_flow(tmp_path):
     with session(tmp_path) as (page, base):
         switch_to_regression(page)
