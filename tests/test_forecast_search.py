@@ -152,7 +152,10 @@ def test_a_run_ends_with_a_forecast_and_a_verdict(tmp_path):
     result = json.loads((folder / "result.json").read_text())
     assert set(result["verdict"]) == {"trusted", "summary", "checks"}
     forecast = read_table(folder / "forecast.parquet")
-    assert len(forecast["prediction"]) == truth.series * spec.horizon
+    assert (
+        len(forecast["prediction"])
+        == (truth.series - len(result["excluded_series"])) * spec.horizon
+    )
     assert np.all(forecast["lower"] <= forecast["upper"])
     assert json.loads((folder / "recipe.json").read_text())["genome"]["families"]
 

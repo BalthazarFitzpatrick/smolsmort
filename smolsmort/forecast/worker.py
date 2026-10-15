@@ -119,6 +119,8 @@ def run(folder: Path) -> int:
             )
         spec = spec_from_dict(request["spec"])
         ws = load_workspace(spec, Path(request["prepared"]), request["summary"])
+        if ws.excluded_series:
+            job.event({"event": "excluded_series", "excluded_series": ws.excluded_series})
         job.save("profile.json", ws.profile)
         budget = Budget(
             **{
@@ -208,6 +210,8 @@ def _write_result(folder, spec, result, final):
         "band": final.get("band"),
         "bands": final.get("bands"),
     }
+    if spec.mode == "series":
+        summary["excluded_series"] = final.get("excluded_series", [])
     if "season_length" in final:
         recipe["season_length"] = summary["season_length"] = final["season_length"]
     for name, data in (("recipe.json", recipe), ("result.json", summary)):
