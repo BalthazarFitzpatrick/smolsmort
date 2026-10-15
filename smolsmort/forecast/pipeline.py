@@ -7,7 +7,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -100,6 +100,7 @@ class Workspace:
     series_masks: dict | None = None
     test_steps: int = 0
     panel: dict | None = None
+    excluded_series: list[dict] = field(default_factory=list)
 
     @property
     def mode(self) -> str:
@@ -148,6 +149,7 @@ def _row_workspace(spec, folder, summary) -> Workspace:
 def _series_workspace(spec, folder, summary) -> Workspace:
     panel = read_table(folder / "panel.parquet", order_by=f"{SERIES}, {STEP}")
     scaffold = read_table(folder / "scaffold.parquet")
+    scaffold, excluded = _filter_scaffold(spec, panel, scaffold)
     steps = np.unique(panel[STEP])
     cuts = series_cuts(len(steps), spec.horizon)
     val_start, test_start = steps[cuts.val_start], steps[cuts.test_start]
@@ -181,10 +183,38 @@ def _series_workspace(spec, folder, summary) -> Workspace:
     ws = Workspace(spec, folder, summary, profile, [], unit)
     ws.frames, ws.series_masks = frames, masks
     ws.panel = panel
+    ws.excluded_series = excluded
     ws.test_steps = int(cuts.steps - cuts.test_start)
     families = set().union(*(set(f.features.families) for f in frames.values()))
     ws.families = sorted(families - _excluded_families(profile))
     return ws
+
+
+def _filter_scaffold(spec, panel, scaffold) -> tuple[dict, list[dict]]:
+    """keep future rows only for series with a finite target at the panel origin"""
+    target = panel[spec.named("target")[0]]
+    origin = panel[STEP].max()
+    dims = spec.named("dimension")
+    excluded = []
+    for key in np.unique(panel[SERIES]):
+        mine = np.flatnonzero(panel[SERIES] == key)
+        observed = mine[np.isfinite(target[mine])]
+        last_seen = panel[STEP][observed].max() if len(observed) else None
+        if last_seen is not None and last_seen == origin:
+            continue
+        excluded.append(
+            {
+                "series": str(key),
+                "dims": {name: panel[name][mine[0]] for name in dims},
+                "last_seen": str(last_seen.astype("datetime64[D]"))
+                if last_seen is not None
+                else None,
+            }
+        )
+    if not excluded:
+        return scaffold, excluded
+    keep = ~np.isin(scaffold[SERIES], [entry["series"] for entry in excluded])
+    return {name: values[keep] for name, values in scaffold.items()}, excluded
 
 
 def _excluded_families(profile) -> set[str]:
@@ -559,6 +589,7 @@ def _finish_series(
         metadata["season_length"] = season_length(ws.profile)
     return {
         **metadata,
+        "excluded_series": ws.excluded_series,
         "verdict": verdict,
         "bands": bands,
         "validation": _stack(val_rows),

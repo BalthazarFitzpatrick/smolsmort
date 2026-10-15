@@ -135,6 +135,7 @@ def test_ensemble_band_uses_stored_validation_average(monkeypatch, cached_winner
         frames={(1, 1): frame},
         series_masks={(1, 1): masks},
         test_steps=2,
+        excluded_series=[],
     )
     members = [
         pipeline.make_genome(["lag"], "squared", {}, name) for name in ("xgboost", "lightgbm")

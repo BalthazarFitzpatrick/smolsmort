@@ -82,12 +82,13 @@ def test_row_mode_predicts_every_open_row_and_exports_the_verdict(row_system):
     assert {r["verdict"] for r in rows} == {expected}
 
 
-def test_series_mode_forecasts_every_combination_and_beats_seasonal_naive(series_system):
+def test_series_mode_forecasts_active_combinations_and_beats_seasonal_naive(series_system):
     app, tab, run_id, _ = series_system
     run, request, result = _outcome(app, run_id)
     horizon = request["spec"]["horizon"]
     forecast = read_table(run / "forecast.parquet")
-    assert len(forecast["prediction"]) == request["summary"]["series"] * horizon
+    active = request["summary"]["series"] - len(result["excluded_series"])
+    assert len(forecast["prediction"]) == active * horizon
     assert set(forecast["bucket"]) == {f"{lo}-{hi}" for lo, hi in buckets_for(horizon)}
     assert result["model_error"] < result["baseline_error"]
 

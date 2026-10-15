@@ -1336,6 +1336,7 @@ class ForecastTopic {
           <span class="spacer"></span>
           <a class="toggle adds hidden" id="${this.topic}-export" download>export csv</a>
         </div>
+        <div id="${this.topic}-excluded-series" class="stat warn forecast-excluded-series hidden"></div>
         <div id="${this.topic}-verdict" class="forecast-verdict hidden"></div>
         <div id="${this.topic}-filter-chips" class="label-columns"></div>
         <div id="${this.topic}-chart" class="forecast-chart"></div>
@@ -1380,6 +1381,7 @@ class ForecastTopic {
     try {
       const state = await api(`/api/forecast-run?id=${encodeURIComponent(this.resultsRunId)}`);
       this.resultsSpec = state.spec;
+      this.paintExcludedSeries(state.excluded_series || []);
       setHead(document.getElementById(`${this.topic}-results-run`), this.resultsRunId);
       const exportLink = document.getElementById(`${this.topic}-export`);
       exportLink.href = `/api/forecast-export/${encodeURIComponent(this.resultsRunId)}.csv`;
@@ -1398,6 +1400,17 @@ class ForecastTopic {
   dims() {
     if (!this.resultsSpec) return [];
     return (this.resultsSpec.columns || []).filter(c => c.role === 'dimension').map(c => c.name);
+  }
+
+  paintExcludedSeries(series) {
+    const box = document.getElementById(`${this.topic}-excluded-series`);
+    const combinations = series.map(item => {
+      const dims = Object.entries(item.dims).map(([name, value]) => `${name}=${value}`).join(', ');
+      return `[${dims}] (last seen ${item.last_seen || 'unknown'})`;
+    });
+    box.textContent = combinations.length
+      ? `excluded from the forecast, no data before the forecast start: ${combinations.join(', ')}` : '';
+    box.classList.toggle('hidden', !combinations.length);
   }
 
   // one page of the table, unfiltered, just to learn what values each dimension carries

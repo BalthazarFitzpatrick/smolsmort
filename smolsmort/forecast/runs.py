@@ -237,6 +237,7 @@ def _metadata(folder: Path, status: dict, generations: list[dict], events: list[
         "best_error": latest.get("best"),
         "best_wape": _validation_wape(request, latest, kind),
         "test_error": result.get("model_error"),
+        "excluded_series": result.get("excluded_series", []),
         "stopped": status.get("stopped") or finishing.get("stopped"),
         "elapsed": status.get("elapsed") or finishing.get("elapsed") or latest.get("elapsed"),
         "leaderboard_generation": revision,
