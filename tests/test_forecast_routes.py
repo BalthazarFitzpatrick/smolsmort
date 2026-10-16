@@ -394,19 +394,20 @@ def test_run_polling_sends_only_updated_leaderboards(app, tab, cursor):
     board = [{"fitness": 0.3, "genome": {"families": ["lag+1"]}}]
     (root / "leaderboard.json").write_text(json.dumps(board))
     complete = _get(app, tab, "/api/forecast-run", {"id": "fixture"})
-    assert complete["leaderboard"] == board
+    assert complete["leaderboard"] == [{**entry, "family": "xgboost"} for entry in board]
     assert complete["leaderboard_generation"] == 0
     assert complete["kind"] == "search" and complete["budget"] == {"plateau": 3}
     state = _get(app, tab, "/api/forecast-run", {"id": "fixture", "since_leaderboard": cursor})
     if cursor == "0":
         assert "leaderboard" not in state
     else:
-        assert state["leaderboard"] == board
+        assert state["leaderboard"] == [{**entry, "family": "xgboost"} for entry in board]
     (root / "leaderboard_generation.json").write_text("1")
     board[0]["fitness"] = 0.2
     (root / "leaderboard.json").write_text(json.dumps(board))
     state = _get(app, tab, "/api/forecast-run", {"id": "fixture", "since_leaderboard": 0})
-    assert state["leaderboard"] == board and state["leaderboard_generation"] == 1
+    assert state["leaderboard"] == [{**entry, "family": "xgboost"} for entry in board]
+    assert state["leaderboard_generation"] == 1
 
 
 def test_old_runs_infer_the_leaderboard_revision_from_generation_events(app, tab):
@@ -482,7 +483,8 @@ def test_generation_event_arriving_after_its_curve_is_not_lost(app, tab):
         "/api/forecast-run",
         {"id": root.name, "since_generation": 0, "since_events": -1},
     )
-    assert second["generations"] == [event] and second["generation_curves"] == []
+    assert second["generations"] == [{**event, "family": "xgboost"}]
+    assert second["generation_curves"] == []
 
 
 def test_view_series_mode_has_a_band_within_bounds(series_run):

@@ -94,7 +94,13 @@ def read_leaderboard(run_dir: Path, top: int = 10) -> list[dict]:
     path = run_dir / "leaderboard.json"
     if not path.exists():
         return []
-    return json.loads(path.read_text())[:top]
+    return [
+        {
+            **entry,
+            "family": entry.get("family") or (entry.get("genome") or {}).get("family") or "xgboost",
+        }
+        for entry in json.loads(path.read_text())[:top]
+    ]
 
 
 def _read_json(path: Path, default=None):
@@ -337,6 +343,7 @@ def multi_run_state(run_dir, request, status, *, since_generation=None, since_ev
             "slice_s": 0,
             "best_error": None,
             "pruned_reason": None,
+            "reason": None,
             "seconds_per_candidate": None,
             "candidates_done": 0,
             "candidates_expected": 0,
@@ -409,6 +416,94 @@ def _require_done(run_dir: Path) -> dict:
     return result
 
 
+def _select_model(run_dir: Path, result: dict, query: dict) -> dict:
+    recipe = _read_json(run_dir / "recipe.json", {})
+    winner = result.get("winner") or {}
+    winner_family = (
+        winner.get("family")
+        or (recipe.get("genome") or {}).get("family")
+        or (result.get("best") or {}).get("family")
+        or (recipe.get("family") if recipe.get("family") != "ensemble" else None)
+        or "xgboost"
+    )
+    ensemble = result.get("ensemble")
+    default_model = "ensemble" if recipe.get("family") == "ensemble" else "winner"
+    model = query.get("model") or default_model
+    if model not in ("winner", "ensemble"):
+        raise ViewError("model must be winner or ensemble")
+    if model == "ensemble" and not ensemble:
+        raise ViewError("run has no saved ensemble")
+    selected = ensemble if model == "ensemble" else winner
+    return {
+        "model": model,
+        "family": "ensemble" if model == "ensemble" else winner_family,
+        "members": ensemble.get("members", []) if model == "ensemble" else [],
+        "winner_family": winner_family,
+        "verdict": selected.get("verdict") or result.get("verdict"),
+        "default_model": default_model,
+    }
+
+
+def _prediction_path(run_dir: Path, query: dict, kind: str) -> Path:
+    selected = _select_model(run_dir, _require_done(run_dir), query)
+    path = run_dir / f"{selected['model']}_{kind}.parquet"
+    if path.exists():
+        return path
+    if selected["model"] != selected["default_model"]:
+        raise ViewError(f"run has no saved {selected['model']} {kind}")
+    return run_dir / f"{kind}.parquet"
+
+
+def result_details(run_dir: Path, request: dict, query: dict) -> dict:
+    """comparison uses validation scores; only the winner and ensemble have test verdicts"""
+    result = _require_done(run_dir)
+    selected = _select_model(run_dir, result, query)
+    selected.pop("default_model")
+    families = {}
+    if request.get("version") == 2:
+        status = _read_json(run_dir / "status.json", {}).get("families", {})
+        saved = result.get("families", {})
+        names = dict.fromkeys([item["name"] for item in request["families"]] + list(saved))
+        for name in names:
+            progress = {
+                **_read_json(run_dir / "families" / name / "status.json", {}),
+                **status.get(name, {}),
+                **saved.get(name, {}),
+            }
+            row = {
+                "family": name,
+                "state": progress.get("state", "done"),
+                "fitness": progress.get("fitness", progress.get("best_error")),
+                "candidates": progress.get("candidates", progress.get("candidates_done", 0)),
+                "pruned_reason": progress.get("pruned_reason"),
+                "reason": progress.get("reason"),
+                "terminated": progress.get("terminated", False),
+            }
+            if name == selected["winner_family"]:
+                row["verdict"] = result.get("winner", {}).get("verdict") or result.get("verdict")
+            families[name] = row
+    importance_family = query.get("importance_family") or selected["family"]
+    known_families = set(families) | {selected["winner_family"]}
+    if importance_family not in known_families | {"ensemble"}:
+        raise ViewError("importance_family must name a family in this run")
+    importance = None
+    if importance_family != "ensemble":
+        importance = result.get("families", {}).get(importance_family, {}).get("importance")
+        if importance is None:
+            importance = _read_json(run_dir / "families" / importance_family / "importance.json")
+        if importance is None and importance_family == selected["winner_family"]:
+            importance = _read_json(run_dir / "importance.json")
+    return {
+        **selected,
+        "families": families,
+        "winner": result.get("winner")
+        or {"family": selected["winner_family"], "verdict": result.get("verdict")},
+        "ensemble": result.get("ensemble"),
+        "importance_family": importance_family,
+        "importance": importance,
+    }
+
+
 def _parse_filters(raw: str | None) -> dict:
     if not raw:
         return {}
@@ -471,9 +566,9 @@ def series_view(run_dir: Path, request: dict, query: dict) -> dict:
     breakdown = _parse_breakdown(query.get("breakdown"), dims)
 
     panel = prepared / "panel.parquet"
-    validation = run_dir / "validation.parquet"
-    test = run_dir / "test.parquet"
-    forecast = run_dir / "forecast.parquet"
+    validation = _prediction_path(run_dir, query, "validation")
+    test = _prediction_path(run_dir, query, "test")
+    forecast = _prediction_path(run_dir, query, "forecast")
 
     con = connect()
     where = _filter_clause(filters, dims)
@@ -660,8 +755,8 @@ def row_view(run_dir: Path, request: dict, query: dict) -> dict:
     unit_days = _row_unit_days(spec)
 
     rows_path = prepared / "rows.parquet"
-    forecast_path = run_dir / "forecast.parquet"
-    validation_path = run_dir / "validation.parquet"
+    forecast_path = _prediction_path(run_dir, query, "forecast")
+    validation_path = _prediction_path(run_dir, query, "validation")
 
     con = connect()
     where = _filter_clause(filters, dims)
@@ -781,9 +876,15 @@ def _row_mc_band(predictions, week_of, resid_pool, unit_days) -> tuple[dict, dic
 
 def view(run_dir: Path, request: dict, query: dict) -> dict:
     mode = request["spec"]["mode"]
-    return (
+    details = result_details(run_dir, request, query)
+    payload = (
         row_view(run_dir, request, query) if mode == "row" else series_view(run_dir, request, query)
     )
+    for series in payload["series"]:
+        if series.get("dashed"):
+            series["family"] = details["family"]
+            series["members"] = details["members"]
+    return {**payload, **details}
 
 
 # ---------------------------------------------------------------- table
@@ -795,6 +896,14 @@ def _paginate(rows: list, page: int, size: int) -> tuple[list, int]:
     return rows[start : start + size], total
 
 
+def _family_column(request: dict) -> str:
+    name = "family"
+    dims = _spec_dims(request["spec"])
+    while name in dims:
+        name = f"model_{name}"
+    return name
+
+
 def series_table(run_dir: Path, request: dict, query: dict) -> dict:
     prepared = Path(request["prepared"])
     spec = request["spec"]
@@ -802,6 +911,9 @@ def series_table(run_dir: Path, request: dict, query: dict) -> dict:
     filters = _parse_filters(query.get("filters"))
     where = _filter_clause(filters, dims)
     panel = prepared / "panel.parquet"
+    validation = _prediction_path(run_dir, query, "validation")
+    test = _prediction_path(run_dir, query, "test")
+    forecast = _prediction_path(run_dir, query, "forecast")
 
     keymap_sql = (
         'SELECT DISTINCT "__series" AS series'
@@ -813,22 +925,24 @@ def series_table(run_dir: Path, request: dict, query: dict) -> dict:
         WITH keymap AS ({keymap_sql})
         SELECT h.step, {dims_sel + "," if dims else ""} h.prediction, NULL AS lower, NULL AS upper,
                h.actual, FALSE AS future
-        FROM read_parquet({_lit(str(run_dir / "validation.parquet"))}) h
+        FROM read_parquet({_lit(str(validation))}) h
         JOIN keymap k USING (series)
         UNION ALL
         SELECT h.step, {dims_sel + "," if dims else ""} h.prediction, NULL AS lower, NULL AS upper,
                h.actual, FALSE AS future
-        FROM read_parquet({_lit(str(run_dir / "test.parquet"))}) h
+        FROM read_parquet({_lit(str(test))}) h
         JOIN keymap k USING (series)
         UNION ALL
         SELECT f.step, {dims_sel + "," if dims else ""} f.prediction, f.lower, f.upper,
                CAST(NULL AS DOUBLE) AS actual, TRUE AS future
-        FROM read_parquet({_lit(str(run_dir / "forecast.parquet"))}) f
+        FROM read_parquet({_lit(str(forecast))}) f
         JOIN keymap k USING (series)
     """
     con = connect()
     full_sql = f"SELECT * FROM ({hist_sql}) t WHERE {where}"
     sort = query.get("sort") or "future"
+    if sort == _family_column(request):
+        sort = "future"
     order = "DESC" if sort == "future" or query.get("desc") == "1" else "ASC"
     full_sql += f" ORDER BY {_quote(sort) if sort != 'future' else 'future'} {order}, step ASC"
     rows = con.execute(full_sql).fetchall()
@@ -862,7 +976,7 @@ def row_table(run_dir: Path, request: dict, query: dict) -> dict:
     where = _filter_clause(filters, dims)
     unit_days = _row_unit_days(spec)
     rows_path = prepared / "rows.parquet"
-    forecast_path = run_dir / "forecast.parquet"
+    forecast_path = _prediction_path(run_dir, query, "forecast")
 
     keymap_sql = _row_keymap_sql(rows_path, dims)
     dims_sel = ", ".join(f"k.{_quote(d)}" for d in dims)
@@ -877,6 +991,8 @@ def row_table(run_dir: Path, request: dict, query: dict) -> dict:
     """
     sql = f"SELECT * FROM ({sql}) t WHERE {where}"
     sort = query.get("sort") or "predicted_date"
+    if sort == _family_column(request):
+        sort = "predicted_date"
     order = "DESC" if query.get("desc") == "1" else "ASC"
     sql += f" ORDER BY {_quote(sort)} {order}"
     rows = con.execute(sql).fetchall()
@@ -906,21 +1022,34 @@ def row_table(run_dir: Path, request: dict, query: dict) -> dict:
 
 def table(run_dir: Path, request: dict, query: dict) -> dict:
     mode = request["spec"]["mode"]
-    return (
+    selected = _select_model(run_dir, _require_done(run_dir), query)
+    payload = (
         row_table(run_dir, request, query)
         if mode == "row"
         else series_table(run_dir, request, query)
     )
+    family_column = _family_column(request)
+    payload["columns"].append(family_column)
+    for row in payload["rows"]:
+        row.append(selected["family"])
+    return {
+        **payload,
+        "model": selected["model"],
+        "family": selected["family"],
+        "family_column": family_column,
+        "members": selected["members"],
+    }
 
 
 # ---------------------------------------------------------------- export
 
 
-def export_csv(run_dir: Path, request: dict) -> bytes:
+def export_csv(run_dir: Path, request: dict, query: dict | None = None) -> bytes:
     """the full forecast table (page 0, everything) as csv, the verdict named on every row"""
     result = _require_done(run_dir)
-    verdict = result["verdict"]
-    payload = table(run_dir, request, {"size": 10**9})
+    query = query or {}
+    verdict = _select_model(run_dir, result, query)["verdict"]
+    payload = table(run_dir, request, {**query, "size": 10**9})
     trust_word = "trusted" if verdict["trusted"] else "not trusted"
 
     buf = io.StringIO()

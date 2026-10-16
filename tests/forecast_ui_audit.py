@@ -1,5 +1,41 @@
 """shared page states and measurements for the forecast chromium size audit"""
 
+FAMILY_LAYOUT = r"""() => {
+  const visible = node => node.getBoundingClientRect().height && node.getBoundingClientRect().width;
+  const target = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--row-height'));
+  const tables = [...document.querySelectorAll('[id$="-family-progress"], [id$="-family-comparison"], [id$="-importance"]')].filter(visible);
+  const menus = [...document.querySelectorAll('[id$="-generation-family"], [id$="-results-model"], [id$="-importance-family"]')].filter(visible);
+  return {
+    target,
+    rows: tables.flatMap(table => [...table.querySelectorAll('tr')].filter(visible).map(row => ({
+      table: table.id, text: row.innerText, height: row.getBoundingClientRect().height
+    }))),
+    headers: tables.flatMap(table => [...table.querySelectorAll('th')].filter(visible).map(header => {
+      const range = document.createRange();
+      range.selectNodeContents(header);
+      const lines = new Set([...range.getClientRects()].filter(rect => rect.width && rect.height).map(rect => Math.round(rect.top)));
+      return {table: table.id, text: header.innerText, lines: lines.size};
+    })),
+    menus: menus.map(menu => ({id: menu.id, toggle: menu.classList.contains('toggle'), height: menu.getBoundingClientRect().height})),
+    selects: [...tables, ...menus].flatMap(node => [...node.querySelectorAll('select'), ...(node.matches('select') ? [node] : [])]).length
+  };
+}"""
+
+
+def assert_family_layout(page):
+    """family tables and pickers share the host's row height and stay on one line"""
+    measured = page.evaluate(FAMILY_LAYOUT)
+    assert measured["selects"] == 0, measured
+    for row in measured["rows"]:
+        assert abs(row["height"] - measured["target"]) < 0.01, row
+    for header in measured["headers"]:
+        assert header["lines"] <= 1, header
+    for menu in measured["menus"]:
+        assert menu["toggle"], menu
+        assert abs(menu["height"] - measured["target"]) < 0.01, menu
+    return measured
+
+
 CONTROL_SIZES = r"""() => {
   const selector = 'button, .toggle, .dropdown-head, input, select, .nav-tab, [role="combobox"], .menu-item, .menu-inline-action';
   const path = node => {
@@ -132,7 +168,13 @@ def visit_control_states(page, *, source, targets, run_id, capture, set_results_
         tab(f"{name}-search")
         page.locator(f'#{name}-runs-list [data-run-id="{run_id}"]').click()
         page.locator(f"#{name}-leaderboard-table tbody tr").first.wait_for()
+        assert_family_layout(page)
         capture(f"search-{name}-finished")
+        if page.locator(f"#{name}-generation-family").is_visible():
+            page.click(f"#{name}-generation-family")
+            page.locator(".menu-panel").wait_for()
+            capture(f"search-{name}-family-menu")
+            page.keyboard.press("Escape")
         page.locator(f"#{name}-leaderboard-table tbody tr .dropdown-head").first.click()
         page.locator(".forecast-recipe-details").wait_for()
         capture(f"recipe-{name}")
@@ -143,7 +185,14 @@ def visit_control_states(page, *, source, targets, run_id, capture, set_results_
         page.locator(f'#{name}-runs-list [data-run-id="{run_id}"]').click()
         page.click(f"#{name}-run-open")
         page.locator(f"#{name}-results-table tr").nth(1).wait_for()
+        assert_family_layout(page)
         capture(f"results-{name}")
+        for picker in ("results-model", "importance-family"):
+            if page.locator(f"#{name}-{picker}").is_visible():
+                page.click(f"#{name}-{picker}")
+                page.locator(".menu-panel").wait_for()
+                capture(f"results-{name}-{picker}-menu")
+                page.keyboard.press("Escape")
         page.click(f"#{name}-results-run")
         page.locator(".menu-panel").wait_for()
         capture(f"results-{name}-run-menu")
