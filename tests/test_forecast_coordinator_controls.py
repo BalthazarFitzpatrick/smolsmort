@@ -31,6 +31,308 @@ def read_json(path):
     return json.loads(path.read_text())
 
 
+@pytest.fixture
+def tunable_race(tmp_path, monkeypatch):
+    from smolsmort.forecast import coordinator
+    from smolsmort.forecast.families import get_family
+
+    clock = [100.0]
+    launches, snapshots, processes = [], [], []
+    errors = {"theta": 0.2, "snaive": 0.3, "ets": 0.4, "arima": 0.7}
+    errors.update(ridge=0.6, lightgbm=0.8, xgboost=0.9)
+    plateaus = {}
+    partial = set()
+
+    def save_json(name, value):
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(value))
+
+    class FamilyProcess:
+        def __init__(self, command, **kwargs):
+            self.name = command[-1]
+            self.target = tmp_path / "families" / self.name
+            self.allocation = read_json(self.target / "slice.json")
+            self.previous = coordinator.read_json(self.target / "checkpoint.json", {})
+            self.pid = 1000 + len(processes)
+            self.returncode = None
+            self.started = clock[0]
+            processes.append(self)
+            launches.append(self)
+
+        def poll(self):
+            if self.returncode is not None:
+                return self.returncode
+            broad = self.allocation["phase"] == "broad"
+            generation = self.previous.get("generation", 0) + (not broad)
+            plateau = generation >= plateaus.get(self.name, float("inf"))
+            end = self.started + 0.1 if broad or plateau else self.allocation["deadline"]
+            if clock[0] < end:
+                return None
+            self.returncode = 0
+            if self.name in partial and not broad:
+                partial.remove(self.name)
+                generation = 0
+            entries = list(self.previous.get("entries", []))
+            for _ in range(1 if broad else 2):
+                genome = make_genome(["lag"], "squared", {"candidate": len(entries)}, self.name)
+                entries.append(
+                    {
+                        "key": genome.key(),
+                        "genome": genome.to_dict(),
+                        "families": 1,
+                        "fitness": errors[self.name],
+                        "contrib": [errors[self.name]] * 8,
+                        "metrics": {},
+                        "generation": generation,
+                        "phase": self.allocation["phase"],
+                        "elapsed_s": 0.1,
+                        "cost_hint": 1,
+                    }
+                )
+            save_json(
+                f"families/{self.name}/checkpoint.json",
+                {
+                    "entries": entries,
+                    "generation": generation,
+                    "population": [entries[-1]["genome"]],
+                },
+            )
+            reason = (
+                "single candidate"
+                if not get_family(self.name).space()
+                else "broad defaults"
+                if broad
+                else "plateau"
+                if plateau
+                else "time cap"
+            )
+            save_json(
+                f"families/{self.name}/status.json",
+                {
+                    "state": "done",
+                    "reason": reason,
+                    "generation": generation,
+                    "candidates_done": len(entries),
+                },
+            )
+            return 0
+
+        def terminate(self):
+            self.returncode = -1
+
+        def kill(self):
+            self.returncode = -1
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    monkeypatch.setattr(coordinator.time, "time", lambda: clock[0])
+    monkeypatch.setattr(coordinator.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        coordinator.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    )
+    monkeypatch.setattr(coordinator.subprocess, "Popen", FamilyProcess)
+    job = SimpleNamespace(
+        cancelled=False,
+        save=save_json,
+        status=lambda *args, **kwargs: snapshots.append(deepcopy(kwargs)),
+        event=lambda payload: None,
+    )
+
+    def run(names=None, cap=2):
+        names = names or list(errors)
+        save_json("finish_complete.json", {})
+        save_json("result.json", {"families": {name: {"fitness": errors[name]} for name in names}})
+        return coordinator.launch_families(
+            tmp_path,
+            make_request(
+                families=[{"name": name} for name in names],
+                time_budget_s=60,
+                max_concurrent_families=cap,
+            ),
+            job,
+        )
+
+    return SimpleNamespace(
+        run=run,
+        clock=clock,
+        launches=launches,
+        snapshots=snapshots,
+        errors=errors,
+        plateaus=plateaus,
+        partial=partial,
+        save=save_json,
+        job=job,
+    )
+
+
+def test_zero_param_leader_allows_every_tunable_to_breed(tunable_race, tmp_path):
+    race = tunable_race
+    result = race.run(cap=2)
+    for name in ("ridge", "lightgbm", "xgboost"):
+        state = result["families"][name]
+        assert state["candidates_done"] > 1
+        assert state["generation"] >= 1
+        for snapshot in race.snapshots:
+            status = snapshot["families"][name]
+            if status["state"] == "pruned":
+                assert status["generation"] >= 1
+                assert status["candidates_done"] > 1
+        saved = read_json(tmp_path / "result.json")["families"][name]
+        assert saved["generation"] >= 1
+        assert saved["candidates"] > 1
+        assert saved["fitness"] == race.errors[name]
+    for name in ("theta", "snaive", "ets", "arima"):
+        assert result["families"][name]["state"] == "done"
+        assert result["families"][name]["candidates_done"] == 1
+        assert [p.allocation["phase"] for p in race.launches if p.name == name] == ["broad"]
+    assert result["best"]["family"] == "theta"
+    assert 142 <= race.clock[0] < 142.2
+    assert all(p.allocation["deadline"] <= 142 for p in race.launches)
+    assert (
+        max(
+            sum(
+                p.started <= at < p.allocation["deadline"]
+                for p in race.launches
+                if p.allocation["phase"] != "broad"
+            )
+            for at in [p.started for p in race.launches]
+        )
+        <= 2
+    )
+
+
+def test_leftover_time_resumes_best_pruned_checkpoint_after_survivor_plateaus(tunable_race):
+    race = tunable_race
+    race.errors["ridge"] = race.errors["theta"]
+    race.plateaus.update(ridge=2, lightgbm=2, xgboost=2)
+    result = race.run(["theta", "ridge", "lightgbm", "xgboost"], cap=1)
+    pruned = [s for s in race.snapshots if s["families"]["lightgbm"]["state"] == "pruned"]
+    assert pruned
+    resumed = [p for p in race.launches if p.previous.get("generation", 0) >= 1]
+    assert [p.name for p in resumed] == ["ridge", "lightgbm", "xgboost"]
+    for process in resumed[1:]:
+        assert process.allocation["phase"] == "deep"
+        assert len(process.previous["entries"]) == 3
+        assert process.previous["population"]
+        state = result["families"][process.name]
+        assert state["generation"] == 2
+        assert state["candidates_done"] == 5
+        assert state["state"] == "done"
+        assert state["pruned_reason"] is None
+        assert any(
+            snapshot["families"][process.name].get("reason") == "resumed with leftover time"
+            for snapshot in race.snapshots
+        )
+    assert race.clock[0] < 142
+
+
+def test_partial_generation_is_not_pruned(tunable_race):
+    race = tunable_race
+    race.partial.add("ridge")
+    race.run(["theta", "ridge", "lightgbm"])
+    partial = [
+        s["families"]["ridge"]
+        for s in race.snapshots
+        if s["families"]["ridge"].get("candidates_done", 0) > 1
+        and s["families"]["ridge"].get("generation") == 0
+    ]
+    assert partial
+    assert all(state["state"] != "pruned" for state in partial)
+    assert any(
+        p.name == "ridge"
+        and p.previous.get("generation") == 0
+        and len(p.previous.get("entries", [])) > 1
+        for p in race.launches
+    )
+
+
+def test_only_zero_param_families_finish_after_broad(tunable_race):
+    race = tunable_race
+    result = race.run(["theta", "snaive", "ets", "arima"])
+    assert len(race.launches) == 4
+    assert all(p.allocation["phase"] == "broad" for p in race.launches)
+    assert all(
+        s["candidates_done"] == 1 and s["state"] == "done" for s in result["families"].values()
+    )
+    assert race.clock[0] < 101
+
+
+@pytest.mark.parametrize("phase", ["halving", "deep"])
+@pytest.mark.parametrize("terminal", ["plateau", "grid complete", "failed", "cancelled"])
+def test_recovery_resumes_pruned_checkpoint_and_keeps_terminal_workers_stopped(
+    tunable_race, tmp_path, phase, terminal
+):
+    race = tunable_race
+    names = ["theta", "ridge", "lightgbm"]
+    race.plateaus.update(ridge=1, lightgbm=1)
+    race.run(names)
+    saved = read_json(tmp_path / "coordinator.json")
+    checkpoint = read_json(tmp_path / "families/ridge/checkpoint.json")
+    saved["phase"] = phase
+    for name in names:
+        saved["families"][name].update(state="pruned", pruned_reason="behind theta")
+    terminal_state = terminal if terminal in ("failed", "cancelled") else "done"
+    saved["families"]["lightgbm"]["reason"] = terminal
+    race.save("families/lightgbm/status.json", {"state": terminal_state, "reason": terminal})
+    race.save("families/ridge/status.json", {"state": "done", "reason": "time cap"})
+    race.save("coordinator.json", saved)
+    race.clock[0] = 120
+    race.plateaus["ridge"] = 2
+    race.launches.clear()
+    result = race.run(names)
+    assert [p.name for p in race.launches] == ["ridge"]
+    assert race.launches[0].previous == checkpoint
+    assert result["families"]["ridge"]["generation"] == 2
+    assert result["families"]["ridge"]["candidates_done"] == 5
+    assert result["families"]["lightgbm"]["state"] == terminal_state
+    assert result["families"]["theta"]["state"] == "done"
+    assert read_json(tmp_path / "coordinator.json")["deadline"] == 160
+    assert race.clock[0] < 142
+
+
+@pytest.mark.parametrize("worker_reason", ["time cap", "plateau"])
+def test_recovery_reconciles_worker_exit_before_coordinator_save(
+    tunable_race, tmp_path, worker_reason
+):
+    race = tunable_race
+    names = ["theta", "ridge"]
+    race.plateaus["ridge"] = 1
+    race.run(names)
+    saved = read_json(tmp_path / "coordinator.json")
+    saved["phase"] = "deep"
+    saved["families"]["ridge"].update(state="running", pid=None)
+    race.save("coordinator.json", saved)
+    race.save("families/ridge/status.json", {"state": "done", "reason": worker_reason})
+    race.clock[0] = 120
+    race.plateaus["ridge"] = 2
+    race.launches.clear()
+    result = race.run(names)
+    assert len(race.launches) == (worker_reason == "time cap")
+    assert result["families"]["ridge"]["state"] == "done"
+    assert result["families"]["ridge"]["generation"] == (2 if worker_reason == "time cap" else 1)
+
+
+def test_cancellation_stops_leftover_workers(tunable_race):
+    race = tunable_race
+    record_status = race.job.status
+
+    def cancel_leftover(*args, **kwargs):
+        record_status(*args, **kwargs)
+        if any(
+            s.get("reason") == "resumed with leftover time" for s in kwargs["families"].values()
+        ):
+            race.job.cancelled = True
+
+    race.job.status = cancel_leftover
+    result = race.run(["theta", "ridge", "lightgbm"])
+    assert result["stopped"] == "cancelled"
+    assert all(s["state"] == "cancelled" for n, s in result["families"].items() if n != "theta")
+    assert all(p.poll() is not None for p in race.launches)
+    assert race.clock[0] < 142
+
+
 def test_v2_control_defaults():
     request = parse_request(make_request())
     assert request["max_concurrent_families"] == 4
@@ -896,18 +1198,18 @@ def test_real_worker_uses_released_threads_on_its_next_candidate(tmp_path, monke
         )
     )
     (run / "request.json").write_text(json.dumps(request))
-    started_at = time.time() - 8
+    started_at = time.time()
     job = _Run(run)
     job.save(
         "coordinator.json",
         {
             "started_at": started_at,
             "deadline": started_at + 20,
-            "phase": "deep",
+            "phase": "broad",
             "families": {
                 name: {
-                    "state": "paused",
-                    "phase": "deep",
+                    "state": "pending",
+                    "phase": "broad",
                     "slice_s": 0,
                     "best_error": None,
                     "pruned_reason": None,
