@@ -97,8 +97,8 @@ def test_allocator_prunes_paired_noise_and_bounds_overrunning_workers(tmp_path, 
         job,
     )
     states = result["families"]
-    assert states["snaive"]["state"] == "pruned"
-    assert "paired" in states["snaive"]["pruned_reason"]
+    assert states["snaive"]["state"] == "done"
+    assert states["snaive"]["pruned_reason"] is None
     assert states["lightgbm"]["pruned_reason"] is None
     assert states["xgboost"]["pruned_reason"] is None
     assert all(process.terminated for process in processes)
@@ -457,8 +457,9 @@ def test_four_family_budget_prunes_and_finishes_ensemble(tmp_path):
     assert time.monotonic() - started <= 64
     result = assert_final_artifacts(root / run_id, names)
     snaive = result["families"]["snaive"]
-    assert snaive["state"] == "pruned", result["families"]
-    assert snaive["pruned_reason"]
+    assert snaive["state"] == "done", result["families"]
+    assert snaive["pruned_reason"] is None
+    assert snaive["candidates"] == 1
     assert snaive["fitness"] > result["winner"]["fitness"]
 
 

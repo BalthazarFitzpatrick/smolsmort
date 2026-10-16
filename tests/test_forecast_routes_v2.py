@@ -798,12 +798,16 @@ def test_warm_worker_seeds_only_the_winner_family(tmp_path, monkeypatch, name, s
 def wait_for_state(app, run_id, timeout=110):
     until = time.monotonic() + timeout
     samples = []
+    event_cursor = -1
     while time.monotonic() < until:
-        state = get(app, id=run_id)
+        state = get(app, id=run_id, since_events=event_cursor)
         samples.append(state)
+        event_cursor = state["events_cursor"]
         if state["state"] in ("done", "failed", "cancelled") and not state["alive"]:
             assert state["state"] == "done", state
-            return state, samples
+            if not state["events"]:
+                return state, samples
+            continue
         time.sleep(0.25)
     pytest.fail(f"run {run_id} did not finish within {timeout}s")
 
