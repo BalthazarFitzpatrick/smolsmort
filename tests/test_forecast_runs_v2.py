@@ -24,6 +24,7 @@ from smolsmort.forecast.requests import parse_request
 from smolsmort.forecast.runs import start_run, wait_run
 from smolsmort.forecast.search import Budget, search
 from smolsmort.forecast.spec import Column, PrepSpec
+from smolsmort.forecast.tables import read_table
 
 
 def make_request(folder, families, duration=15):
@@ -56,6 +57,50 @@ def make_request(folder, families, duration=15):
         "recipe": None,
     }
     return request, spec, prepared
+
+
+def test_v2_ets_excludes_ended_series_from_forecast(tmp_path):
+    pytest.importorskip("statsforecast")
+    selections = [{"name": "ets", "method": "grid"}]
+    _, spec, prepared = make_request(tmp_path, selections, 180)
+    run_id = start_run(
+        tmp_path / "runs",
+        spec,
+        prepared,
+        families=selections,
+        transform="none",
+        time_budget_s=180,
+        candidate_limit_fraction=1,
+        nthread=2,
+        ensemble={"enabled": False, "top": 3},
+    )
+    state = wait_run(tmp_path / "runs", run_id, timeout=210)
+    run = tmp_path / "runs" / run_id
+    finish_log = run / "finish.log"
+    assert state["state"] == "done", (
+        state,
+        finish_log.read_text() if finish_log.exists() else "",
+    )
+    excluded = [
+        {
+            "series": f"C|p{product}",
+            "dims": {"project": "C", "product": f"p{product}"},
+            "last_seen": "2025-10-13",
+        }
+        for product in range(1, 5)
+    ]
+    result = json.loads((run / "result.json").read_text())
+    assert result["excluded_series"] == excluded
+    assert state["excluded_series"] == excluded
+    forecast = read_table(run / "forecast.parquet")
+    assert set(forecast["series"]) == {
+        f"{project}|p{product}" for project in "AB" for product in range(1, 5)
+    }
+    assert len(forecast["series"]) == 8 * spec.horizon
+    events = [json.loads(line) for line in (run / "events.jsonl").read_text().splitlines()]
+    assert [event for event in events if event["event"] == "excluded_series"] == [
+        {"event": "excluded_series", "excluded_series": excluded}
+    ]
 
 
 def test_v1_parsing_is_unchanged():

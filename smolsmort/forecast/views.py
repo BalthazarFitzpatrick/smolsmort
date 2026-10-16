@@ -387,6 +387,7 @@ def multi_run_state(run_dir, request, status, *, since_generation=None, since_ev
         if request["spec"].get("task") == "regression" and kind != "refit"
         else None,
         "test_error": result.get("model_error"),
+        "excluded_series": result.get("excluded_series", []),
     }
     if since_generation is None:
         out["eval_history"] = _read_json(run_dir / "eval_history.json")
