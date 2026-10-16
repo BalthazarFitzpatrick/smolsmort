@@ -139,8 +139,7 @@ def test_models_saved_v2_requests_and_restored_plan(tmp_path, monkeypatch):
         minutes.fill("1")
         minutes.blur()
         at_once = page.locator("#regression-models-at-once")
-        assert at_once.is_disabled()
-        page.click("#regression-models-parallel")
+        # parallel is on by default
         assert at_once.is_enabled()
         assert at_once.get_attribute("max") == "2"
         at_once.fill("2")
@@ -315,7 +314,6 @@ def test_models_refused_invalid_parallelism(tmp_path, at_once):
         select_series(page)
         show_tab(page, "regression-models")
         family_toggle(page, "ridge").click()
-        page.click("#regression-models-parallel")
         field = page.locator("#regression-models-at-once")
         assert field.get_attribute("min") == "1"
         assert field.get_attribute("max") == "2"

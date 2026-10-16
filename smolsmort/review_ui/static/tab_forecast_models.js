@@ -18,7 +18,8 @@ class ForecastModels {
         ? [...new Set(saved.families.filter(name => typeof name === 'string'))] : ['xgboost'],
       minutes: Number.isFinite(saved.minutes) && saved.minutes >= 1 && saved.minutes <= 1440
         ? saved.minutes : 20,
-      parallel: saved.parallel === true,
+      // parallel is the default; only an explicit off is remembered as off
+      parallel: saved.parallel !== false,
       atOnce: Number.isInteger(saved.atOnce) && saved.atOnce >= 1 ? saved.atOnce : 4,
     };
   }
@@ -114,7 +115,7 @@ class ForecastModels {
       if (request !== this.catalogRequest) return;
       this.catalogSpec = spec ? JSON.stringify(spec) : null;
       this.catalog = res.families.filter(family => mode !== 'row' || family.name === 'xgboost');
-      this.say(reason || (mode === 'row' ? 'per-row runs support xgboost only' : 'select families to train'));
+      this.say(reason || (mode === 'row' ? 'per-row runs support xgboost only' : ''));
     } catch (err) {
       if (request !== this.catalogRequest) return;
       this.say(err.message);
