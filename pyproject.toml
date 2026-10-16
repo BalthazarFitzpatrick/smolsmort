@@ -78,7 +78,7 @@ python_functions = ["test_*"]
 
 [tool.uv.sources]
 # temporary commit pin until smortui is tagged
-ui-base = { git = "https://github.com/BalthazarFitzpatrick/smortui.git", rev = "cde0f6b14a2ef2f68eacf10b9d76f50e61e4e0ee" }
+ui-base = { git = "https://github.com/BalthazarFitzpatrick/smortui.git", rev = "7817ce17bd4ad44caabafe03e912a8159bdeddd2" }
 
 [dependency-groups]
 dev = ["ruff>=0.11.0", "pytest>=8.0", "torch>=2.0"]
