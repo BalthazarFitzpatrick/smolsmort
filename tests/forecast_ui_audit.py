@@ -122,9 +122,13 @@ def visit_control_states(page, *, source, targets, run_id, capture, set_results_
             "items => items.map(item => item.value)"
         )
         for flavour in options:
+            tab(f"{name}-data")
             page.select_option("#topic-flavour", flavour)
             page.wait_for_timeout(150)
             capture(f"data-{name}-{flavour}")
+            tab(f"{name}-models")
+            page.locator(f"#{name}-models-families [data-family]").first.wait_for()
+            capture(f"models-{name}-{flavour}")
         tab(f"{name}-search")
         page.locator(f'#{name}-runs-list [data-run-id="{run_id}"]').click()
         page.locator(f"#{name}-leaderboard-table tbody tr").first.wait_for()
@@ -134,7 +138,8 @@ def visit_control_states(page, *, source, targets, run_id, capture, set_results_
         capture(f"recipe-{name}")
         page.keyboard.press("Escape")
         page.click(f"#{name}-new-search")
-        capture(f"search-{name}-new")
+        capture(f"models-{name}-new")
+        tab(f"{name}-search")
         page.locator(f'#{name}-runs-list [data-run-id="{run_id}"]').click()
         page.click(f"#{name}-run-open")
         page.locator(f"#{name}-results-table tr").nth(1).wait_for()

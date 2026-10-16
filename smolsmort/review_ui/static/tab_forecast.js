@@ -168,7 +168,7 @@ class ForecastFieldMenu extends Menu {
   }
 }
 
-// one row per number, right-aligned buttons - the stepper-row recipe from the train tab
+// warm starts retain their own v1 budget controls
 function forecastStepperRow(prefix, row) {
   return `<div class="run-controls stepper-row" data-stepper="${row.key}">
     <span class="field-label">${row.label}</span>
@@ -262,7 +262,7 @@ class ForecastTopic {
         predictWhere: this.predictWhere, censorOn: this.censorOn, censorUnit: this.censorUnit,
         censorAsOf: this.censorAsOf,
         columnsInfo: this.columnsInfo, sourceRows: this.sourceRows, detectedEncoding: this.detectedEncoding,
-        preparedByMode: this.preparedByMode,
+        preparedByMode: this.preparedByMode, modelPlan: this.modelPlan,
       };
       localStorage.setItem(this.storageKey, JSON.stringify({state}));
     } catch (err) { /* private window, no matter */ }
@@ -323,11 +323,14 @@ class ForecastTopic {
     box.append(forecastNode('span', 'field-value', state));
   }
 
-  onFlavourChange() {
+  async onFlavourChange() {
     if (this.dataSay) this.dataSay('flavour changed - reloading columns for the new mode');
-    if (this.source) this.loadColumns();
+    const loading = this.source ? this.loadColumns() : Promise.resolve();
     this.paintDataMode();
     this.restorePrepared();
+    this.models.clearCatalog();
+    await loading;
+    if (!this.models.panel.classList.contains('hidden')) this.models.enter();
   }
 
   // ================================================================== data tab
@@ -830,7 +833,7 @@ class ForecastTopic {
       <div class="forecast-search-layout">
         <aside class="panel-inline forecast-run-rail">
           <div class="forecast-run-controls">
-            <button class="toggle adds" id="${this.topic}-new-search">+ new search</button>
+            <button class="toggle adds" id="${this.topic}-new-search">+ new run</button>
             <div class="forecast-run-sort" id="${this.topic}-run-sort"></div>
           </div>
           <section id="${this.topic}-running-section" class="hidden">
@@ -840,18 +843,11 @@ class ForecastTopic {
           <section><div class="field-label">runs</div><div id="${this.topic}-runs-list"></div></section>
         </aside>
         <div class="forecast-pane forecast-run-detail">
-        <div id="${this.topic}-new-search-pane" class="panel-inline forecast-pane">
-        <div class="field-label">new search · budget</div>
-        <div id="${this.topic}-budget">${budgetRows.map(r => forecastStepperRow(`${this.topic}-budget`, r)).join('')}</div>
-        <div class="run-controls">
-          <div class="toggle adds" id="${this.topic}-search-start">start</div>
-          <div class="toggle removes disabled" id="${this.topic}-search-cancel">cancel</div>
-        </div>
-        </div>
         <div class="panel-inline forecast-pane">
           <div class="run-controls">
-            <span class="field-value" id="${this.topic}-run-title">new search</span>
+            <span class="field-value" id="${this.topic}-run-title">pick a run or start one on models</span>
             <span class="forecast-verdict hidden" id="${this.topic}-run-verdict"></span>
+            <button class="toggle removes disabled" id="${this.topic}-search-cancel" disabled>cancel</button>
           </div>
           <div class="stat" id="${this.topic}-search-status">idle</div>
           <div id="${this.topic}-run-progress" class="hidden">
@@ -860,6 +856,10 @@ class ForecastTopic {
           </div>
           <div class="field-label" id="${this.topic}-run-stop"></div>
           <div class="field-value" id="${this.topic}-run-stats"></div>
+          <div class="hidden" id="${this.topic}-warm-budget">
+            <div class="field-label">warm start · budget</div>
+            <div id="${this.topic}-budget">${budgetRows.map(r => forecastStepperRow(`${this.topic}-budget`, r)).join('')}</div>
+          </div>
           <div class="run-controls hidden" id="${this.topic}-run-actions">
             <button class="toggle" id="${this.topic}-run-warm">warm start</button>
             <button class="toggle" id="${this.topic}-run-refit">refit</button>
@@ -891,9 +891,8 @@ class ForecastTopic {
         </div>
       </div>`;
     forecastWireSteppers(panel, `${this.topic}-budget`, budgetRows, this.searchValues, () => {});
-    document.getElementById(`${this.topic}-search-start`).onclick = () => this.startSearch();
     document.getElementById(`${this.topic}-search-cancel`).onclick = () => this.cancelSearch();
-    document.getElementById(`${this.topic}-new-search`).onclick = () => this.selectRun(null);
+    document.getElementById(`${this.topic}-new-search`).onclick = () => activateTab(`${this.topic}-models`);
     document.getElementById(`${this.topic}-run-sort`).append(forecastDropdown(
       ['date, newest first', 'best performance'], this.runOrder,
       value => { this.runOrder = value; this.paintRuns(); }, 'sort runs'
@@ -907,7 +906,7 @@ class ForecastTopic {
   async enterSearch() {
     await this.loadRuns();
     if (!this.searchEntered) {
-      this.selectedRunId = this.currentRunId || [...this.runCache.keys()].sort().at(-1) || null;
+      this.selectedRunId = this.selectedRunId || this.currentRunId || [...this.runCache.keys()].sort().at(-1) || null;
       this.searchEntered = true;
     }
     await this.selectRun(this.selectedRunId);
@@ -917,24 +916,6 @@ class ForecastTopic {
   searchSay(text) {
     setText(`${this.topic}-search-status`, text);
     document.getElementById(`${this.topic}-search-status`).classList.toggle('hidden', !text);
-  }
-
-  async startSearch() {
-    const budget = {
-      population: this.searchValues.population,
-      plateau: this.searchValues.plateau,
-      max_generations: this.searchValues.generations,
-      time_cap: this.searchValues.minutes * 60,
-    };
-    try {
-      if (this.source && !this.columnsInfo.length) await this.loadColumns();
-      const spec = this.currentSpec();
-      const res = await api('/api/forecast-runs', {spec, budget});
-      if (res.prepared) this.rememberPrepared(spec, res.prepared);
-      this.attachRun(res.run_id, 'search');
-    } catch (err) {
-      this.searchSay(err.message);
-    }
   }
 
   async cancelSearch() {
@@ -1030,13 +1011,15 @@ class ForecastTopic {
       setText(`${this.topic}-run-progress-label`, progress.label);
     }
     document.getElementById(`${this.topic}-search-status`).classList.toggle('hidden', run?.state === 'done');
-    document.getElementById(`${this.topic}-new-search-pane`).classList.toggle('hidden', !!run);
+    document.getElementById(`${this.topic}-warm-budget`).classList.toggle('hidden', !run);
     document.getElementById(`${this.topic}-run-actions`).classList.toggle('hidden', !run);
-    document.getElementById(`${this.topic}-search-cancel`).classList.toggle('disabled', !this.currentRunId);
+    const cancel = document.getElementById(`${this.topic}-search-cancel`);
+    cancel.disabled = !this.currentRunId;
+    cancel.classList.toggle('disabled', cancel.disabled);
     const verdict = document.getElementById(`${this.topic}-run-verdict`);
     verdict.classList.toggle('hidden', !run?.verdict);
     if (!run) {
-      setText(`${this.topic}-run-title`, 'new search');
+      setText(`${this.topic}-run-title`, 'pick a run or start one on models');
       setText(`${this.topic}-run-stop`, '');
       setText(`${this.topic}-run-stats`, '');
       this.searchSay('idle');
@@ -1599,10 +1582,11 @@ window.addEventListener('smolsmort-topic', event => {
   const ctl = new ForecastTopic(topic, topic);
   forecastTopics.set(topic, ctl);
   smolsmortTabs.register({id: `${topic}-data`, label: 'data', topic, mount: p => ctl.mountData(p)});
-  smolsmortTabs.register({id: `${topic}-search`, label: 'search', topic, mount: p => ctl.mountSearch(p)});
+  registerForecastModels(ctl);
+  smolsmortTabs.register({id: `${topic}-search`, label: 'training', topic, mount: p => ctl.mountSearch(p)});
   smolsmortTabs.register({id: `${topic}-results`, label: 'results', topic, mount: p => ctl.mountResults(p)});
   const flavours = topic === 'regression'
-    ? [{id: 'row', label: 'xgboost - per row'}, {id: 'series', label: 'xgboost - time series'}]
+    ? [{id: 'row', label: 'xgboost - per row'}, {id: 'series', label: 'time series'}]
     : [{id: 'row', label: 'xgboost - per row'}];
   smolsmortTabs.setFlavours(topic, flavours);
   smolsmortTabs.onFlavour(topic, () => ctl.onFlavourChange());
