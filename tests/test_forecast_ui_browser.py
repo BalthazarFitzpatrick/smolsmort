@@ -799,6 +799,7 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
         table.locator("tbody tr").first.wait_for()
         headers = [
             "rank",
+            "family",
             "generation found",
             f"validation error ({metric})",
             "gap to best",
@@ -829,14 +830,15 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
         assert selected != regular
         winner = recorded[0]
         cells = rows.first.locator("td").all_text_contents()
-        assert cells[:5] == [
+        assert cells[:6] == [
             "1",
+            "xgboost",
             str(winner["generation"]),
             f"{winner['fitness']:.4g}",
             "+0.00%",
             f"{winner['metrics']['mae']:.4g}" if topic == "regression" else "-",
         ]
-        assert cells[6:9] == [
+        assert cells[7:10] == [
             str(winner["genome"]["params"]["max_depth"]),
             "0.125",
             f"{winner['families']} features",
@@ -845,7 +847,7 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
         details = page.locator(".menu-panel")
         assert details.locator(".popup-title").inner_text() == "recipe 1"
         if topic == "regression":
-            assert cells[5] == "absolute error"
+            assert cells[6] == "absolute error"
             assert details.locator(".forecast-recipe-field").all_text_contents()[:5] == [
                 "lags0,1,3",
                 "rolling8,13,52",
@@ -854,7 +856,7 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
                 "dimsproject",
             ]
         else:
-            assert cells[5] in {"multiclass log loss", "log loss"}
+            assert cells[6] in {"multiclass log loss", "log loss"}
             assert details.locator(".forecast-recipe-field").all_text_contents()[:3] == [
                 "calendarweek,quarter",
                 "measuresplanned_offset,size",
@@ -869,7 +871,7 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
         )
         page.keyboard.press("Escape")
         gap = (recorded[1]["fitness"] - winner["fitness"]) / winner["fitness"] * 100
-        assert rows.nth(1).locator("td").nth(3).inner_text() == f"+{gap:.2f}%"
+        assert rows.nth(1).locator("td").nth(4).inner_text() == f"+{gap:.2f}%"
         assert "[object Object]" not in table.inner_text()
         assert not any(entry["key"] in table.inner_text() for entry in recorded)
         page.locator(f"#{topic}-leaderboard").screenshot(path=tmp_path / f"{topic}-leaderboard.png")
@@ -884,7 +886,7 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
         assert table.locator("th").all_text_contents() == headers
         assert table.locator("tbody tr").count() == 10
         missing = table.locator("tbody tr").nth(len(recorded)).locator("td").all_text_contents()
-        assert missing == [str(len(recorded) + 1)] + ["-"] * 7 + ["- features"]
+        assert missing == [str(len(recorded) + 1), "xgboost"] + ["-"] * 7 + ["- features"]
         table.locator("tbody tr").nth(len(recorded)).locator(".dropdown-head").click()
         assert "failed: too few usable rows" in page.locator(".menu-panel").inner_text()
         page.keyboard.press("Escape")
@@ -897,8 +899,8 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
             "id => document.getElementById(id).querySelectorAll('tbody tr').length === 3",
             arg=f"{topic}-leaderboard-table",
         )
-        assert rows.first.locator("td").nth(3).inner_text() == "+0.00%"
-        assert rows.nth(1).locator("td").nth(3).inner_text() == "-"
+        assert rows.first.locator("td").nth(4).inner_text() == "+0.00%"
+        assert rows.nth(1).locator("td").nth(4).inner_text() == "-"
         assert table.locator("th").all_text_contents() == headers
         snapshot["rows"] = [{"fitness": 1}, {"fitness": 1.0002}]
         page.click(f"#{topic}-new-search")
@@ -1086,7 +1088,7 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
         running.locator(f'[data-run-id="{live}"]').click()
         table.locator('td:text-is("0.09")').wait_for()
         assert page.locator(f"#{TOPIC}-loss-chart .chart-line").count() == 2
-        assert table.locator("tbody tr.on td").nth(1).inner_text() == str(recipes[-1]["generation"])
+        assert table.locator("tbody tr.on td").nth(2).inner_text() == str(recipes[-1]["generation"])
         assert 0 in board_cursors and 1 in board_cursors
         table.locator("tbody tr").first.locator(".dropdown-head").click()
         menu = page.locator(".menu-panel")

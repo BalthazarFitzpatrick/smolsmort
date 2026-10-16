@@ -213,5 +213,14 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-results .forecast-excluded-series { flex-shrink: 0; overflow-x: auto; text-overflow: clip; }
 .forecast-verdict-summary { font-weight: 600; }
 .forecast-results { flex: 1 1 auto; min-height: 0; }
+.forecast-results-models { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: var(--gap); }
+.forecast-results-models > .forecast-pane { min-width: 0; }
+.forecast-results-models:has(> .hidden) { grid-template-columns: minmax(0, 1fr); }
+.forecast-model-table-wrap { max-height: calc(var(--row-height) * 6); overflow: auto; }
+.forecast-family-table th, .forecast-family-table td,
+[id$="-family-progress"] th, [id$="-family-progress"] td { height: var(--row-height); box-sizing: border-box; }
+.forecast-results-models .run-controls { flex-wrap: nowrap; }
+.forecast-results-models .run-controls .field-label { flex-shrink: 1; }
 .forecast-chart { flex: 2 1 0; min-height: 160px; }
+.forecast-results > .forecast-chart { flex: 0 0 auto; }
 .forecast-table-wrap { flex: 3 1 0; min-height: 0; overflow: auto; }
