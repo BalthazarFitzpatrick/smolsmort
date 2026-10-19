@@ -59,6 +59,8 @@ def start_run(
     ensemble: dict | None = None,
     max_concurrent_families: int = 4,
     candidate_limit_fraction: float = 0.25,
+    plateau: int = 5,
+    min_generations: int = 0,
 ) -> str:
     """write the request and start the worker; returns the run id. `recipe` refits a saved
     winner without a search, `warm_from` seeds a search with an earlier run's population"""
@@ -84,6 +86,8 @@ def start_run(
             ensemble=ensemble if ensemble is not None else {"enabled": True, "top": 3},
             max_concurrent_families=max_concurrent_families,
             candidate_limit_fraction=candidate_limit_fraction,
+            plateau=plateau,
+            min_generations=min_generations,
         )
     request = parse_request(request)
     folder.mkdir(parents=True)

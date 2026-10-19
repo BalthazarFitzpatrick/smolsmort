@@ -117,6 +117,13 @@ def test_a_fixed_seed_gives_the_same_leaderboard(series_ws):
     ]
 
 
+def test_a_plateau_waits_for_the_minimum_generations(series_ws):
+    ws, _ = series_ws
+    early = search(ws, Budget(**{**TINY, "max_generations": 30, "plateau": 1}))
+    late = search(ws, Budget(**{**TINY, "max_generations": 30, "plateau": 1, "min_generations": 6}))
+    assert late["stopped"] == "plateau" and late["generations"] >= 6 > early["generations"]
+
+
 def test_the_search_stops_on_a_plateau_before_the_cap(series_ws):
     ws, _ = series_ws
     result = search(ws, Budget(**{**TINY, "max_generations": 30, "plateau": 1}))
