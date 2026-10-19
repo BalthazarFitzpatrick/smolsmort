@@ -335,7 +335,12 @@ def _prep_series(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[str, d
     ]
 
     typed_cols = [f"CAST({_quote(c)} AS VARCHAR) AS {_quote(c)}" for c in dims]
-    typed_cols += [f"CAST({_quote(c)} AS DOUBLE) AS {_quote(c)}" for c in measure_names]
+    # a count reads presence, not value, so a text key (an order id) stays text
+    typed_cols += [
+        f"CAST({_quote(c)} AS "
+        f"{'VARCHAR' if col_by_name[c].aggregation == 'count' else 'DOUBLE'}) AS {_quote(c)}"
+        for c in measure_names
+    ]
     stmts.append(
         "CREATE OR REPLACE TEMP VIEW typed AS\n"
         f"SELECT {step_q}, {time_q}, {', '.join(typed_cols)} FROM stepped;"

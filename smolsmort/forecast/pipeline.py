@@ -15,6 +15,7 @@ import numpy as np
 from smolsmort.forecast import evaluate as ev
 from smolsmort.forecast.families import get_family
 from smolsmort.forecast.features import buckets_for, row_features, series_features
+from smolsmort.forecast.importance import combine_importance, measure_importance
 from smolsmort.forecast.model import CLASSIFIERS, NONNEGATIVE, fit_model, predict
 from smolsmort.forecast.profile import build_profile
 from smolsmort.forecast.spec import ANCHOR, LOWER, ROW, SERIES, STEP, UNIT_DAYS, UPPER, PrepSpec
@@ -417,7 +418,9 @@ def _series_raw_fit(ws, genome, frame, rows, bucket, nthread):
     return fitted, task
 
 
-def _series_predict(ws, genome, frame, fit_rows, eval_rows, bucket, nthread, histories=None):
+def _series_predict(
+    ws, genome, frame, fit_rows, eval_rows, bucket, nthread, histories=None, importance=None
+):
     transform = get_transform(genome.transform)
     if get_family(genome.family).needs == "raw_series":
         fitted, task = _series_raw_fit(ws, genome, frame, eval_rows, bucket, nthread)
@@ -431,6 +434,11 @@ def _series_predict(ws, genome, frame, fit_rows, eval_rows, bucket, nthread, his
             prediction = transform.inv(prediction, base)
     else:
         fitted, x = _series_fit(ws, genome, frame, fit_rows, nthread)
+        if importance is not None:
+            _, names, _ = frame.features.pick(set(genome.families))
+            importance.append(
+                measure_importance(genome.family, fitted, names, x[fit_rows & np.isfinite(frame.y)])
+            )
         base = frame.base[eval_rows] if genome.transform == "logdiff" else None
         prediction = transform.inv(fitted.predict(x[eval_rows]), base)
     # one actual fit, never a blend of curves from different horizon buckets
@@ -457,6 +465,22 @@ def _raw_origin_base(ws, frame, rows):
     return base
 
 
+def fit_importance(ws, genome, *, nthread=1):
+    """fit a family outside the ensemble on known rows, without evaluating its test split"""
+    if get_family(genome.family).needs != "lag_features":
+        return []
+    scores = []
+    for bucket, frame in ws.frames.items():
+        masks = ws.series_masks[bucket]
+        rows = masks["train"] | masks["val"] | masks["test"]
+        fitted, x = _series_fit(ws, genome, frame, rows, nthread)
+        _, names, _ = frame.features.pick(set(genome.families))
+        scores.append(
+            measure_importance(genome.family, fitted, names, x[rows & np.isfinite(frame.y)])
+        )
+    return scores
+
+
 # ---------------------------------------------------------------- the frozen winner
 
 
@@ -468,12 +492,15 @@ def finish(
     members=None,
     validation=None,
     prediction_cache=None,
+    importance_cache=None,
 ) -> dict:
     """band from validation, the verdict from the untouched test split, and the forecast itself"""
     if ws.mode == "row":
         result = _finish_rows(ws, genome, nthread)
     else:
-        result = _finish_series(ws, genome, nthread, members, validation, prediction_cache)
+        result = _finish_series(
+            ws, genome, nthread, members, validation, prediction_cache, importance_cache
+        )
     return {**result, "transform": genome.transform}
 
 
@@ -517,6 +544,8 @@ def _finish_rows(ws, genome, nthread) -> dict:
         )
     everything = np.ones(len(target), dtype=bool)
     fitted, x = _row_fit(ws, genome, everything, "final", nthread)
+    _, names, _ = ws.features.pick(set(genome.families))
+    importance = combine_importance("xgboost", [measure_importance("xgboost", fitted, names)])
     rows = ws.predict_rows
     out = {"row": ws.table[ROW][rows], "anchor": ws.table[ANCHOR][rows]}
     if classification:
@@ -542,6 +571,7 @@ def _finish_rows(ws, genome, nthread) -> dict:
         "forecast": out,
         "model_error": model_error,
         "baseline_error": baseline_error,
+        "importance": importance,
     }
 
 
@@ -575,7 +605,7 @@ def _row_baseline(ws, target) -> np.ndarray:
 
 
 def _finish_series(
-    ws, genome, nthread, members=None, validation=None, prediction_cache=None
+    ws, genome, nthread, members=None, validation=None, prediction_cache=None, importance_cache=None
 ) -> dict:
     profile = ws.profile
     period = profile["genes"].get("period")
@@ -583,16 +613,20 @@ def _finish_series(
     test_pred_all, test_truth_all, base_all = [], [], []
     test_lo, test_hi = [], []
     offset = 0
+    single = members is None
     members = members or [genome]
 
-    def predict_members(frame, fit_rows, eval_rows, bucket):
+    def predict_members(frame, fit_rows, eval_rows, bucket, collect=False):
         predictions = []
         for member in members:
             key = (member.key(), bucket, fit_rows.tobytes(), eval_rows.tobytes())
             prediction = prediction_cache.get(key) if prediction_cache is not None else None
             if prediction is None:
+                options = {}
+                if collect and importance_cache is not None:
+                    options["importance"] = importance_cache.setdefault(member.key(), [])
                 prediction = _series_predict(
-                    ws, member, frame, fit_rows, eval_rows, bucket, nthread
+                    ws, member, frame, fit_rows, eval_rows, bucket, nthread, **options
                 )
                 if prediction_cache is not None:
                     prediction_cache[key] = prediction
@@ -624,6 +658,7 @@ def _finish_series(
             masks["train"] | masks["val"] | masks["test"],
             masks["future"],
             bucket,
+            collect=True,
         )
         lo, hi = ev.apply_band(band, future_pred, nonnegative=True)
         rows = _series_rows(frame, masks["future"], future_pred, bucket)
@@ -657,6 +692,9 @@ def _finish_series(
         "forecast": _stack(forecast),
         "model_error": model_error,
         "baseline_error": baseline_error,
+        "importance": combine_importance(genome.family, importance_cache.get(genome.key(), []))
+        if single and importance_cache is not None
+        else None,
     }
 
 

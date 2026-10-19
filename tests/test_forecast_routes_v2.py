@@ -18,6 +18,7 @@ from forecast_fixtures import write_panel
 from smolsmort.forecast import runs, views
 from smolsmort.forecast.families import get_family, registered_families
 from smolsmort.forecast.tab import forecast_tab
+from smolsmort.forecast.tables import read_table, write_table
 from smolsmort.review.routes import RequestError
 
 
@@ -66,6 +67,230 @@ def make_saved_run(app, name="saved", **changes):
     write_json(folder / "request.json", {"version": 2, **make_payload(), **changes})
     write_json(folder / "status.json", {"state": "done", "phase": "finish"})
     return folder
+
+
+@pytest.fixture
+def completed_models(app, tmp_path):
+    pytest.importorskip("duckdb")
+    prepared = tmp_path / ".forecast-cache" / "synthetic"
+    prepared.mkdir(parents=True)
+    dates = np.array(["2025-01-06", "2025-01-13", "2025-01-20"], dtype="datetime64[D]")
+    write_table(
+        prepared / "panel.parquet",
+        {
+            "__series": np.array(["a"] * 3),
+            "__step": dates,
+            "project": np.array(["a"] * 3),
+            "product": np.array(["one"] * 3),
+            "units": np.array([8.0, 9.0, 10.0]),
+        },
+    )
+    run = make_saved_run(
+        app,
+        families=[{"name": name} for name in ("xgboost", "ridge", "snaive")],
+        prepared=str(prepared),
+    )
+    winner_verdict = {"trusted": True, "summary": "winner beat baseline"}
+    ensemble_verdict = {"trusted": False, "summary": "ensemble did not beat baseline"}
+    write_json(
+        run / "result.json",
+        {
+            "verdict": winner_verdict,
+            "winner": {"family": "xgboost", "fitness": 0.2, "verdict": winner_verdict},
+            "ensemble": {
+                "members": ["xgboost", "ridge"],
+                "fitness": 0.25,
+                "verdict": ensemble_verdict,
+            },
+            "families": {
+                "xgboost": {"fitness": 0.2, "candidates": 6, "state": "done"},
+                "ridge": {
+                    "fitness": 0.3,
+                    "candidates": 4,
+                    "state": "done",
+                    "importance": {
+                        "method": "absolute standardised coefficient",
+                        "features": [{"feature": "lag_2", "importance": 1.0}],
+                    },
+                },
+                "snaive": {
+                    "fitness": 0.5,
+                    "candidates": 1,
+                    "state": "pruned",
+                    "pruned_reason": "paired validation error behind xgboost",
+                    "verdict": {"trusted": True, "summary": "must not expose loser test scores"},
+                },
+            },
+        },
+    )
+    write_json(run / "recipe.json", {"family": "xgboost", "genome": {"family": "xgboost"}})
+    write_json(
+        run / "families/xgboost/importance.json",
+        {"method": "gain", "features": [{"feature": "lag_1", "importance": 1.0}]},
+    )
+    for model, prediction in (("winner", 10.0), ("ensemble", 20.0)):
+        for kind, date, actual in (
+            ("validation", dates[1], 9.0),
+            ("test", dates[2], 10.0),
+            ("forecast", np.datetime64("2025-01-27", "D"), None),
+        ):
+            columns = {
+                "series": np.array(["a"]),
+                "step": np.array([date]),
+                "bucket": np.array(["h1"]),
+                "prediction": np.array([prediction]),
+            }
+            if actual is None:
+                columns.update(lower=np.array([prediction - 1]), upper=np.array([prediction + 1]))
+            else:
+                columns["actual"] = np.array([actual])
+            write_table(run / f"{model}_{kind}.parquet", columns)
+            if model == "winner":
+                write_table(run / f"{kind}.parquet", columns)
+    return run
+
+
+def test_results_compare_validation_scores_without_loser_test_verdicts(app, completed_models):
+    payload = get(app, "/api/forecast-view", id=completed_models.name)
+    assert payload["family"] == payload["winner_family"] == "xgboost"
+    assert payload["model"] == "winner" and payload["members"] == []
+    assert list(payload["families"]) == ["xgboost", "ridge", "snaive"]
+    assert [row["fitness"] for row in payload["families"].values()] == [0.2, 0.3, 0.5]
+    assert payload["families"]["xgboost"]["verdict"] == payload["winner"]["verdict"]
+    assert "verdict" not in payload["families"]["ridge"]
+    assert "verdict" not in payload["families"]["snaive"]
+    assert (
+        payload["families"]["snaive"]["pruned_reason"] == "paired validation error behind xgboost"
+    )
+    assert payload["ensemble"]["verdict"]["trusted"] is False
+    assert payload["importance"] == {
+        "method": "gain",
+        "features": [{"feature": "lag_1", "importance": 1.0}],
+    }
+    forecast = next(line for line in payload["series"] if line["id"] == "forecast")
+    assert forecast["family"] == "xgboost" and forecast["values"][-1] == 10
+
+
+@pytest.mark.parametrize(
+    "model,prediction,family,trusted",
+    [("winner", 10, "xgboost", True), ("ensemble", 20, "ensemble", False)],
+)
+def test_selected_result_model_matches_chart_table_and_export(
+    app, completed_models, model, prediction, family, trusted
+):
+    view = get(app, "/api/forecast-view", id=completed_models.name, model=model)
+    assert view["model"] == model and view["family"] == family
+    assert view["verdict"]["trusted"] is trusted
+    forecast = next(line for line in view["series"] if line["id"] == "forecast")
+    assert forecast["values"][-1] == prediction
+    if model == "ensemble":
+        assert view["members"] == ["xgboost", "ridge"] and view["importance"] is None
+    table = get(app, "/api/forecast-table", id=completed_models.name, model=model, sort="family")
+    assert table["family"] == family and table["columns"][-1] == "family"
+    assert all(row[-1] == family for row in table["rows"])
+    assert {row[table["columns"].index("prediction")] for row in table["rows"]} == {prediction}
+    exported = (
+        forecast_tab()
+        .images["/api/forecast-export/"][0](app, f"{completed_models.name}/{model}.csv")
+        .decode()
+    )
+    assert exported.splitlines()[0] == f"# verdict: {view['verdict']['summary']}"
+    assert f",{family},{'trusted' if trusted else 'not trusted'}" in exported
+
+
+def test_saved_ensemble_is_default_but_winner_can_still_be_selected(app, completed_models):
+    write_json(
+        completed_models / "recipe.json", {"family": "ensemble", "genome": {"family": "xgboost"}}
+    )
+    default = get(app, "/api/forecast-view", id=completed_models.name)
+    winner = get(app, "/api/forecast-view", id=completed_models.name, model="winner")
+    assert default["family"] == "ensemble" and winner["family"] == "xgboost"
+    assert default["verdict"] != winner["verdict"]
+
+
+def test_model_family_column_preserves_a_source_dimension_named_family(app, completed_models):
+    request = views.read_request(completed_models)
+    request["spec"]["columns"].append({"name": "family", "role": "dimension"})
+    write_json(completed_models / "request.json", request)
+    panel = Path(request["prepared"]) / "panel.parquet"
+    columns = read_table(panel)
+    columns["family"] = np.array(["synthetic dimension"] * len(columns["__series"]))
+    write_table(panel, columns)
+    payload = get(
+        app, "/api/forecast-table", id=completed_models.name, model="winner", sort="model_family"
+    )
+    assert payload["family_column"] == "model_family"
+    dimension_index = payload["columns"].index("family")
+    model_index = payload["columns"].index("model_family")
+    assert all(row[dimension_index] == "synthetic dimension" for row in payload["rows"])
+    assert all(row[model_index] == "xgboost" for row in payload["rows"])
+
+
+@pytest.mark.parametrize(
+    "family,method",
+    [("xgboost", "gain"), ("ridge", "absolute standardised coefficient"), ("snaive", None)],
+)
+def test_importance_selection_never_changes_the_shown_forecast(
+    app, completed_models, family, method
+):
+    payload = get(app, "/api/forecast-view", id=completed_models.name, importance_family=family)
+    assert payload["family"] == "xgboost" and payload["importance_family"] == family
+    if method is None:
+        assert payload["importance"] is None
+    else:
+        assert payload["importance"]["method"] == method
+
+
+@pytest.mark.parametrize("query", [{"model": "ridge"}, {"importance_family": "../../other"}])
+def test_result_queries_reject_unsaved_models_and_unknown_importance(app, completed_models, query):
+    with pytest.raises(RequestError):
+        get(app, "/api/forecast-view", id=completed_models.name, **query)
+
+
+def test_legacy_result_defaults_to_xgboost_without_a_family_comparison(app, completed_models):
+    for prefix in ("winner", "ensemble"):
+        for path in completed_models.glob(f"{prefix}_*.parquet"):
+            path.unlink()
+    request = views.read_request(completed_models)
+    request.pop("version")
+    request.pop("families")
+    write_json(completed_models / "request.json", request)
+    write_json(completed_models / "recipe.json", {"genome": {"families": ["lag"]}})
+    write_json(
+        completed_models / "result.json",
+        {"verdict": {"trusted": True, "summary": "trusted fixture"}},
+    )
+    write_json(
+        completed_models / "leaderboard.json", [{"fitness": 0.2, "genome": {"families": ["lag"]}}]
+    )
+    state = get(app, id=completed_models.name)
+    assert state["version"] == 1 and state["winner_family"] == "xgboost"
+    assert state["leaderboard"][0]["family"] == "xgboost"
+    payload = get(app, "/api/forecast-view", id=completed_models.name)
+    assert payload["family"] == "xgboost" and payload["families"] == {}
+
+
+def test_family_poll_preserves_failed_and_terminated_reasons(app):
+    run = make_saved_run(app, families=[{"name": "ridge"}, {"name": "snaive"}])
+    write_json(
+        run / "status.json",
+        {
+            "state": "done",
+            "families": {
+                "ridge": {"state": "failed", "reason": "synthetic fit failed"},
+                "snaive": {
+                    "state": "paused",
+                    "terminated": True,
+                    "reason": "slice deadline exceeded grace; worker terminated",
+                },
+            },
+        },
+    )
+    payload = get(app, id=run.name)
+    assert payload["version"] == 2
+    assert payload["families"]["ridge"]["reason"] == "synthetic fit failed"
+    assert payload["families"]["snaive"]["terminated"] is True
+    assert "worker terminated" in payload["families"]["snaive"]["reason"]
 
 
 def test_catalog_lists_all_registered_families_and_typed_spaces(app):
@@ -573,12 +798,16 @@ def test_warm_worker_seeds_only_the_winner_family(tmp_path, monkeypatch, name, s
 def wait_for_state(app, run_id, timeout=110):
     until = time.monotonic() + timeout
     samples = []
+    event_cursor = -1
     while time.monotonic() < until:
-        state = get(app, id=run_id)
+        state = get(app, id=run_id, since_events=event_cursor)
         samples.append(state)
+        event_cursor = state["events_cursor"]
         if state["state"] in ("done", "failed", "cancelled") and not state["alive"]:
             assert state["state"] == "done", state
-            return state, samples
+            if not state["events"]:
+                return state, samples
+            continue
         time.sleep(0.25)
     pytest.fail(f"run {run_id} did not finish within {timeout}s")
 

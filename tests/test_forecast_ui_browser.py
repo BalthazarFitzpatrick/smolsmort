@@ -1,5 +1,5 @@
-"""headless chromium against the REAL review server, over the synthetic row fixture: the
-regression topic end to end (data -> search -> results). run with:
+"""headless chromium against the real review server, over the synthetic row fixture: the
+regression topic end to end (data -> models -> training -> results). run with:
 uv run --with playwright pytest -q tests/test_forecast_ui_browser.py"""
 
 from __future__ import annotations
@@ -104,18 +104,38 @@ def uncheck_known(page: Page, column: str) -> None:
     row.locator('[role="checkbox"][aria-checked="true"]').click()
 
 
+def mock_model_catalog(page: Page) -> None:
+    """rendering tests mock training, so their catalog uses the same synthetic boundary"""
+    page.route(
+        "**/api/forecast-families?**",
+        lambda route: route.fulfill(
+            json={
+                "families": [
+                    {
+                        "name": "xgboost",
+                        "label": "xgboost",
+                        "available": True,
+                        "suitable": True,
+                        "reason": None,
+                        "install_command": None,
+                    }
+                ]
+            }
+        ),
+    )
+
+
+def start_models(page: Page, topic: str = TOPIC) -> None:
+    mock_model_catalog(page)
+    show_tab(page, f"{topic}-models")
+    page.click(f"#{topic}-models-start")
+
+
 def run_search(page: Page) -> None:
-    show_tab(page, "regression-search")
-    page.click(f"#{TOPIC}-new-search")
-    for key, value in (("population", 6), ("plateau", 1), ("generations", 2)):
-        head = page.locator(f'#{TOPIC}-budget [data-stepper="{key}"]')
-        current = int(head.locator(".field-value").inner_text())
-        delta = int(head.locator("[data-step]").first.get_attribute("data-step"))
-        clicks = round((value - current) / delta)
-        button = head.locator(f'[data-step="{delta if clicks >= 0 else -delta}"]')
-        for _ in range(abs(clicks)):
-            button.click()
-    page.click(f"#{TOPIC}-search-start")
+    show_tab(page, "regression-models")
+    page.locator(f"#{TOPIC}-models-minutes").fill("1")
+    page.locator(f"#{TOPIC}-models-minutes").blur()
+    page.click(f"#{TOPIC}-models-start")
     page.wait_for_function(
         f'/· (done|failed)$/.test(document.getElementById("{TOPIC}-run-title").innerText)',
         timeout=180000,
@@ -530,7 +550,7 @@ def test_search_charts_accumulate_validation_generations_and_reset(tmp_path, top
         )
         assert not progress.is_visible()
         assert not loss.is_visible()
-        page.click(f"#{topic}-search-start")
+        start_models(page, topic)
         page.wait_for_function(
             f'document.getElementById("{topic}-search-status").innerText === "running"'
         )
@@ -647,7 +667,7 @@ def test_search_charts_accumulate_validation_generations_and_reset(tmp_path, top
         assert loss.is_visible()
         snapshot.update(count=0, state="running")
         page.click(f"#{topic}-new-search")
-        page.click(f"#{topic}-search-start")
+        start_models(page, topic)
         page.wait_for_function(
             f'document.getElementById("{topic}-search-status").innerText === "running"'
         )
@@ -705,23 +725,24 @@ def test_generation_loss_ignores_response_from_previous_run(tmp_path):
         )
         show_tab(page, "regression-search")
         with page.expect_request("**/api/forecast-run?**"):
-            page.click(f"#{TOPIC}-search-start")
+            start_models(page)
         page.wait_for_timeout(100)
-        assert len(delayed) == 1
+        assert delayed
         page.click(f"#{TOPIC}-new-search")
-        page.click(f"#{TOPIC}-search-start")
+        start_models(page)
         page.wait_for_function(
             f'document.getElementById("{TOPIC}-search-status").innerText === "running"'
         )
-        delayed[0].fulfill(
-            json={
-                "state": "done",
-                "generations": [{"generation": 99, "best": 0.1, "evaluated": 1, "elapsed": 1}],
-                "generation_curves": [
-                    {"generation": 99, "key": "stale", "metric": "rmse", "validation": [2, 1]}
-                ],
-            }
-        )
+        for route in list(delayed):
+            route.fulfill(
+                json={
+                    "state": "done",
+                    "generations": [{"generation": 99, "best": 0.1, "evaluated": 1, "elapsed": 1}],
+                    "generation_curves": [
+                        {"generation": 99, "key": "stale", "metric": "rmse", "validation": [2, 1]}
+                    ],
+                }
+            )
         page.wait_for_timeout(100)
         assert page.locator(f"#{TOPIC}-search-status").inner_text() == "running"
         assert not page.locator(f"#{TOPIC}-search-loss").is_visible()
@@ -773,11 +794,12 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
             f'document.getElementById("{topic}-data-status").innerText.startsWith("prepared")'
         )
         show_tab(page, f"{topic}-search")
-        page.click(f"#{topic}-search-start")
+        start_models(page, topic)
         table = page.locator(f"#{topic}-leaderboard-table")
         table.locator("tbody tr").first.wait_for()
         headers = [
             "rank",
+            "family",
             "generation found",
             f"validation error ({metric})",
             "gap to best",
@@ -808,14 +830,15 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
         assert selected != regular
         winner = recorded[0]
         cells = rows.first.locator("td").all_text_contents()
-        assert cells[:5] == [
+        assert cells[:6] == [
             "1",
+            "xgboost",
             str(winner["generation"]),
             f"{winner['fitness']:.4g}",
             "+0.00%",
             f"{winner['metrics']['mae']:.4g}" if topic == "regression" else "-",
         ]
-        assert cells[6:9] == [
+        assert cells[7:10] == [
             str(winner["genome"]["params"]["max_depth"]),
             "0.125",
             f"{winner['families']} features",
@@ -824,7 +847,7 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
         details = page.locator(".menu-panel")
         assert details.locator(".popup-title").inner_text() == "recipe 1"
         if topic == "regression":
-            assert cells[5] == "absolute error"
+            assert cells[6] == "absolute error"
             assert details.locator(".forecast-recipe-field").all_text_contents()[:5] == [
                 "lags0,1,3",
                 "rolling8,13,52",
@@ -833,7 +856,7 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
                 "dimsproject",
             ]
         else:
-            assert cells[5] in {"multiclass log loss", "log loss"}
+            assert cells[6] in {"multiclass log loss", "log loss"}
             assert details.locator(".forecast-recipe-field").all_text_contents()[:3] == [
                 "calendarweek,quarter",
                 "measuresplanned_offset,size",
@@ -848,7 +871,7 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
         )
         page.keyboard.press("Escape")
         gap = (recorded[1]["fitness"] - winner["fitness"]) / winner["fitness"] * 100
-        assert rows.nth(1).locator("td").nth(3).inner_text() == f"+{gap:.2f}%"
+        assert rows.nth(1).locator("td").nth(4).inner_text() == f"+{gap:.2f}%"
         assert "[object Object]" not in table.inner_text()
         assert not any(entry["key"] in table.inner_text() for entry in recorded)
         page.locator(f"#{topic}-leaderboard").screenshot(path=tmp_path / f"{topic}-leaderboard.png")
@@ -858,12 +881,12 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
             recorded + [{"note": "failed: too few usable rows"}] + [recorded[-1]] * 12
         )
         page.click(f"#{topic}-new-search")
-        page.click(f"#{topic}-search-start")
+        start_models(page, topic)
         table.locator("tbody tr").nth(9).wait_for()
         assert table.locator("th").all_text_contents() == headers
         assert table.locator("tbody tr").count() == 10
         missing = table.locator("tbody tr").nth(len(recorded)).locator("td").all_text_contents()
-        assert missing == [str(len(recorded) + 1)] + ["-"] * 7 + ["- features"]
+        assert missing == [str(len(recorded) + 1), "xgboost"] + ["-"] * 7 + ["- features"]
         table.locator("tbody tr").nth(len(recorded)).locator(".dropdown-head").click()
         assert "failed: too few usable rows" in page.locator(".menu-panel").inner_text()
         page.keyboard.press("Escape")
@@ -871,21 +894,21 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
 
         snapshot["rows"] = [{"fitness": 0, "metrics": {metric: 0}}, {"fitness": 1}, {}]
         page.click(f"#{topic}-new-search")
-        page.click(f"#{topic}-search-start")
+        start_models(page, topic)
         page.wait_for_function(
             "id => document.getElementById(id).querySelectorAll('tbody tr').length === 3",
             arg=f"{topic}-leaderboard-table",
         )
-        assert rows.first.locator("td").nth(3).inner_text() == "+0.00%"
-        assert rows.nth(1).locator("td").nth(3).inner_text() == "-"
+        assert rows.first.locator("td").nth(4).inner_text() == "+0.00%"
+        assert rows.nth(1).locator("td").nth(4).inner_text() == "-"
         assert table.locator("th").all_text_contents() == headers
         snapshot["rows"] = [{"fitness": 1}, {"fitness": 1.0002}]
         page.click(f"#{topic}-new-search")
-        page.click(f"#{topic}-search-start")
+        start_models(page, topic)
         table.locator('td:text-is("+0.02%")').wait_for()
         snapshot["rows"] = []
         page.click(f"#{topic}-new-search")
-        page.click(f"#{topic}-search-start")
+        start_models(page, topic)
         page.wait_for_function(
             "id => document.getElementById(id).classList.contains('hidden')",
             arg=f"{topic}-leaderboard",
@@ -1065,7 +1088,7 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
         running.locator(f'[data-run-id="{live}"]').click()
         table.locator('td:text-is("0.09")').wait_for()
         assert page.locator(f"#{TOPIC}-loss-chart .chart-line").count() == 2
-        assert table.locator("tbody tr.on td").nth(1).inner_text() == str(recipes[-1]["generation"])
+        assert table.locator("tbody tr.on td").nth(2).inner_text() == str(recipes[-1]["generation"])
         assert 0 in board_cursors and 1 in board_cursors
         table.locator("tbody tr").first.locator(".dropdown-head").click()
         menu = page.locator(".menu-panel")
@@ -1132,7 +1155,7 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
             path=tmp_path / "runs-first.png"
         )
         page.click(f"#{TOPIC}-new-search")
-        assert page.locator(f"#{TOPIC}-new-search-pane").is_visible()
+        assert page.locator(f"#{TOPIC}-models-start").is_visible()
         assert not page.locator(f"#{TOPIC}-search-loss").is_visible()
 
 
@@ -1305,7 +1328,10 @@ def test_forecast_controls_follow_the_shared_row_height(tmp_path, width):
             "setup-time",
             "setup-scaffold",
             "settings",
-            "search-regression-new",
+            "models-regression-new",
+            "models-regression-row",
+            "models-regression-series",
+            "models-classification-row",
             "search-classification-finished",
             "recipe-regression",
             "results-classification",
@@ -1636,7 +1662,7 @@ def assert_dataset_state(page, state, *, source="rows.csv", topic="regression"):
     if source:
         assert readout.locator(".forecast-dataset-file").inner_text() == source
         assert readout.locator(".forecast-dataset-file").get_attribute("title") == source
-    for tab in ("data", "search", "results"):
+    for tab in ("data", "models", "search", "results"):
         show_tab(page, f"{topic}-{tab}")
         assert readout.is_visible()
         assert readout.locator(".field-value").last.inner_text() == state
@@ -1674,7 +1700,7 @@ def test_forecast_reloaded_setup_started_with_current_picks(tmp_path):
         assert_dataset_state(page, "prepared")
         show_tab(page, "regression-search")
         page.click("#regression-new-search")
-        page.click("#regression-search-start")
+        start_models(page)
         page.wait_for_function(
             "document.getElementById('regression-run-title').innerText.endsWith('· done')"
         )
@@ -1689,8 +1715,13 @@ def test_forecast_reloaded_setup_started_with_current_picks(tmp_path):
             show_tab(page, "regression-search")
             if action == "start":
                 page.click("#regression-new-search")
-                page.click("#regression-search-start")
+                start_models(page)
             else:
+                if action == "warm":
+                    minutes = page.locator('#regression-budget [data-stepper="minutes"]')
+                    minutes.locator('[data-step="-1"]').click()
+                    population = page.locator('#regression-budget [data-stepper="population"]')
+                    population.locator('[data-step="2"]').click()
                 page.click(f"#regression-run-{action}")
             page.wait_for_function(
                 "shortId => { const title = document.getElementById('regression-run-title').innerText; "
@@ -1700,6 +1731,13 @@ def test_forecast_reloaded_setup_started_with_current_picks(tmp_path):
             assert requests[-1][1]["spec"]["where"] == f"size > {index}"
             assert_dataset_state(page, "prepared")
         assert requests[-2][1]["warm_from"]
+        assert requests[-2][1]["budget"] == {
+            "population": 18,
+            "plateau": 5,
+            "max_generations": 60,
+            "time_cap": 1140,
+        }
+        assert "families" not in requests[-2][1]
         assert requests[-1][0] == "/api/forecast-refit"
         assert requests[-1][1]["run_id"]
         assert len(preparations) == 1
@@ -1763,8 +1801,8 @@ def test_forecast_search_named_missing_setup_pieces(tmp_path):
         def refused(message):
             show_tab(page, "regression-search")
             page.click("#regression-new-search")
-            page.click("#regression-search-start")
-            assert page.locator("#regression-search-status").inner_text() == message
+            start_models(page)
+            assert page.locator("#regression-models-status").inner_text() == message
 
         refused("no dataset selected")
         choose_forecast_source(page, "rows.csv")
@@ -1800,7 +1838,7 @@ def test_forecast_unprepared_saved_setup_started_after_reload(tmp_path, flavour)
         assert_dataset_state(page, "not prepared", source=source)
         show_tab(page, "regression-search")
         page.click("#regression-new-search")
-        page.click("#regression-search-start")
+        start_models(page)
         page.wait_for_function(
             "document.getElementById('regression-run-title').innerText.endsWith('· done')"
         )

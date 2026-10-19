@@ -181,7 +181,7 @@ def run(folder: Path) -> int:
         else:
             genome = genome_from_dict({**result["best"], "transform": transform})
             result["best"] = genome.to_dict()
-            final = finish(ws, genome, nthread=budget.nthread)
+            final = finish(ws, genome, nthread=budget.nthread, importance_cache={})
             _write_result(folder, spec, result, final)
         if request.get("version") == 2 and not result.get("finalized"):
             recipe = json.loads((folder / "recipe.json").read_text())
@@ -230,6 +230,7 @@ def _write_result(folder, spec, result, final):
         "baseline_error": final["baseline_error"],
         "band": final.get("band"),
         "bands": final.get("bands"),
+        "importance": final.get("importance"),
     }
     if spec.mode == "series":
         summary["excluded_series"] = final.get("excluded_series", [])
@@ -239,6 +240,8 @@ def _write_result(folder, spec, result, final):
         tmp = folder / f"{name}.tmp"
         tmp.write_text(json.dumps(data, indent=2, default=_plain))
         os.replace(tmp, folder / name)
+    if final.get("importance") is not None:
+        _Run(folder).save("importance.json", final["importance"])
     for name in ("forecast", "validation", "test"):
         columns = final.get(name)
         if (

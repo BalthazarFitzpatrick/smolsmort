@@ -11,6 +11,7 @@ from collections import deque
 
 import numpy as np
 
+from smolsmort.forecast.families import get_family
 from smolsmort.forecast.family_worker import read_json
 from smolsmort.forecast.pipeline import genome_from_dict
 from smolsmort.forecast.processes import is_process_alive
@@ -131,6 +132,7 @@ def rank_families(selected, states):
 
 def launch_families(folder, request, job):
     names = [item["name"] for item in request["families"]]
+    tunable = {name for name in names if get_family(name).space()}
     now = time.time()
     state = read_json(folder / "coordinator.json") or {
         "started_at": now,
@@ -139,7 +141,7 @@ def launch_families(folder, request, job):
         "families": {},
     }
     deadline = state["deadline"]
-    search_deadline = state["started_at"] + request["time_budget_s"] * 0.7
+    search_deadline = min(deadline, state["started_at"] + request["time_budget_s"] * 0.7)
     states = state["families"]
     cap = request.get("max_concurrent_families", 4)
     total_threads = request.get("nthread") or os.cpu_count() or 1
@@ -167,8 +169,63 @@ def launch_families(folder, request, job):
                 "pruned_reason": None,
             },
         )
-        if state["phase"] != "broad" and states[name]["state"] == "running":
+
+    def complete(name, terminated=False):
+        target = folder / "families" / name
+        status = read_json(target / "status.json", {})
+        states[name].update({k: v for k, v in status.items() if k not in ("state", "phase", "pid")})
+        checkpoint = read_json(target / "checkpoint.json", {})
+        states[name].update(
+            generation=checkpoint.get("generation", 0),
+            candidates_done=len(checkpoint.get("entries", [])),
+        )
+        entry = best_entry(folder, name)
+        states[name]["best_error"] = entry["fitness"] if entry else None
+        if job.cancelled:
+            states[name]["state"] = "cancelled"
+        elif status.get("state") in ("failed", "cancelled"):
+            states[name]["state"] = status["state"]
+        elif name not in tunable and entry:
+            states[name]["state"] = "done"
+        elif terminated or status.get("reason") in ("time cap", "broad defaults"):
             states[name]["state"] = "paused"
+        else:
+            states[name]["state"] = status.get("state", "failed")
+        if terminated:
+            states[name].update(
+                terminated=True,
+                reason="cancelled"
+                if job.cancelled
+                else "slice deadline exceeded grace; worker terminated",
+            )
+            job.event({"event": "terminated", "family": name, "reason": states[name]["reason"]})
+
+    for name in names:
+        checkpoint = read_json(folder / "families" / name / "checkpoint.json", {})
+        states[name].update(
+            generation=checkpoint.get("generation", 0),
+            candidates_done=len(checkpoint.get("entries", [])),
+        )
+        if states[name]["state"] in ("running", "paused", "pruned"):
+            # worker completion can precede the coordinator's last durable state
+            status = read_json(folder / "families" / name / "status.json", {})
+            if status.get("state") in ("failed", "cancelled") or (
+                status.get("state") == "done"
+                and (
+                    states[name]["state"] == "running"
+                    or status.get("reason") not in ("time cap", "broad defaults")
+                )
+            ):
+                complete(name)
+                states[name]["pruned_reason"] = None
+            elif states[name]["state"] == "running" and state["phase"] != "broad":
+                states[name]["state"] = "paused"
+        if (
+            name not in tunable
+            and best_entry(folder, name)
+            and states[name]["state"] not in ("failed", "cancelled")
+        ):
+            states[name].update(state="done", pruned_reason=None)
 
     def save():
         active_names = [
@@ -199,42 +256,28 @@ def launch_families(folder, request, job):
             return
         leader = min(viable, key=lambda name: viable[name]["fitness"])
         for name, entry in viable.items():
-            if name != leader and _significant(paired_entry(viable[leader]), paired_entry(entry)):
+            # defaults and partial first generations cannot eliminate a tunable family
+            if (
+                name in tunable
+                and states[name]["state"] == "paused"
+                and states[name].get("phase") in ("halving", "deep")
+                and states[name].get("generation", 0) >= 1
+                and states[name].get("candidates_done", 0) > 1
+                and name != leader
+                and _significant(paired_entry(viable[leader]), paired_entry(entry))
+            ):
                 states[name].update(
                     state="pruned",
                     pruned_reason=f"paired validation error significantly behind {leader}",
                 )
 
-    def run_slices(selected, slice_end):
-        phase_end = min(slice_end, deadline)
+    def run_slices(selected, slice_end, *, leftover=False):
+        phase_end = min(slice_end, search_deadline)
         waves = max(1, math.ceil(len(selected) / cap))
         slice_s = max(0, phase_end - time.time()) / waves
         queue = deque(selected)
         active = {}
         allocations = {}
-
-        def complete(name, terminated=False):
-            status = read_json(folder / "families" / name / "status.json", {})
-            states[name].update(
-                {k: v for k, v in status.items() if k not in ("state", "phase", "pid")}
-            )
-            entry = best_entry(folder, name)
-            states[name]["best_error"] = entry["fitness"] if entry else None
-            states[name]["state"] = (
-                "cancelled"
-                if job.cancelled
-                else "paused"
-                if terminated or status.get("reason") in ("time cap", "broad defaults")
-                else status.get("state", "failed")
-            )
-            if terminated:
-                states[name].update(
-                    terminated=True,
-                    reason="cancelled"
-                    if job.cancelled
-                    else "slice deadline exceeded grace; worker terminated",
-                )
-                job.event({"event": "terminated", "family": name, "reason": states[name]["reason"]})
 
         def split_threads():
             nthread = max(1, total_threads // max(1, len(active)))
@@ -261,6 +304,7 @@ def launch_families(folder, request, job):
                                 k: v
                                 for k, v in status.items()
                                 if k not in ("state", "phase", "pid", "nthread")
+                                and (k != "reason" or not leftover)
                             }
                         )
                 if expired:
@@ -280,6 +324,9 @@ def launch_families(folder, request, job):
                         "deadline": family_end,
                         "slice_s": max(0, family_end - started_at),
                     }
+                    if leftover:
+                        allocation["reason"] = "resumed with leftover time"
+                        states[name].update(reason=allocation["reason"], pruned_reason=None)
                     states[name].setdefault("slice_history", []).append(allocation)
                     states[name].update(
                         state="running", phase=state["phase"], slice_s=allocation["slice_s"]
@@ -333,7 +380,8 @@ def launch_families(folder, request, job):
     while state["phase"] == "halving" and not job.cancelled:
         prune_families()
         selected = rank_families(
-            [name for name in names if states[name]["state"] == "paused"], states
+            [name for name in names if name in tunable and states[name]["state"] == "paused"],
+            states,
         )
         if (
             len(selected) <= 1
@@ -346,10 +394,23 @@ def launch_families(folder, request, job):
         run_slices(selected, min(search_deadline, time.time() + request["time_budget_s"] * 0.1))
     if state["phase"] == "deep" and not job.cancelled:
         selected = rank_families(
-            [name for name in names if states[name]["state"] == "paused"], states
+            [name for name in names if name in tunable and states[name]["state"] == "paused"],
+            states,
         )
         run_slices(selected, search_deadline)
         prune_families()
+        while not job.cancelled and time.time() < search_deadline:
+            selected = rank_families(
+                [
+                    name
+                    for name in names
+                    if name in tunable and states[name]["state"] in ("paused", "pruned")
+                ],
+                states,
+            )[:cap]
+            if not selected:
+                break
+            run_slices(selected, search_deadline, leftover=True)
         state["phase"] = "finish"
         save()
     board = []
@@ -463,6 +524,17 @@ def launch_families(folder, request, job):
             return result
         if process.returncode != 0:
             raise ValueError("final fit failed; see finish.log")
+    final = read_json(folder / "result.json")
+    if final and "families" in final:
+        # retain the final fit's metrics while exposing durable search progress
+        for name, summary in final["families"].items():
+            if name in states:
+                summary.update(
+                    candidates=states[name]["candidates_done"],
+                    generation=states[name]["generation"],
+                    reason=states[name].get("reason"),
+                )
+        job.save("result.json", final)
     result["finalized"] = True
     result["elapsed"] = round(max(0, time.time() - state["started_at"]), 1)
     return result

@@ -8,7 +8,14 @@ from pathlib import Path
 import numpy as np
 
 from smolsmort.forecast.family_worker import read_json, watch_parent
-from smolsmort.forecast.pipeline import _fitness, finish, genome_from_dict, load_workspace
+from smolsmort.forecast.importance import combine_importance
+from smolsmort.forecast.pipeline import (
+    _fitness,
+    finish,
+    fit_importance,
+    genome_from_dict,
+    load_workspace,
+)
 from smolsmort.forecast.spec import spec_from_dict
 from smolsmort.forecast.tables import write_table
 from smolsmort.forecast.worker import _Run, _write_result
@@ -16,7 +23,8 @@ from smolsmort.forecast.worker import _Run, _write_result
 
 def summarize(final):
     return {
-        key: final.get(key) for key in ("verdict", "model_error", "baseline_error", "band", "bands")
+        key: final.get(key)
+        for key in ("verdict", "model_error", "baseline_error", "band", "bands", "importance")
     }
 
 
@@ -36,12 +44,14 @@ def run(folder, parent_pid):
     genome = genome_from_dict(winner["genome"])
     nthread = request.get("nthread") or 1
     prediction_cache = {}
+    importance_cache = {}
     final = finish(
         ws,
         genome,
         nthread=nthread,
         validation=winner.get("prediction"),
         prediction_cache=prediction_cache,
+        importance_cache=importance_cache,
     )
     summary = {
         "winner": {"family": winner["family"], "fitness": winner["fitness"], **summarize(final)}
@@ -69,6 +79,7 @@ def run(folder, parent_pid):
             members=[genome_from_dict(entry["genome"]) for entry in members],
             validation=prediction,
             prediction_cache=prediction_cache,
+            importance_cache=importance_cache,
         )
         summary["ensemble"] = {
             "members": [entry["family"] for entry in members],
@@ -96,6 +107,20 @@ def run(folder, parent_pid):
         }
         for name, status in states.items()
     }
+    for entry in ranked:
+        name = entry["family"]
+        if name not in states:
+            continue
+        member = genome_from_dict(entry["genome"])
+        if ws.mode == "row":
+            importance = final.get("importance")
+        else:
+            if member.key() not in importance_cache:
+                importance_cache[member.key()] = fit_importance(ws, member, nthread=nthread)
+            importance = combine_importance(name, importance_cache[member.key()])
+        summary["families"][name]["importance"] = importance
+        if importance is not None:
+            job.save(f"families/{name}/importance.json", importance)
     for label, fitted in (("winner", final), ("ensemble", ensemble)):
         if fitted:
             for kind in ("validation", "test", "forecast"):

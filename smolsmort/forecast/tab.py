@@ -499,9 +499,19 @@ def _run(app, query: dict) -> dict:
     if request.get("version") == 2:
         if "since_leaderboard" in query and state["leaderboard_generation"] <= board_cursor:
             state.pop("leaderboard", None)
-        return {**state, "spec": request.get("spec")}
+        return {**state, "version": 2, "spec": request.get("spec")}
+    for collection in ("generations", "generation_curves"):
+        state[collection] = [
+            {**entry, "family": entry.get("family") or "xgboost"}
+            for entry in state.get(collection, [])
+        ]
+    if state.get("latest"):
+        state["latest"] = {**state["latest"], "family": state["latest"].get("family") or "xgboost"}
     return {
         **state,
+        "version": 1,
+        "family": "xgboost",
+        "winner_family": "xgboost" if state["state"] == "done" else None,
         **(
             {"leaderboard": views.read_leaderboard(run_dir)[:10]}
             if "since_leaderboard" not in query or state["leaderboard_generation"] > board_cursor
@@ -536,20 +546,27 @@ def _view(app, query: dict) -> dict:
 def _table(app, query: dict) -> dict:
     run_dir = _run_dir(app, query.get("id", ""))
     request = views.read_request(run_dir)
-    return views.table(run_dir, request, query)
+    try:
+        return views.table(run_dir, request, query)
+    except views.ViewError as exc:
+        raise RequestError(str(exc), 409) from exc
 
 
 def _export(app, name: str) -> bytes | None:
     if not name.endswith(".csv"):
         return None
     run_id = name[: -len(".csv")]
+    query = {}
+    if "/" in run_id:
+        run_id, model = run_id.rsplit("/", 1)
+        query["model"] = model
     try:
         run_dir = runs.run_folder(_runs_root(app), run_id)
     except RunError:
         return None
     request = views.read_request(run_dir)
     try:
-        return views.export_csv(run_dir, request)
+        return views.export_csv(run_dir, request, query)
     except views.ViewError:
         return None
 
