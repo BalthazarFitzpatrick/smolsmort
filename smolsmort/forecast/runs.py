@@ -61,6 +61,7 @@ def start_run(
     candidate_limit_fraction: float = 0.25,
     plateau: int = 5,
     min_generations: int = 0,
+    prune_sigma: float = 1.0,
 ) -> str:
     """write the request and start the worker; returns the run id. `recipe` refits a saved
     winner without a search, `warm_from` seeds a search with an earlier run's population"""
@@ -88,6 +89,7 @@ def start_run(
             candidate_limit_fraction=candidate_limit_fraction,
             plateau=plateau,
             min_generations=min_generations,
+            prune_sigma=prune_sigma,
         )
     request = parse_request(request)
     folder.mkdir(parents=True)
