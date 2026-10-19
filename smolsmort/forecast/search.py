@@ -379,7 +379,7 @@ def _sample(ws, rng) -> np.ndarray | None:
     return keys[rng.random(len(keys)) < SAMPLE_SHARE]
 
 
-def _significant(new: Entry, best: Entry) -> bool:
+def _significant(new: Entry, best: Entry, sigma: float = 1.0) -> bool:
     """a real gain: the paired per-period difference beats its own standard error"""
     if best is None or not np.isfinite(best.fitness):
         return bool(np.isfinite(new.fitness))
@@ -388,7 +388,7 @@ def _significant(new: Entry, best: Entry) -> bool:
     diff = best.contrib - new.contrib
     if len(diff) < 2:
         return True
-    return bool(diff.sum() > diff.std(ddof=1) * np.sqrt(len(diff)))
+    return bool(diff.sum() > sigma * diff.std(ddof=1) * np.sqrt(len(diff)))
 
 
 def search(

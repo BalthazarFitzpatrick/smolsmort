@@ -338,6 +338,7 @@ def _start(app, payload: dict) -> dict:
             "transform",
             "max_concurrent_families",
             "candidate_limit_fraction",
+            "prune_sigma",
             "ensemble",
         )
     )
@@ -388,6 +389,7 @@ def _start(app, payload: dict) -> dict:
                 "transform",
                 "max_concurrent_families",
                 "candidate_limit_fraction",
+                "prune_sigma",
                 "ensemble",
                 "nthread",
             )

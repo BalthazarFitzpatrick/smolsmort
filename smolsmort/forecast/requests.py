@@ -56,6 +56,14 @@ def parse_request(request: dict) -> dict:
         raise ValueError("plateau must be a positive integer")
     if type(min_generations) is not int or min_generations < 0:
         raise ValueError("min_generations must be a non-negative integer")
+    prune_sigma = request.get("prune_sigma", 1.0)
+    if (
+        isinstance(prune_sigma, bool)
+        or not isinstance(prune_sigma, (int, float))
+        or not math.isfinite(prune_sigma)
+        or prune_sigma <= 0
+    ):
+        raise ValueError("prune_sigma must be positive and finite")
     ensemble = request.get("ensemble", {"enabled": True, "top": 3})
     if (
         not isinstance(ensemble, dict)
@@ -73,4 +81,5 @@ def parse_request(request: dict) -> dict:
         "candidate_limit_fraction": fraction,
         "plateau": plateau,
         "min_generations": min_generations,
+        "prune_sigma": prune_sigma,
     }

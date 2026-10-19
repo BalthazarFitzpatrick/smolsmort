@@ -381,7 +381,20 @@ verdict on every run is what tells you whether they served:
 | validation / test length (series) | max(26, 2 x horizon) / max(horizon, 13) steps | `forecast.splits.series_cuts` |
 | search population / elite / plateau | 16 / 3 / 5 generations | `forecast.search.POPULATION`, `ELITE`, `PLATEAU` |
 | search time cap | 20 minutes | `forecast.search.TIME_CAP` |
+| v2 family pruning threshold | `prune_sigma=1.0` | `forecast.requests.parse_request`, `forecast.runs.start_run` |
 | verdict | ratio <= 0.9, 30 rows, 13 steps; band coverage >= 65% | `forecast.evaluate` |
+
+v2 requests and `forecast.runs.start_run` accept `plateau` (default 5),
+`min_generations` (default 0), and `prune_sigma` (finite positive number, default 1.0).
+use `prune_sigma=2.0` to require stronger paired validation evidence before pruning
+a family; it does not change plateau detection within a family.
+
+for `time_budget_s > 1800`, the finish reserve adapts to measured winner costs:
+`min(0.3 * time_budget_s, max(2 * finish_estimate_s, 300))` seconds.
+without usable winner measurements, and for budgets up to 30 minutes, it stays at 30%.
+broad and halving boundaries use 4/7 and 5.5/7 of the search span; deep search can use
+the rest. a 24h run with a 300s reserve can search for 23h55m, unless its families
+finish earlier. see [long-run controls](docs/GUIDE.md#long-run-forecast-controls).
 
 `train.minimum_window(width, height)` is the smallest window that never clips your object at the
 offset extremes; the train tab shows it as the floor.

@@ -42,6 +42,8 @@ def tunable_race(tmp_path, monkeypatch):
     errors.update(ridge=0.6, lightgbm=0.8, xgboost=0.9)
     plateaus = {}
     partial = set()
+    contributions = {}
+    candidate_seconds = dict.fromkeys(errors, 0.1)
 
     def save_json(name, value):
         path = tmp_path / name
@@ -82,11 +84,11 @@ def tunable_race(tmp_path, monkeypatch):
                         "genome": genome.to_dict(),
                         "families": 1,
                         "fitness": errors[self.name],
-                        "contrib": [errors[self.name]] * 8,
+                        "contrib": contributions.get(self.name, [errors[self.name]] * 8),
                         "metrics": {},
                         "generation": generation,
                         "phase": self.allocation["phase"],
-                        "elapsed_s": 0.1,
+                        "elapsed_s": candidate_seconds[self.name],
                         "cost_hint": 1,
                     }
                 )
@@ -140,7 +142,7 @@ def tunable_race(tmp_path, monkeypatch):
         event=lambda payload: None,
     )
 
-    def run(names=None, cap=2):
+    def run(names=None, cap=2, **changes):
         names = names or list(errors)
         save_json("finish_complete.json", {})
         save_json("result.json", {"families": {name: {"fitness": errors[name]} for name in names}})
@@ -148,8 +150,8 @@ def tunable_race(tmp_path, monkeypatch):
             tmp_path,
             make_request(
                 families=[{"name": name} for name in names],
-                time_budget_s=60,
                 max_concurrent_families=cap,
+                **{"time_budget_s": 60, **changes},
             ),
             job,
         )
@@ -162,9 +164,158 @@ def tunable_race(tmp_path, monkeypatch):
         errors=errors,
         plateaus=plateaus,
         partial=partial,
+        contributions=contributions,
+        candidate_seconds=candidate_seconds,
         save=save_json,
         job=job,
     )
+
+
+def advance_race_clock(race, monkeypatch):
+    from smolsmort.forecast import coordinator
+
+    def sleep(seconds):
+        ends = [
+            process.started + 0.1
+            if process.allocation["phase"] == "broad"
+            else process.allocation["deadline"]
+            for process in race.launches
+            if process.returncode is None
+        ]
+        race.clock[0] = max(race.clock[0] + seconds, min(ends, default=race.clock[0]))
+
+    monkeypatch.setattr(coordinator.time, "sleep", sleep)
+
+
+def test_measured_day_budget_searches_for_at_least_23_hours(tunable_race, tmp_path, monkeypatch):
+    race = tunable_race
+    race.errors["ridge"] = race.errors["lightgbm"] = 0.2
+    advance_race_clock(race, monkeypatch)
+    race.run(["ridge", "lightgbm"], time_budget_s=86400)
+    state = read_json(tmp_path / "coordinator.json")
+    assert state["deadline"] == 100 + 86400
+    assert 23 * 3600 <= race.clock[0] - 100 <= 86400 - 300 + 1
+    assert state["finish_reserve_s"] == 300
+    assert state["search_deadline"] == 100 + 86400 - 300
+    assert {p.allocation["phase"] for p in race.launches} == {"broad", "halving", "deep"}
+    halving = next(p for p in race.launches if p.allocation["phase"] == "halving")
+    assert halving.allocation["slice_s"] == pytest.approx((86400 - 300) / 7)
+    assert max(p.allocation["deadline"] for p in race.launches) == state["search_deadline"]
+
+
+def test_broad_resume_uses_measured_search_span(tunable_race, tmp_path, monkeypatch):
+    race = tunable_race
+    genome = make_genome(["lag"], "squared", {}, "ridge")
+    race.save(
+        "families/ridge/checkpoint.json",
+        {
+            "entries": [
+                {
+                    "genome": genome.to_dict(),
+                    "key": genome.key(),
+                    "fitness": race.errors["ridge"],
+                    "families": 1,
+                    "contrib": [race.errors["ridge"]] * 8,
+                    "metrics": {},
+                    "generation": 0,
+                    "phase": "broad",
+                    "elapsed_s": 0.1,
+                    "cost_hint": 1,
+                }
+            ],
+            "generation": 0,
+        },
+    )
+    race.save(
+        "coordinator.json",
+        {
+            "started_at": 100,
+            "deadline": 100 + 86400,
+            "phase": "broad",
+            "families": {"ridge": {"state": "running"}},
+        },
+    )
+    race.clock[0] = 200
+    advance_race_clock(race, monkeypatch)
+    race.run(["ridge"], time_budget_s=86400)
+    assert race.launches[0].allocation["deadline"] == 100 + (86400 - 300) * 4 / 7
+    assert read_json(tmp_path / "coordinator.json")["deadline"] == 100 + 86400
+
+
+@pytest.mark.parametrize("duration", [90, 300, 1000, 1200, 1800])
+def test_short_budget_keeps_original_phase_timing(tunable_race, monkeypatch, duration):
+    race = tunable_race
+    race.errors["ridge"] = race.errors["lightgbm"] = 0.2
+    advance_race_clock(race, monkeypatch)
+    race.run(["ridge", "lightgbm"], time_budget_s=duration)
+    broad = next(p for p in race.launches if p.allocation["phase"] == "broad")
+    halving = next(p for p in race.launches if p.allocation["phase"] == "halving")
+    assert broad.allocation["deadline"] == pytest.approx(100 + 0.4 * duration)
+    assert halving.allocation["slice_s"] == pytest.approx(0.1 * duration)
+    assert race.clock[0] == pytest.approx(100 + 0.7 * duration, abs=1)
+
+
+def test_unmeasured_day_budget_retains_original_reserve(tunable_race, tmp_path, monkeypatch):
+    race = tunable_race
+    race.candidate_seconds["ridge"] = 0
+    advance_race_clock(race, monkeypatch)
+    race.run(["ridge"], time_budget_s=86400)
+    state = read_json(tmp_path / "coordinator.json")
+    assert race.clock[0] == pytest.approx(100 + 0.7 * 86400, abs=1)
+    assert state["finish_reserve_s"] == pytest.approx(0.3 * 86400)
+
+
+@pytest.mark.parametrize("sigma,pruned", [(1, True), (2, False)])
+def test_pruning_respects_requested_sigma(tunable_race, sigma, pruned):
+    race = tunable_race
+    diff = (np.array([-1, 1] * 4) + 1.5 / np.sqrt(7)) * 0.02
+    assert diff.sum() / (diff.std(ddof=1) * np.sqrt(len(diff))) == pytest.approx(1.5)
+    race.contributions["ridge"] = [0.1] * 8
+    race.contributions["lightgbm"] = (0.1 + diff).tolist()
+    race.run(["ridge", "lightgbm"], prune_sigma=sigma)
+    assert any(s["families"]["lightgbm"]["state"] == "pruned" for s in race.snapshots) == pruned
+
+
+@pytest.mark.parametrize("candidate_s,reserve_s", [(100, 800), (10000, 25920)])
+def test_finish_reserve_scales_winners_and_never_exceeds_thirty_percent(
+    tunable_race, tmp_path, monkeypatch, candidate_s, reserve_s
+):
+    race = tunable_race
+    race.candidate_seconds.update(ridge=candidate_s, lightgbm=candidate_s)
+    advance_race_clock(race, monkeypatch)
+    race.run(["ridge", "lightgbm"], time_budget_s=86400)
+    state = read_json(tmp_path / "coordinator.json")
+    assert state["finish_reserve_s"] == reserve_s
+    assert race.clock[0] == pytest.approx(100 + 86400 - reserve_s, abs=1)
+
+
+@pytest.mark.parametrize("mode,fits", [("series", 2), ("row", 3)])
+@pytest.mark.parametrize("measured", [None, 10, 100])
+def test_finish_estimate_uses_winner_cost_and_completed_measurements(
+    tmp_path, mode, fits, measured
+):
+    from smolsmort.forecast.coordinator import estimate_finish_seconds
+
+    target = tmp_path / "families" / "ridge"
+    target.mkdir(parents=True)
+    winner = {"fitness": 0.1, "families": 1, "cost_hint": 20, "elapsed_s": measured}
+    (target / "checkpoint.json").write_text(json.dumps({"entries": [winner]}))
+    calibration = {"ridge": {"seconds_per_cost": 2, "seconds_per_candidate": 1000}}
+    estimate = estimate_finish_seconds(tmp_path, ["ridge"], calibration, {"spec": {"mode": mode}})
+    assert estimate == fits * max(measured or 0, 40)
+
+
+def test_finish_estimate_rejects_timeout_only_calibration(tmp_path):
+    from smolsmort.forecast.coordinator import estimate_finish_seconds
+
+    target = tmp_path / "families" / "ridge"
+    target.mkdir(parents=True)
+    winner = {"fitness": 0.1, "families": 1}
+    (target / "checkpoint.json").write_text(json.dumps({"entries": [winner]}))
+    calibration = {"ridge": {"seconds_per_candidate": 10, "estimate_is_lower_bound": True}}
+    assert estimate_finish_seconds(tmp_path, ["ridge"], calibration, {}) is None
+    calibration["ridge"]["estimate_is_lower_bound"] = False
+    assert estimate_finish_seconds(tmp_path, ["ridge"], calibration, {}) == 20
 
 
 def test_zero_param_leader_allows_every_tunable_to_breed(tunable_race, tmp_path):
@@ -1127,6 +1278,8 @@ def test_real_all_family_run_respects_two_worker_cap(tmp_path, monkeypatch):
             prepared=str(prepared.folder),
             summary=prepared.summary,
             families=[{"name": name} for name in names],
+            # queued optional families need room to complete their first candidate
+            time_budget_s=180,
             max_concurrent_families=2,
             nthread=4,
             ensemble={"enabled": True, "top": 3},
@@ -1164,7 +1317,7 @@ def test_real_all_family_run_respects_two_worker_cap(tmp_path, monkeypatch):
         (tmp_path / "family-process-samples.json").write_text(json.dumps(samples))
     assert coordinated["finalized"]
     job.status("done", phase="finish", families=coordinated["families"])
-    assert time.monotonic() - started <= 94
+    assert time.monotonic() - started <= 184
     assert max(counts) == 2
     result = assert_final_artifacts(run, names)
     assert set(result["families"]) == set(names)

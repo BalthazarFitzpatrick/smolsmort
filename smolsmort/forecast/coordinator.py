@@ -18,6 +18,7 @@ from smolsmort.forecast.processes import is_process_alive
 from smolsmort.forecast.search import Entry, _significant
 
 GRACE_S = 2.0
+SHORT_BUDGET_S = 1800
 
 
 def stop_process(process):
@@ -130,6 +131,31 @@ def rank_families(selected, states):
     )
 
 
+def estimate_finish_seconds(folder, names, calibration, request):
+    costs = []
+    for name in names:
+        winner = best_entry(folder, name)
+        if winner is None:
+            continue
+        measured = winner.get("elapsed_s")
+        prior = calibration.get(name, {})
+        estimates = [measured] if measured and math.isfinite(measured) and measured > 0 else []
+        if not prior.get("estimate_is_lower_bound"):
+            per_cost, hint = prior.get("seconds_per_cost"), winner.get("cost_hint")
+            calibrated = (
+                per_cost * hint if per_cost and hint else prior.get("seconds_per_candidate")
+            )
+            if calibrated and math.isfinite(calibrated) and calibrated > 0:
+                estimates.append(calibrated)
+        if not estimates:
+            return None
+        costs.append(max(estimates))
+    # test and forecast fits cover each winner, including family importance fits
+    # row finishing also refits validation; the reserve adds a further safety factor
+    fits = 3 if request.get("spec", {}).get("mode") == "row" else 2
+    return fits * sum(costs) if costs else None
+
+
 def launch_families(folder, request, job):
     names = [item["name"] for item in request["families"]]
     tunable = {name for name in names if get_family(name).space()}
@@ -142,6 +168,7 @@ def launch_families(folder, request, job):
     }
     deadline = state["deadline"]
     search_deadline = min(deadline, state["started_at"] + request["time_budget_s"] * 0.7)
+    search_span = search_deadline - state["started_at"]
     states = state["families"]
     cap = request.get("max_concurrent_families", 4)
     total_threads = request.get("nthread") or os.cpu_count() or 1
@@ -228,6 +255,7 @@ def launch_families(folder, request, job):
             states[name].update(state="done", pruned_reason=None)
 
     def save():
+        nonlocal search_deadline, search_span
         active_names = [
             name for name in names if states[name]["state"] in ("paused", "running", "pending")
         ]
@@ -237,6 +265,17 @@ def launch_families(folder, request, job):
             / max(1, len(active_names))
         )
         calibrate_families(folder, states, calibration, share_s)
+        estimate = estimate_finish_seconds(folder, names, calibration, request)
+        reserve = request["time_budget_s"] * 0.3
+        if request["time_budget_s"] > SHORT_BUDGET_S and estimate is not None:
+            reserve = min(reserve, max(estimate * 2, 300))
+        search_deadline = deadline - reserve
+        search_span = max(0, search_deadline - state["started_at"])
+        state.update(
+            finish_estimate_s=estimate,
+            finish_reserve_s=reserve,
+            search_deadline=search_deadline,
+        )
         for name in names:
             if states[name]["state"] not in ("paused", "running", "pending"):
                 states[name]["candidates_expected"] = 0
@@ -264,7 +303,11 @@ def launch_families(folder, request, job):
                 and states[name].get("generation", 0) >= 1
                 and states[name].get("candidates_done", 0) > 1
                 and name != leader
-                and _significant(paired_entry(viable[leader]), paired_entry(entry))
+                and _significant(
+                    paired_entry(viable[leader]),
+                    paired_entry(entry),
+                    sigma=request.get("prune_sigma", 1.0),
+                )
             ):
                 states[name].update(
                     state="pruned",
@@ -290,12 +333,13 @@ def launch_families(folder, request, job):
             while queue or active:
                 if job.cancelled:
                     break
+                phase_end = min(slice_end, search_deadline)
                 expired = []
                 for name, process in list(active.items()):
                     if process.poll() is not None:
                         complete(name)
                         del active[name]
-                    elif time.time() >= allocations[name] + GRACE_S - 1:
+                    elif time.time() >= min(allocations[name], phase_end) + GRACE_S - 1:
                         expired.append(name)
                     else:
                         status = read_json(folder / "families" / name / "status.json", {})
@@ -370,7 +414,7 @@ def launch_families(folder, request, job):
     save()
     if state["phase"] == "broad":
         selected = [name for name in names if states[name]["state"] in ("pending", "running")]
-        broad_end = min(search_deadline, state["started_at"] + request["time_budget_s"] * 0.4)
+        broad_end = min(search_deadline, state["started_at"] + search_span * 4 / 7)
         run_slices(selected, broad_end)
         for name in selected:
             if states[name]["state"] in ("pending", "running"):
@@ -383,15 +427,12 @@ def launch_families(folder, request, job):
             [name for name in names if name in tunable and states[name]["state"] == "paused"],
             states,
         )
-        if (
-            len(selected) <= 1
-            or time.time() >= state["started_at"] + request["time_budget_s"] * 0.55
-        ):
+        if len(selected) <= 1 or time.time() >= state["started_at"] + search_span * 5.5 / 7:
             state["phase"] = "deep"
             save()
             break
         save()
-        run_slices(selected, min(search_deadline, time.time() + request["time_budget_s"] * 0.1))
+        run_slices(selected, min(search_deadline, time.time() + search_span / 7))
     if state["phase"] == "deep" and not job.cancelled:
         selected = rank_families(
             [name for name in names if name in tunable and states[name]["state"] == "paused"],

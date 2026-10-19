@@ -473,11 +473,12 @@ def test_every_locally_available_family_shares_one_run(tmp_path):
         spec,
         prepared,
         families=[{"name": name} for name in names],
-        time_budget_s=90,
+        # leave time for every optional family's search and final refits
+        time_budget_s=180,
         nthread=max(2, len(names)),
         ensemble={"enabled": True, "top": 3},
     )
-    status = wait_run(root, run_id, timeout=100)
+    status = wait_run(root, run_id, timeout=190)
     assert status["state"] == "done", status
     result = assert_final_artifacts(root / run_id, names)
     for name, state in result["families"].items():
