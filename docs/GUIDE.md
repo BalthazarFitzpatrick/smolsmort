@@ -466,12 +466,7 @@ the work:
 cache as `prep.sql`. the cache key is the spec plus the file's content hash, so changing a role, an
 aggregation or the file re-runs prep and nothing stale survives.
 
-**search.** a genetic search tries feature families, objectives and tree settings against the
-validation rows and stops when a generation brings no gain larger than its own noise, or at the time
-cap. it runs in its own process and never reads the test rows. a saved run can be refit on a newer
-file without a search, or seed the next search with its final population.
-
-series validation splits the existing pre-test validation block into three disjoint windows.
+**validation.** series validation splits the existing pre-test validation block into three disjoint windows.
 each window fits on all known steps before its start; cached lag features retain their existing
 per-row forecast origins. shortened histories use fewer windows (at least one), based on
 one nominal third of the full validation length, rounded down. statistical families also fit
@@ -482,6 +477,11 @@ only when finishing the winner. result and verdict accuracy fields include `val_
 `val_test_gap` (test wape minus mean validation wape; positive means worse on test).
 paused searches saved before walk-forward validation must restart; their single-window scores
 cannot be mixed with fold scores. checkpoints created with the same fold windows resume normally.
+
+**search.** a genetic search tries feature families, objectives and tree settings against the
+validation rows and stops when a generation brings no gain larger than its own noise, or at the time
+cap. it runs in its own process and never reads the test rows. a saved run can be refit on a newer
+file without a search, or seed the next search with its final population.
 
 **results.** every run ends with a verdict computed on the untouched test rows. the accuracy metric is the wape (sum of absolute errors over the sum of actuals) next to the same metric for the naive baseline, shown as one line such as "wape 22.0% vs naive baseline 25.0%, 12% better". accuracy and history decide `trusted`; the band is judged apart (`band_ok`):
 
