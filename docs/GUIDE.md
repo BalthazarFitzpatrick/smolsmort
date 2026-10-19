@@ -471,13 +471,13 @@ validation rows and stops when a generation brings no gain larger than its own n
 cap. it runs in its own process and never reads the test rows. a saved run can be refit on a newer
 file without a search, or seed the next search with its final population.
 
-**results.** every run ends with a trust verdict computed on the untouched test rows:
+**results.** every run ends with a verdict computed on the untouched test rows. the accuracy metric is the wape (sum of absolute errors over the sum of actuals) next to the same metric for the naive baseline, shown as one line such as "wape 22.0% vs naive baseline 25.0%, 12% better". accuracy and history decide `trusted`; the band is judged apart (`band_ok`):
 
 | check | passes when |
 |---|---|
 | beats the naive baseline | error <= 0.9 x the baseline's (group median per row; seasonal naive per series) |
-| band is calibrated | the 80% band covers 65-95% of test rows |
-| band is sharper than the data's own spread | the band is narrower than the target's own 10-90% range |
+| band is calibrated | the 80% band covers at least 65% of test rows (band only) |
+| band is sharper than the data's own spread | the band is narrower than the target's own 10-90% range (band only) |
 | enough history to judge | at least 30 test rows (and 13 test steps for a series) |
 
 a failed check does not hide the forecast; the results tab shows the warning above the chart, names

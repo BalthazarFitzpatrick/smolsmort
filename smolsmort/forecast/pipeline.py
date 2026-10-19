@@ -520,6 +520,7 @@ def _finish_rows(ws, genome, nthread) -> dict:
             band_coverage=None,
             test_rows=len(test_truth),
             needs_band=False,
+            metric="log_loss",
         )
         band = None
     else:

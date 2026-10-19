@@ -9,7 +9,8 @@ import numpy as np
 
 # trust thresholds - from the plan agreed 2026-09-23, not yet measured against real outcomes
 BASELINE_RATIO = 0.9
-COVERAGE_RANGE = (0.65, 0.95)
+# no upper cap: a padded band is caught by the sharpness check, not by coverage
+COVERAGE_MIN = 0.65
 MIN_TEST_ROWS = 30
 MIN_TEST_STEPS = 13
 
@@ -125,14 +126,27 @@ def judge(
     needs_band: bool = True,
     band_width: float | None = None,
     spread: float | None = None,
+    metric: str = "wape",
 ) -> dict:
-    """the trust verdict on the untouched test split; every failed check is named with its numbers"""
+    """the verdict on the untouched test split. accuracy and history decide `trusted`; the band
+    is judged apart in `band_ok`. every failed check is named with its numbers"""
     checks = []
     ratio = model_error / baseline_error if baseline_error else float("inf")
+    passed = bool(ratio <= BASELINE_RATIO)
+    accuracy = {
+        "metric": metric,
+        "model_error": model_error,
+        "baseline_error": baseline_error,
+        "ratio": ratio,
+        "improvement": 1 - ratio if np.isfinite(ratio) else None,
+        "passed": passed,
+        "text": _accuracy_text(metric, model_error, baseline_error, ratio),
+    }
     checks.append(
         {
             "check": "beats the naive baseline",
-            "passed": bool(ratio <= BASELINE_RATIO),
+            "group": "accuracy",
+            "passed": passed,
             "detail": f"error {model_error:.3g} vs baseline {baseline_error:.3g} "
             f"(ratio {ratio:.2f}, needs <= {BASELINE_RATIO})",
         }
@@ -140,15 +154,21 @@ def judge(
     has_band = band_coverage is not None and np.isfinite(band_coverage)
     if needs_band and not has_band:
         checks.append(
-            {"check": "band is calibrated", "passed": False, "detail": "no band could be fitted"}
+            {
+                "check": "band is calibrated",
+                "group": "band",
+                "passed": False,
+                "detail": "no band could be fitted",
+            }
         )
     elif needs_band:
-        lo, hi = COVERAGE_RANGE
         checks.append(
             {
                 "check": "band is calibrated",
-                "passed": bool(lo <= band_coverage <= hi),
-                "detail": f"80% band covered {band_coverage:.0%} of test rows (needs {lo:.0%}-{hi:.0%})",
+                "group": "band",
+                "passed": bool(band_coverage >= COVERAGE_MIN),
+                "detail": f"80% band covered {band_coverage:.0%} of test rows "
+                f"(needs at least {COVERAGE_MIN:.0%})",
             }
         )
     if needs_band and band_width is not None and spread is not None:
@@ -156,6 +176,7 @@ def judge(
         checks.append(
             {
                 "check": "band is sharper than the data's own spread",
+                "group": "band",
                 "passed": bool(np.isfinite(band_width) and band_width < spread),
                 "detail": f"median 80% band {band_width:.3g} wide vs the target's own "
                 f"10-90% range {spread:.3g}",
@@ -166,15 +187,40 @@ def judge(
     checks.append(
         {
             "check": "enough history to judge",
+            "group": "history",
             "passed": bool(enough),
             "detail": f"{test_rows} test rows (needs {MIN_TEST_ROWS}){steps}",
         }
     )
-    trusted = all(c["passed"] for c in checks)
-    failed = [c["check"] for c in checks if not c["passed"]]
-    summary = (
-        "the forecast held up on data it never saw"
-        if trusted
-        else "do not act on this forecast - it failed: " + ", ".join(failed)
+    trusted = all(c["passed"] for c in checks if c["group"] != "band")
+    band_checks = [c for c in checks if c["group"] == "band"]
+    band_ok = all(c["passed"] for c in band_checks) if band_checks else None
+    failed = [c["check"] for c in checks if c["group"] != "band" and not c["passed"]]
+    if trusted:
+        summary = f"the forecast held up on data it never saw: {accuracy['text']}"
+    else:
+        summary = "do not act on this forecast - it failed: " + ", ".join(failed)
+        summary += f" ({accuracy['text']})"
+    if band_ok is False:
+        bad_band = ", ".join(c["check"] for c in band_checks if not c["passed"])
+        summary += f"; do not rely on its band - it failed: {bad_band}"
+    return {
+        "trusted": trusted,
+        "summary": summary,
+        "accuracy": accuracy,
+        "band_ok": band_ok,
+        "checks": checks,
+    }
+
+
+def _accuracy_text(metric: str, model: float, baseline: float, ratio: float) -> str:
+    if metric == "wape":
+        model_text, baseline_text = f"{model:.1%}", f"{baseline:.1%}"
+    else:
+        model_text, baseline_text = f"{model:.3g}", f"{baseline:.3g}"
+    gain = (
+        f"{abs(1 - ratio):.0%} {'better' if ratio < 1 else 'worse'}" if np.isfinite(ratio) else ""
     )
-    return {"trusted": trusted, "summary": summary, "checks": checks}
+    return f"{metric} {model_text} vs naive baseline {baseline_text}" + (
+        f", {gain}" if gain else ""
+    )
