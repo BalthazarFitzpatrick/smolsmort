@@ -165,7 +165,7 @@ def test_finish_persists_all_family_winners_and_reuses_final_fits(
         return fitted, x
 
     monkeypatch.setattr(pipeline, "_series_fit", fit_model)
-    monkeypatch.setattr(ensemble, "load_workspace", lambda *args: ws)
+    monkeypatch.setattr(ensemble, "load_workspace", lambda *args, **kwargs: ws)
     monkeypatch.setattr(ensemble, "watch_parent", lambda pid: None)
     ensemble.run(tmp_path, 1)
     result = json.loads((tmp_path / "result.json").read_text())
