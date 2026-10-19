@@ -67,6 +67,8 @@ OBJECTIVE_DEFAULTS = {
 class Budget:
     population: int = POPULATION
     plateau: int = PLATEAU
+    # generations to finish before a plateau may stop the search [the seeded one counts]
+    min_generations: int = 0
     time_cap: float = TIME_CAP
     max_generations: int = MAX_GENERATIONS
     seed: int = 0
@@ -635,7 +637,7 @@ def search(
         if stop and stop():
             reason = "cancelled"
             break
-        if quiet >= budget.plateau:
+        if quiet >= budget.plateau and generation >= budget.min_generations:
             reason = "plateau"
             break
         if elapsed >= budget.time_cap:

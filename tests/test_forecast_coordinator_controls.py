@@ -339,6 +339,21 @@ def test_v2_control_defaults():
     assert request["candidate_limit_fraction"] == 0.25
 
 
+def test_plateau_controls_default_and_validate():
+    request = parse_request(make_request())
+    assert (request["plateau"], request["min_generations"]) == (5, 0)
+    request = parse_request(make_request(plateau=10, min_generations=3))
+    assert (request["plateau"], request["min_generations"]) == (10, 3)
+    for changes, field in (
+        ({"plateau": 0}, "plateau"),
+        ({"plateau": True}, "plateau"),
+        ({"min_generations": -1}, "min_generations"),
+        ({"min_generations": 1.5}, "min_generations"),
+    ):
+        with pytest.raises(ValueError, match=field):
+            parse_request(make_request(**changes))
+
+
 @pytest.mark.parametrize("value", [0, -1, True, False, 1.0, 1.5, math.nan, math.inf, "2", None])
 def test_invalid_family_concurrency_is_rejected(value):
     with pytest.raises(ValueError, match="max_concurrent_families"):
