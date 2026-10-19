@@ -505,10 +505,60 @@ in their original order. the four new statistics require their own family names.
 until screening priors are available, fresh search births and seeds use the legacy families,
 including `roll:w` aliases. mutation can add any family from the full candidate pool.
 
+**validation.** series validation splits the existing pre-test validation block into three disjoint windows.
+each window fits on all known steps before its start; cached lag features retain their existing
+per-row forecast origins. shortened histories use fewer windows (at least one), based on
+one nominal third of the full validation length, rounded down. statistical families also fit
+separately for each window. candidate and ensemble fitness is the unweighted mean fold wape;
+paired period contributions carry the same equal fold weights. leaderboard metrics and results
+store `fold_scores` and `fold_count`. the test boundary stays fixed, and test targets are read
+only when finishing the winner. result and verdict accuracy fields include `val_error` and
+`val_test_gap` (test wape minus mean validation wape; positive means worse on test).
+paused searches saved before walk-forward validation must restart; their single-window scores
+cannot be mixed with fold scores. checkpoints created with the same fold windows resume normally.
+
 **search.** a genetic search tries feature families, objectives and tree settings against the
 validation rows and stops when a generation brings no gain larger than its own noise, or at the time
 cap. it runs in its own process and never reads the test rows. a saved run can be refit on a newer
 file without a search, or seed the next search with its final population.
+
+#### long-run forecast controls
+
+v2 request json and `forecast.runs.start_run` support these controls:
+
+| field | default | meaning |
+|---|---|---|
+| `time_budget_s` | required for v2 | total wall-clock budget, including final fits |
+| `plateau` | 5 | quiet generations before stopping a family |
+| `min_generations` | 0 | generations required before a plateau may stop a family |
+| `prune_sigma` | 1.0 | paired validation significance threshold for pruning a family |
+
+`prune_sigma` must be finite and greater than zero; booleans are rejected.
+with at least two paired contributions, pruning requires
+`sum(leader_diff) > prune_sigma * std(leader_diff) * sqrt(n)`, where
+`leader_diff` is the family's validation error minus the leader's.
+at `prune_sigma=2`, a family 1.5 standard errors behind remains in the race;
+at the default 1, it can be pruned after a completed tuning generation.
+the setting does not change the significance threshold used for plateau detection.
+
+budgets up to 1800 seconds keep the original 30% finish reserve. longer runs use
+`min(0.3 * time_budget_s, max(2 * finish_estimate_s, 300))`. the coordinator
+updates this estimate from checkpointed winner timings and cost calibration,
+using the larger of a winner's measured time and its calibrated candidate cost.
+it budgets two fits per family winner for series test/forecast and importance work,
+or three for rows, which also refit validation. this is an estimate, not a guarantee;
+the reserve doubles it and keeps a five-minute floor. missing usable costs retain
+the original 30% reserve until measurements arrive.
+
+broad and halving boundaries are 4/7 and 5.5/7 of the available search span;
+halving slices take 1/7, then deep search uses the remainder. a 24h request with
+cheap measured winners gets a 300-second finish reserve and up to 23h55m of search.
+phase allocations use the estimate available when issued; existing slices are
+not extended when new measurements free more time. deep search can use that time.
+plateau and completed grids can still stop families sooner. `coordinator.json`
+stores `finish_estimate_s`, `finish_reserve_s`, and `search_deadline` for inspection.
+resume keeps the original run deadline and restores checkpointed candidates;
+time spent stopped still consumes the wall-clock budget.
 
 **results.** every run ends with a verdict computed on the untouched test rows. the accuracy metric is the wape (sum of absolute errors over the sum of actuals) next to the same metric for the naive baseline, shown as one line such as "wape 22.0% vs naive baseline 25.0%, 12% better". accuracy and history decide `trusted`; the band is judged apart (`band_ok`):
 

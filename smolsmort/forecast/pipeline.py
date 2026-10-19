@@ -113,6 +113,7 @@ class Workspace:
     panel: dict | None = None
     transform: str = "none"
     excluded_series: list[dict] = field(default_factory=list)
+    series_folds: tuple[tuple[np.datetime64, np.datetime64], ...] = ()
 
     @property
     def mode(self) -> str:
@@ -203,6 +204,10 @@ def _series_workspace(spec, folder, summary) -> Workspace:
         }
     ws = Workspace(spec, folder, summary, profile, [], unit)
     ws.frames, ws.series_masks = frames, masks
+    ws.series_folds = tuple(
+        (steps[start].astype("datetime64[D]"), steps[end].astype("datetime64[D]"))
+        for start, end in cuts.folds
+    )
     ws.panel = panel
     ws.excluded_series = excluded
     ws.test_steps = int(cuts.steps - cuts.test_start)
@@ -266,6 +271,33 @@ def score(
 
 
 def _fitness(ws, pred, truth, periods) -> Scored:
+    folds = getattr(ws, "series_folds", ())
+    if not folds:
+        return _period_fitness(ws, pred, truth, periods)
+    scores = []
+    for start, end in folds:
+        rows = (periods >= start.astype(int)) & (periods < end.astype(int))
+        if rows.any():
+            scores.append(_period_fitness(ws, pred[rows], truth[rows], periods[rows]))
+    if not scores:
+        return _period_fitness(ws, pred, truth, periods)
+    fold_scores = [s.fitness for s in scores]
+    fitness = float(np.mean(fold_scores))
+    # equal fold weights keep paired contributions aligned with the ranked fitness
+    contrib = np.concatenate([s.contrib / len(scores) for s in scores])
+    return Scored(
+        fitness,
+        contrib,
+        {
+            "wape": fitness,
+            "mae": ev.mae(truth, pred),
+            "fold_scores": fold_scores,
+            "fold_count": len(scores),
+        },
+    )
+
+
+def _period_fitness(ws, pred, truth, periods) -> Scored:
     classification = ws.spec.task == "classification"
     if classification:
         codes, probs = truth, pred
@@ -353,17 +385,52 @@ def _series_phase(ws, genome, phase, nthread, sample=None, histories=None):
     preds, truths, periods = [], [], []
     for bucket, frame in ws.frames.items():
         masks = ws.series_masks[bucket]
-        fit_rows = masks["train"] if phase == "val" else masks["train"] | masks["val"]
-        if sample is not None:
-            fit_rows = fit_rows & np.isin(frame.series, sample)
         eval_rows = masks["val"] if phase == "val" else masks["test"]
-        prediction = _series_predict(
-            ws, genome, frame, fit_rows, eval_rows, bucket, nthread, histories
-        )
+        if phase == "val":
+
+            def predict_fold(fit_rows, fold_rows, frame=frame, bucket=bucket):
+                if sample is not None:
+                    fit_rows = fit_rows & np.isin(frame.series, sample)
+                return _series_predict(
+                    ws, genome, frame, fit_rows, fold_rows, bucket, nthread, histories
+                )
+
+            prediction = _series_validation(ws, bucket, predict_fold)
+        else:
+            fit_rows = masks["train"] | masks["val"]
+            prediction = _series_predict(
+                ws, genome, frame, fit_rows, eval_rows, bucket, nthread, histories
+            )
         preds.append(prediction)
         truths.append(frame.y[eval_rows])
         periods.append(frame.step[eval_rows].astype(int))
     return np.concatenate(preds), np.concatenate(truths), np.concatenate(periods)
+
+
+def _validation_masks(ws, bucket):
+    masks, frame = ws.series_masks[bucket], ws.frames[bucket]
+    folds = getattr(ws, "series_folds", ())
+    if not folds:
+        yield masks["train"], masks["val"]
+        return
+    known = masks["train"] | masks["val"]
+    for start, end in folds:
+        yield (
+            known & (frame.step < start),
+            masks["val"] & (frame.step >= start) & (frame.step < end),
+        )
+
+
+def _series_validation(ws, bucket, predict_fold):
+    masks = ws.series_masks[bucket]
+    prediction = np.empty(int(masks["val"].sum()))
+    for fit_rows, eval_rows in _validation_masks(ws, bucket):
+        assert not np.any((fit_rows | eval_rows) & masks["test"]), (
+            "test targets are sealed during search"
+        )
+        if eval_rows.any():
+            prediction[eval_rows[masks["val"]]] = predict_fold(fit_rows, eval_rows)
+    return prediction
 
 
 def _series_fit(ws, genome, frame, rows, nthread):
@@ -395,7 +462,13 @@ def _series_fit(ws, genome, frame, rows, nthread):
 def _series_raw_fit(ws, genome, frame, rows, bucket, nthread):
     from smolsmort.forecast.families.stats import RawSeriesTask, season_length
 
-    panel = ws.panel
+    # bound raw target reads before transforms or statistical providers can inspect them
+    keep = (
+        ws.panel[STEP] <= frame.step[rows].max()
+        if rows.any()
+        else np.zeros(len(ws.panel[STEP]), dtype=bool)
+    )
+    panel = {name: values[keep] for name, values in ws.panel.items()}
     target = ws.spec.named("target")[0]
     if genome.transform != "none":
         transform = get_transform(genome.transform)
@@ -454,8 +527,10 @@ def _raw_origin_base(ws, frame, rows):
     keys, origins = frame.series[rows], frame.origin[rows]
     target = ws.spec.named("target")[0]
     for key in np.unique(keys):
-        mine = (ws.panel[SERIES] == key) & np.isfinite(ws.panel[target])
+        mine = (ws.panel[SERIES] == key) & (ws.panel[STEP] <= origins[keys == key].max())
         steps, values = ws.panel[STEP][mine], ws.panel[target][mine]
+        known = np.isfinite(values)
+        steps, values = steps[known], values[known]
         order = np.argsort(steps)
         selected = keys == key
         positions = np.searchsorted(steps[order], origins[selected], side="right") - 1
@@ -640,7 +715,13 @@ def _finish_series(
         val_pred = (
             np.asarray(validation)[offset : offset + count]
             if validation is not None
-            else predict_members(frame, masks["train"], masks["val"], bucket)
+            else _series_validation(
+                ws,
+                bucket,
+                lambda fit_rows, eval_rows, frame=frame, bucket=bucket: predict_members(
+                    frame, fit_rows, eval_rows, bucket
+                ),
+            )
         )
         offset += count
         band = ev.fit_band(frame.y[masks["val"]], val_pred)
@@ -669,6 +750,13 @@ def _finish_series(
     first = next(iter(ws.frames))
     seen = ws.series_masks[first]["train"] | ws.series_masks[first]["val"]
     model_error, baseline_error = ev.wape(truth, pred), ev.wape(truth, np.concatenate(base_all))
+    validation_rows = _stack(val_rows)
+    validation_score = _fitness(
+        ws,
+        validation_rows["prediction"],
+        validation_rows["actual"],
+        validation_rows["step"].astype(int),
+    )
     verdict = ev.judge(
         model_error=model_error,
         baseline_error=baseline_error,
@@ -677,6 +765,7 @@ def _finish_series(
         test_steps=ws.test_steps,
         band_width=_median_width(np.concatenate(test_lo), np.concatenate(test_hi)),
         spread=_spread(ws.frames[first].y[seen]),
+        val_error=validation_score.fitness,
     )
     metadata = {}
     if get_family(genome.family).needs == "raw_series":
@@ -688,7 +777,11 @@ def _finish_series(
         "excluded_series": ws.excluded_series,
         "verdict": verdict,
         "bands": bands,
-        "validation": _stack(val_rows),
+        "validation": validation_rows,
+        "fold_scores": validation_score.metrics.get("fold_scores", [validation_score.fitness]),
+        "fold_count": validation_score.metrics.get("fold_count", 1),
+        "val_error": validation_score.fitness,
+        "val_test_gap": model_error - validation_score.fitness,
         "test": _stack(test_rows),
         "forecast": _stack(forecast),
         "model_error": model_error,

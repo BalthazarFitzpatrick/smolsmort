@@ -131,6 +131,7 @@ def test_ensemble_band_uses_stored_validation_average(monkeypatch, cached_winner
     frame = SimpleNamespace(y=truth, step=np.arange(8), series=np.zeros(8, dtype=int))
     ws = SimpleNamespace(
         mode="series",
+        spec=SimpleNamespace(task="regression"),
         profile={"genes": {}},
         frames={(1, 1): frame},
         series_masks={(1, 1): masks},
@@ -473,11 +474,12 @@ def test_every_locally_available_family_shares_one_run(tmp_path):
         spec,
         prepared,
         families=[{"name": name} for name in names],
-        time_budget_s=90,
+        # leave time for every optional family's search and final refits
+        time_budget_s=180,
         nthread=max(2, len(names)),
         ensemble={"enabled": True, "top": 3},
     )
-    status = wait_run(root, run_id, timeout=100)
+    status = wait_run(root, run_id, timeout=190)
     assert status["state"] == "done", status
     result = assert_final_artifacts(root / run_id, names)
     for name, state in result["families"].items():

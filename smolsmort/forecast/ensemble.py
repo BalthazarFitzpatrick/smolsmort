@@ -24,7 +24,18 @@ from smolsmort.forecast.worker import _Run, _write_result
 def summarize(final):
     return {
         key: final.get(key)
-        for key in ("verdict", "model_error", "baseline_error", "band", "bands", "importance")
+        for key in (
+            "verdict",
+            "model_error",
+            "baseline_error",
+            "band",
+            "bands",
+            "importance",
+            "fold_scores",
+            "fold_count",
+            "val_error",
+            "val_test_gap",
+        )
     }
 
 
