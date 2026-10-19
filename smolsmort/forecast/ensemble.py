@@ -33,7 +33,12 @@ def run(folder, parent_pid):
     job = _Run(folder)
     request = read_json(folder / "request.json")
     spec = spec_from_dict(request["spec"])
-    ws = load_workspace(spec, Path(request["prepared"]), request["summary"])
+    ws = load_workspace(
+        spec,
+        Path(request["prepared"]),
+        request["summary"],
+        transform=request.get("transform", "none"),
+    )
     ranked = read_json(folder / "finalists.json")
     winner = ranked[0]
     genome = genome_from_dict(winner["genome"])

@@ -113,7 +113,7 @@ def test_v1_parsing_is_unchanged():
     "changes",
     [
         {"version": 3},
-        {"transform": "logdiff"},
+        {"transform": "log"},
         {"time_budget_s": 0},
         {"time_budget_s": float("nan")},
         {"families": []},

@@ -118,7 +118,15 @@ def run(folder: Path) -> int:
                 },
             )
         spec = spec_from_dict(request["spec"])
-        ws = load_workspace(spec, Path(request["prepared"]), request["summary"])
+        transform = request.get("transform", "none") if request.get("version") == 2 else "none"
+        if request.get("recipe") and request["recipe"].get("transform", "none") != transform:
+            raise ValueError(
+                "recipe transform differs from the requested transform; "
+                "use a v2 request with the saved transform"
+            )
+        ws = load_workspace(
+            spec, Path(request["prepared"]), request["summary"], transform=transform
+        )
         if ws.excluded_series:
             job.event({"event": "excluded_series", "excluded_series": ws.excluded_series})
         job.save("profile.json", ws.profile)
@@ -171,15 +179,19 @@ def run(folder: Path) -> int:
         if result.get("finalized"):
             final = json.loads((folder / "result.json").read_text())
         else:
-            final = finish(
-                ws, genome_from_dict(result["best"]), nthread=budget.nthread, importance_cache={}
-            )
+            genome = genome_from_dict({**result["best"], "transform": transform})
+            result["best"] = genome.to_dict()
+            final = finish(ws, genome, nthread=budget.nthread, importance_cache={})
             _write_result(folder, spec, result, final)
         if request.get("version") == 2 and not result.get("finalized"):
             recipe = json.loads((folder / "recipe.json").read_text())
             job.save(
                 "recipe.json",
-                {**recipe, "family": result["best"].get("family", "xgboost"), "transform": "none"},
+                {
+                    **recipe,
+                    "family": result["best"].get("family", "xgboost"),
+                    "transform": transform,
+                },
             )
         job.status(
             "done",
@@ -204,8 +216,15 @@ def _warm_start(previous) -> list[dict] | None:
 
 
 def _write_result(folder, spec, result, final):
-    recipe = {"genome": result["best"], "spec": asdict(spec), "stopped": result["stopped"]}
+    transform = final.get("transform", result["best"].get("transform", "none"))
+    recipe = {
+        "genome": result["best"],
+        "spec": asdict(spec),
+        "stopped": result["stopped"],
+        "transform": transform,
+    }
     summary = {
+        "transform": transform,
         "verdict": final["verdict"],
         "model_error": final["model_error"],
         "baseline_error": final["baseline_error"],

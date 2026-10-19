@@ -329,7 +329,7 @@ def test_recipe_selection_uses_validation_even_when_test_error_disagrees(
         series_masks={(1, 1): {"val": np.array([True, True])}},
     )
     monkeypatch.setattr(ensemble, "watch_parent", lambda pid: None)
-    monkeypatch.setattr(ensemble, "load_workspace", lambda *args: ws)
+    monkeypatch.setattr(ensemble, "load_workspace", lambda *args, **kwargs: ws)
     validations = []
 
     def finish_candidate(ws, genome, **kwargs):

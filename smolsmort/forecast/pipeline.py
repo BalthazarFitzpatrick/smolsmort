@@ -21,6 +21,7 @@ from smolsmort.forecast.profile import build_profile
 from smolsmort.forecast.spec import ANCHOR, LOWER, ROW, SERIES, STEP, UNIT_DAYS, UPPER, PrepSpec
 from smolsmort.forecast.splits import labels_as_of, row_cuts, series_cuts
 from smolsmort.forecast.tables import is_text, read_table
+from smolsmort.forecast.transform import get_transform
 
 
 class PipelineError(ValueError):
@@ -33,8 +34,10 @@ class Genome:
     objective: str
     params: tuple[tuple[str, object], ...]
     family: str = "xgboost"
+    transform: str = "none"
 
     def __post_init__(self):
+        get_transform(self.transform)
         try:
             get_family(self.family)
         except KeyError as exc:
@@ -51,14 +54,20 @@ class Genome:
         }
         if self.family != "xgboost":
             data["family"] = self.family
+        if self.transform != "none":
+            data["transform"] = self.transform
         return data
 
     def key(self) -> str:
         return hashlib.sha1(json.dumps(self.to_dict(), sort_keys=True).encode()).hexdigest()[:12]
 
 
-def make_genome(families, objective: str, params: dict, family: str = "xgboost") -> Genome:
-    return Genome(tuple(sorted(set(families))), objective, tuple(sorted(params.items())), family)
+def make_genome(
+    families, objective: str, params: dict, family: str = "xgboost", transform: str = "none"
+) -> Genome:
+    return Genome(
+        tuple(sorted(set(families))), objective, tuple(sorted(params.items())), family, transform
+    )
 
 
 def genome_from_dict(data: dict, family: str | None = None) -> Genome:
@@ -67,6 +76,7 @@ def genome_from_dict(data: dict, family: str | None = None) -> Genome:
         data["objective"],
         data["params"],
         family=data.get("family", "xgboost") if family is None else family,
+        transform=data.get("transform", "none"),
     )
 
 
@@ -101,6 +111,7 @@ class Workspace:
     series_masks: dict | None = None
     test_steps: int = 0
     panel: dict | None = None
+    transform: str = "none"
     excluded_series: list[dict] = field(default_factory=list)
 
     @property
@@ -108,16 +119,25 @@ class Workspace:
         return self.spec.mode
 
 
-def load_workspace(spec: PrepSpec, folder: Path, summary: dict) -> Workspace:
+def load_workspace(
+    spec: PrepSpec, folder: Path, summary: dict, *, transform: str = "none"
+) -> Workspace:
     """everything a search needs, read and built once: tables, cuts, profile, candidate features"""
     folder = Path(folder)
+    target_transform = get_transform(transform)
     if spec.mode == "row":
+        if transform != "none":
+            raise PipelineError("target transforms require time-series regression")
         return _row_workspace(spec, folder, summary)
     if spec.task == "classification":
         raise PipelineError(
             "classification runs per row only; the time-series flavour is regression"
         )
-    return _series_workspace(spec, folder, summary)
+    ws = _series_workspace(spec, folder, summary)
+    ws.transform = transform
+    if transform != "none":
+        target_transform.validate_target(ws.panel[spec.named("target")[0]])
+    return ws
 
 
 def _row_workspace(spec, folder, summary) -> Workspace:
@@ -337,16 +357,9 @@ def _series_phase(ws, genome, phase, nthread, sample=None, histories=None):
         if sample is not None:
             fit_rows = fit_rows & np.isin(frame.series, sample)
         eval_rows = masks["val"] if phase == "val" else masks["test"]
-        if get_family(genome.family).needs == "raw_series":
-            fitted, x = _series_raw_fit(ws, genome, frame, eval_rows, bucket, nthread)
-            prediction = fitted.predict(x)
-        else:
-            fitted, x = _series_fit(ws, genome, frame, fit_rows, nthread)
-            prediction = fitted.predict(x[eval_rows])
-        # one actual fit, never a blend of curves from different horizon buckets
-        if histories is not None and not histories:
-            history = fitted.eval_history
-            histories.append({**history, "bucket": list(bucket)} if history else None)
+        prediction = _series_predict(
+            ws, genome, frame, fit_rows, eval_rows, bucket, nthread, histories
+        )
         preds.append(prediction)
         truths.append(frame.y[eval_rows])
         periods.append(frame.step[eval_rows].astype(int))
@@ -358,15 +371,20 @@ def _series_fit(ws, genome, frame, rows, nthread):
     available, reason = family.available()
     if not available:
         raise PipelineError(f"family {genome.family!r} is unavailable; {reason}")
+    if genome.transform == "logdiff" and genome.objective in NONNEGATIVE:
+        raise PipelineError(
+            f"logdiff transform requires a signed-target objective, got {genome.objective!r}"
+        )
     x, _, types = frame.features.pick(set(genome.families))
     if not x.shape[1]:
         raise PipelineError("a genome with no feature families cannot be fitted")
     # oldest first, so the early-stopping slice is the newest steps rather than the last series
     order = np.flatnonzero(rows)[np.argsort(frame.step[rows], kind="stable")]
+    base = frame.base[order] if genome.transform == "logdiff" else None
     fitted = family.fit(
         x[order],
         objective=genome.objective,
-        y=frame.y[order],
+        y=get_transform(genome.transform).fwd(frame.y[order], base),
         feature_types=types,
         params=dict(genome.params),
         nthread=nthread,
@@ -377,9 +395,17 @@ def _series_fit(ws, genome, frame, rows, nthread):
 def _series_raw_fit(ws, genome, frame, rows, bucket, nthread):
     from smolsmort.forecast.families.stats import RawSeriesTask, season_length
 
+    panel = ws.panel
+    target = ws.spec.named("target")[0]
+    if genome.transform != "none":
+        transform = get_transform(genome.transform)
+        transform.validate_target(panel[target])
+        if genome.family != "snaive":
+            # logdiff stats fit levels; the cutoff offset is applied after forecasting
+            panel = {**panel, target: np.log1p(panel[target])}
     task = RawSeriesTask(
-        ws.panel,
-        ws.spec.named("target")[0],
+        panel,
+        target,
         ws.unit,
         frame,
         rows,
@@ -392,17 +418,51 @@ def _series_raw_fit(ws, genome, frame, rows, bucket, nthread):
     return fitted, task
 
 
-def _series_predict(ws, genome, frame, fit_rows, eval_rows, bucket, nthread, importance=None):
+def _series_predict(
+    ws, genome, frame, fit_rows, eval_rows, bucket, nthread, histories=None, importance=None
+):
+    transform = get_transform(genome.transform)
     if get_family(genome.family).needs == "raw_series":
         fitted, task = _series_raw_fit(ws, genome, frame, eval_rows, bucket, nthread)
-        return fitted.predict(task)
-    fitted, x = _series_fit(ws, genome, frame, fit_rows, nthread)
-    if importance is not None:
-        _, names, _ = frame.features.pick(set(genome.families))
-        importance.append(
-            measure_importance(genome.family, fitted, names, x[fit_rows & np.isfinite(frame.y)])
-        )
-    return fitted.predict(x[eval_rows])
+        prediction = fitted.predict(task)
+        if genome.transform != "none":
+            base = _raw_origin_base(ws, frame, eval_rows)
+            if genome.family == "snaive":
+                prediction = transform.fwd(prediction, base)
+            elif genome.transform == "logdiff":
+                prediction = prediction - np.log1p(base)
+            prediction = transform.inv(prediction, base)
+    else:
+        fitted, x = _series_fit(ws, genome, frame, fit_rows, nthread)
+        if importance is not None:
+            _, names, _ = frame.features.pick(set(genome.families))
+            importance.append(
+                measure_importance(genome.family, fitted, names, x[fit_rows & np.isfinite(frame.y)])
+            )
+        base = frame.base[eval_rows] if genome.transform == "logdiff" else None
+        prediction = transform.inv(fitted.predict(x[eval_rows]), base)
+    # one actual fit, never a blend of curves from different horizon buckets
+    if histories is not None and not histories:
+        history = fitted.eval_history
+        histories.append({**history, "bucket": list(bucket)} if history else None)
+    return prediction
+
+
+def _raw_origin_base(ws, frame, rows):
+    """the last observed target at each statistical forecast's cutoff"""
+    base = np.full(int(rows.sum()), np.nan)
+    keys, origins = frame.series[rows], frame.origin[rows]
+    target = ws.spec.named("target")[0]
+    for key in np.unique(keys):
+        mine = (ws.panel[SERIES] == key) & np.isfinite(ws.panel[target])
+        steps, values = ws.panel[STEP][mine], ws.panel[target][mine]
+        order = np.argsort(steps)
+        selected = keys == key
+        positions = np.searchsorted(steps[order], origins[selected], side="right") - 1
+        valid = positions >= 0
+        indices = np.flatnonzero(selected)[valid]
+        base[indices] = values[order][positions[valid]]
+    return base
 
 
 def fit_importance(ws, genome, *, nthread=1):
@@ -436,10 +496,12 @@ def finish(
 ) -> dict:
     """band from validation, the verdict from the untouched test split, and the forecast itself"""
     if ws.mode == "row":
-        return _finish_rows(ws, genome, nthread)
-    return _finish_series(
-        ws, genome, nthread, members, validation, prediction_cache, importance_cache
-    )
+        result = _finish_rows(ws, genome, nthread)
+    else:
+        result = _finish_series(
+            ws, genome, nthread, members, validation, prediction_cache, importance_cache
+        )
+    return {**result, "transform": genome.transform}
 
 
 def _finish_rows(ws, genome, nthread) -> dict:
