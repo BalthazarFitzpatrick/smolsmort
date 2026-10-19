@@ -131,6 +131,7 @@ def test_ensemble_band_uses_stored_validation_average(monkeypatch, cached_winner
     frame = SimpleNamespace(y=truth, step=np.arange(8), series=np.zeros(8, dtype=int))
     ws = SimpleNamespace(
         mode="series",
+        spec=SimpleNamespace(task="regression"),
         profile={"genes": {}},
         frames={(1, 1): frame},
         series_masks={(1, 1): masks},
