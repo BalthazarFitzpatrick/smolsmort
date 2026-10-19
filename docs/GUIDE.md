@@ -502,6 +502,9 @@ step positions. momentum uses the same mean threshold within each half-window; a
 uses two equal halves. an old `roll:w` recipe still selects exactly mean, std, max and zeros,
 in their original order. the four new statistics require their own family names.
 
+until screening priors are available, fresh search births and seeds use the legacy families,
+including `roll:w` aliases. mutation can add any family from the full candidate pool.
+
 **search.** a genetic search tries feature families, objectives and tree settings against the
 validation rows and stops when a generation brings no gain larger than its own noise, or at the time
 cap. it runs in its own process and never reads the test rows. a saved run can be refit on a newer
