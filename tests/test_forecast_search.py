@@ -150,7 +150,7 @@ def test_a_run_ends_with_a_forecast_and_a_verdict(tmp_path):
     assert all(curve["validation"] and "training" not in curve for curve in curves)
     assert run_state(tmp_path / "runs", run_id)["generation_curves"] == curves
     result = json.loads((folder / "result.json").read_text())
-    assert set(result["verdict"]) == {"trusted", "summary", "checks"}
+    assert set(result["verdict"]) == {"trusted", "summary", "accuracy", "band_ok", "checks"}
     forecast = read_table(folder / "forecast.parquet")
     assert (
         len(forecast["prediction"])

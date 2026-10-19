@@ -193,7 +193,7 @@ def test_the_verdict_names_each_failed_check_with_its_numbers():
     bad = judge(
         model_error=10.0, baseline_error=10.5, band_coverage=0.5, test_rows=12, test_steps=8
     )
-    assert not bad["trusted"]
+    assert not bad["trusted"] and not bad["band_ok"]
     assert bad["summary"].startswith("do not act on this forecast")
     failed = {c["check"]: c["detail"] for c in bad["checks"] if not c["passed"]}
     assert set(failed) == {
@@ -204,7 +204,7 @@ def test_the_verdict_names_each_failed_check_with_its_numbers():
     assert "ratio 0.95" in failed["beats the naive baseline"]
     assert "50%" in failed["band is calibrated"]
     no_band = judge(model_error=1, baseline_error=2, band_coverage=None, test_rows=100)
-    assert not no_band["trusted"]
+    assert no_band["trusted"] and no_band["band_ok"] is False
 
 
 def test_a_band_on_a_target_centred_at_zero_is_absolute_not_relative():
@@ -221,8 +221,23 @@ def test_a_band_as_wide_as_the_data_itself_is_not_trusted():
     common = {"model_error": 1.0, "baseline_error": 2.0, "band_coverage": 0.8, "test_rows": 500}
     sharp = judge(**common, band_width=3.0, spread=10.0)
     vague = judge(**common, band_width=40.0, spread=12.0)
-    assert sharp["trusted"]
-    assert not vague["trusted"]
+    assert sharp["trusted"] and sharp["band_ok"]
+    assert vague["trusted"] and vague["band_ok"] is False
+    assert "do not rely on its band" in vague["summary"]
     failed = [c for c in vague["checks"] if not c["passed"]]
     assert [c["check"] for c in failed] == ["band is sharper than the data's own spread"]
     assert "40" in failed[0]["detail"] and "12" in failed[0]["detail"]
+
+
+def test_the_accuracy_block_names_the_metric_and_the_gain():
+    verdict = judge(model_error=0.22, baseline_error=0.25, band_coverage=0.99, test_rows=500)
+    accuracy = verdict["accuracy"]
+    assert accuracy["metric"] == "wape" and accuracy["ratio"] == pytest.approx(0.88)
+    assert accuracy["improvement"] == pytest.approx(0.12)
+    assert accuracy["text"] == "wape 22.0% vs naive baseline 25.0%, 12% better"
+    # a band covering nearly everything is not failed on coverage alone
+    assert verdict["band_ok"] and verdict["trusted"] is True
+    worse = judge(model_error=1.1, baseline_error=1.0, band_coverage=0.8, test_rows=500)
+    assert not worse["trusted"] and not worse["accuracy"]["passed"]
+    assert worse["accuracy"]["text"].endswith("10% worse")
+    assert "wape 110.0% vs naive baseline 100.0%" in worse["summary"]

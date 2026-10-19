@@ -138,9 +138,9 @@ Nobody judges these by hand. **The holdout is the judge:** rows are cut by time 
 validation and test. A genetic search tries feature sets, objectives and tree settings against
 validation, unattended, until it stops improving or runs out of time. The test rows are touched
 once, by the winner. Every run ends with a **trust verdict** that says, in plain words, whether the
-forecast is worth acting on - it must beat a naive baseline by 10%, its 80% band must cover 65-95%
-of test rows, the band must be narrower than the target's own spread, and there must be enough
-history to judge. A forecast that fails is still shown, with the warning next to it.
+forecast is worth acting on - it must beat a naive baseline by 10%, and there must be enough history to judge.
+The band is judged apart: it must cover at least 65% of test rows and be narrower than the target's
+own spread, or the verdict says not to rely on it. A forecast that fails is still shown, with the warning next to it.
 
 ### Sweep, and where the loop closes
 
@@ -381,7 +381,7 @@ verdict on every run is what tells you whether they served:
 | validation / test length (series) | max(26, 2 x horizon) / max(horizon, 13) steps | `forecast.splits.series_cuts` |
 | search population / elite / plateau | 16 / 3 / 5 generations | `forecast.search.POPULATION`, `ELITE`, `PLATEAU` |
 | search time cap | 20 minutes | `forecast.search.TIME_CAP` |
-| verdict | ratio <= 0.9, coverage 65-95%, 30 rows, 13 steps | `forecast.evaluate` |
+| verdict | ratio <= 0.9, 30 rows, 13 steps; band coverage >= 65% | `forecast.evaluate` |
 
 `train.minimum_window(width, height)` is the smallest window that never clips your object at the
 offset extremes; the train tab shows it as the floor.

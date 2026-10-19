@@ -357,7 +357,7 @@ def test_a_search_run_reaches_done_and_reports_a_verdict(app, tab):
     run_id = started["run_id"]
     state = _wait_done(app, tab, run_id)
     assert state["state"] == "done", state
-    assert set(state["verdict"]) == {"trusted", "summary", "checks"}
+    assert set(state["verdict"]) == {"trusted", "summary", "accuracy", "band_ok", "checks"}
     assert state["spec"]["mode"] == "series"
     assert isinstance(state["leaderboard"], list)
 
