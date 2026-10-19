@@ -127,6 +127,7 @@ def judge(
     band_width: float | None = None,
     spread: float | None = None,
     metric: str = "wape",
+    val_error: float | None = None,
 ) -> dict:
     """the verdict on the untouched test split. accuracy and history decide `trusted`; the band
     is judged apart in `band_ok`. every failed check is named with its numbers"""
@@ -136,6 +137,8 @@ def judge(
     accuracy = {
         "metric": metric,
         "model_error": model_error,
+        "val_error": val_error,
+        "val_test_gap": model_error - val_error if val_error is not None else None,
         "baseline_error": baseline_error,
         "ratio": ratio,
         "improvement": 1 - ratio if np.isfinite(ratio) else None,

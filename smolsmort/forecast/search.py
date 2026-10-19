@@ -416,6 +416,9 @@ def search(
     """run until a plateau, the time cap, the generation cap or `stop()`; returns the ranked
     leaderboard, the final population (the next search's warm start) and why it stopped"""
     rng = np.random.default_rng(budget.seed)
+    validation_folds = [[str(start), str(end)] for start, end in getattr(ws, "series_folds", ())]
+    if resume and validation_folds and resume.get("validation_folds") != validation_folds:
+        raise PipelineError("checkpoint validation folds differ; start a new search")
     if isinstance(family, str):
         family = get_family(family)
     legacy = family is None or (family.name == "xgboost" and not space and method == "genetic")
@@ -447,6 +450,8 @@ def search(
             }
             if evaluate_score:
                 state["candidate_times"] = candidate_times
+            if validation_folds:
+                state["validation_folds"] = validation_folds
             on_checkpoint(state)
 
     def evaluate(genome: Genome, generation: int, rows=None) -> Entry:

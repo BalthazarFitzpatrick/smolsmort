@@ -234,6 +234,8 @@ def _write_result(folder, spec, result, final):
     }
     if spec.mode == "series":
         summary["excluded_series"] = final.get("excluded_series", [])
+        for key in ("fold_scores", "fold_count", "val_error", "val_test_gap"):
+            summary[key] = final.get(key)
     if "season_length" in final:
         recipe["season_length"] = summary["season_length"] = final["season_length"]
     for name, data in (("recipe.json", recipe), ("result.json", summary)):

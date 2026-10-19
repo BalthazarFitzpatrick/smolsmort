@@ -13,6 +13,7 @@ MATURITY_WEEKS = 26
 # one quarter each, as in the gate; the search can shorten them when history is thin
 VAL_WEEKS = 13
 TEST_WEEKS = 13
+FOLDS = 3
 
 
 class SplitError(ValueError):
@@ -81,6 +82,7 @@ class SeriesCuts:
     val_start: int
     test_start: int
     steps: int
+    folds: tuple[tuple[int, int], ...] = ()
 
 
 def series_cuts(steps: int, horizon: int, *, min_train: int = 26) -> SeriesCuts:
@@ -97,4 +99,9 @@ def series_cuts(steps: int, horizon: int, *, min_train: int = 26) -> SeriesCuts:
             )
         test = max(horizon, spare // 3)
         val = spare - test
-    return SeriesCuts(steps - test - val, steps - test, steps)
+    val_start, test_start = steps - test - val, steps - test
+    # split the existing validation block into thirds; thin history uses fewer nominal thirds
+    fold_steps = max(1, max(26, 2 * horizon) // FOLDS)
+    count = min(FOLDS, max(1, val // fold_steps))
+    edges = [val_start + i * val // count for i in range(count + 1)]
+    return SeriesCuts(val_start, test_start, steps, tuple(zip(edges[:-1], edges[1:], strict=True)))

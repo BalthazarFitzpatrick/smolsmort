@@ -471,6 +471,18 @@ validation rows and stops when a generation brings no gain larger than its own n
 cap. it runs in its own process and never reads the test rows. a saved run can be refit on a newer
 file without a search, or seed the next search with its final population.
 
+series validation splits the existing pre-test validation block into three disjoint windows.
+each window fits on all known steps before its start; cached lag features retain their existing
+per-row forecast origins. shortened histories use fewer windows (at least one), based on
+one nominal third of the full validation length, rounded down. statistical families also fit
+separately for each window. candidate and ensemble fitness is the unweighted mean fold wape;
+paired period contributions carry the same equal fold weights. leaderboard metrics and results
+store `fold_scores` and `fold_count`. the test boundary stays fixed, and test targets are read
+only when finishing the winner. result and verdict accuracy fields include `val_error` and
+`val_test_gap` (test wape minus mean validation wape; positive means worse on test).
+paused searches saved before walk-forward validation must restart; their single-window scores
+cannot be mixed with fold scores. checkpoints created with the same fold windows resume normally.
+
 **results.** every run ends with a verdict computed on the untouched test rows. the accuracy metric is the wape (sum of absolute errors over the sum of actuals) next to the same metric for the naive baseline, shown as one line such as "wape 22.0% vs naive baseline 25.0%, 12% better". accuracy and history decide `trusted`; the band is judged apart (`band_ok`):
 
 | check | passes when |

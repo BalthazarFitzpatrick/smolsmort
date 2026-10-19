@@ -88,7 +88,9 @@ def test_a_genome_scores_in_both_modes_and_the_leak_is_never_offered(
 
     def check_series_fit(ws, genome, frame, rows, nthread):
         bucket = next(key for key, value in ws.frames.items() if value is frame)
-        assert np.array_equal(rows, ws.series_masks[bucket]["train"])
+        assert any(
+            np.array_equal(rows, fit_rows) for fit_rows, _ in pipeline._validation_masks(ws, bucket)
+        )
         assert not np.any(rows & ws.series_masks[bucket]["test"])
         return series_fit(ws, genome, frame, rows, nthread)
 
@@ -158,6 +160,16 @@ def test_a_run_ends_with_a_forecast_and_a_verdict(tmp_path):
     assert run_state(tmp_path / "runs", run_id)["generation_curves"] == curves
     result = json.loads((folder / "result.json").read_text())
     assert set(result["verdict"]) == {"trusted", "summary", "accuracy", "band_ok", "checks"}
+    assert result["fold_count"] == len(result["fold_scores"]) == 3
+    assert result["val_error"] == pytest.approx(np.mean(result["fold_scores"]))
+    assert result["val_test_gap"] == pytest.approx(result["model_error"] - result["val_error"])
+    accuracy = result["verdict"]["accuracy"]
+    assert accuracy["val_error"] == result["val_error"]
+    assert accuracy["val_test_gap"] == result["val_test_gap"]
+    for entry in board:
+        if entry["fitness"] is not None:
+            assert entry["metrics"]["fold_count"] == 3
+            assert entry["fitness"] == pytest.approx(np.mean(entry["metrics"]["fold_scores"]))
     forecast = read_table(folder / "forecast.parquet")
     assert (
         len(forecast["prediction"])

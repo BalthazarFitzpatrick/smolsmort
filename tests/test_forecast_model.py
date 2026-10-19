@@ -241,3 +241,15 @@ def test_the_accuracy_block_names_the_metric_and_the_gain():
     assert not worse["trusted"] and not worse["accuracy"]["passed"]
     assert worse["accuracy"]["text"].endswith("10% worse")
     assert "wape 110.0% vs naive baseline 100.0%" in worse["summary"]
+
+
+def test_accuracy_reports_validation_gap_without_changing_trust():
+    options = {"model_error": 0.2, "baseline_error": 0.3, "band_coverage": 0.8, "test_rows": 100}
+    without = judge(**options)
+    with_validation = judge(**options, val_error=0.1)
+    assert without["accuracy"]["val_error"] is None
+    assert without["accuracy"]["val_test_gap"] is None
+    assert with_validation["accuracy"]["val_error"] == 0.1
+    assert with_validation["accuracy"]["val_test_gap"] == pytest.approx(0.1)
+    assert with_validation["trusted"] == without["trusted"]
+    assert with_validation["checks"] == without["checks"]
