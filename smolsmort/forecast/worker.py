@@ -17,7 +17,7 @@ import numpy as np
 
 from smolsmort.forecast.pipeline import finish, genome_from_dict, load_workspace
 from smolsmort.forecast.requests import parse_request
-from smolsmort.forecast.search import Budget, search
+from smolsmort.forecast.search import Budget, check_validation_folds, search
 from smolsmort.forecast.spec import spec_from_dict
 from smolsmort.forecast.tables import write_table
 
@@ -148,6 +148,10 @@ def run(folder: Path) -> int:
         elif request.get("version") == 2:
             from smolsmort.forecast.launcher import launch_families
 
+            for family in request["families"]:
+                checkpoint = folder / "families" / family["name"] / "checkpoint.json"
+                if checkpoint.exists():
+                    check_validation_folds(ws, json.loads(checkpoint.read_text()))
             result = launch_families(folder, request, job)
         else:
             result = search(

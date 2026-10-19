@@ -391,6 +391,14 @@ def _significant(new: Entry, best: Entry) -> bool:
     return bool(diff.sum() > diff.std(ddof=1) * np.sqrt(len(diff)))
 
 
+def check_validation_folds(ws, checkpoint):
+    """keep cached scores from a different validation protocol out of resumed searches"""
+    folds = [[str(start), str(end)] for start, end in getattr(ws, "series_folds", ())]
+    if checkpoint and folds and checkpoint.get("validation_folds") != folds:
+        raise PipelineError("checkpoint validation folds differ; start a new search")
+    return folds
+
+
 def search(
     ws: Workspace,
     budget: Budget,
@@ -416,9 +424,7 @@ def search(
     """run until a plateau, the time cap, the generation cap or `stop()`; returns the ranked
     leaderboard, the final population (the next search's warm start) and why it stopped"""
     rng = np.random.default_rng(budget.seed)
-    validation_folds = [[str(start), str(end)] for start, end in getattr(ws, "series_folds", ())]
-    if resume and validation_folds and resume.get("validation_folds") != validation_folds:
-        raise PipelineError("checkpoint validation folds differ; start a new search")
+    validation_folds = check_validation_folds(ws, resume)
     if isinstance(family, str):
         family = get_family(family)
     legacy = family is None or (family.name == "xgboost" and not space and method == "genetic")

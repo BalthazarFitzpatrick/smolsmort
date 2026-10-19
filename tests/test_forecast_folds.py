@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib
 import json
+import sys
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,6 +16,7 @@ from smolsmort.forecast import evaluate, pipeline
 from smolsmort.forecast.families import get_family
 from smolsmort.forecast.families.stats import StatsFitted
 from smolsmort.forecast.pipeline import finish, load_workspace, make_genome, score
+from smolsmort.forecast.requests import parse_request
 from smolsmort.forecast.search import Budget, Entry, _significant, search
 from smolsmort.forecast.spec import SERIES, STEP, Column, PrepSpec
 from smolsmort.forecast.splits import FOLDS, series_cuts
@@ -340,3 +343,97 @@ def test_compatible_checkpoint_keeps_fold_scores_predictions_and_contributions(
     assert set(restored) == set(expected)
     assert result["best"] == expected[checkpoint["best_key"]]["genome"]
     assert result["leaderboard"][0]["metrics"]["fold_count"] == 3
+
+
+@pytest.fixture
+def worker_run(workspace, checkpoint, tmp_path, monkeypatch):
+    from smolsmort.forecast import worker
+
+    request = parse_request(
+        {
+            "version": 2,
+            "spec": asdict(workspace.spec),
+            "prepared": str(tmp_path / "prepared"),
+            "summary": {"step": "week"},
+            "families": [{"name": "ridge", "method": "grid"}],
+            "time_budget_s": 60,
+            "nthread": 1,
+            "ensemble": {"enabled": False, "top": 1},
+        }
+    )
+    (tmp_path / "request.json").write_text(json.dumps(request))
+    family_folder = tmp_path / "families" / "ridge"
+    family_folder.mkdir(parents=True)
+    (family_folder / "checkpoint.json").write_text(json.dumps(checkpoint))
+    (family_folder / "status.json").write_text(
+        json.dumps({"state": "done", "reason": "grid complete"})
+    )
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    monkeypatch.setattr(worker.signal, "signal", lambda *args: None)
+    monkeypatch.setattr(worker, "load_workspace", lambda *args, **kwargs: workspace)
+    return tmp_path
+
+
+@pytest.mark.parametrize(("family_state", "deadline"), [("done", 200), ("paused", 50)])
+def test_v2_worker_rejects_legacy_completed_or_expired_checkpoints(
+    worker_run, family_state, deadline, monkeypatch
+):
+    from smolsmort.forecast import launcher, worker
+
+    checkpoint_path = worker_run / "families" / "ridge" / "checkpoint.json"
+    saved = json.loads(checkpoint_path.read_text())
+    saved.pop("validation_folds")
+    checkpoint_path.write_text(json.dumps(saved))
+    (worker_run / "coordinator.json").write_text(
+        json.dumps(
+            {
+                "started_at": 1,
+                "deadline": deadline,
+                "phase": "deep",
+                "families": {"ridge": {"state": family_state}},
+            }
+        )
+    )
+    launched = []
+
+    def reject_launch(*args):
+        launched.append(args)
+        raise AssertionError("legacy checkpoints must fail before coordinator recovery")
+
+    monkeypatch.setattr(worker.time, "time", lambda: 100)
+    monkeypatch.setattr(launcher, "launch_families", reject_launch)
+    assert worker.run(worker_run) == 1
+    assert launched == []
+    status = json.loads((worker_run / "status.json").read_text())
+    assert status["state"] == "failed"
+    assert "checkpoint validation folds differ; start a new search" in status["reason"]
+
+
+def test_v2_worker_launches_compatible_completed_checkpoint(worker_run, monkeypatch):
+    from smolsmort.forecast import launcher, worker
+
+    (worker_run / "coordinator.json").write_text(
+        json.dumps(
+            {
+                "started_at": 1,
+                "deadline": 50,
+                "phase": "deep",
+                "families": {"ridge": {"state": "done"}},
+            }
+        )
+    )
+    launched = []
+
+    def launch(folder, request, job):
+        assert folder == worker_run
+        assert request["families"] == [{"name": "ridge", "method": "grid"}]
+        launched.append(folder)
+        return {"stopped": "cancelled", "elapsed": 0}
+
+    monkeypatch.setattr(worker.time, "time", lambda: 100)
+    monkeypatch.setattr(launcher, "launch_families", launch)
+    assert worker.run(worker_run) == 0
+    assert launched == [worker_run]
+    status = json.loads((worker_run / "status.json").read_text())
+    assert status["state"] == "cancelled"
+    assert status["stopped"] == "cancelled"

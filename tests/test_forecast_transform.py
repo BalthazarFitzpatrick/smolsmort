@@ -227,7 +227,8 @@ def test_stats_fit_sees_log_history_and_returns_raw_cutoff_predictions(
     genome = make_genome([], "squared", {}, family="ets", transform=name)
     predicted = _series_predict(ws, genome, frame, fit_rows, eval_rows, bucket, 1)
 
-    np.testing.assert_array_equal(captured["history"], np.log1p(original_values))
+    visible = ws.panel[STEP] <= frame.step[eval_rows].max()
+    np.testing.assert_array_equal(captured["history"], np.log1p(original_values[visible]))
     np.testing.assert_array_equal(ws.panel["y"], original_values)
     expected = np.expm1(captured["prediction"])
     np.testing.assert_allclose(predicted, expected, rtol=1e-12, atol=1e-12)
@@ -285,7 +286,8 @@ def test_v2_panel_run_records_transform_and_raw_bands(tmp_path, name):
     selections = [
         {"name": family, "method": "grid"} for family in ("xgboost", "ridge", "ets", "snaive")
     ]
-    request, spec, prepared = make_request(tmp_path, selections, duration=30)
+    # three validation fits must finish before this test can inspect every family's transform
+    request, spec, prepared = make_request(tmp_path, selections, duration=90)
     run_id = start_run(
         tmp_path / "runs",
         spec,
