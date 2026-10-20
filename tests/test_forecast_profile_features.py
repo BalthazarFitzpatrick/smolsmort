@@ -11,6 +11,8 @@ from forecast_fixtures import write_panel, write_rows
 
 from smolsmort.forecast.features import (
     ALPHAS,
+    LEGACY_ROLL_STATS,
+    ROLL_STATS,
     WINDOWS,
     buckets_for,
     row_features,
@@ -228,7 +230,9 @@ def test_each_daily_feature_uses_only_positions_through_origin(daily, bucket):
     new = [
         i
         for i, family in enumerate(families)
-        if family.startswith(("lag:", "roll:")) or family == "season"
+        if family.startswith("lag:")
+        or (family.startswith("roll:") and family.rsplit(":", 1)[1] in LEGACY_ROLL_STATS)
+        or family == "season"
     ]
     assert new
     for row in np.flatnonzero(~before.future):
@@ -281,7 +285,9 @@ def test_step_families_and_missing_genome_families(daily, unit, windows, lags):
         scaffold = {STEP: np.array([], dtype="datetime64[D]"), SERIES: np.array([], dtype=str)}
     frame = series_features(spec, table, scaffold, (1, 1), unit, train)
     families = set(frame.features.families)
-    assert {f"roll:{w}" for w in windows} == {f for f in families if f.startswith("roll:")}
+    assert {f"roll:{w}:{stat}" for w in windows for stat in ROLL_STATS} == {
+        f for f in families if f.startswith("roll:")
+    }
     assert {f"lag:{k}" for k in lags} == {f for f in families if f.startswith("lag:")}
     assert frame.features.pick({"lag+0", "absent", "roll:999"})[1] == ["lag_1"]
 
@@ -291,7 +297,9 @@ def test_daily_families_are_capped_by_training_history(daily):
     train = np.arange(len(table[STEP])) < 20
     frame = series_features(spec, table, scaffold, (2, 4), "day", train)
     families = set(frame.features.families)
-    assert {f for f in families if f.startswith("roll:")} == {"roll:7", "roll:14"}
+    assert {f for f in families if f.startswith("roll:")} == {
+        f"roll:{w}:{stat}" for w in (7, 14) for stat in ROLL_STATS
+    }
     assert {f for f in families if f.startswith("lag:")} == {"lag:7", "lag:14"}
 
 
@@ -305,13 +313,12 @@ def test_supplied_periods_become_independent_absolute_families(daily):
         np.testing.assert_array_equal(column, frame.features.pick({"lag:7"})[0][:, 0])
 
 
-def test_weekly_columns_families_and_values_stayed_identical(panel):
+def test_weekly_legacy_genomes_keep_their_column_names_and_order(panel):
     spec, table, scaffold, train, _ = panel
     for bucket in buckets_for(spec.horizon):
         frame = series_features(spec, table, scaffold, bucket, "week", train, period=52)
-        assert not any(f.startswith("lag:") for f in frame.features.families)
         assert {f for f in frame.features.families if f.startswith("roll:")} == {
-            f"roll:{w}" for w in WINDOWS
+            f"roll:{w}:{stat}" for w in WINDOWS for stat in ROLL_STATS
         }
         assert {f for f in frame.features.families if f.startswith("ewm:")} == {
             f"ewm:{a}" for a in ALPHAS
@@ -321,5 +328,16 @@ def test_weekly_columns_families_and_values_stayed_identical(panel):
         expected += [f"ewm{a}" for a in ALPHAS]
         expected += [f"orders_lag_{bucket[1] + j}" for j in range(4)]
         expected += ["cal_week", "cal_month", "cal_quarter", "project", "product"]
-        old_families = set(frame.features.families) - {"cal:cyclic", "cal:dom", "cal:holiday"}
+        old_families = {
+            *(f"lag+{j}" for j in range(4)),
+            "season",
+            *(f"roll:{w}" for w in WINDOWS),
+            *(f"ewm:{a}" for a in ALPHAS),
+            "measure:orders",
+            "dim:project",
+            "dim:product",
+            "cal:week",
+            "cal:month",
+            "cal:quarter",
+        }
         assert frame.features.pick(old_families)[1] == expected

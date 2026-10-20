@@ -466,6 +466,45 @@ the work:
 cache as `prep.sql`. the cache key is the spec plus the file's content hash, so changing a role, an
 aggregation or the file re-runs prep and nothing stale survives.
 
+**series feature candidates.** each horizon bucket reads target and measure values only through
+its origin, `target step - bucket end`. the search can choose each family below independently:
+
+| family | candidate inputs |
+|---|---|
+| `lag+0` through `lag+3` | the origin value and its previous three steps |
+| `season` | the target's seasonal lag, when it reaches back to the origin or earlier |
+| `lag:k` | individual absolute lags; weekly: 1 through 13, 26 and 52; only `bucket end <= k < training history` |
+| `roll:w:mean`, `roll:w:std`, `roll:w:max`, `roll:w:zeros` | separate rolling mean, population standard deviation, maximum and zero share |
+| `roll:w:min`, `roll:w:median`, `roll:w:q10`, `roll:w:q90` | separate rolling minimum, median and interpolated 10th/90th percentiles |
+| `diff:k` | origin value minus the value `k` steps before it |
+| `slope:w` | least-squares change per step over the window ending at the origin |
+| `cycle_ratio` | origin value divided by the value one season earlier; missing for a zero or missing denominator |
+| `momentum:w` | mean of the latest `floor(w/2)` steps minus the preceding `floor(w/2)` steps |
+| `ewm:a` | exponential means with alpha 0.1, 0.3 or 0.5 |
+| `measure:m`, `lead:m`, `dim:d`, `cal:*` | existing measure lags, detected measure leads, dimensions and target calendars |
+
+the unit tables set the windows, differences and fallback season. supplied or detected periods
+also enter the absolute lag pool; the selected profile period takes priority for `cycle_ratio`.
+
+| unit | windows `w` | differences `k` | fallback season |
+|---|---|---|---|
+| day | 7, 14, 28, 91, 182 | 1, 7, 28, 365 | 7 |
+| week | 4, 8, 13, 26, 52 | 1, 4, 13, 52 | 52 |
+| month | 3, 6, 12 | 1, 3, 12 | 12 |
+| quarter | 2, 4, 8 | 1, 2, 4 | 4 |
+| year | 2, 3, 5 | 1, 2, 3 | none |
+
+differences and cycle ratios require a lag shorter than training history; slope and momentum
+windows must fit training history. rolling windows do too, except weekly rolling windows stay
+available for saved recipes. rolling statistics ignore non-finite values and need at least
+`max(floor(w/2), 1)` observations. slope needs at least two observations and keeps their original
+step positions. momentum uses the same mean threshold within each half-window; an odd window
+uses two equal halves. an old `roll:w` recipe still selects exactly mean, std, max and zeros,
+in their original order. the four new statistics require their own family names.
+
+until screening priors are available, fresh search births and seeds use the legacy families,
+including `roll:w` aliases. mutation can add any family from the full candidate pool.
+
 **validation.** series validation splits the existing pre-test validation block into three disjoint windows.
 each window fits on all known steps before its start; cached lag features retain their existing
 per-row forecast origins. shortened histories use fewer windows (at least one), based on

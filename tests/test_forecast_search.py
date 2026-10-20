@@ -14,10 +14,18 @@ from forecast_fixtures import write_panel, write_rows
 
 from smolsmort.forecast import pipeline, worker
 from smolsmort.forecast import runs as run_store
+from smolsmort.forecast.families import get_family
 from smolsmort.forecast.pipeline import Scored, load_workspace, make_genome, score
 from smolsmort.forecast.prep import prepare
 from smolsmort.forecast.runs import cancel_run, run_state, start_run, wait_run
-from smolsmort.forecast.search import Budget, search
+from smolsmort.forecast.search import (
+    Budget,
+    _family_population,
+    _FamilyVariation,
+    _seed_population,
+    _Variation,
+    search,
+)
 from smolsmort.forecast.spec import Censor, Column, PrepSpec
 from smolsmort.forecast.tables import read_table
 
@@ -25,6 +33,119 @@ pytest.importorskip("xgboost")
 pytest.importorskip("duckdb")
 
 TINY = {"population": 6, "plateau": 2, "max_generations": 3, "time_cap": 120, "seed": 0}
+
+
+def make_candidate_search(unit, family):
+    legacy = {
+        "lag+0",
+        "lag+1",
+        "lag+2",
+        "lag+3",
+        "season",
+        "roll:4",
+        "ewm:0.1",
+        "measure:orders",
+        "lead:orders",
+        "dim:product",
+        "cal:week",
+        "cal:cyclic",
+    }
+    novel = {
+        f"roll:4:{stat}" for stat in ("mean", "std", "max", "zeros", "min", "median", "q10", "q90")
+    } | {"diff:1", "slope:4", "cycle_ratio", "momentum:4"}
+    (novel if unit == "week" else legacy).add("lag:12")
+    ws = SimpleNamespace(
+        mode="series",
+        unit=unit,
+        spec=SimpleNamespace(task="regression"),
+        families=sorted((legacy - {"roll:4"}) | novel),
+        profile={"genes": {"objectives": ["squared", "absolute"]}},
+    )
+    rng = np.random.default_rng(17)
+    var = (
+        _Variation(ws, rng) if family is None else _FamilyVariation(ws, rng, get_family(family), {})
+    )
+    return ws, var, legacy, novel
+
+
+@pytest.mark.parametrize("unit", ["week", "day", "month", "quarter", "year"])
+@pytest.mark.parametrize("family", [None, "xgboost", "lightgbm", "ridge"])
+def test_candidate_births_and_seeds_stay_legacy_but_mutation_explores(unit, family):
+    ws, var, legacy, novel = make_candidate_search(unit, family)
+    assert set(var.birth_families) == legacy
+    assert set(var.families) == legacy | novel
+    births = [var.random() for _ in range(500)]
+    assert all(genome.families and set(genome.families) <= legacy for genome in births)
+    seeds = (
+        _seed_population(ws, var, 16, [])
+        if family is None
+        else _family_population(var, 16, [], "genetic")
+    )
+    if family is not None:
+        seeds += _family_population(var, 16, [], "grid")
+    assert all(set(genome.families) <= legacy for genome in seeds)
+    assert set(seeds[0].families) == legacy
+    assert var.crossover(seeds[0], seeds[0]).families == seeds[0].families
+    mutations = [var.mutate(seeds[0]) for _ in range(500)]
+    assert novel <= set().union(*(genome.families for genome in mutations))
+
+
+@pytest.mark.parametrize("family", [None, "lightgbm"])
+@pytest.mark.parametrize("below_rate", [False, True])
+def test_candidate_mutation_keeps_the_full_pool_flip_rate(family, below_rate):
+    _ws, var, legacy, _novel = make_candidate_search("week", family)
+    genome = var.make_genome(legacy, var.objectives[0], var.params_for(var.objectives[0]))
+    rate = 1 / len(var.families)
+    draws = iter(
+        [rate - 1e-9 if name == "diff:1" and below_rate else rate for name in var.families]
+        + [1.0] * 100
+    )
+    var.rng = SimpleNamespace(random=lambda: next(draws))
+    mutated = var.mutate(genome)
+    assert set(mutated.families) == legacy | ({"diff:1"} if below_rate else set())
+
+
+@pytest.mark.parametrize("family", [None, "lightgbm"])
+def test_candidate_warm_seeds_keep_aliases_and_previously_selected_new_families(family):
+    ws, var, _legacy, _novel = make_candidate_search("week", family)
+    saved = var.make_genome(
+        ["roll:4", "diff:1"],
+        var.objectives[0],
+        var.params_for(var.objectives[0]),
+        family or "xgboost",
+    )
+    seeds = (
+        _seed_population(ws, var, 16, [saved.to_dict()])
+        if family is None
+        else _family_population(var, 16, [saved.to_dict()], "genetic")
+    )
+    assert seeds[0] == saved
+
+
+@pytest.mark.parametrize("family", ["xgboost", "lightgbm"])
+def test_candidate_broad_defaults_use_legacy_families(monkeypatch, family):
+    ws, _var, legacy, _novel = make_candidate_search("week", family)
+    evaluated = []
+
+    def record_genome(_ws, genome, **_kwargs):
+        evaluated.append(genome)
+        return Scored(1.0, np.array([1.0]), {}, None)
+
+    monkeypatch.setattr("smolsmort.forecast.search.score", record_genome)
+    search(ws, Budget(population=4, max_generations=1), family=family, defaults_only=True)
+    assert len(evaluated) == 1
+    assert set(evaluated[0].families) == legacy
+
+
+def test_candidate_birth_rule_preserves_row_and_raw_series_searches():
+    ws, _var, _legacy, _novel = make_candidate_search("week", None)
+    ws.mode = "row"
+    ws.families = ["measure:x", "log:x", "dim:group", "freq:group", "date:trend"]
+    assert _Variation(ws, np.random.default_rng(0)).birth_families == ws.families
+    ws.mode = "series"
+    var = _FamilyVariation(ws, np.random.default_rng(0), get_family("snaive"), {})
+    assert var.birth_families == var.families == []
+    assert _family_population(var, 16, [], "genetic")[0].families == ()
 
 
 def _series(folder):

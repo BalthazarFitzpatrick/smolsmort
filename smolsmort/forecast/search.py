@@ -114,10 +114,29 @@ class Entry:
         return data
 
 
+def _select_birth_families(ws):
+    if getattr(ws, "mode", None) != "series":
+        return list(ws.families)
+    # placeholder until screening priors replace legacy-only births and seeds
+    # mutation still explores the full pool, including the saved rolling aliases
+    legacy = set()
+    for name in ws.families:
+        if name.startswith("roll:"):
+            legacy.add(":".join(name.split(":")[:2]))
+        elif (
+            name == "season"
+            or name.startswith(("lag+", "ewm:", "measure:", "lead:", "dim:", "cal:"))
+            or (name.startswith("lag:") and ws.unit != "week")
+        ):
+            legacy.add(name)
+    return sorted(legacy)
+
+
 class _Variation:
     def __init__(self, ws: Workspace, rng: np.random.Generator):
         self.transform = getattr(ws, "transform", "none")
-        self.families = list(ws.families)
+        self.birth_families = _select_birth_families(ws)
+        self.families = list(dict.fromkeys([*ws.families, *self.birth_families]))
         self.objectives = list(ws.profile["genes"]["objectives"])
         self.rng = rng
         family = get_family("xgboost")
@@ -142,8 +161,8 @@ class _Variation:
         return params
 
     def random(self) -> Genome:
-        keep = [f for f in self.families if self.rng.random() < 0.7] or [
-            self.rng.choice(self.families)
+        keep = [f for f in self.birth_families if self.rng.random() < 0.7] or [
+            self.rng.choice(self.birth_families)
         ]
         objective = str(self.rng.choice(self.objectives))
         params = {name: self._draw(spec) for name, spec in self.space.items()}
@@ -239,6 +258,7 @@ class _FamilyVariation(_Variation):
             ] or self.objectives
         if family.needs == "raw_series":
             self.families = []
+            self.birth_families = []
         if self.transform == "logdiff":
             aliases = getattr(family, "objective_aliases", {})
             self.objectives = [
@@ -259,9 +279,9 @@ class _FamilyVariation(_Variation):
 
     def random(self):
         objective = str(self.rng.choice(self.objectives))
-        keep = [name for name in self.families if self.rng.random() < 0.7]
-        if self.families and not keep:
-            keep = [str(self.rng.choice(self.families))]
+        keep = [name for name in self.birth_families if self.rng.random() < 0.7]
+        if self.birth_families and not keep:
+            keep = [str(self.rng.choice(self.birth_families))]
         params = {
             name: self._draw(spec) if name not in self.choices else self.rng.choice(spec).item()
             for name, spec in self.space.items()
@@ -311,12 +331,12 @@ class _FamilyVariation(_Variation):
 
 def _family_population(var, size, warm, method):
     if not var.space:
-        return [var.make_genome(var.families, var.objectives[0], {}, var.family.name)]
+        return [var.make_genome(var.birth_families, var.objectives[0], {}, var.family.name)]
     if method == "grid":
         choices = [var.overrides.get(name, [var.defaults[name]]) for name in var.space]
         return [
             var.make_genome(
-                var.families,
+                var.birth_families,
                 objective,
                 var.params_for(objective, dict(zip(var.space, values, strict=True))),
                 var.family.name,
@@ -330,7 +350,8 @@ def _family_population(var, size, warm, method):
         if data.get("family", "xgboost") == var.family.name
     ]
     seeds.extend(
-        var.make_genome(var.families, o, var.params_for(o), var.family.name) for o in var.objectives
+        var.make_genome(var.birth_families, o, var.params_for(o), var.family.name)
+        for o in var.objectives
     )
     while len(seeds) < size:
         seeds.append(var.random())
@@ -338,7 +359,7 @@ def _family_population(var, size, warm, method):
 
 
 def _seed_population(ws, var: _Variation, size: int, warm) -> list[Genome]:
-    everything = list(ws.families)
+    everything = var.birth_families
     seeds = [var.make_genome(everything, o, var.params_for(o)) for o in var.objectives]
     first = var.objectives[0]
     for depth in (3, 8):
@@ -346,7 +367,7 @@ def _seed_population(ws, var: _Variation, size: int, warm) -> list[Genome]:
             params = {**var.params_for(first), "max_depth": depth, "eta": eta}
             seeds.append(var.make_genome(everything, first, params))
     for data in warm or []:
-        families = [f for f in data["families"] if f in ws.families]
+        families = [f for f in data["families"] if f in var.families]
         if families and data["objective"] in var.objectives:
             seeds.insert(
                 0,
@@ -519,7 +540,7 @@ def search(
     )
     if defaults_only and family and family.space() and not resume:
         default = var.make_genome(
-            var.families, var.objectives[0], var.params_for(var.objectives[0]), family.name
+            var.birth_families, var.objectives[0], var.params_for(var.objectives[0]), family.name
         )
         population = [default, *[genome for genome in population if genome.key() != default.key()]]
     best, quiet, generation, reason = None, 0, 0, "generation cap"

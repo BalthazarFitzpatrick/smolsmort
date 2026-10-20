@@ -17,6 +17,17 @@ BUCKETS = ((1, 1), (2, 4), (5, 8), (9, 13), (14, 26), (27, 52))
 LAGS = (0, 1, 2, 3)
 WINDOWS = (4, 8, 13, 26, 52)
 ALPHAS = (0.1, 0.3, 0.5)
+LEGACY_ROLL_STATS = ("mean", "std", "max", "zeros")
+ROLL_STATS = (*LEGACY_ROLL_STATS, "min", "median", "q10", "q90")
+# absolute lags, rolling windows, origin differences and fallback calendar season
+STEP_FEATURES = {
+    "week": ((*range(1, 14), 26, 52), WINDOWS, (1, 4, 13, 52), 52),
+    "day": ((7, 14, 28, 364), (7, 14, 28, 91, 182), (1, 7, 28, 365), 7),
+    "month": ((12,), (3, 6, 12), (1, 3, 12), 12),
+    "quarter": ((4,), (2, 4, 8), (1, 2, 4), 4),
+    "year": ((2, 3), (2, 3, 5), (1, 2, 3), None),
+}
+LEGACY_WINDOWS = {"week": WINDOWS}
 
 
 @dataclass
@@ -28,7 +39,11 @@ class Features:
 
     def pick(self, families) -> tuple[np.ndarray, list[str], list[str]]:
         """the columns of the chosen families, in table order"""
-        keep = [i for i, f in enumerate(self.families) if f in families]
+        selected = set(families)
+        for family in tuple(selected):
+            if family.startswith("roll:") and family.count(":") == 1:
+                selected.update(f"{family}:{stat}" for stat in LEGACY_ROLL_STATS)
+        keep = [i for i, f in enumerate(self.families) if f in selected]
         return self.x[:, keep], [self.names[i] for i in keep], [self.types[i] for i in keep]
 
 
@@ -202,33 +217,70 @@ def _extend(values: np.ndarray, length: int, aggregation) -> np.ndarray:
     return out
 
 
-def _rolling(values: np.ndarray, window: int):
-    """mean, std, max and zero share over the `window` values ending at each position"""
+def _window_sum(values: np.ndarray, window: int) -> np.ndarray:
+    total = np.concatenate(([0], np.cumsum(values)))
+    end = np.arange(1, len(values) + 1)
+    return total[end] - total[np.maximum(end - window, 0)]
+
+
+def _rolling_mean(values: np.ndarray, window: int) -> np.ndarray:
+    finite = np.isfinite(values)
+    count = _window_sum(finite, window)
+    total = _window_sum(np.where(finite, values, 0.0), window)
+    return np.divide(
+        total, count, out=np.full(len(values), np.nan), where=count >= max(window // 2, 1)
+    )
+
+
+def _rolling(values: np.ndarray, window: int) -> dict[str, np.ndarray]:
+    """finite-value statistics ending at each origin, with the legacy half-window threshold"""
     n = len(values)
     finite = np.isfinite(values)
     zero_filled = np.where(finite, values, 0.0)
-    cs = np.concatenate([[0], np.cumsum(zero_filled)])
-    cs2 = np.concatenate([[0], np.cumsum(zero_filled**2)])
-    cn = np.concatenate([[0], np.cumsum(finite)])
-    cz = np.concatenate([[0], np.cumsum(finite & (values == 0))])
-    end = np.arange(1, n + 1)
-    start = np.maximum(end - window, 0)
-    count = cn[end] - cn[start]
+    count = _window_sum(finite, window)
     enough = count >= max(window // 2, 1)
     with np.errstate(invalid="ignore", divide="ignore"):
-        mean = (cs[end] - cs[start]) / count
-        var = (cs2[end] - cs2[start]) / count - mean**2
-        zeros = (cz[end] - cz[start]) / count
+        mean = _window_sum(zero_filled, window) / count
+        var = _window_sum(zero_filled**2, window) / count - mean**2
+        zeros = _window_sum(finite & (values == 0), window) / count
     padded = np.concatenate([np.full(window - 1, -np.inf), np.where(finite, values, -np.inf)])
     high = np.lib.stride_tricks.sliding_window_view(padded, window).max(axis=1)
     high = np.where(np.isfinite(high), high, np.nan)
     nan = np.full(n, np.nan)
-    return (
-        np.where(enough, mean, nan),
-        np.where(enough, np.sqrt(np.maximum(var, 0)), nan),
-        np.where(enough, high, nan),
-        np.where(enough, zeros, nan),
-    )
+    padded = np.concatenate([np.full(window - 1, np.inf), np.where(finite, values, np.inf)])
+    ordered = np.sort(np.lib.stride_tricks.sliding_window_view(padded, window), axis=1)
+    stats = {
+        "mean": np.where(enough, mean, nan),
+        "std": np.where(enough, np.sqrt(np.maximum(var, 0)), nan),
+        "max": np.where(enough, high, nan),
+        "zeros": np.where(enough, zeros, nan),
+        "min": np.where(enough, ordered[:, 0], nan),
+    }
+    rows = np.flatnonzero(enough)
+    for name, quantile in (("median", 0.5), ("q10", 0.1), ("q90", 0.9)):
+        position = (count[rows] - 1) * quantile
+        low = ordered[rows, np.floor(position).astype(int)]
+        high = ordered[rows, np.ceil(position).astype(int)]
+        column = np.full(n, np.nan)
+        column[rows] = low + (high - low) * (position - np.floor(position))
+        stats[name] = column
+    return stats
+
+
+def _slope(values: np.ndarray, window: int) -> np.ndarray:
+    """least-squares change per step, retaining the time gaps of missing observations"""
+    padded = np.concatenate([np.full(window - 1, np.nan), values])
+    seen = np.lib.stride_tricks.sliding_window_view(padded, window)
+    finite = np.isfinite(seen)
+    count = finite.sum(axis=1)
+    x = np.arange(window, dtype=float)
+    y = np.where(finite, seen, 0.0)
+    sum_x = (finite * x).sum(axis=1)
+    sum_x2 = (finite * x**2).sum(axis=1)
+    numerator = count * (y * x).sum(axis=1) - sum_x * y.sum(axis=1)
+    denominator = count * sum_x2 - sum_x**2
+    enough = (count >= max(window // 2, 2)) & (denominator > 0)
+    return np.divide(numerator, denominator, out=np.full(len(values), np.nan), where=enough)
 
 
 def _ewm(values: np.ndarray, alpha: float) -> np.ndarray:
@@ -288,6 +340,11 @@ def series_features(
     if period:
         detected.add(period)
     absolute_lags, windows = _step_features(unit, history, detected)
+    _, _, differences, fallback_period = STEP_FEATURES[unit]
+    differences = tuple(k for k in differences if k < history)
+    cycle_period = period or min(detected, default=fallback_period)
+    if cycle_period is not None and cycle_period >= history:
+        cycle_period = None
     dim_codes = {d: _codes(panel[d], train) for d in dims}
     last = step_index(panel[STEP], unit).max()
     parts = []
@@ -311,6 +368,9 @@ def series_features(
             absolute_lags,
             windows,
             preserve_relative=unit != "week",
+            differences=differences,
+            dynamics_windows=tuple(w for w in windows if w <= history),
+            cycle_period=cycle_period,
         )
         rows = [(p, panel[target][mine][p], False) for p in range(len(mine)) if p - b >= 0]
         future = np.flatnonzero(scaffold[SERIES] == key)
@@ -367,18 +427,11 @@ def _unit_days(unit: str) -> int:
 
 
 def _step_features(unit, history, periods):
-    """weekly families stay fixed; other units expose only history-supported windows and lags"""
-    if unit == "week":
-        return (), WINDOWS
-    lags, windows = {
-        "day": ((7, 14, 28, 364), (7, 14, 28, 91, 182)),
-        "month": ((12,), (3, 6, 12)),
-        "quarter": ((4,), (2, 4, 8)),
-        "year": ((2, 3), (2, 3, 5)),
-    }[unit]
+    """history-supported candidates, retaining weekly windows for saved recipes"""
+    lags, windows, _, _ = STEP_FEATURES[unit]
     return (
         tuple(sorted(k for k in set(lags) | set(periods) if k < history)),
-        tuple(w for w in windows if w <= history),
+        tuple(w for w in windows if w <= history or w in LEGACY_WINDOWS.get(unit, ())),
     )
 
 
@@ -393,6 +446,9 @@ def _series_base(
     windows=WINDOWS,
     *,
     preserve_relative=False,
+    differences=(),
+    dynamics_windows=(),
+    cycle_period=None,
 ) -> dict:
     """name -> (family, values) at every origin position g, built from positions <= g only.
     families are relative to the bucket (lag+0 is the freshest lag any bucket may read), so one
@@ -409,8 +465,25 @@ def _series_base(
             # separate columns retain relative-lag and season families when their offsets coincide
             base[f"absolute_lag_{k}"] = (f"lag:{k}", _shift(y, k - b))
     for w in windows:
-        for stat, col in zip(("mean", "std", "max", "zeros"), _rolling(y, w), strict=True):
-            base[f"roll{w}_{stat}"] = (f"roll:{w}", col)
+        for stat, col in _rolling(y, w).items():
+            base[f"roll{w}_{stat}"] = (f"roll:{w}:{stat}", col)
+    finite_y = np.where(np.isfinite(y), y, np.nan)
+    for k in differences:
+        base[f"diff_{k}"] = (f"diff:{k}", finite_y - _shift(finite_y, k))
+    for w in dynamics_windows:
+        base[f"slope_{w}"] = (f"slope:{w}", _slope(y, w))
+        half = w // 2
+        mean = _rolling_mean(y, half)
+        base[f"momentum_{w}"] = (f"momentum:{w}", mean - _shift(mean, half))
+    if cycle_period:
+        previous = _shift(finite_y, cycle_period)
+        ratio = np.divide(
+            finite_y,
+            previous,
+            out=np.full(len(y), np.nan),
+            where=np.isfinite(previous) & (previous != 0),
+        )
+        base["cycle_ratio"] = ("cycle_ratio", ratio)
     for a in ALPHAS:
         base[f"ewm{a}"] = (f"ewm:{a}", _ewm(y, a))
     for m in measures:
