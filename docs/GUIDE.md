@@ -502,8 +502,23 @@ step positions. momentum uses the same mean threshold within each half-window; a
 uses two equal halves. an old `roll:w` recipe still selects exactly mean, std, max and zeros,
 in their original order. the four new statistics require their own family names.
 
-until screening priors are available, fresh search births and seeds use the legacy families,
+until search consumes screening priors, fresh search births and seeds use the legacy families,
 including `roll:w` aliases. mutation can add any family from the full candidate pool.
+
+**family screen.** series runs write `screen.json` before search. only rows before the first
+validation fold are scored against seasonal-naive residuals: the latest same-season value
+available at the bucket's origin, using the detected or calendar season (origin value for yearly
+data without a detected season). rows lacking that history are skipped. columns are pooled
+across horizon buckets, using at most 20,000 sampled
+training rows. each family gets its strongest absolute spearman correlation and its share of
+gain from one 40-round lightgbm fit, blended equally; without lightgbm or with fewer than 20
+usable rows, correlation alone is used.
+rank percentiles map linearly through `(0, 0.1)`, `(0.9, 0.35)` and `(1, 0.9)`, reserving priors
+above 0.35 for the top decile. tied scores share a rank; zero scores start at 0.1.
+a seeded sample of about 10% of all families from the bottom half gets
+`wildcard: true` and `p_on` raised to 0.5. each entry stores `family`, `score`, `rank_corr`, `gain`,
+`p_on` and `wildcard`. these priors are saved for the later bouquet search; search does not use
+them yet. validation and test targets stay sealed throughout the screen.
 
 **validation.** series validation splits the existing pre-test validation block into three disjoint windows.
 each window fits on all known steps before its start; cached lag features retain their existing

@@ -26,6 +26,7 @@ RUN_FILES = (
     "generation_curves.jsonl",
     "worker.log",
     "profile.json",
+    "screen.json",
     "leaderboard.json",
     "leaderboard_generation.json",
     "population.json",
