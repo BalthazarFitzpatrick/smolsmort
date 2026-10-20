@@ -357,7 +357,7 @@ def test_a_search_run_reaches_done_and_reports_a_verdict(app, tab):
     run_id = started["run_id"]
     state = _wait_done(app, tab, run_id)
     assert state["state"] == "done", state
-    assert set(state["verdict"]) == {"trusted", "summary", "accuracy", "band_ok", "checks"}
+    assert set(state["verdict"]) == {"summary", "accuracy", "checks"}
     assert state["spec"]["mode"] == "series"
     assert isinstance(state["leaderboard"], list)
 
@@ -538,7 +538,7 @@ def test_table_pages_and_sorts(series_run):
     assert any(row[future_idx] for row in page0["rows"])
 
 
-def test_export_carries_the_verdict_on_every_row(series_run):
+def test_export_carries_the_ratio_on_every_row(series_run):
     app, tab, run_id, _root = series_run
     data = tab.images["/api/forecast-export/"][0](app, f"{run_id}.csv")
     assert data is not None
@@ -547,11 +547,12 @@ def test_export_carries_the_verdict_on_every_row(series_run):
     assert lines[0].startswith("# verdict:")
     reader = csv.reader(io.StringIO("\n".join(lines[1:])))
     header = next(reader)
-    assert "verdict" in header
-    v_idx = header.index("verdict")
+    assert "ratio" in header and "verdict" not in header
+    ratio_idx = header.index("ratio")
     body = list(reader)
     assert body
-    assert all(row[v_idx] in ("trusted", "not trusted") for row in body)
+    view = _get(app, tab, "/api/forecast-view", {"id": run_id})
+    assert all(float(row[ratio_idx]) == view["verdict"]["accuracy"]["ratio"] for row in body)
 
 
 def test_cancel_stops_a_run(app, tab):

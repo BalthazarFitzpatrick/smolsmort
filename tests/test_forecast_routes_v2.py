@@ -90,8 +90,8 @@ def completed_models(app, tmp_path):
         families=[{"name": name} for name in ("xgboost", "ridge", "snaive")],
         prepared=str(prepared),
     )
-    winner_verdict = {"trusted": True, "summary": "winner beat baseline"}
-    ensemble_verdict = {"trusted": False, "summary": "ensemble did not beat baseline"}
+    winner_verdict = {"accuracy": {"ratio": 0.95}, "summary": "winner beat baseline"}
+    ensemble_verdict = {"accuracy": {"ratio": 1.0}, "summary": "ensemble did not beat baseline"}
     write_json(
         run / "result.json",
         {
@@ -118,7 +118,10 @@ def completed_models(app, tmp_path):
                     "candidates": 1,
                     "state": "pruned",
                     "pruned_reason": "paired validation error behind xgboost",
-                    "verdict": {"trusted": True, "summary": "must not expose loser test scores"},
+                    "verdict": {
+                        "accuracy": {"ratio": 0.8},
+                        "summary": "must not expose loser test scores",
+                    },
                 },
             },
         },
@@ -162,7 +165,7 @@ def test_results_compare_validation_scores_without_loser_test_verdicts(app, comp
     assert (
         payload["families"]["snaive"]["pruned_reason"] == "paired validation error behind xgboost"
     )
-    assert payload["ensemble"]["verdict"]["trusted"] is False
+    assert payload["ensemble"]["verdict"]["accuracy"]["ratio"] == 1.0
     assert payload["importance"] == {
         "method": "gain",
         "features": [{"feature": "lag_1", "importance": 1.0}],
@@ -172,15 +175,15 @@ def test_results_compare_validation_scores_without_loser_test_verdicts(app, comp
 
 
 @pytest.mark.parametrize(
-    "model,prediction,family,trusted",
-    [("winner", 10, "xgboost", True), ("ensemble", 20, "ensemble", False)],
+    "model,prediction,family,ratio",
+    [("winner", 10, "xgboost", 0.95), ("ensemble", 20, "ensemble", 1.0)],
 )
 def test_selected_result_model_matches_chart_table_and_export(
-    app, completed_models, model, prediction, family, trusted
+    app, completed_models, model, prediction, family, ratio
 ):
     view = get(app, "/api/forecast-view", id=completed_models.name, model=model)
     assert view["model"] == model and view["family"] == family
-    assert view["verdict"]["trusted"] is trusted
+    assert view["verdict"]["accuracy"]["ratio"] == ratio
     forecast = next(line for line in view["series"] if line["id"] == "forecast")
     assert forecast["values"][-1] == prediction
     if model == "ensemble":
@@ -195,7 +198,8 @@ def test_selected_result_model_matches_chart_table_and_export(
         .decode()
     )
     assert exported.splitlines()[0] == f"# verdict: {view['verdict']['summary']}"
-    assert f",{family},{'trusted' if trusted else 'not trusted'}" in exported
+    assert exported.splitlines()[1].endswith(",family,ratio")
+    assert f",{family},{ratio}" in exported
 
 
 def test_saved_ensemble_is_default_but_winner_can_still_be_selected(app, completed_models):
@@ -258,7 +262,7 @@ def test_legacy_result_defaults_to_xgboost_without_a_family_comparison(app, comp
     write_json(completed_models / "recipe.json", {"genome": {"families": ["lag"]}})
     write_json(
         completed_models / "result.json",
-        {"verdict": {"trusted": True, "summary": "trusted fixture"}},
+        {"verdict": {"accuracy": {"ratio": 0.95}, "summary": "ratio fixture"}},
     )
     write_json(
         completed_models / "leaderboard.json", [{"fitness": 0.2, "genome": {"families": ["lag"]}}]

@@ -560,18 +560,22 @@ stores `finish_estimate_s`, `finish_reserve_s`, and `search_deadline` for inspec
 resume keeps the original run deadline and restores checkpointed candidates;
 time spent stopped still consumes the wall-clock budget.
 
-**results.** every run ends with a verdict computed on the untouched test rows. the accuracy metric is the wape (sum of absolute errors over the sum of actuals) next to the same metric for the naive baseline, shown as one line such as "wape 22.0% vs naive baseline 25.0%, 12% better". accuracy and history decide `trusted`; the band is judged apart (`band_ok`):
+**results.** every run reports accuracy on the untouched test rows. the accuracy metric is wape
+(sum of absolute errors over the sum of actuals), next to the same metric for the naive baseline.
+the error ratio is model error divided by baseline error: below 1 means better than naive;
+1 or above is in the worse category. for example, wape 22.0% against baseline wape 25.0% gives
+a ratio of 0.88, or 12% better. the baseline is the group median per row or seasonal naive per
+series. the results also show these plain facts, with no pass thresholds:
 
-| check | passes when |
+| fact | reading |
 |---|---|
-| beats the naive baseline | error <= 0.9 x the baseline's (group median per row; seasonal naive per series) |
-| band is calibrated | the 80% band covers at least 65% of test rows (band only) |
-| band is sharper than the data's own spread | the band is narrower than the target's own 10-90% range (band only) |
-| enough history to judge | at least 30 test rows (and 13 test steps for a series) |
+| band coverage | share of test rows inside the 80% band |
+| band width and target spread | median band width alongside the target's 10-90% range |
+| test history | number of test rows and, for a series, test steps |
 
-a failed check does not hide the forecast; the results tab shows the warning above the chart, names
-every failed check with its numbers, and the csv export carries it in its first line and on every
-row. the chart shows the total, narrowed by dimension filters and split by up to three dimensions,
+the results banner shows the ratio and better/worse reading above the chart. the csv export
+carries the accuracy summary in its first line and the ratio on every row.
+the chart shows the total, narrowed by dimension filters and split by up to three dimensions,
 with the band recomputed at the aggregate on screen; the table below pages, sorts and, per row,
 groups by a dimension with each group's earliest and latest predicted date.
 

@@ -125,6 +125,19 @@ function forecastNumber(value) {
   return Number.isFinite(value) ? String(Number(value.toPrecision(4))) : '-';
 }
 
+function forecastRatioText(verdict) {
+  const ratio = verdict?.accuracy?.ratio;
+  return Number.isFinite(ratio)
+    ? `ratio ${forecastNumber(ratio)}, ${ratio < 1 ? 'better' : 'worse'} than naive`
+    : verdict?.summary || 'ratio unavailable';
+}
+
+function forecastRatioStyle(node, verdict) {
+  const ratio = verdict?.accuracy?.ratio;
+  node.classList.toggle('better', Number.isFinite(ratio) && ratio < 1);
+  node.classList.toggle('worse', Number.isFinite(ratio) && ratio >= 1);
+}
+
 const FORECAST_OBJECTIVES = {
   squared: 'squared error', absolute: 'absolute error', tweedie: 'tweedie loss',
   poisson: 'poisson loss', aft: 'survival loss', logistic: 'log loss',
@@ -1097,9 +1110,8 @@ class ForecastTopic {
     setText(`${this.topic}-run-title`, `${run.id.split('-').at(-1)} · ${run.kind || 'search'} · ${run.state}`);
     setText(`${this.topic}-run-stop`, this.stopReason(run));
     if (run.verdict) {
-      verdict.textContent = run.verdict.trusted ? 'trusted' : 'not trusted';
-      verdict.classList.toggle('trusted', !!run.verdict.trusted);
-      verdict.classList.toggle('warn', !run.verdict.trusted);
+      verdict.textContent = forecastRatioText(run.verdict);
+      forecastRatioStyle(verdict, run.verdict);
     }
     const names = this.generationFamilies(run);
     if (!names.includes(this.generationFamily)) this.generationFamily = names[0] || 'xgboost';
@@ -1516,7 +1528,7 @@ class ForecastTopic {
       await this.refreshTable();
     } catch (err) {
       if (load !== this.resultsLoad) return;
-      this.paintVerdict({trusted: false, summary: err.message, checks: []});
+      this.paintVerdict({summary: err.message, checks: []});
     }
   }
 
@@ -1617,14 +1629,13 @@ class ForecastTopic {
   paintVerdict(verdict, label = null) {
     const box = document.getElementById(`${this.topic}-verdict`);
     box.classList.remove('hidden');
-    box.classList.toggle('trusted', !!verdict.trusted);
-    box.classList.toggle('warn', !verdict.trusted);
+    forecastRatioStyle(box, verdict);
     box.innerHTML = '';
     const summary = document.createElement('div');
     summary.className = 'forecast-verdict-summary';
-    summary.textContent = (label ? `${label}: ` : '') + (verdict.summary || (verdict.trusted ? 'trusted' : 'not trusted'));
+    summary.textContent = (label ? `${label}: ` : '') + forecastRatioText(verdict);
     box.appendChild(summary);
-    (verdict.checks || []).filter(c => !c.passed).forEach(check => {
+    (verdict.checks || []).forEach(check => {
       const line = document.createElement('div');
       line.className = 'forecast-verdict-check';
       line.textContent = `${check.check}: ${check.detail}`;
@@ -1645,7 +1656,7 @@ class ForecastTopic {
     const families = Object.entries(view.families || {});
     document.getElementById(`${this.topic}-results-models`).classList.remove('hidden');
     document.getElementById(`${this.topic}-family-comparison-wrap`).classList.toggle('hidden', !families.length);
-    const verdictText = verdict => verdict ? (verdict.trusted ? 'trusted' : 'not trusted') : '-';
+    const verdictText = verdict => verdict ? forecastRatioText(verdict) : '-';
     const rows = families.map(([name, entry]) => [name, entry.state,
       forecastNumber(entry.fitness), entry.candidates ?? 0, entry.pruned_reason || entry.reason || '-',
       verdictText(name === view.winner_family ? view.winner?.verdict || entry.verdict : null)]);
@@ -1654,7 +1665,7 @@ class ForecastTopic {
       '-', '-', verdictText(view.ensemble.verdict),
     ]);
     forecastFillTable(document.getElementById(`${this.topic}-family-comparison`),
-      ['family', 'state', 'validation error', 'candidates', 'reason', 'test verdict'], rows);
+      ['family', 'state', 'validation error', 'candidates', 'reason', 'test ratio'], rows);
     setHead(document.getElementById(`${this.topic}-importance-family`), this.importanceFamily);
     const importance = view.importance;
     const method = importance?.method === 'absolute_standardized_coefficient' ? 'absolute standardised coefficient' : importance?.method;
@@ -1686,7 +1697,7 @@ class ForecastTopic {
       document.getElementById(`${this.topic}-group-row`).classList.toggle('hidden', view.mode !== 'row');
     } catch (err) {
       if (request !== this.viewRequest) return;
-      this.paintVerdict({trusted: false, summary: err.message, checks: []});
+      this.paintVerdict({summary: err.message, checks: []});
     }
   }
 
@@ -1716,7 +1727,7 @@ class ForecastTopic {
       this.paintTable(data);
     } catch (err) {
       if (request !== this.tableRequest) return;
-      this.paintVerdict({trusted: false, summary: err.message, checks: []});
+      this.paintVerdict({summary: err.message, checks: []});
     }
   }
 
