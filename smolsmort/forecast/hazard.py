@@ -9,6 +9,8 @@ import numpy as np
 from smolsmort.forecast.model import Fitted, ModelError, predict
 
 FEATURE_NAMES = ["hazard_week", "hazard_calendar_week"]
+# tail extrapolation stops this many weeks past its start; further means "not within reach"
+TAIL_LIMIT_WEEKS = 104
 
 
 @dataclass
@@ -96,15 +98,22 @@ def predict_hazard(fitted, x, anchors, *, waited=None):
         crossed = survival <= 1 - probability
         with np.errstate(divide="ignore"):
             extra = np.ceil(np.log((1 - probability) / start_survival) / np.log1p(-tail))
-        beyond = start + np.maximum(extra, 1) - 1
-        return np.where(crossed.any(axis=1), crossed.argmax(axis=1), beyond).astype(float)
+        limited = ~crossed.any(axis=1) & (extra > TAIL_LIMIT_WEEKS)
+        beyond = start + np.clip(extra, 1, TAIL_LIMIT_WEEKS) - 1
+        weeks = np.where(crossed.any(axis=1), crossed.argmax(axis=1), beyond).astype(float)
+        return weeks, limited
 
+    (prediction, median_limited), (lower, _), (upper, upper_limited) = (
+        find_quantile(probability) for probability in (0.5, 0.1, 0.9)
+    )
     return {
         "week": week,
         "hazard": hazards,
         "survival": survival,
         "survival_start": survival_start,
-        "prediction": find_quantile(0.5),
-        "lower": find_quantile(0.1),
-        "upper": find_quantile(0.9),
+        "prediction": prediction,
+        "lower": lower,
+        "upper": upper,
+        # median or p90 hit the tail limit: report as not within reach, not as a date
+        "beyond_limit": median_limited | upper_limited,
     }

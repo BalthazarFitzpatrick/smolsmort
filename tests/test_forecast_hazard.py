@@ -109,10 +109,11 @@ def test_conditional_survival_starts_at_one_after_six_weeks(monkeypatch):
     np.testing.assert_allclose(curves["survival_start"][1, 6:], 0.8 ** np.arange(7))
     np.testing.assert_array_equal(curves["prediction"], [3, 9])
     np.testing.assert_array_equal(curves["lower"], [0, 6])
-    np.testing.assert_array_equal(curves["upper"], [10, 12])
+    # past the cap 12 the 0.2 tail repeats: 0.8^7 at week 12, four more weeks reach 0.8^11 <= 0.1
+    np.testing.assert_array_equal(curves["upper"], [10, 16])
 
 
-def test_quantiles_use_the_cap_when_survival_never_crosses(monkeypatch):
+def test_quantiles_stop_at_the_tail_limit_when_survival_never_crosses(monkeypatch):
     monkeypatch.setattr(hazard, "predict", lambda _fitted, x: np.zeros(len(x)))
     curves = predict_hazard(
         HazardFitted(SimpleNamespace(eval_history=None), cap=4),
@@ -120,8 +121,10 @@ def test_quantiles_use_the_cap_when_survival_never_crosses(monkeypatch):
         np.array(["2024-01-01"], dtype="datetime64[D]"),
     )
     np.testing.assert_array_equal(curves["survival"], np.ones((1, 5)))
+    # a zero tail never crosses: quantiles stop at the tail limit past the cap and are flagged
     for name in ("prediction", "lower", "upper"):
-        np.testing.assert_array_equal(curves[name], [4])
+        np.testing.assert_array_equal(curves[name], [4 + hazard.TAIL_LIMIT_WEEKS])
+    assert curves["beyond_limit"].tolist() == [True]
 
 
 def test_events_after_a_phase_cut_cannot_change_that_phases_risk_set():
