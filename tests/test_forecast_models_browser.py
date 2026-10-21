@@ -139,7 +139,9 @@ def test_models_saved_v2_requests_and_restored_plan(tmp_path, monkeypatch):
         minutes.fill("1")
         minutes.blur()
         at_once = page.locator("#regression-models-at-once")
-        # parallel is on by default
+        assert at_once.is_disabled()
+        assert page.locator("#regression-models-parallel").get_attribute("aria-checked") == "false"
+        page.click("#regression-models-parallel")
         assert at_once.is_enabled()
         assert at_once.get_attribute("max") == "2"
         at_once.fill("2")

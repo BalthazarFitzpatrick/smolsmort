@@ -39,7 +39,7 @@ def parse_request(request: dict) -> dict:
         type(request["nthread"]) is not int or request["nthread"] < 1
     ):
         raise ValueError("nthread must be a positive integer")
-    concurrency = request.get("max_concurrent_families", 4)
+    concurrency = request.get("max_concurrent_families", 1)
     if type(concurrency) is not int or concurrency < 1:
         raise ValueError("max_concurrent_families must be a positive integer")
     fraction = request.get("candidate_limit_fraction", 0.25)

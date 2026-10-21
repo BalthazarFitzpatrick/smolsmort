@@ -102,7 +102,8 @@ def test_missing_lightgbm_uses_only_rank_correlation(workspace, monkeypatch):
     assert all(row["gain"] == 0 and row["score"] == row["rank_corr"] for row in ranking)
 
 
-def test_lightgbm_uses_one_small_fit(workspace, monkeypatch):
+@pytest.mark.parametrize("nthread", [None, 3])
+def test_lightgbm_uses_one_small_fit(workspace, monkeypatch, nthread):
     pytest.importorskip("lightgbm")
     calls = []
     fit = screen.LightgbmFamily.fit
@@ -112,8 +113,10 @@ def test_lightgbm_uses_one_small_fit(workspace, monkeypatch):
         return fit(self, x, **kwargs)
 
     monkeypatch.setattr(screen.LightgbmFamily, "fit", record_fit)
-    ranking = screen_families(workspace)
+    options = {} if nthread is None else {"nthread": nthread}
+    ranking = screen_families(workspace, **options)
     assert len(calls) == 1
+    assert calls[0]["nthread"] == (nthread or 1)
     assert calls[0]["patience"] == 0
     assert calls[0]["max_rounds"] == 40
     assert sum(row["gain"] for row in ranking) == pytest.approx(1)

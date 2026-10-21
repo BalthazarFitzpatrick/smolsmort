@@ -22,6 +22,13 @@ from smolsmort.forecast.runs import cancel_run, start_run, wait_run
 from smolsmort.forecast.spec import Column, PrepSpec
 
 
+@pytest.fixture(autouse=True)
+def stub_machine_probe(monkeypatch):
+    from smolsmort.forecast import coordinator
+
+    monkeypatch.setattr(coordinator, "describe_machine", lambda threads, cap: {"nthread": threads})
+
+
 def test_allocator_prunes_paired_noise_and_bounds_overrunning_workers(tmp_path, monkeypatch):
     from smolsmort.forecast import coordinator
 

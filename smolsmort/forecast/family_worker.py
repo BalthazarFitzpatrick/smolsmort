@@ -103,11 +103,11 @@ def run(folder: Path, name: str) -> int:
             request["summary"],
             transform=request.get("transform", "none"),
         )
-        nthread = max(
-            1, (request.get("nthread") or os.cpu_count() or 1) // len(request["families"])
-        )
-        if allocation:
-            nthread = allocation.get("nthread", nthread)
+        nthread = (allocation or {}).get("nthread")
+        if nthread is None:
+            nthread = max(
+                1, (request.get("nthread") or os.cpu_count() or 1) // len(request["families"])
+            )
         previous = Path(request["warm_from"]) if request.get("warm_from") else None
         recipe = read_json(previous / "recipe.json", {}) if previous else {}
         winner_family = recipe.get("genome", {}).get("family", "xgboost")
@@ -181,13 +181,25 @@ def run(folder: Path, name: str) -> int:
         else:
             state, reason = "done", result["stopped"]
         job.status(
-            state, reason=reason, elapsed=result["elapsed"], started_at=started_at, **progress
+            state,
+            reason=reason,
+            elapsed=result["elapsed"],
+            started_at=started_at,
+            ended_at=time.time(),
+            **progress,
         )
         event({"event": state, "stopped": reason})
         return 1 if state == "failed" else 0
     except Exception as exc:
         reason = f"{type(exc).__name__}: {exc}"
-        job.status("failed", reason=reason, trace=traceback.format_exc(), **progress)
+        job.status(
+            "failed",
+            reason=reason,
+            trace=traceback.format_exc(),
+            started_at=started_at,
+            ended_at=time.time(),
+            **progress,
+        )
         event({"event": "failed", "reason": reason})
         return 1
 

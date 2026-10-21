@@ -127,18 +127,14 @@ def run(folder: Path) -> int:
         request = json.loads((folder / "request.json").read_text())
         request = parse_request(request)
         if request.get("version") == 2:
-            coordinator_path = folder / "coordinator.json"
-            if coordinator_path.exists():
-                coordinator = json.loads(coordinator_path.read_text())
-            else:
-                coordinator = {
-                    "started_at": started_at,
-                    "deadline": started_at + request["time_budget_s"],
-                    "phase": "broad",
-                    "families": {},
-                }
+            from smolsmort.forecast.coordinator import initialize_state
+
+            coordinator = initialize_state(folder, request, started_at=started_at)
             coordinator["queued_s"] = coordinator.get("queued_s", 0.0) + queued_s
             job.save("coordinator.json", coordinator)
+            nthread = coordinator["nthread"]
+        else:
+            nthread = request.get("nthread") or os.cpu_count() or 1
         spec = spec_from_dict(request["spec"])
         transform = request.get("transform", "none") if request.get("version") == 2 else "none"
         if request.get("recipe") and request["recipe"].get("transform", "none") != transform:
@@ -155,11 +151,11 @@ def run(folder: Path) -> int:
         budget = Budget(
             **{
                 **request.get("budget", {}),
-                "nthread": request.get("nthread") or os.cpu_count() or 1,
+                "nthread": nthread,
             }
         )
         if ws.mode == "series" and not (folder / "screen.json").exists():
-            job.save("screen.json", screen_families(ws, seed=budget.seed))
+            job.save("screen.json", screen_families(ws, seed=budget.seed, nthread=nthread))
         warm = _warm_start(request.get("warm_from"))
         if request.get("recipe"):
             # a refit: the saved recipe, no search
@@ -211,7 +207,21 @@ def run(folder: Path) -> int:
         else:
             genome = genome_from_dict({**result["best"], "transform": transform}, spec=spec)
             result["best"] = genome.to_dict()
-            final = finish(ws, genome, nthread=budget.nthread, importance_cache={})
+            if request.get("version") == 2:
+                coordinator["phase"] = "finish"
+                coordinator["phase_history"].extend(
+                    {"phase": phase, "started_at": time.time()}
+                    for phase in ("finish", "finish_start")
+                )
+                job.save("coordinator.json", coordinator)
+            try:
+                final = finish(ws, genome, nthread=budget.nthread, importance_cache={})
+            finally:
+                if request.get("version") == 2:
+                    coordinator["phase_history"].append(
+                        {"phase": "finish_end", "started_at": time.time()}
+                    )
+                    job.save("coordinator.json", coordinator)
             _write_result(folder, spec, result, final)
         if request.get("version") == 2 and not result.get("finalized"):
             recipe = json.loads((folder / "recipe.json").read_text())
@@ -265,6 +275,14 @@ def _write_result(folder, spec, result, final):
         "bands": final.get("bands"),
         "importance": final.get("importance"),
     }
+    coordinator_path = folder / "coordinator.json"
+    if coordinator_path.exists():
+        coordinator = json.loads(coordinator_path.read_text())
+        summary.update(
+            machine=coordinator.get("machine"),
+            phase_history=coordinator.get("phase_history", []),
+            elapsed=max(0, time.time() - coordinator["started_at"]),
+        )
     if spec.mode == "series":
         summary["excluded_series"] = final.get("excluded_series", [])
         for key in ("fold_scores", "fold_count", "val_error", "val_test_gap"):

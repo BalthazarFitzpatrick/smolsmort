@@ -135,7 +135,7 @@ def _training_data(ws, max_rows, rng):
     return np.concatenate(xs), np.concatenate(ys), columns
 
 
-def _fit_gain(x, residual, columns, seed):
+def _fit_gain(x, residual, columns, seed, nthread):
     gains = np.zeros(len(columns))
     if len(residual) < 20 or not len(columns):
         return None
@@ -152,7 +152,7 @@ def _fit_gain(x, residual, columns, seed):
         feature_types=[kind for _, _, kind in columns],
         params={"num_leaves": 15, "max_depth": 4},
         seed=seed,
-        nthread=1,
+        nthread=nthread,
         max_rounds=40,
         patience=0,
     )
@@ -161,7 +161,9 @@ def _fit_gain(x, residual, columns, seed):
     return np.array([importance[name] for name in names])
 
 
-def screen_families(ws: Workspace, *, seed: int = 0, max_rows: int = 20_000) -> list[dict]:
+def screen_families(
+    ws: Workspace, *, seed: int = 0, max_rows: int = 20_000, nthread: int = 1
+) -> list[dict]:
     """rank families on pre-validation rows by blended max rank correlation and gain share.
     priors are 0.1 + 0.8 * score / top_score, clipped to [0.1, 0.9]; zero scores start at 0.1.
     a seeded 10% of families from the bottom half get priors raised to at least 0.5"""
@@ -172,7 +174,7 @@ def screen_families(ws: Workspace, *, seed: int = 0, max_rows: int = 20_000) -> 
     if not ws.families:
         return []
     x, residual, columns = _training_data(ws, max_rows, np.random.default_rng(seed))
-    gains = _fit_gain(x, residual, columns, seed)
+    gains = _fit_gain(x, residual, columns, seed, nthread)
     has_gain = gains is not None
     if gains is None:
         gains = np.zeros(len(columns))
