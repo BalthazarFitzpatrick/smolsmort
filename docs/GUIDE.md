@@ -498,6 +498,22 @@ durations. an open entity's survival curve is conditioned on the weeks it has al
 quantiles that never cross their threshold use the cap, including entities already waiting longer
 than that cap. returned curves distinguish survival at the start and end of each week.
 
+**censored forecast accuracy.** hazard and aft verdicts use ibs (integrated brier score): the
+average squared error of the survival probabilities across the scored weeks. lower is better.
+open test entities count too; after their last observation their outcome is unknown, so that
+part contributes no error. inverse censoring weights, estimated from train only, account for
+missing follow-up. the weekly horizon is fixed from train's 95th percentile and stops before
+those weights lose support. scores use trapezoids between weeks, or the single week's score.
+
+the baseline is a kaplan-meier (km) survival curve for each level of the dimension that scores
+best on validation. unseen levels use the pooled curve. model and baseline curves for open
+entities account for the completed weeks already waited; an exhausted km tail stays flat.
+an ibs ratio below 1 means the model beats that baseline. aft uses its fitted duration
+distribution and scale on the same weekly grid. c-index is a separate fact: how often predicted
+durations put comparable events in the right order, with half credit for tied predictions.
+1 means all comparable pairs were ordered correctly; 0.5 means chance ordering. it does not
+decide the verdict, and no band coverage check is required for these survival scores.
+
 timeseries specs may mark categorical columns as `input` to keep detail beyond the output grain.
 only `dimension` columns define series and scaffold rows; inputs never expand either table.
 prep writes `inputs.parquet` with each input's levels, row counts and the first target's
@@ -664,12 +680,13 @@ queued runs can be cancelled before they start. the default lock file is
 `~/.cache/smolsmort/forecast.lock`; set `SMOLSMORT_RUN_LOCK` to share another path
 across workers. the os releases the lock when its worker exits, even after a crash.
 
-**results.** every run reports accuracy on the untouched test rows. the accuracy metric is wape
+**results.** every run reports accuracy on the untouched test rows. ordinary regression uses wape
 (sum of absolute errors over the sum of actuals), next to the same metric for the naive baseline.
 the error ratio is model error divided by baseline error: below 1 means better than naive;
 1 or above is in the worse category. for example, wape 22.0% against baseline wape 25.0% gives
 a ratio of 0.88, or 12% better. the baseline is the group median per entity or seasonal naive per
-series. the results also show these plain facts, with no pass thresholds:
+series; censored hazard and aft runs use ibs against km as described above. the results also
+show these plain facts where applicable, with no pass thresholds:
 
 | fact | reading |
 |---|---|
