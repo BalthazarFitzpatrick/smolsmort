@@ -281,8 +281,9 @@ def _write_result(folder, spec, result, final):
         summary.update(
             machine=coordinator.get("machine"),
             phase_history=coordinator.get("phase_history", []),
-            elapsed=max(0, time.time() - coordinator["started_at"]),
         )
+        if "started_at" in coordinator:
+            summary["elapsed"] = max(0, time.time() - coordinator["started_at"])
     if spec.mode == "timeseries":
         summary["excluded_series"] = final.get("excluded_series", [])
         for key in ("fold_scores", "fold_count", "val_error", "val_test_gap"):
