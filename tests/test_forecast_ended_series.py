@@ -9,12 +9,12 @@ import numpy as np
 import pytest
 from test_forecast_runs_v2 import make_request
 
-from smolsmort.forecast.features import series_features
+from smolsmort.forecast.features import timeseries_features
 from smolsmort.forecast.pipeline import finish, load_workspace, make_genome
 from smolsmort.forecast.prep import prepare
 from smolsmort.forecast.runs import start_run, wait_run
 from smolsmort.forecast.spec import SERIES, STEP
-from smolsmort.forecast.splits import series_cuts
+from smolsmort.forecast.splits import timeseries_cuts
 from smolsmort.forecast.tables import read_table, write_table
 
 pytest.importorskip("duckdb")
@@ -25,12 +25,12 @@ def test_workspace_removed_only_future_rows_of_ended_series(tmp_path):
     ws = load_workspace(spec, prepared.folder, prepared.summary)
     scaffold = read_table(prepared.folder / "scaffold.parquet")
     steps = np.unique(ws.panel[STEP])
-    cuts = series_cuts(len(steps), spec.horizon)
+    cuts = timeseries_cuts(len(steps), spec.horizon)
     train = ws.panel[STEP] < steps[cuts.val_start]
     ended = {f"C|p{product}" for product in range(1, 5)}
     assert [entry["series"] for entry in ws.excluded_series] == sorted(ended)
     for bucket, frame in ws.frames.items():
-        before = series_features(
+        before = timeseries_features(
             spec,
             ws.panel,
             scaffold,
@@ -90,10 +90,10 @@ def test_panel_without_ended_series_kept_identical_forecasts(tmp_path):
     assert ws.excluded_series == []
     scaffold = read_table(prepared.folder / "scaffold.parquet")
     steps = np.unique(ws.panel[STEP])
-    cuts = series_cuts(len(steps), spec.horizon)
+    cuts = timeseries_cuts(len(steps), spec.horizon)
     train = ws.panel[STEP] < steps[cuts.val_start]
     original_frames = {
-        bucket: series_features(
+        bucket: timeseries_features(
             spec,
             ws.panel,
             scaffold,

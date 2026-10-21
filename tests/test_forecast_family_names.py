@@ -14,7 +14,12 @@ import pytest
 pytest.importorskip("duckdb")
 
 from smolsmort.forecast.candidate_worker import estimate_cost
-from smolsmort.forecast.features import family_aliases, family_name, row_features, split_family_name
+from smolsmort.forecast.features import (
+    entity_features,
+    family_aliases,
+    family_name,
+    split_family_name,
+)
 from smolsmort.forecast.pipeline import finish, genome_from_dict, load_workspace, make_genome, score
 from smolsmort.forecast.prep import prepare
 from smolsmort.forecast.screen import read_priors, read_top_families, screen_families
@@ -49,7 +54,7 @@ def build_weekly_workspace(folder):
                     )
     spec = PrepSpec(
         str(path),
-        "series",
+        "timeseries",
         "regression",
         (
             Column("need_by_date", "time"),
@@ -301,7 +306,7 @@ def test_aliases_follow_renamed_spec_columns_and_detected_periods(weekly_workspa
 def test_reserved_source_names_cannot_alias_another_columns_family():
     spec = PrepSpec(
         "rows.csv",
-        "row",
+        "entity",
         "regression",
         (
             Column("date", "anchor"),
@@ -315,7 +320,7 @@ def test_reserved_source_names_cannot_alias_another_columns_family():
         "dim": np.arange(4.0),
         "measure": np.array(["a", "a", "b", "b"]),
     }
-    features = row_features(spec, table, np.ones(4, dtype=bool))
+    features = entity_features(spec, table, np.ones(4, dtype=bool))
     assert features.pick(["measure:dim"])[1] == ["dim"]
     assert features.pick(["dim:measure"])[1] == ["measure"]
     assert features.pick(["%64im:measure"])[1] == ["dim"]
@@ -331,10 +336,10 @@ def test_reserved_source_names_cannot_alias_another_columns_family():
         ).families == (name,)
 
 
-def test_row_families_use_the_anchor_only_for_calendar():
+def test_entity_families_use_the_anchor_only_for_calendar():
     spec = PrepSpec(
         "rows.csv",
-        "row",
+        "entity",
         "regression",
         (
             Column("created", "anchor"),
@@ -348,7 +353,7 @@ def test_row_families_use_the_anchor_only_for_calendar():
         "lead_days": np.arange(4.0),
         "site": np.array(["a", "a", "b", "b"]),
     }
-    features = row_features(spec, table, np.ones(4, dtype=bool))
+    features = entity_features(spec, table, np.ones(4, dtype=bool))
     assert set(features.families) == {
         "lead_days:measure",
         "lead_days:log",

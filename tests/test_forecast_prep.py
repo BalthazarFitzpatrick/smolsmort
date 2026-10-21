@@ -21,10 +21,10 @@ from smolsmort.forecast.spec import (  # noqa: E402
 )
 
 
-def _row_spec(source, **changes):
+def _entity_spec(source, **changes):
     base = {
         "source": str(source),
-        "mode": "row",
+        "mode": "entity",
         "task": "regression",
         "columns": (
             Column("created", "anchor"),
@@ -42,7 +42,7 @@ def _row_spec(source, **changes):
 def _panel_spec(source, **changes):
     base = {
         "source": str(source),
-        "mode": "series",
+        "mode": "timeseries",
         "task": "regression",
         "columns": (
             Column("day", "time"),
@@ -61,11 +61,11 @@ def _read(con, path, sql):
 
 
 # ---------------------------------------------------------------------------
-# series mode
+# time series mode
 # ---------------------------------------------------------------------------
 
 
-def test_series_prep_has_twelve_series_on_monday_steps(tmp_path):
+def test_timeseries_prep_has_twelve_series_on_monday_steps(tmp_path):
     truth = write_panel(tmp_path)
     prepared = prepare(_panel_spec(truth.path), tmp_path / "cache")
     con = duckdb.connect()
@@ -85,7 +85,7 @@ def test_series_prep_has_twelve_series_on_monday_steps(tmp_path):
     assert {row[0] for row in weekdays} == {1}  # duckdb: 1 == monday
 
 
-def test_series_prep_fills_the_hole_with_zero_units(tmp_path):
+def test_timeseries_prep_fills_the_hole_with_zero_units(tmp_path):
     truth = write_panel(tmp_path)
     prepared = prepare(_panel_spec(truth.path), tmp_path / "cache")
     con = duckdb.connect()
@@ -100,7 +100,7 @@ def test_series_prep_fills_the_hole_with_zero_units(tmp_path):
     assert all(units == 0.0 for _step, units in hole_weeks)
 
 
-def test_series_prep_ends_project_c_at_its_own_last_week(tmp_path):
+def test_timeseries_prep_ends_project_c_at_its_own_last_week(tmp_path):
     truth = write_panel(tmp_path)
     prepared = prepare(_panel_spec(truth.path), tmp_path / "cache")
     con = duckdb.connect()
@@ -116,7 +116,7 @@ def test_series_prep_ends_project_c_at_its_own_last_week(tmp_path):
     assert (global_max.date() - c_max.date()).days // 7 >= truth.weeks - truth.ended_week - 1
 
 
-def test_series_prep_sums_the_two_weekly_transaction_rows(tmp_path):
+def test_timeseries_prep_sums_the_two_weekly_transaction_rows(tmp_path):
     truth = write_panel(tmp_path)
     prepared = prepare(_panel_spec(truth.path), tmp_path / "cache")
     con = duckdb.connect()
@@ -132,12 +132,12 @@ def test_series_prep_sums_the_two_weekly_transaction_rows(tmp_path):
     assert first_week_units[1] == pytest.approx(raw_rows[0][1] + raw_rows[1][1])
 
 
-def test_series_median_uses_middle_value_and_leaves_gaps_missing(tmp_path):
+def test_timeseries_median_uses_middle_value_and_leaves_gaps_missing(tmp_path):
     source = tmp_path / "median.csv"
     source.write_text("day,units\n2025-01-06,1\n2025-01-07,3\n2025-01-08,100\n2025-01-20,7\n")
     spec = PrepSpec(
         str(source),
-        "series",
+        "timeseries",
         "regression",
         (Column("day", "time"), Column("units", "target", aggregation="median")),
         step="week",
@@ -151,14 +151,14 @@ def test_series_median_uses_middle_value_and_leaves_gaps_missing(tmp_path):
     assert prepared.summary["scaffold_rows"] == 3
 
 
-def test_series_count_target_accepts_a_text_key(tmp_path):
+def test_timeseries_count_target_accepts_a_text_key(tmp_path):
     source = tmp_path / "orders.csv"
     source.write_text(
         "day,order_id\n2025-01-06,PA001\n2025-01-07,PA002\n2025-01-08,\n2025-01-20,PA003\n"
     )
     spec = PrepSpec(
         str(source),
-        "series",
+        "timeseries",
         "regression",
         (Column("day", "time"), Column("order_id", "target", aggregation="count")),
         step="week",
@@ -171,7 +171,7 @@ def test_series_count_target_accepts_a_text_key(tmp_path):
     assert values == [(2,), (0,), (1,)]
 
 
-def test_series_prep_forward_fills_the_last_aggregation_across_the_hole(tmp_path):
+def test_timeseries_prep_forward_fills_the_last_aggregation_across_the_hole(tmp_path):
     truth = write_panel(tmp_path)
     prepared = prepare(_panel_spec(truth.path), tmp_path / "cache")
     con = duckdb.connect()
@@ -186,7 +186,7 @@ def test_series_prep_forward_fills_the_last_aggregation_across_the_hole(tmp_path
     assert hole_values == [before_gap] * (stop - start)
 
 
-def test_series_prep_scaffolds_h_steps_after_the_global_last_for_every_series(tmp_path):
+def test_timeseries_prep_scaffolds_h_steps_after_the_global_last_for_every_series(tmp_path):
     truth = write_panel(tmp_path)
     prepared = prepare(_panel_spec(truth.path), tmp_path / "cache")
     con = duckdb.connect()
@@ -204,13 +204,13 @@ def test_series_prep_scaffolds_h_steps_after_the_global_last_for_every_series(tm
 
 
 # ---------------------------------------------------------------------------
-# row mode
+# entity mode
 # ---------------------------------------------------------------------------
 
 
-def test_row_prep_writes_every_row(tmp_path):
+def test_entity_prep_writes_every_row(tmp_path):
     truth = write_rows(tmp_path, n=600)
-    prepared = prepare(_row_spec(truth.path), tmp_path / "cache")
+    prepared = prepare(_entity_spec(truth.path), tmp_path / "cache")
     con = duckdb.connect()
 
     total = con.execute(
@@ -219,9 +219,9 @@ def test_row_prep_writes_every_row(tmp_path):
     assert total == 600
 
 
-def test_row_prep_bounds_open_and_known_rows_correctly(tmp_path):
+def test_entity_prep_bounds_open_and_known_rows_correctly(tmp_path):
     truth = write_rows(tmp_path, n=600)
-    prepared = prepare(_row_spec(truth.path), tmp_path / "cache")
+    prepared = prepare(_entity_spec(truth.path), tmp_path / "cache")
     con = duckdb.connect()
     rows_path = prepared.folder / "rows.parquet"
 
@@ -244,9 +244,9 @@ def test_row_prep_bounds_open_and_known_rows_correctly(tmp_path):
         assert lower == target == upper
 
 
-def test_row_prep_predict_matches_the_open_count(tmp_path):
+def test_entity_prep_predict_matches_the_open_count(tmp_path):
     truth = write_rows(tmp_path, n=600)
-    prepared = prepare(_row_spec(truth.path), tmp_path / "cache")
+    prepared = prepare(_entity_spec(truth.path), tmp_path / "cache")
     con = duckdb.connect()
 
     predict_rows = con.execute(
@@ -255,9 +255,9 @@ def test_row_prep_predict_matches_the_open_count(tmp_path):
     assert predict_rows == truth.open_rows
 
 
-def test_row_prep_classification_target_gets_null_bounds(tmp_path):
+def test_entity_prep_classification_target_gets_null_bounds(tmp_path):
     truth = write_rows(tmp_path, n=600)
-    spec = _row_spec(
+    spec = _entity_spec(
         truth.path,
         task="classification",
         columns=(
@@ -291,7 +291,7 @@ def test_row_prep_classification_target_gets_null_bounds(tmp_path):
 
 def test_prepare_reuses_an_unchanged_spec_and_source(tmp_path):
     truth = write_rows(tmp_path, n=200)
-    spec = _row_spec(truth.path)
+    spec = _entity_spec(truth.path)
     cache = tmp_path / "cache"
 
     first = prepare(spec, cache)
@@ -326,7 +326,7 @@ def test_prepare_gets_a_new_folder_when_an_aggregation_changes(tmp_path):
 def test_prepare_gets_a_new_folder_when_the_source_changes_by_one_byte(tmp_path):
     truth = write_rows(tmp_path, n=200)
     cache = tmp_path / "cache"
-    spec = _row_spec(truth.path)
+    spec = _entity_spec(truth.path)
     folder_before = prepare(spec, cache).folder
 
     # flip one character's case, well inside an existing row - same row count, one changed byte
@@ -356,7 +356,7 @@ def test_latin1_encoded_column_values_come_back_intact(tmp_path):
 
     spec = PrepSpec(
         source=str(path),
-        mode="row",
+        mode="entity",
         task="regression",
         encoding="latin-1",
         columns=(
@@ -395,7 +395,7 @@ def test_json_source_gives_the_same_rows_as_the_equivalent_csv(tmp_path):
     def _spec(source):
         return PrepSpec(
             source=str(source),
-            mode="row",
+            mode="entity",
             task="regression",
             columns=(
                 Column("created", "anchor"),
@@ -425,7 +425,7 @@ def test_json_source_gives_the_same_rows_as_the_equivalent_csv(tmp_path):
 
 def test_the_stored_sql_contains_the_quoted_column_names(tmp_path):
     truth = write_rows(tmp_path, n=100)
-    prepared = prepare(_row_spec(truth.path), tmp_path / "cache")
+    prepared = prepare(_entity_spec(truth.path), tmp_path / "cache")
     assert '"created"' in prepared.sql
     assert '"branch"' in prepared.sql
     assert '"lead_weeks"' in prepared.sql
@@ -437,7 +437,7 @@ def test_running_the_stored_sql_by_hand_reproduces_the_table(tmp_path, monkeypat
     rather than re-parsing the text into a separate output path - the COPY targets in the
     stored sql are the real cache files, so a faithful replay overwrites them with themselves"""
     truth = write_rows(tmp_path, n=100)
-    prepared = prepare(_row_spec(truth.path), tmp_path / "cache")
+    prepared = prepare(_entity_spec(truth.path), tmp_path / "cache")
     rows_path = prepared.folder / "rows.parquet"
     before = rows_path.read_bytes()
 
@@ -460,7 +460,7 @@ def test_the_predict_filter_reads_source_columns_the_spec_leaves_out(tmp_path):
     )
     spec = PrepSpec(
         str(source),
-        "row",
+        "entity",
         "regression",
         (Column("created", "anchor"), Column("branch", "dimension"), Column("lead", "target")),
         predict_where="is_open = 1",
@@ -474,7 +474,7 @@ def test_the_predict_filter_reads_source_columns_the_spec_leaves_out(tmp_path):
     assert "__predict" not in rows and "is_open" not in rows
 
 
-def test_series_history_ends_before_the_step_holding_the_export_date(tmp_path):
+def test_timeseries_history_ends_before_the_step_holding_the_export_date(tmp_path):
     truth = write_panel(tmp_path)
     full = prepare(_panel_spec(truth.path), tmp_path / "cache")
     # a wednesday: its week is still running

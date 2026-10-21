@@ -21,7 +21,7 @@ import numpy as np
 
 from smolsmort.forecast import evaluate as ev
 from smolsmort.forecast.families import registered_families
-from smolsmort.forecast.spec import spec_from_dict
+from smolsmort.forecast.spec import normalize_mode, normalize_saved_modes, spec_from_dict
 from smolsmort.forecast.tables import connect
 
 MAX_LINES = 12
@@ -67,12 +67,12 @@ def _iso(value) -> str:
 
 
 def read_request(run_dir: Path) -> dict:
-    return json.loads((run_dir / "request.json").read_text())
+    return normalize_saved_modes(json.loads((run_dir / "request.json").read_text()))
 
 
 def read_result(run_dir: Path) -> dict | None:
     path = run_dir / "result.json"
-    return json.loads(path.read_text()) if path.exists() else None
+    return normalize_saved_modes(json.loads(path.read_text())) if path.exists() else None
 
 
 def read_leaderboard(run_dir: Path, top: int = 10) -> list[dict]:
@@ -105,7 +105,8 @@ def read_leaderboard(run_dir: Path, top: int = 10) -> list[dict]:
 
 def _read_json(path: Path, default=None):
     try:
-        return json.loads(path.read_text())
+        data = json.loads(path.read_text())
+        return normalize_saved_modes(data) if isinstance(data, dict) else data
     except (FileNotFoundError, json.JSONDecodeError):
         return default
 
@@ -187,8 +188,8 @@ def family_catalog(runs_root: Path, spec=None, prepared=None, task="regression")
             reason = f"library unavailable; {install}"
         elif not objectives:
             reason = f"family {family.name!r} does not support {task}"
-        elif spec is not None and spec.mode == "row" and family.name != "xgboost":
-            reason = "per-row runs support xgboost only"
+        elif spec is not None and spec.mode == "entity" and family.name != "xgboost":
+            reason = "entity runs support xgboost only"
         elif history_error:
             reason = history_error
         elif workspace is not None:
@@ -217,10 +218,10 @@ def family_catalog(runs_root: Path, spec=None, prepared=None, task="regression")
 def _suitability_reason(family, ws):
     if family.needs == "raw_series":
         from smolsmort.forecast.spec import SERIES, STEP
-        from smolsmort.forecast.splits import series_cuts
+        from smolsmort.forecast.splits import timeseries_cuts
 
         steps = np.unique(ws.panel[STEP])
-        cut = steps[series_cuts(len(steps), ws.spec.horizon).val_start]
+        cut = steps[timeseries_cuts(len(steps), ws.spec.horizon).val_start]
         target = ws.spec.named("target")[0]
         counts = [
             int(
@@ -240,7 +241,7 @@ def _suitability_reason(family, ws):
         if minimum < 2 * period:
             return f"needs two seasons ({2 * period} training steps per series); shortest series has {minimum}"
     else:
-        if ws.mode == "series":
+        if ws.mode == "timeseries":
             counts = [int(masks["train"].sum()) for masks in ws.series_masks.values()]
         else:
             if ws.spec.task == "classification":
@@ -526,7 +527,7 @@ def _parse_breakdown(raw: str | None, dims: list[str]) -> list[str]:
     return [d for d in wanted if d in dims][:3]
 
 
-# ---------------------------------------------------------------- series mode view
+# ---------------------------------------------------------------- time series mode view
 
 
 def _series_combos(con, panel_path: Path, breakdown: list[str], where: str) -> list[tuple]:
@@ -561,7 +562,7 @@ def _align(values: dict[str, float], x: list[str]) -> list[float | None]:
     return [values.get(day) for day in x]
 
 
-def series_view(run_dir: Path, request: dict, query: dict) -> dict:
+def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
     prepared = Path(request["prepared"])
     spec = request["spec"]
     dims = _spec_dims(spec)
@@ -644,7 +645,7 @@ def series_view(run_dir: Path, request: dict, query: dict) -> dict:
         series_lines.append((actual_id, label, actual, False))
         series_lines.append((forecast_id, label, forecast_series, True))
 
-        lo_by_step, hi_by_step = _series_band(
+        lo_by_step, hi_by_step = _timeseries_band(
             con, keymap_sql, validation, forecast, combo_where, future_rows, nonnegative
         )
         bands.append((f"band:{forecast_id}", forecast_id, lo_by_step, hi_by_step))
@@ -658,7 +659,7 @@ def series_view(run_dir: Path, request: dict, query: dict) -> dict:
         {"id": bid, "series": sid, "lo": _align(lo, x), "hi": _align(hi, x)}
         for bid, sid, lo, hi in bands
     ]
-    markers = _series_markers(con, validation, test, forecast)
+    markers = _timeseries_markers(con, validation, test, forecast)
 
     out = {
         "x": x,
@@ -666,14 +667,14 @@ def series_view(run_dir: Path, request: dict, query: dict) -> dict:
         "bands": bands_payload,
         "markers": markers,
         "verdict": result["verdict"],
-        "mode": "series",
+        "mode": "timeseries",
     }
     if note:
         out["note"] = note
     return out
 
 
-def _series_band(con, keymap_sql, validation, forecast, combo_where, future_rows, nonnegative):
+def _timeseries_band(con, keymap_sql, validation, forecast, combo_where, future_rows, nonnegative):
     """per bucket: fit a band on the view's aggregated validation residuals, apply it to that
     bucket's aggregated future prediction - buckets partition the horizon, so every future step
     gets exactly one band"""
@@ -707,7 +708,7 @@ def _series_band(con, keymap_sql, validation, forecast, combo_where, future_rows
     return lo_by_step, hi_by_step
 
 
-def _series_markers(con, validation: Path, test: Path, forecast: Path) -> list[dict]:
+def _timeseries_markers(con, validation: Path, test: Path, forecast: Path) -> list[dict]:
     markers = []
     for path, label in (
         (validation, "validation start"),
@@ -722,10 +723,10 @@ def _series_markers(con, validation: Path, test: Path, forecast: Path) -> list[d
     return markers
 
 
-# ---------------------------------------------------------------- row mode view
+# ---------------------------------------------------------------- entity mode view
 
 
-def _row_unit_days(spec: dict) -> float:
+def _entity_unit_days(spec: dict) -> float:
     from smolsmort.forecast.spec import UNIT_DAYS
 
     censor = spec.get("censor")
@@ -733,7 +734,7 @@ def _row_unit_days(spec: dict) -> float:
     return UNIT_DAYS[unit]
 
 
-def _row_keymap_sql(rows_path: Path, dims: list[str]) -> str:
+def _entity_keymap_sql(rows_path: Path, dims: list[str]) -> str:
     cols = ", ".join(_quote(d) for d in dims)
     return (
         'SELECT "__row" AS row'
@@ -749,7 +750,7 @@ def _weekify(days: np.ndarray) -> np.ndarray:
     return (days - weekday.astype("timedelta64[D]")).astype("datetime64[D]")
 
 
-def row_view(run_dir: Path, request: dict, query: dict) -> dict:
+def entity_view(run_dir: Path, request: dict, query: dict) -> dict:
     prepared = Path(request["prepared"])
     spec = request["spec"]
     dims = _spec_dims(spec)
@@ -757,7 +758,7 @@ def row_view(run_dir: Path, request: dict, query: dict) -> dict:
     result = _require_done(run_dir)
     filters = _parse_filters(query.get("filters"))
     breakdown = _parse_breakdown(query.get("breakdown"), dims)
-    unit_days = _row_unit_days(spec)
+    unit_days = _entity_unit_days(spec)
 
     rows_path = prepared / "rows.parquet"
     forecast_path = _prediction_path(run_dir, query, "forecast")
@@ -771,7 +772,7 @@ def row_view(run_dir: Path, request: dict, query: dict) -> dict:
         combos = combos[:MAX_LINES]
         note = f"capped at {MAX_LINES} of {len(combos)} lines"
 
-    keymap_sql = _row_keymap_sql(rows_path, dims)
+    keymap_sql = _entity_keymap_sql(rows_path, dims)
 
     resid_rows = con.execute(
         f"SELECT truth, prediction FROM read_parquet({_lit(str(validation_path))})"
@@ -823,7 +824,7 @@ def row_view(run_dir: Path, request: dict, query: dict) -> dict:
         series_lines.append((actual_id, label, actual_by_week, False))
         series_lines.append((load_id, label, load_by_week, True))
 
-        lo, hi = _row_mc_band(predictions, week_of, resid_pool, unit_days)
+        lo, hi = _entity_mc_band(predictions, week_of, resid_pool, unit_days)
         bands.append((f"band:{load_id}", load_id, lo, hi))
 
     x = sorted(x_set)
@@ -842,14 +843,14 @@ def row_view(run_dir: Path, request: dict, query: dict) -> dict:
         "bands": bands_payload,
         "markers": [],
         "verdict": result["verdict"],
-        "mode": "row",
+        "mode": "entity",
     }
     if note:
         out["note"] = note
     return out
 
 
-def _row_mc_band(predictions, week_of, resid_pool, unit_days) -> tuple[dict, dict]:
+def _entity_mc_band(predictions, week_of, resid_pool, unit_days) -> tuple[dict, dict]:
     """200 draws: each open row's week moves by prediction * (1 + a sampled validation residual);
     the 10/90 percentile of the resulting weekly counts is the band"""
     if not predictions or not len(resid_pool):
@@ -880,10 +881,12 @@ def _row_mc_band(predictions, week_of, resid_pool, unit_days) -> tuple[dict, dic
 
 
 def view(run_dir: Path, request: dict, query: dict) -> dict:
-    mode = request["spec"]["mode"]
+    mode = normalize_mode(request["spec"]["mode"])
     details = result_details(run_dir, request, query)
     payload = (
-        row_view(run_dir, request, query) if mode == "row" else series_view(run_dir, request, query)
+        entity_view(run_dir, request, query)
+        if mode == "entity"
+        else timeseries_view(run_dir, request, query)
     )
     for series in payload["series"]:
         if series.get("dashed"):
@@ -909,7 +912,7 @@ def _family_column(request: dict) -> str:
     return name
 
 
-def series_table(run_dir: Path, request: dict, query: dict) -> dict:
+def timeseries_table(run_dir: Path, request: dict, query: dict) -> dict:
     prepared = Path(request["prepared"])
     spec = request["spec"]
     dims = _spec_dims(spec)
@@ -973,17 +976,17 @@ def _row_to_json(row: tuple) -> list:
     return out
 
 
-def row_table(run_dir: Path, request: dict, query: dict) -> dict:
+def entity_table(run_dir: Path, request: dict, query: dict) -> dict:
     prepared = Path(request["prepared"])
     spec = request["spec"]
     dims = _spec_dims(spec)
     filters = _parse_filters(query.get("filters"))
     where = _filter_clause(filters, dims)
-    unit_days = _row_unit_days(spec)
+    unit_days = _entity_unit_days(spec)
     rows_path = prepared / "rows.parquet"
     forecast_path = _prediction_path(run_dir, query, "forecast")
 
-    keymap_sql = _row_keymap_sql(rows_path, dims)
+    keymap_sql = _entity_keymap_sql(rows_path, dims)
     dims_sel = ", ".join(f"k.{_quote(d)}" for d in dims)
     con = connect()
     sql = f"""
@@ -1026,12 +1029,12 @@ def row_table(run_dir: Path, request: dict, query: dict) -> dict:
 
 
 def table(run_dir: Path, request: dict, query: dict) -> dict:
-    mode = request["spec"]["mode"]
+    mode = normalize_mode(request["spec"]["mode"])
     selected = _select_model(run_dir, _require_done(run_dir), query)
     payload = (
-        row_table(run_dir, request, query)
-        if mode == "row"
-        else series_table(run_dir, request, query)
+        entity_table(run_dir, request, query)
+        if mode == "entity"
+        else timeseries_table(run_dir, request, query)
     )
     family_column = _family_column(request)
     payload["columns"].append(family_column)

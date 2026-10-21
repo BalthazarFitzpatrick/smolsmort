@@ -1,4 +1,4 @@
-"""model inputs from a prepared table. row mode: one row per entity. series mode: one table per
+"""model inputs from a prepared table. entity mode: one row per entity. time series mode: one table per
 horizon bucket, every feature read at the origin d - b, so nothing after the origin can leak in"""
 
 from __future__ import annotations
@@ -87,20 +87,20 @@ def family_sort_key(name: str) -> str:
 
 def family_aliases(spec: PrepSpec, names=()) -> dict[str, str]:
     """old saved names mapped with the prep spec, including detected periods and roll aliases"""
-    clock = spec.named("time" if spec.mode == "series" else "anchor")[0]
+    clock = spec.named("time" if spec.mode == "timeseries" else "anchor")[0]
     target = spec.named("target")[0]
     aliases = {}
     for column in spec.columns:
         for op in ("dim", "freq", "measure", "log", "lead", "mix", "spread"):
-            temporal = spec.mode == "series" and op in {"measure", "lead", "mix", "spread"}
+            temporal = spec.mode == "timeseries" and op in {"measure", "lead", "mix", "spread"}
             aliases[f"{op}:{column.name}"] = family_name(
                 op, column.name, clock if temporal else None
             )
     for part in ("week", "month", "quarter", "weekday", "cyclic", "dom", "holiday", "trend"):
-        aliases[f"{'cal' if spec.mode == 'series' else 'date'}:{part}"] = family_name(
+        aliases[f"{'cal' if spec.mode == 'timeseries' else 'date'}:{part}"] = family_name(
             f"cal:{part}", clock=clock
         )
-    if spec.mode == "series":
+    if spec.mode == "timeseries":
         operations = {"season", "cycle_ratio", *(f"lag+{j}" for j in LAGS)}
         operations.update(f"ewm:{alpha}" for alpha in ALPHAS)
         for lags, windows, differences, _ in STEP_FEATURES.values():
@@ -190,7 +190,7 @@ def _holiday_dates(country: str, first_year: int, last_year: int) -> np.ndarray:
     return np.array(sorted(calendar), dtype="datetime64[D]").astype(int)
 
 
-def _series_calendar(
+def _timeseries_calendar(
     days: np.ndarray, unit: str, country: str | None = None, *, clock: str | None = None
 ) -> dict:
     """additional families read only the target calendar, including known future dates"""
@@ -246,11 +246,11 @@ def buckets_for(horizon: int) -> list[tuple[int, int]]:
     return out
 
 
-# ---------------------------------------------------------------- row mode
+# ---------------------------------------------------------------- entity mode
 
 
-def row_features(spec: PrepSpec, table: dict, train) -> Features:
-    """every candidate input column for row mode; the search picks families from these"""
+def entity_features(spec: PrepSpec, table: dict, train) -> Features:
+    """every candidate input column for entity mode; the search picks families from these"""
     train = np.asarray(train, dtype=bool)
     build = _Builder(len(table[ANCHOR]))
     for name in spec.inputs():
@@ -285,7 +285,7 @@ def row_features(spec: PrepSpec, table: dict, train) -> Features:
     return features
 
 
-# ---------------------------------------------------------------- series mode
+# ---------------------------------------------------------------- time series mode
 
 
 def step_index(steps: np.ndarray, unit: str) -> np.ndarray:
@@ -407,7 +407,7 @@ def _shift(values: np.ndarray, by: int) -> np.ndarray:
 
 
 @dataclass
-class SeriesFrame:
+class TimeseriesFrame:
     features: Features
     y: np.ndarray
     series: np.ndarray
@@ -482,7 +482,7 @@ def _build_input_values(spec: PrepSpec, panel: dict, inputs: dict | None, train)
     return columns
 
 
-def series_features(
+def timeseries_features(
     spec: PrepSpec,
     panel: dict,
     scaffold: dict,
@@ -494,7 +494,7 @@ def series_features(
     periods: tuple[int, ...] | None = None,
     measure_lags: dict[str, int] | None = None,
     inputs: dict | None = None,
-) -> SeriesFrame:
+) -> TimeseriesFrame:
     """the rows one bucket's model trains, is judged and predicts on. a target at step d with
     origin d - b sees the target and measures up to the origin only, and the calendar of d"""
     lo, b = bucket
@@ -531,7 +531,7 @@ def series_features(
             name: _extend(panel[name][mine], length, aggregation.get(name))
             for name in [target, *measures]
         }
-        base = _series_base(
+        base = _timeseries_base(
             series_values,
             target,
             measures,
@@ -570,7 +570,7 @@ def series_features(
                 cols[f"cal_{part}"] = (family_name(f"cal:{part}", clock=clock), values)
         for d in dims:
             cols[d] = (family_name("dim", d), np.full(len(rows), dim_codes[d][mine[0]]))
-        cols.update(_series_calendar(step, unit, spec.holidays_country, clock=clock))
+        cols.update(_timeseries_calendar(step, unit, spec.holidays_country, clock=clock))
         parts.append(
             {
                 "cols": cols,
@@ -590,7 +590,7 @@ def series_features(
         build.add(name, values, "c" if split_family_name(family)[2] == "dim" else "q", family)
     features = build.done()
     features.aliases = family_aliases(spec, (family_sort_key(name) for name in features.families))
-    return SeriesFrame(
+    return TimeseriesFrame(
         features,
         np.concatenate([p["y"] for p in parts]),
         np.concatenate([p["series"] for p in parts]),
@@ -615,7 +615,7 @@ def _step_features(unit, history, periods):
     )
 
 
-def _series_base(
+def _timeseries_base(
     values,
     target,
     measures,

@@ -45,7 +45,7 @@ def test_prune_sigma_rejects_invalid_thresholds(sigma):
 def mock_run(tmp_path, monkeypatch):
     spec = PrepSpec(
         str(tmp_path / "synthetic.csv"),
-        "row",
+        "entity",
         "regression",
         (Column("day", "anchor"), Column("target", "target")),
     )

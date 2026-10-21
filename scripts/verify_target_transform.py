@@ -19,7 +19,7 @@ from smolsmort.forecast.spec import Column, PrepSpec
 def compare_transform(source, transform, output):
     spec = PrepSpec(
         source=str(source),
-        mode="series",
+        mode="timeseries",
         task="regression",
         columns=(Column("dteday", "time"), Column("cnt", "target", "sum")),
         step="day",

@@ -300,7 +300,7 @@ def test_finish_reserve_scales_winners_and_never_exceeds_thirty_percent(
     assert race.clock[0] == pytest.approx(100 + 86400 - reserve_s, abs=1)
 
 
-@pytest.mark.parametrize("mode,fits", [("series", 2), ("row", 3)])
+@pytest.mark.parametrize("mode,fits", [("timeseries", 2), ("entity", 3)])
 @pytest.mark.parametrize("measured", [None, 10, 100])
 def test_finish_estimate_uses_winner_cost_and_completed_measurements(
     tmp_path, mode, fits, measured
@@ -1215,7 +1215,7 @@ def test_search_records_timeout_threads_and_continues(tmp_path):
         objectives=lambda task: ("squared",),
     )
     ws = SimpleNamespace(
-        mode="row",
+        mode="entity",
         spec=SimpleNamespace(task="regression"),
         masks={"train": np.ones(20, dtype=bool)},
         families=["lag"],
@@ -1276,7 +1276,7 @@ def test_candidate_timing_retains_sample_and_full_attempts(monkeypatch):
         objectives=lambda task: ("squared",),
     )
     ws = SimpleNamespace(
-        mode="row",
+        mode="entity",
         spec=SimpleNamespace(task="regression"),
         masks={"train": np.ones(20, dtype=bool)},
         families=["lag"],

@@ -47,7 +47,7 @@ def make_panel():
     scaffold = {SERIES: np.repeat(keys, horizon), STEP: np.tile(future, series)}
     spec = PrepSpec(
         "synthetic.csv",
-        "series",
+        "timeseries",
         "regression",
         (
             Column("day", "time"),
@@ -248,7 +248,7 @@ def test_seasonal_residual_and_row_cap(workspace):
 
 
 @pytest.mark.parametrize("version", [1, 2])
-def test_series_worker_writes_screen_before_search(workspace, tmp_path, monkeypatch, version):
+def test_timeseries_worker_writes_screen_before_search(workspace, tmp_path, monkeypatch, version):
     request = {
         "spec": asdict(workspace.spec),
         "prepared": "synthetic",

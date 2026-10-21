@@ -27,7 +27,7 @@ def panel(tmp_path):
     truth = write_panel(tmp_path)
     spec = PrepSpec(
         str(truth.path),
-        "series",
+        "timeseries",
         "regression",
         (
             Column("day", "time"),

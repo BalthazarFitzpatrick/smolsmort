@@ -89,7 +89,7 @@ def session(tmp_path: Path, *, width: int = 1280, numeric: bool = False):
 def switch_to_regression(page: Page) -> None:
     page.click('#topic-switch .topic-tab:has-text("regression")')
     page.wait_for_timeout(150)
-    page.select_option("#topic-flavour", "row")
+    page.select_option("#topic-flavour", "entity")
     page.wait_for_timeout(150)
 
 
@@ -146,7 +146,7 @@ def run_search(page: Page) -> None:
 
 def test_forecast_results_warned_about_excluded_series(tmp_path):
     spec = {
-        "mode": "series",
+        "mode": "timeseries",
         "columns": [
             {"name": "day", "role": "time"},
             {"name": "project", "role": "dimension"},
@@ -188,7 +188,7 @@ def test_forecast_results_warned_about_excluded_series(tmp_path):
             "**/api/forecast-view?**",
             lambda route: route.fulfill(
                 json={
-                    "mode": "series",
+                    "mode": "timeseries",
                     "x": ["2026-06-29"],
                     "series": [],
                     "bands": [],
@@ -204,7 +204,7 @@ def test_forecast_results_warned_about_excluded_series(tmp_path):
             ),
         )
         switch_to_regression(page)
-        page.select_option("#topic-flavour", "series")
+        page.select_option("#topic-flavour", "timeseries")
         show_tab(page, "regression-results")
         warning = page.locator(f"#{TOPIC}-excluded-series")
         assert not warning.is_visible()
@@ -232,7 +232,7 @@ def test_forecast_results_warned_about_excluded_series(tmp_path):
             assert warning.evaluate("node => node.scrollWidth > node.clientWidth")
 
 
-def test_forecast_regression_row_flow(tmp_path):
+def test_forecast_regression_entity_flow(tmp_path):
     with session(tmp_path) as (page, base):
         switch_to_regression(page)
         show_tab(page, "regression-data")
@@ -253,11 +253,11 @@ def test_forecast_regression_row_flow(tmp_path):
         set_role(page, "lead_weeks", "target")
         set_role(page, "line", "ignore")
 
-        page.select_option("#topic-flavour", "series")
+        page.select_option("#topic-flavour", "timeseries")
         page.wait_for_function(
             f'/^\\d+ columns/.test(document.getElementById("{TOPIC}-data-status").innerText)'
         )
-        page.select_option("#topic-flavour", "row")
+        page.select_option("#topic-flavour", "entity")
         page.wait_for_function(
             f'/^\\d+ columns/.test(document.getElementById("{TOPIC}-data-status").innerText)'
         )
@@ -332,7 +332,7 @@ def test_stored_filters_with_quotes_fill_their_fields_intact(tmp_path):
 
 @pytest.mark.parametrize(
     ("topic", "flavour"),
-    [("regression", "row"), ("regression", "series"), ("classification", "row")],
+    [("regression", "entity"), ("regression", "timeseries"), ("classification", "entity")],
 )
 def test_data_controls_use_smortui_styles(tmp_path, topic, flavour):
     with session(tmp_path) as (page, base):
@@ -370,7 +370,7 @@ def test_unsaved_time_setup_shows_week_and_saved_plural(tmp_path, stored_step):
             )
             page.reload()
         switch_to_regression(page)
-        page.select_option("#topic-flavour", "series")
+        page.select_option("#topic-flavour", "timeseries")
         show_tab(page, "regression-data")
         head = page.locator(f"#{TOPIC}-setup-time")
         readout = page.locator(f"#{TOPIC}-setup-readout")
@@ -391,7 +391,7 @@ def test_unsaved_time_setup_shows_week_and_saved_plural(tmp_path, stored_step):
 def test_scaffold_defaults_empty_and_preserves_saved_picks(tmp_path):
     with session(tmp_path) as (page, base):
         switch_to_regression(page)
-        page.select_option("#topic-flavour", "series")
+        page.select_option("#topic-flavour", "timeseries")
         show_tab(page, "regression-data")
 
         def load_source(name):
@@ -415,11 +415,11 @@ def test_scaffold_defaults_empty_and_preserves_saved_picks(tmp_path):
         assert_empty_scaffold()
         load_source("panel.csv")
         assert_empty_scaffold()
-        page.select_option("#topic-flavour", "row")
+        page.select_option("#topic-flavour", "entity")
         page.wait_for_function(
             f'/^\\d+ columns/.test(document.getElementById("{TOPIC}-data-status").innerText)'
         )
-        page.select_option("#topic-flavour", "series")
+        page.select_option("#topic-flavour", "timeseries")
         page.wait_for_function(
             f'/^\\d+ columns/.test(document.getElementById("{TOPIC}-data-status").innerText)'
         )
@@ -432,11 +432,11 @@ def test_scaffold_defaults_empty_and_preserves_saved_picks(tmp_path):
         page.click(f"#{TOPIC}-setup-scaffold")
         page.locator('.forecast-setup-menu .menu-item[data-id="project"]').click()
         page.locator('.forecast-setup-menu .menu-buttons [data-id="save"]').click()
-        page.select_option("#topic-flavour", "row")
+        page.select_option("#topic-flavour", "entity")
         page.wait_for_function(
             f'/^\\d+ columns/.test(document.getElementById("{TOPIC}-data-status").innerText)'
         )
-        page.select_option("#topic-flavour", "series")
+        page.select_option("#topic-flavour", "timeseries")
         page.wait_for_function(
             f'/^\\d+ columns/.test(document.getElementById("{TOPIC}-data-status").innerText)'
         )
@@ -448,7 +448,7 @@ def test_scaffold_defaults_empty_and_preserves_saved_picks(tmp_path):
         menu.locator('.menu-buttons [data-id="save"]').click()
         page.reload()
         switch_to_regression(page)
-        page.select_option("#topic-flavour", "series")
+        page.select_option("#topic-flavour", "timeseries")
         show_tab(page, "regression-data")
         page.wait_for_function(
             f'/^\\d+ columns/.test(document.getElementById("{TOPIC}-data-status").innerText)'
@@ -1169,7 +1169,7 @@ def test_forecast_controls_follow_the_shared_row_height(tmp_path, width):
     cancelled = "20261002-120000-stop01"
     refit = "20261003-120000-refit1"
     spec = {
-        "mode": "series",
+        "mode": "timeseries",
         "task": "regression",
         "step": "week",
         "horizon": 3,
@@ -1181,7 +1181,7 @@ def test_forecast_controls_follow_the_shared_row_height(tmp_path, width):
     }
     observations = []
     states = []
-    view_mode = ["series"]
+    view_mode = ["timeseries"]
     with session(tmp_path, width=width) as (page, base):
         for run_id in (old, cancelled, refit):
             folder = tmp_path / "forecast_root/.forecast-runs" / run_id
@@ -1330,14 +1330,14 @@ def test_forecast_controls_follow_the_shared_row_height(tmp_path, width):
             "setup-scaffold",
             "settings",
             "models-regression-new",
-            "models-regression-row",
-            "models-regression-series",
-            "models-classification-row",
+            "models-regression-entity",
+            "models-regression-timeseries",
+            "models-classification-entity",
             "search-classification-finished",
             "recipe-regression",
             "results-classification",
-            "data-regression-row",
-            "data-regression-series",
+            "data-regression-entity",
+            "data-regression-timeseries",
         } <= set(states)
         (tmp_path / "control-sizes.json").write_text(json.dumps(observations, indent=2))
         show_tab(page, "regression-search")
@@ -1370,7 +1370,7 @@ def test_forecast_controls_follow_the_shared_row_height(tmp_path, width):
 def test_numeric_scaffold_saved_prepared_and_searched(tmp_path):
     with session(tmp_path, numeric=True) as (page, base):
         switch_to_regression(page)
-        page.select_option("#topic-flavour", "series")
+        page.select_option("#topic-flavour", "timeseries")
         show_tab(page, "regression-data")
 
         def load_source(name):
@@ -1425,7 +1425,7 @@ def test_numeric_scaffold_saved_prepared_and_searched(tmp_path):
         assert "workingday" in page.locator(f"#{TOPIC}-setup-scaffold").inner_text()
         page.reload()
         switch_to_regression(page)
-        page.select_option("#topic-flavour", "series")
+        page.select_option("#topic-flavour", "timeseries")
         show_tab(page, "regression-data")
         page.wait_for_function(
             f'/^\\d+ columns/.test(document.getElementById("{TOPIC}-data-status").innerText)'
@@ -1456,10 +1456,10 @@ def test_numeric_scaffold_saved_prepared_and_searched(tmp_path):
         finish(menu)
 
 
-def test_series_setup_saves_discards_and_prepares(tmp_path):
+def test_timeseries_setup_saves_discards_and_prepares(tmp_path):
     with session(tmp_path) as (page, base):
         switch_to_regression(page)
-        page.select_option("#topic-flavour", "series")
+        page.select_option("#topic-flavour", "timeseries")
         show_tab(page, "regression-data")
         page.click(f"#{TOPIC}-data-source")
         page.locator('.menu-panel .menu-item[data-id="panel.csv"]').click()
@@ -1561,7 +1561,7 @@ def test_series_setup_saves_discards_and_prepares(tmp_path):
 
         page.reload()
         switch_to_regression(page)
-        page.select_option("#topic-flavour", "series")
+        page.select_option("#topic-flavour", "timeseries")
         show_tab(page, "regression-data")
         page.wait_for_function(
             f'/^\\d+ columns/.test(document.getElementById("{TOPIC}-data-status").innerText)'
@@ -1669,7 +1669,7 @@ def assert_dataset_state(page, state, *, source="rows.csv", topic="regression"):
         assert readout.locator(".field-value").last.inner_text() == state
 
 
-def choose_series_target(page, name):
+def choose_timeseries_target(page, name):
     show_tab(page, "regression-data")
     page.click("#regression-setup-predict")
     option = page.locator(f'.forecast-setup-menu .menu-item[data-id="{name}"]')
@@ -1757,18 +1757,18 @@ def test_forecast_prepared_setup_stayed_per_topic_and_flavour(tmp_path):
         page.wait_for_function(
             "document.getElementById('forecast-dataset').innerText.includes('600 rows')"
         )
-        page.select_option("#topic-flavour", "series")
+        page.select_option("#topic-flavour", "timeseries")
         page.wait_for_function(
             "document.getElementById('regression-data-status').innerText.match(/^\\d+ columns/)"
         )
         assert_dataset_state(page, "not prepared", source="panel.csv")
-        choose_series_target(page, "units")
+        choose_timeseries_target(page, "units")
         page.click("#regression-prepare")
         page.wait_for_function(
             "document.getElementById('forecast-dataset').innerText.includes('600 rows')"
         )
-        assert preparations[-1]["mode"] == "series"
-        page.select_option("#topic-flavour", "row")
+        assert preparations[-1]["mode"] == "timeseries"
+        page.select_option("#topic-flavour", "entity")
         assert_dataset_state(page, "prepared", source="panel.csv")
 
         page.click('#topic-switch .topic-tab:has-text("classification")')
@@ -1782,16 +1782,16 @@ def test_forecast_prepared_setup_stayed_per_topic_and_flavour(tmp_path):
         assert_dataset_state(page, "not prepared", topic="classification")
         page.click('#topic-switch .topic-tab:has-text("regression")')
         assert_dataset_state(page, "prepared", source="panel.csv")
-        page.select_option("#topic-flavour", "series")
+        page.select_option("#topic-flavour", "timeseries")
         assert_dataset_state(page, "prepared", source="panel.csv")
         page.reload()
         page.wait_for_selector("#forecast-dataset:not(.hidden)")
-        assert page.locator("#topic-flavour").input_value() == "series"
+        assert page.locator("#topic-flavour").input_value() == "timeseries"
         assert_dataset_state(page, "prepared", source="panel.csv")
         saved = page.evaluate(
             "JSON.parse(localStorage.getItem('smolsmort:forecast:regression')).state"
         )
-        assert set(saved["preparedByMode"]) == {"row", "series"}
+        assert set(saved["preparedByMode"]) == {"entity", "timeseries"}
 
 
 def test_forecast_search_named_missing_setup_pieces(tmp_path):
@@ -1811,27 +1811,27 @@ def test_forecast_search_named_missing_setup_pieces(tmp_path):
         (tmp_path / "forecast_root/no_dates.csv").write_text("units,group\n1,a\n2,b\n3,a\n")
         choose_forecast_source(page, "no_dates.csv")
         set_role(page, "units", "target")
-        page.select_option("#topic-flavour", "series")
+        page.select_option("#topic-flavour", "timeseries")
         page.wait_for_function(
             "document.getElementById('regression-data-status').innerText.match(/^\\d+ columns/)"
         )
-        choose_series_target(page, "units")
+        choose_timeseries_target(page, "units")
         refused("pick a date to extend in time")
         assert requests == preparations == []
         assert "prepare the data first" not in page.locator("body").inner_text()
 
 
-@pytest.mark.parametrize("flavour", ["row", "series"])
+@pytest.mark.parametrize("flavour", ["entity", "timeseries"])
 def test_forecast_unprepared_saved_setup_started_after_reload(tmp_path, flavour):
     with session(tmp_path) as (page, _):
         requests, preparations = mock_prepared_searches(page)
         switch_to_regression(page)
-        if flavour == "series":
+        if flavour == "timeseries":
             page.select_option("#topic-flavour", flavour)
-        source = "panel.csv" if flavour == "series" else "rows.csv"
+        source = "panel.csv" if flavour == "timeseries" else "rows.csv"
         choose_forecast_source(page, source)
-        if flavour == "series":
-            choose_series_target(page, "units")
+        if flavour == "timeseries":
+            choose_timeseries_target(page, "units")
         else:
             set_role(page, "lead_weeks", "target")
         page.reload()

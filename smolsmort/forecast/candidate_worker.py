@@ -57,7 +57,7 @@ def estimate_cost(ws, genome):
     params = dict(genome.params)
     aliases = family_aliases(ws.spec, genome.families)
     families = {aliases.get(name, name) for name in genome.families}
-    if ws.mode == "row":
+    if ws.mode == "entity":
         columns = sum(name in families for name in ws.features.families)
         return max(float(family.cost((int(ws.masks["train"].sum()), columns), params)), 1e-9)
     hints = []

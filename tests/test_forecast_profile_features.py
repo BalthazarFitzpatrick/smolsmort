@@ -15,16 +15,16 @@ from smolsmort.forecast.features import (
     ROLL_STATS,
     WINDOWS,
     buckets_for,
+    entity_features,
     family_aliases,
-    row_features,
-    series_features,
     split_family_name,
     step_index,
+    timeseries_features,
 )
 from smolsmort.forecast.prep import prepare
 from smolsmort.forecast.profile import build_profile
 from smolsmort.forecast.spec import ANCHOR, LOWER, SERIES, STEP, UPPER, Censor, Column, PrepSpec
-from smolsmort.forecast.splits import labels_as_of, series_cuts
+from smolsmort.forecast.splits import labels_as_of, timeseries_cuts
 from smolsmort.forecast.tables import read_table
 
 pytest.importorskip("duckdb")
@@ -36,7 +36,7 @@ def panel(tmp_path_factory):
     truth = write_panel(folder)
     spec = PrepSpec(
         str(truth.path),
-        "series",
+        "timeseries",
         "regression",
         (
             Column("day", "time"),
@@ -50,7 +50,7 @@ def panel(tmp_path_factory):
     table = read_table(prepared.folder / "panel.parquet", order_by=f"{SERIES}, {STEP}")
     scaffold = read_table(prepared.folder / "scaffold.parquet")
     steps = np.unique(table[STEP])
-    cuts = series_cuts(len(steps), spec.horizon)
+    cuts = timeseries_cuts(len(steps), spec.horizon)
     train = table[STEP] < steps[cuts.val_start]
     return spec, table, scaffold, train, truth
 
@@ -61,7 +61,7 @@ def rows(tmp_path_factory):
     truth = write_rows(folder, n=800)
     spec = PrepSpec(
         str(truth.path),
-        "row",
+        "entity",
         "regression",
         (
             Column("created", "anchor"),
@@ -110,16 +110,16 @@ def test_rows_outside_train_cannot_change_the_profile(panel):
     assert build_profile(spec, changed, train) == before
 
 
-def test_row_features_offer_families_and_freeze_levels_on_train(rows):
+def test_entity_features_offer_families_and_freeze_levels_on_train(rows):
     spec, table, train = rows
-    features = row_features(spec, table, train)
+    features = entity_features(spec, table, train)
     families = set(features.families)
     assert {"branch:dim", "branch:freq", "size:measure", "size:log", "created:cal:week"} <= families
     assert "created:cal:trend" in families
     changed = {k: v.copy() for k, v in table.items()}
     changed["branch"] = changed["branch"].astype(object)
     changed["branch"][~train] = "brand new"
-    codes = row_features(spec, changed, train).pick({"branch:dim"})[0][:, 0]
+    codes = entity_features(spec, changed, train).pick({"branch:dim"})[0][:, 0]
     assert np.isnan(codes[~train]).all() and np.isfinite(codes[train]).all()
 
 
@@ -129,27 +129,27 @@ def test_buckets_cut_at_the_horizon():
 
 
 @pytest.mark.parametrize("bucket", [(1, 1), (2, 4), (5, 8)])
-def test_series_features_never_see_past_their_origin(panel, bucket):
+def test_timeseries_features_never_see_past_their_origin(panel, bucket):
     spec, table, scaffold, train, _ = panel
-    before = series_features(spec, table, scaffold, bucket, "week", train, period=52)
+    before = timeseries_features(spec, table, scaffold, bucket, "week", train, period=52)
     origin = np.unique(table[STEP])[100]
     changed = {k: v.copy() for k, v in table.items()}
     later = changed[STEP] > origin
     changed["units"][later] = changed["units"][later] * 3 + 11
     changed["orders"][later] = -changed["orders"][later]
-    after = series_features(spec, changed, scaffold, bucket, "week", train, period=52)
+    after = timeseries_features(spec, changed, scaffold, bucket, "week", train, period=52)
     safe = before.origin <= origin.astype("datetime64[D]")
     assert safe.sum() > 100 and (~safe).sum() > 100
     assert np.array_equal(before.features.x[safe], after.features.x[safe], equal_nan=True)
     assert not np.array_equal(before.features.x[~safe], after.features.x[~safe], equal_nan=True)
 
 
-def test_series_features_build_one_future_row_per_series_and_step(panel):
+def test_timeseries_features_build_one_future_row_per_series_and_step(panel):
     spec, table, scaffold, train, truth = panel
     for lo, hi in buckets_for(spec.horizon):
-        frame = series_features(spec, table, scaffold, (lo, hi), "week", train)
+        frame = timeseries_features(spec, table, scaffold, (lo, hi), "week", train)
         assert frame.future.sum() == truth.series * (hi - lo + 1)
-    ended = series_features(spec, table, scaffold, (1, 1), "week", train)
+    ended = timeseries_features(spec, table, scaffold, (1, 1), "week", train)
     c_future = ended.future & (ended.series == "C|p1")
     lag = ended.features.names.index("lag_1")
     assert c_future.sum() == 1
@@ -158,7 +158,7 @@ def test_series_features_build_one_future_row_per_series_and_step(panel):
 
 def test_a_lag_column_is_the_target_that_many_steps_back(panel):
     spec, table, scaffold, train, _ = panel
-    frame = series_features(spec, table, scaffold, (2, 4), "week", train)
+    frame = timeseries_features(spec, table, scaffold, (2, 4), "week", train)
     mine = (frame.series == "A|p1") & ~frame.future
     column = frame.features.x[mine, frame.features.names.index("lag_4")]
     series = table["units"][table[SERIES] == "A|p1"]
@@ -182,7 +182,7 @@ def make_seasonal_table(unit, count, periods):
         steps = (np.datetime64("2020-01", "M") + index * months).astype("datetime64[D]")
     spec = PrepSpec(
         "synthetic.csv",
-        "series",
+        "timeseries",
         "regression",
         (Column("day", "time"), Column("units", "target", "sum")),
         step=unit,
@@ -226,7 +226,7 @@ def daily():
 @pytest.mark.parametrize("bucket", buckets_for(60))
 def test_each_daily_feature_uses_only_positions_through_origin(daily, bucket):
     spec, table, scaffold, train = daily
-    before = series_features(spec, table, scaffold, bucket, "day", train, period=7)
+    before = timeseries_features(spec, table, scaffold, bucket, "day", train, period=7)
     names, families = before.features.names, before.features.families
     assert {f"units@day:lag+{j}" for j in range(4)} <= set(families)
     new = [
@@ -271,7 +271,7 @@ def test_each_daily_feature_uses_only_positions_through_origin(daily, bucket):
     changed = {name: values.copy() for name, values in table.items()}
     # change a held-out future value; training-derived columns and earlier origins must be fixed
     changed["units"][920] = 1e9
-    after = series_features(spec, changed, scaffold, bucket, "day", train, period=7)
+    after = timeseries_features(spec, changed, scaffold, bucket, "day", train, period=7)
     safe = before.origin < table[STEP][920]
     np.testing.assert_array_equal(before.features.x[safe], after.features.x[safe])
     assert not np.array_equal(before.features.x[~safe], after.features.x[~safe], equal_nan=True)
@@ -292,7 +292,7 @@ def test_step_families_and_missing_genome_families(daily, unit, windows, lags):
         spec, table = make_seasonal_table(unit, 100, ())
         train = np.arange(100) < 80
         scaffold = {STEP: np.array([], dtype="datetime64[D]"), SERIES: np.array([], dtype=str)}
-    frame = series_features(spec, table, scaffold, (1, 1), unit, train)
+    frame = timeseries_features(spec, table, scaffold, (1, 1), unit, train)
     families = set(frame.features.families)
     assert {f"units@day:roll:{w}:{stat}" for w in windows for stat in ROLL_STATS} == {
         f for f in families if split_family_name(f)[2].startswith("roll:")
@@ -306,7 +306,7 @@ def test_step_families_and_missing_genome_families(daily, unit, windows, lags):
 def test_daily_families_are_capped_by_training_history(daily):
     spec, table, scaffold, _ = daily
     train = np.arange(len(table[STEP])) < 20
-    frame = series_features(spec, table, scaffold, (2, 4), "day", train)
+    frame = timeseries_features(spec, table, scaffold, (2, 4), "day", train)
     families = set(frame.features.families)
     assert {f for f in families if split_family_name(f)[2].startswith("roll:")} == {
         f"units@day:roll:{w}:{stat}" for w in (7, 14) for stat in ROLL_STATS
@@ -319,7 +319,9 @@ def test_daily_families_are_capped_by_training_history(daily):
 
 def test_supplied_periods_become_independent_absolute_families(daily):
     spec, table, scaffold, train = daily
-    frame = series_features(spec, table, scaffold, (2, 4), "day", train, period=7, periods=(7, 52))
+    frame = timeseries_features(
+        spec, table, scaffold, (2, 4), "day", train, period=7, periods=(7, 52)
+    )
     families = set(frame.features.families)
     assert {
         "units@day:lag+3",
@@ -335,7 +337,7 @@ def test_supplied_periods_become_independent_absolute_families(daily):
 def test_weekly_legacy_genomes_keep_their_column_names_and_order(panel):
     spec, table, scaffold, train, _ = panel
     for bucket in buckets_for(spec.horizon):
-        frame = series_features(spec, table, scaffold, bucket, "week", train, period=52)
+        frame = timeseries_features(spec, table, scaffold, bucket, "week", train, period=52)
         assert {
             f for f in frame.features.families if split_family_name(f)[2].startswith("roll:")
         } == {f"units@day:roll:{w}:{stat}" for w in WINDOWS for stat in ROLL_STATS}

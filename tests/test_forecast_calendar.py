@@ -20,7 +20,7 @@ NEW_FAMILIES = {"day:cal:cyclic", "day:cal:dom", "day:cal:holiday"}
 def make_spec(unit="day", country=None):
     return PrepSpec(
         "synthetic.csv",
-        "series",
+        "timeseries",
         "regression",
         (
             Column("day", "time"),
@@ -54,7 +54,7 @@ def make_panel(unit):
 
 def test_daily_calendar_values_are_hand_computed():
     days = np.array(["2024-01-01", "2024-02-29", "2024-03-01", "2023-12-31"], dtype="datetime64[D]")
-    columns = features._series_calendar(days, "day")
+    columns = features._timeseries_calendar(days, "day")
     expected = {
         "cal_day_of_month": [1, 29, 1, 31],
         "cal_month_start": [1, 0, 1, 0],
@@ -79,7 +79,7 @@ def test_daily_calendar_values_are_hand_computed():
 
 @pytest.mark.parametrize("unit", ["week", "month", "quarter", "year"])
 def test_non_daily_calendars_have_no_weekday_or_dom(unit):
-    columns = features._series_calendar(np.array(["2024-02-29"], dtype="datetime64[D]"), unit)
+    columns = features._timeseries_calendar(np.array(["2024-02-29"], dtype="datetime64[D]"), unit)
     assert set(columns) == {
         "cal_month_sin",
         "cal_month_cos",
@@ -94,8 +94,8 @@ def test_weekly_calendar_uses_monday_across_month_and_year_boundary():
     mondays = np.array(
         ["2024-01-01", "2024-01-01", "2024-01-29", "2022-12-26"], dtype="datetime64[D]"
     )
-    weekly = features._series_calendar(days, "week")
-    daily = features._series_calendar(mondays, "day")
+    weekly = features._timeseries_calendar(days, "week")
+    daily = features._timeseries_calendar(mondays, "day")
     for name, (family, values) in weekly.items():
         assert family == daily[name][0]
         np.testing.assert_array_equal(values, daily[name][1])
@@ -105,9 +105,9 @@ def test_weekly_calendar_uses_monday_across_month_and_year_boundary():
 def test_old_feature_columns_values_and_family_order_are_unchanged(monkeypatch, unit):
     panel, scaffold, train = make_panel(unit)
     spec = make_spec(unit)
-    new = features.series_features(spec, panel, scaffold, (2, 4), unit, train, periods=())
-    monkeypatch.setattr(features, "_series_calendar", lambda *args, **kwargs: {})
-    legacy = features.series_features(spec, panel, scaffold, (2, 4), unit, train, periods=())
+    new = features.timeseries_features(spec, panel, scaffold, (2, 4), unit, train, periods=())
+    monkeypatch.setattr(features, "_timeseries_calendar", lambda *args, **kwargs: {})
+    legacy = features.timeseries_features(spec, panel, scaffold, (2, 4), unit, train, periods=())
     families = set(legacy.features.families)
     assert not families & NEW_FAMILIES
     values, names, types = new.features.pick(families)
@@ -125,18 +125,18 @@ def test_calendar_features_depend_only_on_target_step(country, bucket):
         pytest.importorskip("holidays")
     panel, scaffold, train = make_panel("day")
     spec = make_spec(country=country)
-    before = features.series_features(spec, panel, scaffold, bucket, "day", train, periods=())
+    before = features.timeseries_features(spec, panel, scaffold, bucket, "day", train, periods=())
     changed = {name: values.copy() for name, values in panel.items()}
     changed["units"] = np.linspace(-1e6, 1e6, 100)
     changed["orders"] = np.full(100, 1e9)
-    after = features.series_features(spec, changed, scaffold, bucket, "day", train, periods=())
+    after = features.timeseries_features(spec, changed, scaffold, bucket, "day", train, periods=())
     families = {
         f for f in before.features.families if features.split_family_name(f)[2].startswith("cal:")
     }
     np.testing.assert_array_equal(
         before.features.pick(families)[0], after.features.pick(families)[0]
     )
-    expected = features._series_calendar(before.step, "day", country, clock="day")
+    expected = features._timeseries_calendar(before.step, "day", country, clock="day")
     for name, (family, values) in expected.items():
         assert family in families
         np.testing.assert_allclose(
@@ -150,7 +150,7 @@ def test_calendar_features_depend_only_on_target_step(country, bucket):
 def test_holiday_flags_and_distances_match_the_library_across_years():
     holidays = pytest.importorskip("holidays")
     days = np.arange(np.datetime64("2021-12-20"), np.datetime64("2023-01-10"))
-    columns = features._series_calendar(days, "day", "US")
+    columns = features._timeseries_calendar(days, "day", "US")
     holiday_dates = sorted(holidays.country_holidays("US", years=[2021, 2022, 2023], observed=True))
     expected = {"cal_holiday": [], "cal_days_to_holiday": [], "cal_days_since_holiday": []}
     for day in days.astype(object):
@@ -177,10 +177,10 @@ def test_missing_holiday_library_names_the_install_command(monkeypatch):
     monkeypatch.setitem(sys.modules, "holidays", None)
     days = np.array(["2024-01-01"], dtype="datetime64[D]")
     assert not any(
-        family == "cal:holiday" for family, _ in features._series_calendar(days, "day").values()
+        family == "cal:holiday" for family, _ in features._timeseries_calendar(days, "day").values()
     )
     with pytest.raises(ImportError, match="uv sync --extra holidays"):
-        features._series_calendar(days, "day", "US")
+        features._timeseries_calendar(days, "day", "US")
 
 
 def test_country_with_no_holidays_has_capped_distances(monkeypatch):
@@ -189,7 +189,7 @@ def test_country_with_no_holidays_has_capped_distances(monkeypatch):
     monkeypatch.setitem(sys.modules, "holidays", calendar)
     try:
         days = np.array(["2024-01-01", "2024-12-31"], dtype="datetime64[D]")
-        columns = features._series_calendar(days, "day", "empty")
+        columns = features._timeseries_calendar(days, "day", "empty")
         np.testing.assert_array_equal(columns["cal_holiday"][1], [0, 0])
         np.testing.assert_array_equal(columns["cal_days_to_holiday"][1], [30, 30])
         np.testing.assert_array_equal(columns["cal_days_since_holiday"][1], [30, 30])
@@ -204,7 +204,7 @@ def test_holiday_features_cover_known_future_scaffold_targets():
         STEP: panel[STEP][-1] + np.arange(1, 9),
         SERIES: np.full(8, "one"),
     }
-    frame = features.series_features(
+    frame = features.timeseries_features(
         make_spec(country="US"), panel, scaffold, (5, 8), "day", train, periods=()
     )
     future_dates = frame.step[frame.future].astype(object)
@@ -222,6 +222,7 @@ def test_holiday_features_cover_known_future_scaffold_targets():
 def test_default_country_digest_matches_the_legacy_spec():
     spec = make_spec()
     legacy = asdict(spec)
+    legacy["mode"] = "series"
     legacy.pop("holidays_country")
     for column in legacy["columns"]:
         column.pop("skip_missing")
@@ -243,12 +244,13 @@ def test_default_country_keeps_the_prepared_cache_key(tmp_path):
     source.write_text("day,units\n2024-01-01,10\n2024-01-02,12\n", encoding="utf-8")
     spec = PrepSpec(
         str(source),
-        "series",
+        "timeseries",
         "regression",
         (Column("day", "time"), Column("units", "target", "sum")),
         step="day",
     )
     legacy = asdict(spec)
+    legacy["mode"] = "series"
     legacy.pop("holidays_country")
     for column in legacy["columns"]:
         column.pop("skip_missing")

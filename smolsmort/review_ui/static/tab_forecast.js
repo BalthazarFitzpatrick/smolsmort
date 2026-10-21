@@ -1,7 +1,7 @@
 // forecast: the regression and classification topics share this one set of tabs, parameterised by
 // topic/task. the flavour dropdown picks spec.mode; the topic itself picks spec.task
 
-const FORECAST_ROW_ROLES = ['anchor', 'dimension', 'measure', 'target', 'ignore'];
+const FORECAST_ENTITY_ROLES = ['anchor', 'dimension', 'measure', 'target', 'ignore'];
 const FORECAST_AGGREGATIONS = ['sum', 'mean', 'median', 'min', 'max'];
 const FORECAST_UNITS = ['day', 'week', 'month', 'quarter', 'year'];
 const FORECAST_PAGE_SIZE = 50;
@@ -277,7 +277,7 @@ class ForecastTopic {
     this.columnsInfo = [];
     this.sourceRows = null;
     this.columnState = {}; // name -> {role, aggregation, known}
-    this.seriesSetup = null;
+    this.seriesSetup = null; // persisted browser state keeps its existing key
     this.step = 'week';
     this.horizon = 8;
     this.asOf = todayIso();
@@ -317,7 +317,7 @@ class ForecastTopic {
   }
 
   mode() {
-    return smolsmortTabs.flavour(this.topic) || 'row';
+    return smolsmortTabs.flavour(this.topic) || 'entity';
   }
 
   // ---- persistence: the last spec per topic, wrapped so a private window never breaks the tab ----
@@ -369,10 +369,10 @@ class ForecastTopic {
     const spec = this.buildSpec();
     if (!spec.source) throw new Error('no dataset selected');
     if (!spec.columns.some(col => col.role === 'target')) throw new Error('pick a variable to predict');
-    if (spec.mode === 'series' && !spec.columns.some(col => col.role === 'time')) {
+    if (spec.mode === 'timeseries' && !spec.columns.some(col => col.role === 'time')) {
       throw new Error('pick a date to extend in time');
     }
-    if (spec.mode === 'row' && !spec.columns.some(col => col.role === 'anchor')) {
+    if (spec.mode === 'entity' && !spec.columns.some(col => col.role === 'anchor')) {
       throw new Error('pick an anchor date');
     }
     return spec;
@@ -435,7 +435,7 @@ class ForecastTopic {
         </div>
         <div id="${this.topic}-data-columns"></div>
         <div class="h-divider"></div>
-        <div id="${this.topic}-series-row">
+        <div id="${this.topic}-timeseries-row">
           <div class="forecast-setup-heads" id="${this.topic}-setup-heads"></div>
           <div class="stat forecast-setup-readout" id="${this.topic}-setup-readout" aria-live="polite"></div>
           <div class="run-controls">
@@ -443,8 +443,8 @@ class ForecastTopic {
             <input type="date" id="${this.topic}-asof" class="text-field">
           </div>
         </div>
-        <div class="field-label" id="${this.topic}-row-heading">row settings</div>
-        <div id="${this.topic}-row-row">
+        <div class="field-label" id="${this.topic}-entity-heading">entity settings</div>
+        <div id="${this.topic}-entity-row">
           ${censorBlock}
           <div class="run-controls">
             <span class="field-label">rows to predict</span>
@@ -492,11 +492,11 @@ class ForecastTopic {
   }
 
   paintDataMode() {
-    const series = this.mode() === 'series';
-    document.getElementById(`${this.topic}-series-row`).classList.toggle('hidden', !series);
-    document.getElementById(`${this.topic}-row-row`).classList.toggle('hidden', series);
-    const heading = document.getElementById(`${this.topic}-row-heading`);
-    if (heading) heading.classList.toggle('hidden', series);
+    const timeseries = this.mode() === 'timeseries';
+    document.getElementById(`${this.topic}-timeseries-row`).classList.toggle('hidden', !timeseries);
+    document.getElementById(`${this.topic}-entity-row`).classList.toggle('hidden', timeseries);
+    const heading = document.getElementById(`${this.topic}-entity-heading`);
+    if (heading) heading.classList.toggle('hidden', timeseries);
     this.renderColumnGrid();
   }
 
@@ -580,8 +580,8 @@ class ForecastTopic {
       this.columnsInfo = res.columns;
       this.sourceRows = res.row_count;
       this.detectedEncoding = res.encoding;
-      // row roles survive flavour changes; series picks have their own saved state
-      const roles = FORECAST_ROW_ROLES;
+      // entity roles survive flavour changes; timeseries picks have their own saved state
+      const roles = FORECAST_ENTITY_ROLES;
       const next = {};
       this.columnsInfo.forEach(col => {
         const prior = this.columnState[col.name];
@@ -593,7 +593,7 @@ class ForecastTopic {
           known: prior ? prior.known !== false : true,
         };
       });
-      this.reconcileSeriesSetup();
+      this.reconcileTimeseriesSetup();
       this.columnState = next;
       this.renderColumnGrid();
       this.updateCensorAnchor();
@@ -605,7 +605,7 @@ class ForecastTopic {
     }
   }
 
-  reconcileSeriesSetup() {
+  reconcileTimeseriesSetup() {
     const fields = kind => this.columnsInfo.filter(col => col.kind === kind).map(col => col.name);
     const measures = fields('number');
     const dates = fields('date');
@@ -784,7 +784,7 @@ class ForecastTopic {
   renderColumnGrid() {
     const box = document.getElementById(`${this.topic}-data-columns`);
     box.innerHTML = '';
-    if (!this.columnsInfo.length || this.mode() === 'series') return;
+    if (!this.columnsInfo.length || this.mode() === 'timeseries') return;
     const table = document.createElement('table');
     table.className = 'forecast-column-grid';
     const head = document.createElement('tr');
@@ -807,7 +807,7 @@ class ForecastTopic {
       samplesCell.textContent = col.sample.join(', ');
       samplesCell.title = samplesCell.textContent;
       const roleCell = document.createElement('td');
-      const roleHead = forecastDropdown(FORECAST_ROW_ROLES, state.role, role => {
+      const roleHead = forecastDropdown(FORECAST_ENTITY_ROLES, state.role, role => {
         this.columnState[col.name] = {...this.columnState[col.name], role};
         this.updateCensorAnchor();
         this.renderColumnGrid();
@@ -837,9 +837,9 @@ class ForecastTopic {
 
   buildSpec() {
     const mode = this.mode();
-    const series = mode === 'series';
+    const timeseries = mode === 'timeseries';
     const setup = this.seriesSetup;
-    const columns = series ? this.columnsInfo.map(col => ({
+    const columns = timeseries ? this.columnsInfo.map(col => ({
       name: col.name,
       role: setup?.targets.includes(col.name) ? 'target' : setup?.time === col.name ? 'time' :
         setup?.dimensions.includes(col.name) ? 'dimension' : 'ignore',
@@ -858,14 +858,14 @@ class ForecastTopic {
       task: this.task,
       columns,
       encoding: this.encoding || 'auto',
-      step: series ? (this.step === 'auto' ? null : this.step) : null,
-      horizon: series ? this.horizon : 8,
+      step: timeseries ? (this.step === 'auto' ? null : this.step) : null,
+      horizon: timeseries ? this.horizon : 8,
       where: this.where || null,
-      predict_where: !series ? (this.predictWhere || null) : null,
-      censor: (!series && this.task === 'regression' && this.censorOn && anchorEntry) ? {
+      predict_where: !timeseries ? (this.predictWhere || null) : null,
+      censor: (!timeseries && this.task === 'regression' && this.censorOn && anchorEntry) ? {
         anchor: anchorEntry.name, unit: this.censorUnit, as_of: this.censorAsOf || null,
       } : null,
-      as_of: series ? (this.asOf || null) : null,
+      as_of: timeseries ? (this.asOf || null) : null,
     };
   }
 
@@ -1724,7 +1724,7 @@ class ForecastTopic {
       this.paintModelResults(view);
       this.paintVerdict(view.verdict, forecastModelLabel(view));
       this.paintChart(view);
-      document.getElementById(`${this.topic}-group-row`).classList.toggle('hidden', view.mode !== 'row');
+      document.getElementById(`${this.topic}-group-row`).classList.toggle('hidden', view.mode !== 'entity');
     } catch (err) {
       if (request !== this.viewRequest) return;
       this.paintVerdict({summary: err.message, checks: []});
@@ -1820,8 +1820,8 @@ window.addEventListener('smolsmort-topic', event => {
   smolsmortTabs.register({id: `${topic}-search`, label: 'training', topic, mount: p => ctl.mountSearch(p)});
   smolsmortTabs.register({id: `${topic}-results`, label: 'results', topic, mount: p => ctl.mountResults(p)});
   const flavours = topic === 'regression'
-    ? [{id: 'row', label: 'xgboost - per row'}, {id: 'series', label: 'time series'}]
-    : [{id: 'row', label: 'xgboost - per row'}];
+    ? [{id: 'entity', label: 'Entity'}, {id: 'timeseries', label: 'Time series'}]
+    : [{id: 'entity', label: 'Entity'}];
   smolsmortTabs.setFlavours(topic, flavours);
   smolsmortTabs.onFlavour(topic, () => ctl.onFlavourChange());
 });

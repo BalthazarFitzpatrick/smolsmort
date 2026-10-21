@@ -19,7 +19,7 @@ from smolsmort.forecast.pipeline import finish, load_workspace, make_genome, sco
 from smolsmort.forecast.requests import parse_request
 from smolsmort.forecast.search import Budget, Entry, _significant, search
 from smolsmort.forecast.spec import SERIES, STEP, Column, PrepSpec
-from smolsmort.forecast.splits import FOLDS, series_cuts
+from smolsmort.forecast.splits import FOLDS, timeseries_cuts
 
 
 @pytest.fixture
@@ -39,7 +39,7 @@ def workspace(monkeypatch):
     monkeypatch.setattr(pipeline, "read_table", lambda path, **kwargs: tables[path.name])
     spec = PrepSpec(
         "synthetic.csv",
-        "series",
+        "timeseries",
         "regression",
         (Column("day", "time"), Column("y", "target", "sum")),
         step="week",
@@ -58,7 +58,7 @@ def make_candidate(ws, family="ridge", transform="none"):
 
 def test_weekly_folds_are_disjoint_expand_history_and_preserve_test(workspace):
     ws = workspace
-    cuts = series_cuts(156, ws.spec.horizon)
+    cuts = timeseries_cuts(156, ws.spec.horizon)
     assert len(cuts.folds) == len(ws.series_folds) == FOLDS == 3
     assert cuts.test_start == 143
     assert [end - start for start, end in cuts.folds] == [8, 9, 9]
@@ -87,7 +87,7 @@ def test_weekly_folds_are_disjoint_expand_history_and_preserve_test(workspace):
 
 @pytest.mark.parametrize(("weeks", "expected_count"), [(34, 1), (50, 2), (156, 3)])
 def test_thin_history_keeps_valid_fewer_folds(weeks, expected_count):
-    cuts = series_cuts(weeks, 4)
+    cuts = timeseries_cuts(weeks, 4)
     assert len(cuts.folds) == expected_count
     assert cuts.val_start >= 26
     assert cuts.steps - cuts.test_start >= 4
@@ -178,7 +178,7 @@ def test_raw_series_families_fit_every_fold(workspace, monkeypatch, name):
         assert task.panel[STEP].max() <= steps.max()
         calls.append((task.bucket, matching[0]))
         return StatsFitted(
-            pipeline._series_baseline(task.frame, task.rows, task.bucket, task.season_length),
+            pipeline._timeseries_baseline(task.frame, task.rows, task.bucket, task.season_length),
             task.season_length,
         )
 

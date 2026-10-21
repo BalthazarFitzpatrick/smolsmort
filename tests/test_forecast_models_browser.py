@@ -16,7 +16,7 @@ pytest.importorskip("duckdb")
 from forecast_fixtures import write_panel
 from test_forecast_ui_browser import (
     choose_forecast_source,
-    choose_series_target,
+    choose_timeseries_target,
     mock_prepared_searches,
     session,
     show_tab,
@@ -92,11 +92,11 @@ def selected_families(page, topic="regression"):
     )
 
 
-def select_series(page):
+def select_timeseries(page):
     switch_to_regression(page)
-    page.select_option("#topic-flavour", "series")
+    page.select_option("#topic-flavour", "timeseries")
     choose_forecast_source(page, "panel.csv")
-    choose_series_target(page, "units")
+    choose_timeseries_target(page, "units")
 
 
 def test_models_saved_v2_requests_and_restored_plan(tmp_path, monkeypatch):
@@ -115,7 +115,7 @@ def test_models_saved_v2_requests_and_restored_plan(tmp_path, monkeypatch):
     monkeypatch.setattr(runs, "_PROCESSES", {})
     with session(tmp_path) as (page, _base):
         write_panel(tmp_path / "forecast_root", weeks=156)
-        select_series(page)
+        select_timeseries(page)
         page.click("#regression-prepare")
         page.wait_for_function(
             "document.getElementById('regression-data-status').innerText.startsWith('prepared')",
@@ -130,7 +130,7 @@ def test_models_saved_v2_requests_and_restored_plan(tmp_path, monkeypatch):
             if row["name"] in {"ridge", "snaive"}
         )
         query = parse_qs(urlparse(catalog_response.value.url).query)
-        assert json.loads(query["spec"][0])["mode"] == "series"
+        assert json.loads(query["spec"][0])["mode"] == "timeseries"
         family_toggle(page, "xgboost").click()
         family_toggle(page, "ridge").click()
         family_toggle(page, "snaive").click()
@@ -171,7 +171,7 @@ def test_models_saved_v2_requests_and_restored_plan(tmp_path, monkeypatch):
             assert {key: stored[key] for key in expected} == expected
             assert "budget" not in stored
             assert stored["transform"] == "none"
-            assert stored["spec"]["mode"] == "series"
+            assert stored["spec"]["mode"] == "timeseries"
             page.wait_for_selector('.nav-tab.active[data-tab="regression-search"]')
             page.wait_for_function(
                 "id => document.getElementById('regression-run-title').innerText.includes(id)",
@@ -205,7 +205,7 @@ def test_models_saved_v2_requests_and_restored_plan(tmp_path, monkeypatch):
 def test_models_catalog_explained_skips_and_selected_only_suitable_families(tmp_path):
     with session(tmp_path, width=800) as (page, _base):
         mock_catalog(page)
-        select_series(page)
+        select_timeseries(page)
         show_tab(page, "regression-models")
         family_toggle(page, "xgboost").wait_for()
         assert page.locator("#regression-models-families [data-family]").count() == 5
@@ -238,11 +238,11 @@ def test_models_catalog_explained_skips_and_selected_only_suitable_families(tmp_
 
 
 @pytest.mark.parametrize("topic", ["regression", "classification"])
-def test_models_row_mode_only_offered_xgboost_and_kept_tab_ids(tmp_path, topic):
+def test_models_entity_mode_only_offered_xgboost_and_kept_tab_ids(tmp_path, topic):
     with session(tmp_path) as (page, _base):
         mock_catalog(page)
         page.click(f'#topic-switch .topic-tab:has-text("{topic}")')
-        page.select_option("#topic-flavour", "row")
+        page.select_option("#topic-flavour", "entity")
         show_tab(page, f"{topic}-models")
         family_toggle(page, "xgboost", topic).wait_for()
         assert page.locator(f"#{topic}-models-families [data-family]").evaluate_all(
@@ -277,7 +277,7 @@ def test_models_duration_supported_fractional_minutes_and_one_day(tmp_path, minu
     with session(tmp_path) as (page, _base):
         requests, _preparations = mock_prepared_searches(page)
         mock_catalog(page)
-        select_series(page)
+        select_timeseries(page)
         show_tab(page, "regression-models")
         duration = page.locator("#regression-models-minutes")
         assert duration.get_attribute("min") == "1"
@@ -297,7 +297,7 @@ def test_models_refused_duration_outside_the_form_bounds(tmp_path, minutes):
     with session(tmp_path) as (page, _base):
         requests, _preparations = mock_prepared_searches(page)
         mock_catalog(page)
-        select_series(page)
+        select_timeseries(page)
         show_tab(page, "regression-models")
         duration = page.locator("#regression-models-minutes")
         duration.fill(minutes)
@@ -313,7 +313,7 @@ def test_models_refused_invalid_parallelism(tmp_path, at_once):
     with session(tmp_path) as (page, _base):
         requests, _preparations = mock_prepared_searches(page)
         mock_catalog(page)
-        select_series(page)
+        select_timeseries(page)
         show_tab(page, "regression-models")
         family_toggle(page, "ridge").click()
         field = page.locator("#regression-models-at-once")
@@ -326,19 +326,19 @@ def test_models_refused_invalid_parallelism(tmp_path, at_once):
         assert requests == []
 
 
-def test_models_flavour_switch_restored_series_selection(tmp_path):
+def test_models_flavour_switch_restored_timeseries_selection(tmp_path):
     with session(tmp_path) as (page, _base):
         mock_catalog(page)
-        select_series(page)
+        select_timeseries(page)
         show_tab(page, "regression-models")
         page.click("#regression-models-all-suitable")
         assert selected_families(page) == ["xgboost", "ridge", "snaive"]
-        page.select_option("#topic-flavour", "row")
+        page.select_option("#topic-flavour", "entity")
         page.wait_for_function(
             "document.querySelectorAll('#regression-models-families [data-family]').length === 1"
         )
         assert selected_families(page) == ["xgboost"]
-        page.select_option("#topic-flavour", "series")
+        page.select_option("#topic-flavour", "timeseries")
         family_toggle(page, "ridge").wait_for()
         assert selected_families(page) == ["xgboost", "ridge", "snaive"]
 
@@ -366,7 +366,7 @@ def test_models_kept_new_run_selected_when_the_first_training_list_arrived_late(
 
         page.route("**/api/forecast-runs", list_or_start)
         page.route("**/api/forecast-run?**", read_run)
-        select_series(page)
+        select_timeseries(page)
         show_tab(page, "regression-models")
         with page.expect_request(
             lambda request: request.method == "GET" and request.url.endswith("/api/forecast-runs")
