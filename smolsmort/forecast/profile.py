@@ -214,6 +214,8 @@ def suggest_genes(spec: PrepSpec, profile: dict) -> dict:
             objectives += ["tweedie", "poisson"]
         if profile.get("censored", 0) > 0:
             objectives.append("aft")
+            if spec.mode == "entity":
+                objectives.append("hazard")
     genes = {"objectives": objectives, "exclude": sorted(profile["leaks"])}
     if spec.mode == "timeseries":
         genes["period"] = profile.get("period")
