@@ -470,6 +470,25 @@ the work:
 cache as `prep.sql`. the cache key is the spec plus the file's content hash, so changing a role, an
 aggregation or the file re-runs prep and nothing stale survives.
 
+for an entity regression target stored as an event date, name it in `censor.event` and use the
+start date as both the anchor column and `censor.anchor`. prep converts elapsed days to the
+chosen unit (including fractional weeks). a missing event or one after `as_of` stays open;
+an event before its start is excluded and counted as `refused_event_before_start`. without
+`as_of`, the latest anchor remains the export date. for example:
+
+```json
+{
+  "source": "orders.csv",
+  "mode": "entity",
+  "task": "regression",
+  "columns": [
+    {"name": "created", "role": "anchor"},
+    {"name": "delivered", "role": "target"}
+  ],
+  "censor": {"anchor": "created", "event": "delivered", "unit": "week", "as_of": "2026-10-01"}
+}
+```
+
 timeseries specs may mark categorical columns as `input` to keep detail beyond the output grain.
 only `dimension` columns define series and scaffold rows; inputs never expand either table.
 prep writes `inputs.parquet` with each input's levels, row counts and the first target's

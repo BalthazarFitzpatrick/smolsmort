@@ -90,6 +90,8 @@ class Censor:
     unit: Step = "week"
     # the export date; empty means the latest anchor value in the file
     as_of: str | None = None
+    # the target holds an event date instead of a duration when set
+    event: str | None = None
 
 
 @dataclass(frozen=True)
@@ -129,6 +131,17 @@ class PrepSpec:
                     raise SpecError(f"{col.name!r} needs an aggregation in time series mode")
         if self.censor and self.censor.anchor not in names:
             raise SpecError(f"censor anchor {self.censor.anchor!r} is not a column")
+        if self.censor and self.censor.event is not None:
+            if self.mode != "entity":
+                raise SpecError("censor.event is only supported in entity mode")
+            if self.task != "regression":
+                raise SpecError("censor.event requires regression")
+            if self.censor.event != self.named("target")[0]:
+                raise SpecError("censor.event must name the target column")
+            if self.censor.anchor != self.named("anchor")[0]:
+                raise SpecError(
+                    "censor.anchor must name the anchor column when censor.event is set"
+                )
         if self.horizon < 1:
             raise SpecError("horizon must be at least one step")
 
@@ -148,6 +161,8 @@ class PrepSpec:
                 column.pop("skip_missing")
         if self.holidays_country is None:
             data.pop("holidays_country")
+        if self.censor and self.censor.event is None:
+            data["censor"].pop("event")
         text = json.dumps(data, sort_keys=True, default=str)
         return hashlib.sha256(text.encode()).hexdigest()[:16]
 

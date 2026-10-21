@@ -219,11 +219,8 @@ def _columns(app, payload: dict) -> dict:
 
 
 def _prep(app, payload: dict) -> dict:
-    try:
-        spec = spec_from_dict(_spec_from_payload(app, payload))
-    except SpecError as exc:
-        raise RequestError(str(exc)) from exc
-    prepared = prepare(spec, _cache_root(app))
+    spec = _parse_spec(app, payload)
+    prepared = _prepare_spec(app, spec)
     views.save_prepared_spec(prepared, spec)
     return {"summary": prepared.summary, "sql": prepared.sql, "reused": prepared.reused}
 
