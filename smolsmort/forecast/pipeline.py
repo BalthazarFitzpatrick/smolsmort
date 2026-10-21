@@ -171,6 +171,7 @@ def _row_workspace(spec, folder, summary) -> Workspace:
 def _series_workspace(spec, folder, summary) -> Workspace:
     panel = read_table(folder / "panel.parquet", order_by=f"{SERIES}, {STEP}")
     scaffold = read_table(folder / "scaffold.parquet")
+    inputs = read_table(folder / "inputs.parquet") if spec.named("input") else None
     scaffold, excluded = _filter_scaffold(spec, panel, scaffold)
     steps = np.unique(panel[STEP])
     cuts = series_cuts(len(steps), spec.horizon)
@@ -190,6 +191,7 @@ def _series_workspace(spec, folder, summary) -> Workspace:
             train,
             period=genes.get("period"),
             measure_lags=genes.get("measure_lags"),
+            inputs=inputs,
         )
         step = frame.step
         known = ~frame.future & np.isfinite(frame.y)

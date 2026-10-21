@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -96,14 +97,41 @@ def test_every_candidate_family_ignores_values_after_its_origin(unit, bucket):
     origin = count - 70
     indices = step_index(panel[STEP], unit) - step_index(panel[STEP], unit).min()
     train = indices <= origin
+    spec = replace(spec, columns=(*spec.columns, Column("site", "input")))
+    share = 0.2 + (indices % 7) / 10
+    inputs = {
+        SERIES: np.repeat(panel[SERIES], 2),
+        STEP: np.repeat(panel[STEP], 2),
+        "__column": np.full(len(indices) * 2, "site", dtype=object),
+        "__level": np.tile(np.array(["s1", "s2"], dtype=object), len(indices)),
+        "rows": np.ones(len(indices) * 2, dtype=int),
+        "target": (panel["units"][:, None] * np.column_stack([share, 1 - share])).ravel(),
+    }
     period = STEP_FEATURES[unit][3]
-    before = series_features(spec, panel, scaffold, bucket, unit, train, period=period, periods=())
+    before = series_features(
+        spec, panel, scaffold, bucket, unit, train, period=period, periods=(), inputs=inputs
+    )
     changed = {name: values.copy() for name, values in panel.items()}
     for name in ("units", "orders"):
         changed[name][indices > origin] *= -17
-    after = series_features(spec, changed, scaffold, bucket, unit, train, period=period, periods=())
+    changed_inputs = {name: values.copy() for name, values in inputs.items()}
+    late = np.repeat(indices > origin, 2) & (inputs["__level"] == "s1")
+    changed_inputs["target"][late] *= 17
+    changed_inputs["__level"][late] = "unseen"
+    after = series_features(
+        spec,
+        changed,
+        scaffold,
+        bucket,
+        unit,
+        train,
+        period=period,
+        periods=(),
+        inputs=changed_inputs,
+    )
     assert before.features.names == after.features.names
     assert before.features.families == after.features.families
+    assert {"mix:site", "spread:site"} <= set(before.features.families)
     origins = step_index(before.step, unit) - step_index(panel[STEP], unit).min() - bucket[1]
     safe = origins <= origin
     assert safe.any() and (~safe).any()
@@ -113,6 +141,12 @@ def test_every_candidate_family_ignores_values_after_its_origin(unit, bucket):
         assert np.isfinite(old[origins == origin]).all(), family
         np.testing.assert_array_equal(old[safe], new[safe], err_msg=family)
     assert not np.array_equal(before.features.x[~safe], after.features.x[~safe], equal_nan=True)
+    for family in ("mix:site", "spread:site"):
+        assert not np.array_equal(
+            before.features.pick({family})[0][~safe],
+            after.features.pick({family})[0][~safe],
+            equal_nan=True,
+        )
 
 
 @pytest.mark.parametrize("unit", STEP_FEATURES)

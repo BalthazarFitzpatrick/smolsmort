@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+from urllib.parse import quote
 
 import numpy as np
 
@@ -312,6 +313,56 @@ class SeriesFrame:
     base: np.ndarray
 
 
+def _build_input_values(spec: PrepSpec, panel: dict, inputs: dict | None, train) -> dict:
+    """input shares and spread aligned to the panel, with levels frozen across all series"""
+    if inputs is None or not spec.named("input"):
+        return {}
+    rows = len(panel[STEP])
+    panel_keys = zip(panel[SERIES], panel[STEP].astype("datetime64[D]"), strict=True)
+    positions = {key: index for index, key in enumerate(panel_keys)}
+    input_keys = zip(inputs[SERIES], inputs[STEP].astype("datetime64[D]"), strict=True)
+    indices = np.array([positions.get(key, -1) for key in input_keys], dtype=int)
+    columns = {}
+    for name in spec.named("input"):
+        label = quote(name, safe="")
+        keep = (inputs["__column"] == name) & (indices >= 0)
+        index = indices[keep]
+        levels = inputs["__level"][keep]
+        target = np.asarray(inputs["target"][keep], dtype=float)
+        train_rows = train[index]
+        seen, codes = np.unique(levels[train_rows], return_inverse=True)
+        totals = np.bincount(
+            codes, weights=np.nan_to_num(target[train_rows], nan=0.0), minlength=len(seen)
+        )
+        top = sorted(zip(seen, totals, strict=True), key=lambda item: (-item[1], item[0]))[:5]
+        top_levels = [level for level, _ in top]
+        count = np.bincount(index, minlength=rows)
+        total = np.bincount(index, weights=target, minlength=rows)
+        # an observed zero total has zero shares; steps without source rows remain missing
+        shares = np.divide(
+            target,
+            total[index],
+            out=np.zeros(len(index)),
+            where=total[index] != 0,
+        )
+        for level in top_levels:
+            values = np.bincount(
+                index[levels == level], weights=shares[levels == level], minlength=rows
+            )
+            level_label = quote(level, safe="")
+            columns[f"mix:{label}:level:{level_label}"] = (
+                f"mix:{name}",
+                np.where(count, values, np.nan),
+            )
+        other = ~np.isin(levels, top_levels)
+        values = np.bincount(index[other], weights=shares[other], minlength=rows)
+        columns[f"mix:{label}:other"] = (f"mix:{name}", np.where(count, values, np.nan))
+        columns[f"spread:{label}:count"] = (f"spread:{name}", np.where(count, count, np.nan))
+        hhi = np.bincount(index, weights=shares**2, minlength=rows)
+        columns[f"spread:{label}:hhi"] = (f"spread:{name}", np.where(count, hhi, np.nan))
+    return columns
+
+
 def series_features(
     spec: PrepSpec,
     panel: dict,
@@ -323,6 +374,7 @@ def series_features(
     period: int | None = None,
     periods: tuple[int, ...] | None = None,
     measure_lags: dict[str, int] | None = None,
+    inputs: dict | None = None,
 ) -> SeriesFrame:
     """the rows one bucket's model trains, is judged and predicts on. a target at step d with
     origin d - b sees the target and measures up to the origin only, and the calendar of d"""
@@ -346,6 +398,7 @@ def series_features(
     if cycle_period is not None and cycle_period >= history:
         cycle_period = None
     dim_codes = {d: _codes(panel[d], train) for d in dims}
+    input_values = _build_input_values(spec, panel, inputs, train)
     last = step_index(panel[STEP], unit).max()
     parts = []
     for key in np.unique(panel[SERIES]):
@@ -372,6 +425,10 @@ def series_features(
             dynamics_windows=tuple(w for w in windows if w <= history),
             cycle_period=cycle_period,
         )
+        for name, (family, values) in input_values.items():
+            extended = _extend(values[mine], length, None)
+            for j in LAGS:
+                base[f"{name}_lag_{b + j}"] = (family, _shift(extended, j))
         rows = [(p, panel[target][mine][p], False) for p in range(len(mine)) if p - b >= 0]
         future = np.flatnonzero(scaffold[SERIES] == key)
         f_index = step_index(scaffold[STEP][future], unit)
