@@ -583,6 +583,13 @@ stores `finish_estimate_s`, `finish_reserve_s`, and `search_deadline` for inspec
 resume keeps the original run deadline and restores checkpointed candidates;
 time spent stopped still consumes the wall-clock budget.
 
+forecast runs share an exclusive lock, so searches, warm starts, and refits wait
+in `queued` state while another run holds it. a new run's budget starts after
+it acquires the lock; `coordinator.json` records the wait as `queued_s`.
+queued runs can be cancelled before they start. the default lock file is
+`~/.cache/smolsmort/forecast.lock`; set `SMOLSMORT_RUN_LOCK` to share another path
+across workers. the os releases the lock when its worker exits, even after a crash.
+
 **results.** every run reports accuracy on the untouched test rows. the accuracy metric is wape
 (sum of absolute errors over the sum of actuals), next to the same metric for the naive baseline.
 the error ratio is model error divided by baseline error: below 1 means better than naive;

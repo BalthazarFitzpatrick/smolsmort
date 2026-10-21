@@ -17,6 +17,7 @@ import numpy as np
 
 from smolsmort.forecast.pipeline import finish, genome_from_dict, load_workspace
 from smolsmort.forecast.requests import parse_request
+from smolsmort.forecast.run_lock import RunLock
 from smolsmort.forecast.screen import read_priors, read_top_families, screen_families
 from smolsmort.forecast.search import Budget, check_validation_folds, search
 from smolsmort.forecast.spec import spec_from_dict
@@ -102,22 +103,42 @@ def run(folder: Path) -> int:
         raise SystemExit("the forecast worker must not share a process with torch")
     folder = Path(folder)
     job = _Run(folder)
-    started = time.monotonic()
-    request = json.loads((folder / "request.json").read_text())
-    job.status("running", started_at=time.time())
+    lock = None
     try:
+        lock = RunLock()
+        queued_at = time.time()
+        waiting_since = time.monotonic()
+        queued = False
+        while not job.cancelled:
+            if lock.try_acquire():
+                break
+            if not queued:
+                job.status("queued", queued_at=queued_at)
+                queued = True
+            time.sleep(0.1)
+        if job.cancelled:
+            job.status("cancelled", stopped="cancelled")
+            job.event({"event": "cancelled", "stopped": "cancelled"})
+            return 0
+        started = time.monotonic()
+        queued_s = started - waiting_since if queued else 0.0
+        started_at = time.time()
+        job.status("running", started_at=started_at)
+        request = json.loads((folder / "request.json").read_text())
         request = parse_request(request)
-        if request.get("version") == 2 and not (folder / "coordinator.json").exists():
-            started_at = time.time()
-            job.save(
-                "coordinator.json",
-                {
+        if request.get("version") == 2:
+            coordinator_path = folder / "coordinator.json"
+            if coordinator_path.exists():
+                coordinator = json.loads(coordinator_path.read_text())
+            else:
+                coordinator = {
                     "started_at": started_at,
                     "deadline": started_at + request["time_budget_s"],
                     "phase": "broad",
                     "families": {},
-                },
-            )
+                }
+            coordinator["queued_s"] = coordinator.get("queued_s", 0.0) + queued_s
+            job.save("coordinator.json", coordinator)
         spec = spec_from_dict(request["spec"])
         transform = request.get("transform", "none") if request.get("version") == 2 else "none"
         if request.get("recipe") and request["recipe"].get("transform", "none") != transform:
@@ -215,6 +236,9 @@ def run(folder: Path) -> int:
         # any failure must reach the ui as a status, never as a run that looks alive
         job.status("failed", reason=f"{type(exc).__name__}: {exc}", trace=traceback.format_exc())
         return 1
+    finally:
+        if lock is not None:
+            lock.close()
 
 
 def _warm_start(previous) -> list[dict] | None:

@@ -333,12 +333,17 @@ def multi_run_state(run_dir, request, status, *, since_generation=None, since_ev
             tmp.write_text(json.dumps(snapshot), encoding="utf-8")
             tmp.replace(run_dir / "route-cursors.json")
     families = {}
+    family_state = "pending"
+    if status["state"] not in ("starting", "queued") and (
+        request.get("recipe") or status["state"] in ("cancelled", "failed")
+    ):
+        family_state = status["state"]
     for selection in request["families"]:
         name = selection["name"]
         coordinator = status.get("families", {}).get(name, {})
         worker = _read_json(run_dir / "families" / name / "status.json", {})
         families[name] = {
-            "state": status["state"] if request.get("recipe") else "pending",
+            "state": family_state,
             "phase": "refit" if request.get("recipe") else "broad",
             "slice_s": 0,
             "best_error": None,
