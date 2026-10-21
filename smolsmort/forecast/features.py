@@ -428,9 +428,14 @@ def _build_input_values(spec: PrepSpec, panel: dict, inputs: dict | None, train)
     indices = np.array([positions.get(key, -1) for key in input_keys], dtype=int)
     columns = {}
     clock = spec.named("time")[0]
-    for name in spec.named("input"):
+    for column in spec.columns:
+        if column.role != "input":
+            continue
+        name = column.name
         label = quote(name, safe="")
         keep = (inputs["__column"] == name) & (indices >= 0)
+        if column.skip_missing:
+            keep &= inputs["__level"] != "(none)"
         index = indices[keep]
         levels = inputs["__level"][keep]
         target = np.asarray(inputs["target"][keep], dtype=float)
