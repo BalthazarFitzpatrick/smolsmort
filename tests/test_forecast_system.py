@@ -1,12 +1,13 @@
 """the assembled forecast topics end to end, through the routes the page calls: one real search per
 mode on the synthetic fixtures, then what a user would check - the leak refused, the baseline beaten,
-the band honest, every open row or future step predicted, the export carrying the verdict"""
+the band measured, every open row or future step predicted, the export carrying the ratio"""
 
 from __future__ import annotations
 
 import csv
 import io
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -64,11 +65,13 @@ def test_row_mode_refuses_the_leak_and_beats_the_baseline(row_system):
     for entry in json.loads((run / "leaderboard.json").read_text()):
         assert not [f for f in entry["genome"]["families"] if "leak_plus1" in f]
     assert result["model_error"] < result["baseline_error"]
-    calibrated = {c["check"]: c for c in result["verdict"]["checks"]}["band is calibrated"]
-    assert calibrated["passed"], calibrated["detail"]
+    band = {c["check"]: c for c in result["verdict"]["checks"]}["band coverage"]
+    measured = re.fullmatch(r"80% band covered (\d+)% of test rows", band["detail"])
+    assert measured is not None
+    assert 0 <= int(measured[1]) <= 100
 
 
-def test_row_mode_predicts_every_open_row_and_exports_the_verdict(row_system):
+def test_row_mode_predicts_every_open_row_and_exports_the_ratio(row_system):
     app, tab, run_id, _ = row_system
     run, request, result = _outcome(app, run_id)
     forecast = read_table(run / "forecast.parquet")
@@ -77,9 +80,9 @@ def test_row_mode_predicts_every_open_row_and_exports_the_verdict(row_system):
     assert lines[0].startswith("# verdict:")
     rows = list(csv.DictReader(io.StringIO("\n".join(lines[1:]))))
     assert len(rows) == len(forecast["prediction"])
-    assert {"prediction", "lower", "upper", "verdict"} <= set(rows[0])
-    expected = "trusted" if result["verdict"]["trusted"] else "not trusted"
-    assert {r["verdict"] for r in rows} == {expected}
+    assert {"prediction", "lower", "upper", "ratio"} <= set(rows[0])
+    expected = result["verdict"]["accuracy"]["ratio"]
+    assert {float(r["ratio"]) for r in rows} == {expected}
 
 
 def test_series_mode_forecasts_active_combinations_and_beats_seasonal_naive(series_system):

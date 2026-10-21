@@ -335,7 +335,10 @@ def test_recipe_selection_uses_validation_even_when_test_error_disagrees(
 
     def finish_candidate(ws, genome, **kwargs):
         validations.append(np.asarray(kwargs["validation"]))
-        return {"verdict": {"trusted": True}, "model_error": 0.9 if kwargs.get("members") else 0.01}
+        return {
+            "verdict": {"accuracy": {"ratio": 0.8}},
+            "model_error": 0.9 if kwargs.get("members") else 0.01,
+        }
 
     def write_result(folder, spec, result, final):
         (folder / "recipe.json").write_text(json.dumps({"genome": result["best"]}))

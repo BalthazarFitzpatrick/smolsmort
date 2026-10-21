@@ -280,7 +280,7 @@ def test_a_run_ends_with_a_forecast_and_a_verdict(tmp_path):
     assert all(curve["validation"] and "training" not in curve for curve in curves)
     assert run_state(tmp_path / "runs", run_id)["generation_curves"] == curves
     result = json.loads((folder / "result.json").read_text())
-    assert set(result["verdict"]) == {"trusted", "summary", "accuracy", "band_ok", "checks"}
+    assert set(result["verdict"]) == {"summary", "accuracy", "checks"}
     assert result["fold_count"] == len(result["fold_scores"]) == 3
     assert result["val_error"] == pytest.approx(np.mean(result["fold_scores"]))
     assert result["val_test_gap"] == pytest.approx(result["model_error"] - result["val_error"])

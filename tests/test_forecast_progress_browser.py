@@ -45,8 +45,8 @@ def write_multifamily_run(root, *, version=2):
     }
     names = ("xgboost", "ridge", "snaive")
     fitness = {"xgboost": 0.12, "ridge": 0.18, "snaive": 0.31}
-    verdict = {"trusted": True, "reason": "synthetic test improvement"}
-    ensemble_verdict = {"trusted": False, "reason": "synthetic test threshold"}
+    verdict = {"accuracy": {"ratio": 0.95}}
+    ensemble_verdict = {"accuracy": {"ratio": 1.05}}
     families = {
         name: {
             "state": "done",
@@ -477,12 +477,21 @@ def test_multifamily_saved_run_named_models_and_explained_importance(tmp_path):
         )
         comparison = page.locator("#regression-family-comparison tbody tr")
         assert [row.locator("td").all_text_contents() for row in comparison.all()] == [
-            ["xgboost", "done", "0.12", "4", "-", "trusted"],
+            ["xgboost", "done", "0.12", "4", "-", "ratio 0.95, better than naive"],
             ["ridge", "done", "0.18", "3", "-", "-"],
             ["snaive", "done", "0.31", "2", "-", "-"],
-            ["ensemble of xgboost, ridge", "done", "0.15", "-", "-", "not trusted"],
+            [
+                "ensemble of xgboost, ridge",
+                "done",
+                "0.15",
+                "-",
+                "-",
+                "ratio 1.05, worse than naive",
+            ],
         ]
-        assert page.locator("#regression-verdict").inner_text() == "xgboost: trusted"
+        assert page.locator("#regression-verdict").inner_text() == (
+            "xgboost: ratio 0.95, better than naive"
+        )
         assert page.locator("#regression-importance-status").inner_text().startswith("gain")
         assert page.locator("#regression-importance tbody tr").all_text_contents() == [
             "lag_175.00%",
@@ -517,7 +526,7 @@ def test_multifamily_saved_run_named_models_and_explained_importance(tmp_path):
         page.click("#regression-results-model")
         page.locator('.menu-panel .menu-item[data-id="ensemble"]').click()
         page.wait_for_function(
-            "document.getElementById('regression-verdict').innerText === 'ensemble of xgboost, ridge: not trusted'"
+            "document.getElementById('regression-verdict').innerText === 'ensemble of xgboost, ridge: ratio 1.05, worse than naive'"
         )
         page.wait_for_function(
             "document.querySelector('#regression-results-table tr:nth-child(2) td:last-child').innerText === 'ensemble'"
@@ -543,12 +552,69 @@ def test_legacy_saved_run_defaulted_to_xgboost_without_comparison(tmp_path):
         assert board.locator("tbody tr td").nth(family_index).inner_text() == "xgboost"
         page.click("#regression-run-open")
         page.locator("#regression-verdict").wait_for()
-        assert page.locator("#regression-verdict").inner_text() == "xgboost: trusted"
+        assert page.locator("#regression-verdict").inner_text() == (
+            "xgboost: ratio 0.95, better than naive"
+        )
         assert not page.locator("#regression-family-comparison").is_visible()
         assert (
             page.locator("#regression-importance-status").inner_text()
             == "no saved feature importance for this run"
         )
+
+
+def test_result_and_run_banners_compared_ratios_and_kept_plain_facts(tmp_path):
+    with session(tmp_path) as (page, _):
+        run_id = write_multifamily_run(tmp_path / "forecast_root")
+        switch_to_regression(page)
+        page.select_option("#topic-flavour", "series")
+        show_tab(page, "regression-search")
+        page.locator(f'#regression-runs-list [data-run-id="{run_id}"]').click()
+        page.locator("#regression-run-verdict").wait_for()
+        page.click("#regression-run-open")
+        page.locator("#regression-verdict").wait_for()
+        facts = [
+            {"check": "band", "group": "reliability", "detail": "test coverage 80%"},
+            {"check": "history", "group": "reliability", "detail": "60 periods"},
+        ]
+        for ratio, comparison, colour in (
+            (0.95, "better", "rgb(199, 237, 95)"),
+            (1, "worse", "rgb(173, 121, 111)"),
+            (1.05, "worse", "rgb(173, 121, 111)"),
+            (None, None, None),
+        ):
+            verdict = {"accuracy": {"ratio": ratio}, "checks": facts}
+            page.evaluate(
+                "run => { const ctl = forecastTopics.get('regression');"
+                " ctl.paintRunDetail(run); ctl.paintVerdict(run.verdict, 'xgboost'); }",
+                {**make_run(state="done"), "verdict": verdict},
+            )
+            expected = (
+                f"ratio {ratio}, {comparison} than naive" if comparison else "ratio unavailable"
+            )
+            assert page.locator("#regression-run-verdict").inner_text() == expected
+            assert page.locator("#regression-verdict .forecast-verdict-summary").inner_text() == (
+                f"xgboost: {expected}"
+            )
+            assert page.locator(
+                "#regression-verdict .forecast-verdict-check"
+            ).all_text_contents() == ["band: test coverage 80%", "history: 60 periods"]
+            for selector in ("#regression-run-verdict", "#regression-verdict"):
+                banner = page.locator(selector)
+                classes = banner.get_attribute("class").split()
+                assert ("better" in classes) == (comparison == "better")
+                assert ("worse" in classes) == (comparison == "worse")
+                if colour:
+                    assert banner.evaluate("node => getComputedStyle(node).color") == colour
+                    assert (
+                        banner.evaluate("node => getComputedStyle(node).borderTopColor") == colour
+                    )
+        page.evaluate(
+            "() => forecastTopics.get('regression').paintVerdict("
+            "{summary: 'failed to load', checks: []})"
+        )
+        banner = page.locator("#regression-verdict")
+        assert banner.inner_text() == "failed to load"
+        assert not {"better", "worse"}.intersection(banner.get_attribute("class").split())
 
 
 def test_legacy_progress_kept_generation_budget_with_family_summary(tmp_path):
@@ -603,7 +669,7 @@ def test_results_kept_latest_model_importance_and_table_after_delayed_responses(
         )
         release_response(0)
         assert page.locator("#regression-verdict").inner_text() == (
-            "ensemble of xgboost, ridge: not trusted"
+            "ensemble of xgboost, ridge: ratio 1.05, worse than naive"
         )
         assert_ensemble_table()
         page.unroute("**/api/forecast-view?**", hold_response)
@@ -632,6 +698,6 @@ def test_results_kept_latest_model_importance_and_table_after_delayed_responses(
             .startswith("absolute standardised coefficient")
         )
         assert page.locator("#regression-verdict").inner_text() == (
-            "ensemble of xgboost, ridge: not trusted"
+            "ensemble of xgboost, ridge: ratio 1.05, worse than naive"
         )
         assert_ensemble_table()

@@ -40,7 +40,7 @@ def compare_transform(source, transform, output):
             "test_wape": final["model_error"],
             "baseline_wape": final["baseline_error"],
             "checks": final["verdict"]["checks"],
-            "trusted": final["verdict"]["trusted"],
+            "ratio": final["verdict"]["accuracy"]["ratio"],
             "winner": result["best"],
             "generations": result["generations"],
             "stopped": result["stopped"],

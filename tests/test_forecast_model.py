@@ -187,24 +187,41 @@ def test_metrics_and_the_group_baseline():
     assert open_consistency([5, 1], [3, 3]) == 0.5
 
 
-def test_the_verdict_names_each_failed_check_with_its_numbers():
-    good = judge(model_error=7.0, baseline_error=10.0, band_coverage=0.8, test_rows=200)
-    assert good["trusted"] and all(c["passed"] for c in good["checks"])
-    bad = judge(
+def test_the_verdict_reports_band_and_history_as_plain_facts():
+    verdict = judge(
         model_error=10.0, baseline_error=10.5, band_coverage=0.5, test_rows=12, test_steps=8
     )
-    assert not bad["trusted"] and not bad["band_ok"]
-    assert bad["summary"].startswith("do not act on this forecast")
-    failed = {c["check"]: c["detail"] for c in bad["checks"] if not c["passed"]}
-    assert set(failed) == {
-        "beats the naive baseline",
-        "band is calibrated",
-        "enough history to judge",
+    assert set(verdict) == {"summary", "accuracy", "checks"}
+    assert verdict["summary"].startswith("ratio 0.95, better than naive")
+    assert all(set(c) == {"check", "group", "detail"} for c in verdict["checks"])
+    facts = {c["check"]: c["detail"] for c in verdict["checks"]}
+    assert facts == {
+        "naive baseline comparison": "error 10 vs baseline 10.5 (ratio 0.95)",
+        "band coverage": "80% band covered 50% of test rows",
+        "test history": "12 test rows, 8 steps",
     }
-    assert "ratio 0.95" in failed["beats the naive baseline"]
-    assert "50%" in failed["band is calibrated"]
     no_band = judge(model_error=1, baseline_error=2, band_coverage=None, test_rows=100)
-    assert no_band["trusted"] and no_band["band_ok"] is False
+    assert no_band["checks"][1]["detail"] == "no band could be fitted"
+    assert no_band["summary"].startswith("ratio 0.50, better than naive")
+
+
+@pytest.mark.parametrize(
+    "ratio,comparison", [(0.9, "better"), (0.95, "better"), (1.0, "worse"), (1.1, "worse")]
+)
+def test_ratio_one_is_the_only_comparison_boundary(ratio, comparison):
+    verdict = judge(model_error=ratio, baseline_error=1, band_coverage=None, test_rows=1)
+    assert verdict["accuracy"]["ratio"] == ratio
+    assert verdict["summary"].startswith(f"ratio {ratio:.2f}, {comparison} than naive")
+
+
+def test_zero_baseline_retains_the_infinite_ratio():
+    verdict = judge(
+        model_error=1, baseline_error=0, band_coverage=None, test_rows=100, needs_band=False
+    )
+    assert verdict["accuracy"]["ratio"] == float("inf")
+    assert verdict["accuracy"]["improvement"] is None
+    assert verdict["summary"].startswith("ratio inf, worse than naive")
+    assert [c["group"] for c in verdict["checks"]] == ["accuracy", "history"]
 
 
 def test_a_band_on_a_target_centred_at_zero_is_absolute_not_relative():
@@ -217,33 +234,42 @@ def test_a_band_on_a_target_centred_at_zero_is_absolute_not_relative():
     assert positive.relative
 
 
-def test_a_band_as_wide_as_the_data_itself_is_not_trusted():
+def test_band_width_and_spread_do_not_change_the_accuracy_comparison():
     common = {"model_error": 1.0, "baseline_error": 2.0, "band_coverage": 0.8, "test_rows": 500}
     sharp = judge(**common, band_width=3.0, spread=10.0)
     vague = judge(**common, band_width=40.0, spread=12.0)
-    assert sharp["trusted"] and sharp["band_ok"]
-    assert vague["trusted"] and vague["band_ok"] is False
-    assert "do not rely on its band" in vague["summary"]
-    failed = [c for c in vague["checks"] if not c["passed"]]
-    assert [c["check"] for c in failed] == ["band is sharper than the data's own spread"]
-    assert "40" in failed[0]["detail"] and "12" in failed[0]["detail"]
+    assert sharp["accuracy"] == vague["accuracy"]
+    assert sharp["summary"] == vague["summary"]
+    facts = {c["check"]: c["detail"] for c in vague["checks"]}
+    assert facts["band width and target spread"] == (
+        "median 80% band 40 wide vs the target's own 10-90% range 12"
+    )
 
 
 def test_the_accuracy_block_names_the_metric_and_the_gain():
     verdict = judge(model_error=0.22, baseline_error=0.25, band_coverage=0.99, test_rows=500)
     accuracy = verdict["accuracy"]
+    assert set(accuracy) == {
+        "metric",
+        "model_error",
+        "baseline_error",
+        "ratio",
+        "improvement",
+        "text",
+        "val_error",
+        "val_test_gap",
+    }
     assert accuracy["metric"] == "wape" and accuracy["ratio"] == pytest.approx(0.88)
     assert accuracy["improvement"] == pytest.approx(0.12)
     assert accuracy["text"] == "wape 22.0% vs naive baseline 25.0%, 12% better"
-    # a band covering nearly everything is not failed on coverage alone
-    assert verdict["band_ok"] and verdict["trusted"] is True
+    assert verdict["checks"][1]["detail"] == "80% band covered 99% of test rows"
     worse = judge(model_error=1.1, baseline_error=1.0, band_coverage=0.8, test_rows=500)
-    assert not worse["trusted"] and not worse["accuracy"]["passed"]
+    assert worse["accuracy"]["ratio"] == pytest.approx(1.1)
     assert worse["accuracy"]["text"].endswith("10% worse")
     assert "wape 110.0% vs naive baseline 100.0%" in worse["summary"]
 
 
-def test_accuracy_reports_validation_gap_without_changing_trust():
+def test_accuracy_reports_validation_gap_without_changing_the_comparison():
     options = {"model_error": 0.2, "baseline_error": 0.3, "band_coverage": 0.8, "test_rows": 100}
     without = judge(**options)
     with_validation = judge(**options, val_error=0.1)
@@ -251,5 +277,5 @@ def test_accuracy_reports_validation_gap_without_changing_trust():
     assert without["accuracy"]["val_test_gap"] is None
     assert with_validation["accuracy"]["val_error"] == 0.1
     assert with_validation["accuracy"]["val_test_gap"] == pytest.approx(0.1)
-    assert with_validation["trusted"] == without["trusted"]
+    assert with_validation["summary"] == without["summary"]
     assert with_validation["checks"] == without["checks"]

@@ -137,10 +137,10 @@ a CSV or JSON file, one role per column (time or anchor, dimension, measure, tar
 Nobody judges these by hand. **The holdout is the judge:** rows are cut by time into training,
 validation and test. A genetic search tries feature sets, objectives and tree settings against
 validation, unattended, until it stops improving or runs out of time. The test rows are touched
-once, by the winner. Every run ends with a **trust verdict** that says, in plain words, whether the
-forecast is worth acting on - it must beat a naive baseline by 10%, and there must be enough history to judge.
-The band is judged apart: it must cover at least 65% of test rows and be narrower than the target's
-own spread, or the verdict says not to rely on it. A forecast that fails is still shown, with the warning next to it.
+once, by the winner. every run reports an **error ratio**: model error divided by naive baseline
+error. a ratio below 1 means better than naive; a ratio of 1 or above is in the worse category.
+band coverage, band width, the target's own spread, and test history remain plain facts beside
+the accuracy reading, with no pass thresholds.
 
 ### Sweep, and where the loop closes
 
@@ -382,7 +382,7 @@ verdict on every run is what tells you whether they served:
 | search population / elite / plateau | 16 / 3 / 5 generations | `forecast.search.POPULATION`, `ELITE`, `PLATEAU` |
 | search time cap | 20 minutes | `forecast.search.TIME_CAP` |
 | v2 family pruning threshold | `prune_sigma=1.0` | `forecast.requests.parse_request`, `forecast.runs.start_run` |
-| verdict | ratio <= 0.9, 30 rows, 13 steps; band coverage >= 65% | `forecast.evaluate` |
+| accuracy reading | error ratio < 1: better than naive; >= 1: worse | `forecast.evaluate` |
 
 v2 requests and `forecast.runs.start_run` accept `plateau` (default 5),
 `min_generations` (default 0), and `prune_sigma` (finite positive number, default 1.0).

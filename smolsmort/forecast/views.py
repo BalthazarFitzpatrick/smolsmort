@@ -1045,17 +1045,17 @@ def table(run_dir: Path, request: dict, query: dict) -> dict:
 
 
 def export_csv(run_dir: Path, request: dict, query: dict | None = None) -> bytes:
-    """the full forecast table (page 0, everything) as csv, the verdict named on every row"""
+    """the full forecast table (page 0, everything) as csv, with the error ratio on every row"""
     result = _require_done(run_dir)
     query = query or {}
     verdict = _select_model(run_dir, result, query)["verdict"]
     payload = table(run_dir, request, {**query, "size": 10**9})
-    trust_word = "trusted" if verdict["trusted"] else "not trusted"
+    ratio = verdict["accuracy"]["ratio"]
 
     buf = io.StringIO()
     buf.write(f"# verdict: {verdict['summary']}\n")
     writer = csv.writer(buf)
-    writer.writerow([*payload["columns"], "verdict"])
+    writer.writerow([*payload["columns"], "ratio"])
     for row in payload["rows"]:
-        writer.writerow([*row, trust_word])
+        writer.writerow([*row, ratio])
     return buf.getvalue().encode("utf-8")

@@ -1,18 +1,10 @@
-"""how good a forecast is on rows it never saw: errors, an 80% band from validation residuals,
-and the trust verdict that tells the user when a forecast is not worth acting on"""
+"""forecast errors against naive, an 80% band from validation residuals, and history facts"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 import numpy as np
-
-# trust thresholds - from the plan agreed 2026-09-23, not yet measured against real outcomes
-BASELINE_RATIO = 0.9
-# no upper cap: a padded band is caught by the sharpness check, not by coverage
-COVERAGE_MIN = 0.65
-MIN_TEST_ROWS = 30
-MIN_TEST_STEPS = 13
 
 
 def wape(y, p) -> float:
@@ -129,11 +121,9 @@ def judge(
     metric: str = "wape",
     val_error: float | None = None,
 ) -> dict:
-    """the verdict on the untouched test split. accuracy and history decide `trusted`; the band
-    is judged apart in `band_ok`. every failed check is named with its numbers"""
+    """compare untouched test error with naive and report band and history facts"""
     checks = []
     ratio = model_error / baseline_error if baseline_error else float("inf")
-    passed = bool(ratio <= BASELINE_RATIO)
     accuracy = {
         "metric": metric,
         "model_error": model_error,
@@ -142,76 +132,55 @@ def judge(
         "baseline_error": baseline_error,
         "ratio": ratio,
         "improvement": 1 - ratio if np.isfinite(ratio) else None,
-        "passed": passed,
         "text": _accuracy_text(metric, model_error, baseline_error, ratio),
     }
     checks.append(
         {
-            "check": "beats the naive baseline",
+            "check": "naive baseline comparison",
             "group": "accuracy",
-            "passed": passed,
             "detail": f"error {model_error:.3g} vs baseline {baseline_error:.3g} "
-            f"(ratio {ratio:.2f}, needs <= {BASELINE_RATIO})",
+            f"(ratio {ratio:.2f})",
         }
     )
     has_band = band_coverage is not None and np.isfinite(band_coverage)
     if needs_band and not has_band:
         checks.append(
             {
-                "check": "band is calibrated",
+                "check": "band coverage",
                 "group": "band",
-                "passed": False,
                 "detail": "no band could be fitted",
             }
         )
     elif needs_band:
         checks.append(
             {
-                "check": "band is calibrated",
+                "check": "band coverage",
                 "group": "band",
-                "passed": bool(band_coverage >= COVERAGE_MIN),
-                "detail": f"80% band covered {band_coverage:.0%} of test rows "
-                f"(needs at least {COVERAGE_MIN:.0%})",
+                "detail": f"80% band covered {band_coverage:.0%} of test rows",
             }
         )
     if needs_band and band_width is not None and spread is not None:
-        # a band no narrower than the target's own 10-90% range says only "the usual range"
         checks.append(
             {
-                "check": "band is sharper than the data's own spread",
+                "check": "band width and target spread",
                 "group": "band",
-                "passed": bool(np.isfinite(band_width) and band_width < spread),
                 "detail": f"median 80% band {band_width:.3g} wide vs the target's own "
                 f"10-90% range {spread:.3g}",
             }
         )
-    enough = test_rows >= MIN_TEST_ROWS and (test_steps is None or test_steps >= MIN_TEST_STEPS)
-    steps = "" if test_steps is None else f", {test_steps} steps (needs {MIN_TEST_STEPS})"
+    steps = "" if test_steps is None else f", {test_steps} steps"
     checks.append(
         {
-            "check": "enough history to judge",
+            "check": "test history",
             "group": "history",
-            "passed": bool(enough),
-            "detail": f"{test_rows} test rows (needs {MIN_TEST_ROWS}){steps}",
+            "detail": f"{test_rows} test rows{steps}",
         }
     )
-    trusted = all(c["passed"] for c in checks if c["group"] != "band")
-    band_checks = [c for c in checks if c["group"] == "band"]
-    band_ok = all(c["passed"] for c in band_checks) if band_checks else None
-    failed = [c["check"] for c in checks if c["group"] != "band" and not c["passed"]]
-    if trusted:
-        summary = f"the forecast held up on data it never saw: {accuracy['text']}"
-    else:
-        summary = "do not act on this forecast - it failed: " + ", ".join(failed)
-        summary += f" ({accuracy['text']})"
-    if band_ok is False:
-        bad_band = ", ".join(c["check"] for c in band_checks if not c["passed"])
-        summary += f"; do not rely on its band - it failed: {bad_band}"
+    comparison = "better" if ratio < 1 else "worse"
+    summary = f"ratio {ratio:.2f}, {comparison} than naive: {accuracy['text']}"
     return {
-        "trusted": trusted,
         "summary": summary,
         "accuracy": accuracy,
-        "band_ok": band_ok,
         "checks": checks,
     }
 

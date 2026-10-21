@@ -208,8 +208,8 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-recipe-field .field-label { white-space: nowrap; }
 .forecast-recipe-field .field-value { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .forecast-verdict { padding: 8px 12px; border: 2px solid var(--grey-border); }
-.forecast-verdict.trusted { border-color: var(--lichen-deep); color: var(--lichen); }
-.forecast-verdict.warn { border-color: var(--stone-red); color: var(--stone-red-lift); }
+.forecast-verdict.better { border-color: #c7ed5f; color: #c7ed5f; }
+.forecast-verdict.worse { border-color: #ad796f; color: #ad796f; }
 .forecast-results .forecast-excluded-series { flex-shrink: 0; overflow-x: auto; text-overflow: clip; }
 .forecast-verdict-summary { font-weight: 600; }
 .forecast-results { flex: 1 1 auto; min-height: 0; }

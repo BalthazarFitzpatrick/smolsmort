@@ -193,7 +193,7 @@ def test_forecast_results_warned_about_excluded_series(tmp_path):
                     "series": [],
                     "bands": [],
                     "markers": [],
-                    "verdict": {"trusted": True},
+                    "verdict": {"accuracy": {"ratio": 0.95}},
                 }
             ),
         )
@@ -296,9 +296,8 @@ def test_forecast_regression_row_flow(tmp_path):
         page.wait_for_selector(f"#{TOPIC}-verdict:not(.hidden)")
         verdict_text = page.inner_text(f"#{TOPIC}-verdict")
         assert verdict_text.strip()
-        # a failing check names itself, whatever the fixture's actual quality turns out to be
-        if "warn" in (page.get_attribute(f"#{TOPIC}-verdict", "class") or ""):
-            assert ":" in verdict_text
+        assert "ratio " in verdict_text and "than naive" in verdict_text
+        assert page.locator(f"#{TOPIC}-verdict .forecast-verdict-check").count() > 0
 
         page.wait_for_function(
             f'document.querySelectorAll("#{TOPIC}-chart svg path.chart-band").length > 0',
@@ -511,7 +510,7 @@ def test_search_charts_accumulate_validation_generations_and_reset(tmp_path, top
                 json={
                     "state": snapshot["state"],
                     "generations": generations,
-                    "verdict": {"trusted": True},
+                    "verdict": {"accuracy": {"ratio": 0.95}},
                     "leaderboard": [],
                     "generation_curves": curves,
                 }
@@ -772,7 +771,7 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
                     "state": "done",
                     "generations": [],
                     "generation_curves": [],
-                    "verdict": {"trusted": True},
+                    "verdict": {"accuracy": {"ratio": 0.95}},
                     "leaderboard": snapshot["rows"],
                 }
             ),
@@ -1003,7 +1002,7 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
                 "spec": {"task": "regression"},
                 "budget": {"plateau": 2},
                 "stopped": "plateau" if state == "done" and run_id == live else run.get("stopped"),
-                "verdict": {"trusted": True} if state == "done" else None,
+                "verdict": {"accuracy": {"ratio": 0.95}} if state == "done" else None,
                 "generations": [
                     {
                         "generation": index,
@@ -1119,10 +1118,12 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
             page.locator(f"#{TOPIC}-run-stop").inner_text()
             == "no gain larger than the noise for 2 generations in a row"
         )
-        assert page.locator(f"#{TOPIC}-run-verdict").inner_text() == "trusted"
+        assert page.locator(f"#{TOPIC}-run-verdict").inner_text() == (
+            "ratio 0.95, better than naive"
+        )
         assert not page.locator(f"#{TOPIC}-search-status").is_visible()
         assert (
-            "done - trusted"
+            "done - ratio"
             not in page.locator('.tab-panel[data-panel="regression-search"]').inner_text()
         )
         assert page.locator(f"#{TOPIC}-search-progress").is_visible()
@@ -1196,7 +1197,7 @@ def test_forecast_controls_follow_the_shared_row_height(tmp_path, width):
                 json.dumps(
                     {
                         "state": "done",
-                        "verdict": {"trusted": True},
+                        "verdict": {"accuracy": {"ratio": 0.95}},
                         "stopped": "cancelled"
                         if run_id == cancelled
                         else "refit"
@@ -1234,7 +1235,7 @@ def test_forecast_controls_follow_the_shared_row_height(tmp_path, width):
                     "series": [{"id": "actual", "label": "actual", "values": [1, 2]}],
                     "bands": [],
                     "markers": [],
-                    "verdict": {"trusted": True},
+                    "verdict": {"accuracy": {"ratio": 0.95}},
                 }
             ),
         )
@@ -1630,7 +1631,7 @@ def mock_prepared_searches(page):
             "generations": [],
             "generation_curves": [],
             "leaderboard": [],
-            "verdict": {"trusted": True},
+            "verdict": {"accuracy": {"ratio": 0.95}},
         }
         route.fulfill(json={"run_id": run_id, "prepared": prepared})
 

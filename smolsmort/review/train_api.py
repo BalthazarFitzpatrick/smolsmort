@@ -373,9 +373,9 @@ class TrainApi:
     def start(self, payload: dict) -> dict:
         """clamp the options, apply them to the backend, and train on a background thread.
 
-        CLAMPED LIKE THE OLD POPUP: a learning rate is the one hyperparameter that can waste a
-        long run outright, so a value outside the range that ever makes sense is corrected rather
-        than trusted. a `name` saves the run's weights under it once it finishes.
+        clamped like the old popup: a learning rate is the one hyperparameter that can waste a
+        long run outright, so a value outside the range that ever makes sense is corrected before
+        training. a `name` saves the run's weights under it once it finishes.
         """
         if busy := self._sweeping():
             return busy
