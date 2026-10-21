@@ -137,7 +137,7 @@ def run_state(
         from smolsmort.forecast.views import multi_run_state
 
         alive = _alive(folder)
-        if status["state"] in ("starting", "running") and not alive:
+        if status["state"] in ("starting", "queued", "running") and not alive:
             status = {**status, "state": "failed", "reason": "the worker exited without reporting"}
         return {
             **multi_run_state(
@@ -183,7 +183,7 @@ def run_state(
             if curve["generation"] > cursor:
                 curves.append(curve)
     alive = _alive(folder)
-    if status["state"] in ("starting", "running") and not alive:
+    if status["state"] in ("starting", "queued", "running") and not alive:
         status = {"state": "failed", "reason": "the worker exited without reporting"}
     state = {
         **status,
@@ -314,7 +314,7 @@ def cancel_run(runs_root: Path, run_id: str) -> None:
     folder = run_folder(runs_root, run_id)
     (folder / "cancel").touch()
     status = json.loads((folder / "status.json").read_text())
-    if status["state"] not in ("starting", "running"):
+    if status["state"] not in ("starting", "queued", "running"):
         return
     from smolsmort.forecast.processes import stop_run_processes
 

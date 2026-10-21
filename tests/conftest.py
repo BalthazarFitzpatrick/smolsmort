@@ -10,6 +10,8 @@ late, because torch tests earlier in the same run had already initialised their 
 import os
 import sys
 
+import pytest
+
 # macos only: the clash is torch's bundled openmp against homebrew's libomp. linux (the ci image)
 # has one runtime, and single-threading every torch op there just made the suite slower
 if sys.platform == "darwin":
@@ -17,3 +19,8 @@ if sys.platform == "darwin":
     # single-threaded: allowing torch's openmp pool and xgboost's to both spin up threads
     # segfaults the process even with the duplicate-lib check disabled above
     os.environ.setdefault("OMP_NUM_THREADS", "1")
+
+
+@pytest.fixture(autouse=True)
+def isolate_forecast_run_lock(tmp_path, monkeypatch):
+    monkeypatch.setenv("SMOLSMORT_RUN_LOCK", str(tmp_path / "forecast.lock"))

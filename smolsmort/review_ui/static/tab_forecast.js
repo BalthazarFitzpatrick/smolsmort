@@ -1010,7 +1010,7 @@ class ForecastTopic {
       ? setTimeout(() => this.pollSearch(), 1000) : null;
   }
 
-  isRunning(run) { return ['starting', 'running'].includes(run.state); }
+  isRunning(run) { return ['starting', 'queued', 'running'].includes(run.state); }
 
   attachRun(id, kind) {
     this.currentRunId = id;
