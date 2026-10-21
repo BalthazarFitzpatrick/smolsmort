@@ -180,24 +180,40 @@ def _prep_entity(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[str, d
         f"CREATE OR REPLACE TEMP VIEW valid AS\nSELECT * FROM anchored WHERE {anchor_q} IS NOT NULL;"
     )
 
-    target_type = "VARCHAR" if spec.task == "classification" else "DOUBLE"
-    select_cols = [row_q, anchor_q, _quote(PREDICT)]
-    select_cols += [f"CAST({_quote(c)} AS VARCHAR) AS {_quote(c)}" for c in dims]
-    select_cols += [f"CAST({_quote(c)} AS DOUBLE) AS {_quote(c)}" for c in measures]
-    select_cols.append(f"CAST({target_q} AS {target_type}) AS {target_q}")
-    _run(f"CREATE OR REPLACE TEMP VIEW typed AS\nSELECT {', '.join(select_cols)} FROM valid;")
-
     as_of_value = None
-    if spec.task == "classification":
-        lower_sql = upper_sql = "CAST(NULL AS DOUBLE)"
-    elif spec.censor:
+    if spec.censor and spec.task != "classification":
         if spec.censor.as_of:
             as_of_sql = f"CAST({_literal(spec.censor.as_of)} AS DATE)"
             as_of_value = spec.censor.as_of
         else:
-            as_of_sql = f"(SELECT MAX({anchor_q}) FROM typed)"
-            as_of_value = con.execute(f"SELECT MAX({anchor_q}) FROM typed").fetchone()[0]
+            as_of_sql = f"(SELECT MAX({anchor_q}) FROM valid)"
+            as_of_value = con.execute(f"SELECT MAX({anchor_q}) FROM valid").fetchone()[0]
         unit_days = UNIT_DAYS[spec.censor.unit]
+
+    target_type = "VARCHAR" if spec.task == "classification" else "DOUBLE"
+    target_sql = f"CAST({target_q} AS {target_type})"
+    event_target = spec.censor is not None and spec.censor.event is not None
+    event_filter = ""
+    if event_target:
+        event_sql = f"CAST({target_q} AS DATE)"
+        # keep numeric targets and null open rows for the existing model and prediction paths
+        target_sql = (
+            f"CASE WHEN {event_sql} <= {as_of_sql} "
+            f"THEN date_diff('day', {anchor_q}, {event_sql}) / {unit_days} END"
+        )
+        event_filter = f"\nWHERE {event_sql} IS NULL OR {event_sql} >= {anchor_q}"
+    select_cols = [row_q, anchor_q, _quote(PREDICT)]
+    select_cols += [f"CAST({_quote(c)} AS VARCHAR) AS {_quote(c)}" for c in dims]
+    select_cols += [f"CAST({_quote(c)} AS DOUBLE) AS {_quote(c)}" for c in measures]
+    select_cols.append(f"{target_sql} AS {target_q}")
+    _run(
+        f"CREATE OR REPLACE TEMP VIEW typed AS\n"
+        f"SELECT {', '.join(select_cols)} FROM valid{event_filter};"
+    )
+
+    if spec.task == "classification":
+        lower_sql = upper_sql = "CAST(NULL AS DOUBLE)"
+    elif spec.censor:
         lower_sql = (
             f"CASE WHEN {target_q} IS NOT NULL THEN {target_q} "
             f"ELSE date_diff('day', {anchor_q}, {as_of_sql}) / {unit_days} END"
@@ -227,6 +243,7 @@ def _prep_entity(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[str, d
     source_rows = con.execute("SELECT count(*) FROM source").fetchone()[0]
     filtered_rows = con.execute("SELECT count(*) FROM filtered").fetchone()[0]
     valid_rows = con.execute("SELECT count(*) FROM valid").fetchone()[0]
+    rows = con.execute("SELECT count(*) FROM bounds").fetchone()[0]
     open_rows = con.execute(f"SELECT count(*) FROM bounds WHERE {target_q} IS NULL").fetchone()[0]
     predict_rows = con.execute(
         f"SELECT count(*) FROM read_parquet({_literal(predict_path)})"
@@ -238,12 +255,14 @@ def _prep_entity(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[str, d
         "source_rows": source_rows,
         "rows_after_where": filtered_rows,
         "dropped_null_anchor": filtered_rows - valid_rows,
-        "rows": valid_rows,
+        "rows": rows,
         "open_rows": open_rows,
-        "known_rows": valid_rows - open_rows,
+        "known_rows": rows - open_rows,
         "predict_rows": predict_rows,
         "as_of": str(as_of_value)[:10] if as_of_value is not None else None,
     }
+    if event_target:
+        summary["refused_event_before_start"] = valid_rows - rows
     return "\n\n".join(stmts), summary
 
 
