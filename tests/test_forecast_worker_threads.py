@@ -93,7 +93,7 @@ def test_worker_persists_threads_before_screen_and_recipe_refit(
     monkeypatch.setattr(worker, "load_workspace", load_workspace)
     monkeypatch.setattr(worker, "screen_families", screen_families)
     monkeypatch.setattr(
-        worker, "genome_from_dict", lambda data: SimpleNamespace(to_dict=lambda: data)
+        worker, "genome_from_dict", lambda data, **kwargs: SimpleNamespace(to_dict=lambda: data)
     )
     monkeypatch.setattr(worker, "finish", finish_recipe)
 

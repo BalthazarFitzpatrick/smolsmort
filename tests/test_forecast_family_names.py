@@ -11,6 +11,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+pytest.importorskip("duckdb")
+
 from smolsmort.forecast.candidate_worker import estimate_cost
 from smolsmort.forecast.features import family_aliases, family_name, row_features, split_family_name
 from smolsmort.forecast.pipeline import finish, genome_from_dict, load_workspace, make_genome, score
