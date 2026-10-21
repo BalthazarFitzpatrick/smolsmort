@@ -17,6 +17,7 @@ import numpy as np
 
 from smolsmort.forecast.pipeline import finish, genome_from_dict, load_workspace
 from smolsmort.forecast.requests import parse_request
+from smolsmort.forecast.screen import screen_families
 from smolsmort.forecast.search import Budget, check_validation_folds, search
 from smolsmort.forecast.spec import spec_from_dict
 from smolsmort.forecast.tables import write_table
@@ -136,6 +137,8 @@ def run(folder: Path) -> int:
                 "nthread": request.get("nthread") or os.cpu_count() or 1,
             }
         )
+        if ws.mode == "series":
+            job.save("screen.json", screen_families(ws, seed=budget.seed))
         warm = _warm_start(request.get("warm_from"))
         if request.get("recipe"):
             # a refit: the saved recipe, no search
