@@ -128,7 +128,9 @@ def _select_birth_families(ws):
             legacy.add(":".join(name.split(":")[:2]))
         elif (
             name == "season"
-            or name.startswith(("lag+", "ewm:", "measure:", "lead:", "dim:", "cal:"))
+            or name.startswith(
+                ("lag+", "ewm:", "measure:", "lead:", "dim:", "cal:", "mix:", "spread:")
+            )
             or (name.startswith("lag:") and ws.unit != "week")
         ):
             legacy.add(name)

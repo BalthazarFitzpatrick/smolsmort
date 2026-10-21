@@ -1,12 +1,23 @@
 """categorical inputs retain source-level detail without changing the output grain"""
 
+import csv
+import itertools
+import json
+import time
 from dataclasses import asdict, replace
+from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
+from smolsmort.forecast import pipeline
+from smolsmort.forecast.features import LAGS, series_features
+from smolsmort.forecast.pipeline import load_workspace, make_genome
 from smolsmort.forecast.prep import prepare
-from smolsmort.forecast.spec import FILES, Column, PrepSpec, SpecError
+from smolsmort.forecast.screen import screen_families
+from smolsmort.forecast.search import DEFAULTS, Budget, _select_birth_families, search
+from smolsmort.forecast.spec import FILES, SERIES, STEP, Column, PrepSpec, SpecError
 
 duckdb = pytest.importorskip("duckdb")
 
@@ -318,3 +329,268 @@ def test_parse_spec_accepts_inputs_only_in_series_mode(input_source, tmp_path, m
             _parse_spec(app, {"spec": data})
     else:
         assert _parse_spec(app, {"spec": data}).named("input") == ["site"]
+
+
+def make_input_panel():
+    steps = np.datetime64("2025-01-06") + np.arange(12) * np.timedelta64(7, "D")
+    spec = PrepSpec(
+        "synthetic.csv",
+        "series",
+        "regression",
+        (
+            Column("day", "time"),
+            Column("group", "dimension"),
+            Column("site", "input"),
+            Column("units", "target", "sum"),
+        ),
+        step="week",
+        horizon=2,
+    )
+    panel = {
+        SERIES: np.repeat(["a", "b"], len(steps)),
+        STEP: np.tile(steps, 2),
+        "group": np.repeat(["a", "b"], len(steps)),
+        "units": np.arange(len(steps) * 2, dtype=float) + 10,
+    }
+    scaffold = {
+        SERIES: np.repeat(["a", "b"], 2),
+        STEP: np.tile(steps[-1] + np.arange(1, 3) * np.timedelta64(7, "D"), 2),
+    }
+    records = [("a", 0, level, 10.0) for level in ("alpha", "beta", "charlie", "delta", "epsilon")]
+    records += [
+        ("b", 0, "zeta", 100.0),
+        ("a", 1, "alpha", 0.0),
+        ("a", 1, "zeta", 0.0),
+        ("a", 3, "alpha", 2.0),
+        ("a", 3, "zeta", 6.0),
+        ("a", 3, "epsilon", 2.0),
+        ("a", 4, "alpha", 2.0),
+        ("a", 4, "zeta", 3.0),
+        ("a", 4, "epsilon", 4.0),
+        ("a", 4, "other", 1.0),
+        ("a", 4, "new", 10.0),
+        ("b", 4, "new", 10_000.0),
+    ]
+    inputs = {
+        SERIES: np.array([row[0] for row in records]),
+        STEP: np.array([steps[row[1]] for row in records]),
+        "__column": np.full(len(records), "site"),
+        "__level": np.array([row[2] for row in records]),
+        "rows": np.ones(len(records), dtype=int),
+        "target": np.array([row[3] for row in records]),
+    }
+    return spec, panel, scaffold, inputs, panel[STEP] < steps[3]
+
+
+@pytest.mark.parametrize("bucket", [(1, 1), (2, 2)])
+def test_input_features_keep_grain_and_use_origin_lags(bucket):
+    spec, panel, scaffold, inputs, train = make_input_panel()
+    original = series_features(spec, panel, scaffold, bucket, "week", train)
+    frame = series_features(spec, panel, scaffold, bucket, "week", train, inputs=inputs)
+    for name in ("y", "series", "step", "origin", "future", "base"):
+        np.testing.assert_array_equal(getattr(frame, name), getattr(original, name))
+    assert set(frame.features.families) - set(original.features.families) == {
+        "mix:site",
+        "spread:site",
+    }
+    input_columns = [
+        index
+        for index, family in enumerate(frame.features.families)
+        if family in {"mix:site", "spread:site"}
+    ]
+    assert len(input_columns) == (6 + 2) * len(LAGS)
+    assert all(frame.features.types[index] == "q" for index in input_columns)
+    names = frame.features.names
+    origin = np.datetime64("2025-02-03")
+    row = np.flatnonzero((frame.series == "a") & (frame.origin == origin))[0]
+    expected = {
+        0: (0.1, 0.15, 0.75, 5.0, 0.325),
+        1: (0.2, 0.6, 0.2, 3.0, 0.44),
+        2: (np.nan, np.nan, np.nan, np.nan, np.nan),
+        3: (0.0, 0.0, 0.0, 2.0, 0.0),
+    }
+    columns = (
+        "mix:site:level:alpha",
+        "mix:site:level:zeta",
+        "mix:site:other",
+        "spread:site:count",
+        "spread:site:hhi",
+    )
+    for lag, values in expected.items():
+        actual = [
+            frame.features.x[row, names.index(f"{name}_lag_{bucket[1] + lag}")] for name in columns
+        ]
+        np.testing.assert_allclose(actual, values, rtol=1e-6, equal_nan=True)
+    other_series = np.flatnonzero((frame.series == "b") & (frame.origin == origin))[0]
+    assert frame.features.x[other_series, names.index(f"mix:site:other_lag_{bucket[1]}")] == 1
+
+
+def test_input_levels_freeze_globally_on_train_rows_with_name_ties():
+    spec, panel, scaffold, inputs, train = make_input_panel()
+    frame = series_features(spec, panel, scaffold, (1, 1), "week", train, inputs=inputs)
+    names = frame.features.names
+    selected = {
+        name.removeprefix("mix:site:level:").removesuffix("_lag_1")
+        for name in names
+        if name.startswith("mix:site:level:") and name.endswith("_lag_1")
+    }
+    assert selected == {"zeta", "alpha", "beta", "charlie", "delta"}
+    assert not any(":new_" in name or ":epsilon_" in name for name in names)
+    changed = {name: values.copy() for name, values in inputs.items()}
+    changed["target"][changed[STEP] >= np.datetime64("2025-01-27")] *= 1000
+    rebuilt = series_features(spec, panel, scaffold, (1, 1), "week", train, inputs=changed)
+    assert rebuilt.features.names == names
+
+
+def test_input_level_named_other_does_not_collide_with_other_bucket():
+    spec, panel, scaffold, inputs, train = make_input_panel()
+    inputs["__level"][inputs["__level"] == "zeta"] = "other"
+    frame = series_features(spec, panel, scaffold, (1, 1), "week", train, inputs=inputs)
+    assert "mix:site:level:other_lag_1" in frame.features.names
+    assert "mix:site:other_lag_1" in frame.features.names
+    assert len(frame.features.names) == len(set(frame.features.names))
+
+
+def test_input_features_stay_missing_beyond_an_ended_series():
+    spec, panel, scaffold, inputs, train = make_input_panel()
+    keep = (panel[SERIES] != "a") | (panel[STEP] <= np.datetime64("2025-02-03"))
+    panel = {name: values[keep] for name, values in panel.items()}
+    frame = series_features(spec, panel, scaffold, (1, 1), "week", train[keep], inputs=inputs)
+    ended_future = (frame.series == "a") & frame.future
+    assert ended_future.any()
+    values = frame.features.pick({"mix:site", "spread:site"})[0]
+    assert np.isnan(values[ended_future]).all()
+
+
+def test_workspace_freezes_input_levels_at_first_validation_fold(monkeypatch):
+    spec, _, _, _, _ = make_input_panel()
+    steps = np.datetime64("2025-01-06") + np.arange(54) * np.timedelta64(7, "D")
+    panel = {
+        SERIES: np.full(52, "a"),
+        STEP: steps[:52],
+        "group": np.full(52, "a"),
+        "units": np.arange(52, dtype=float) + 100,
+    }
+    inputs = {
+        SERIES: panel[SERIES],
+        STEP: panel[STEP],
+        "__column": np.full(52, "site"),
+        "__level": np.where(np.arange(52) < 26, "known", "unseen"),
+        "rows": np.ones(52, dtype=int),
+        "target": np.where(np.arange(52) < 26, 1.0, 100_000.0),
+    }
+    tables = {
+        "panel.parquet": panel,
+        "inputs.parquet": inputs,
+        "scaffold.parquet": {SERIES: np.full(2, "a"), STEP: steps[52:]},
+    }
+    monkeypatch.setattr(pipeline, "read_table", lambda path, **kwargs: tables[path.name])
+    workspace = load_workspace(spec, Path("synthetic"), {"step": "week"})
+    cutoff = workspace.series_folds[0][0]
+    assert cutoff == steps[26]
+    assert {"mix:site", "spread:site"} <= set(workspace.families)
+    for bucket, frame in workspace.frames.items():
+        assert not any(":level:unseen_" in name for name in frame.features.names)
+        rows = frame.origin >= cutoff
+        other = frame.features.names.index(f"mix:site:other_lag_{bucket[1]}")
+        np.testing.assert_array_equal(frame.features.x[rows, other], 1)
+
+
+def test_input_column_and_level_names_cannot_overwrite_another_family():
+    spec, panel, scaffold, inputs, train = make_input_panel()
+    spec = replace(spec, columns=(*spec.columns, Column("site:level:x", "input")))
+    first = {name: values.copy() for name, values in inputs.items()}
+    first["__level"] = np.full(len(inputs[STEP]), "x:level:y", dtype=object)
+    second = {name: values.copy() for name, values in inputs.items()}
+    second["__column"] = np.full(len(inputs[STEP]), "site:level:x", dtype=object)
+    second["__level"] = np.full(len(inputs[STEP]), "y", dtype=object)
+    # one source level per series and step matches the prepared table's unique grain
+    keep = np.array([0, 5])
+    combined = {name: np.concatenate([first[name][keep], second[name][keep]]) for name in inputs}
+    frame = series_features(spec, panel, scaffold, (1, 1), "week", train, inputs=combined)
+    assert len(frame.features.pick({"mix:site"})[1]) == 2 * len(LAGS)
+    assert len(frame.features.pick({"mix:site:level:x"})[1]) == 2 * len(LAGS)
+    assert len(frame.features.names) == len(set(frame.features.names))
+
+
+def test_input_families_are_available_to_births_without_screen_priors():
+    workspace = SimpleNamespace(
+        mode="series",
+        unit="week",
+        families=["lag+0", "mix:site", "spread:site", "mix:segment", "spread:segment"],
+    )
+    assert _select_birth_families(workspace) == sorted(workspace.families)
+
+
+def write_leading_input_source(folder):
+    rng = np.random.default_rng(42)
+    steps = np.datetime64("2023-01-02") + np.arange(156) * np.timedelta64(7, "D")
+    source = folder / "leading-input.csv"
+    with source.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["day", "group", "site", "noise_0", "noise_1", "noise_2", "units"])
+        for series in range(6):
+            shares = rng.uniform(0.1, 0.9, (len(steps) + 2, 4))
+            for step, date in enumerate(steps):
+                target = 100 + 100 * (shares[step, 0] - 0.5)
+                for levels in itertools.product((0, 1), repeat=4):
+                    weights = [
+                        shares[step + 2, col] if level == 0 else 1 - shares[step + 2, col]
+                        for col, level in enumerate(levels)
+                    ]
+                    writer.writerow(
+                        [
+                            str(date),
+                            f"series_{series}",
+                            *(f"s{level + 1}" for level in levels),
+                            target * np.prod(weights),
+                        ]
+                    )
+    return PrepSpec(
+        str(source),
+        "series",
+        "regression",
+        (
+            Column("day", "time"),
+            Column("group", "dimension"),
+            Column("site", "input"),
+            *(Column(f"noise_{index}", "input") for index in range(3)),
+            Column("units", "target", "sum"),
+        ),
+        step="week",
+        horizon=2,
+    )
+
+
+def test_leading_site_mix_ranks_near_top_and_wins_short_search(tmp_path):
+    pytest.importorskip("xgboost")
+    started = time.perf_counter()
+    spec = write_leading_input_source(tmp_path)
+    prepared = prepare(spec, tmp_path / "cache")
+    workspace = load_workspace(spec, prepared.folder, prepared.summary)
+    ranking = screen_families(workspace)
+    assert "mix:site" in [row["family"] for row in ranking[:3]]
+    priors = {row["family"]: row["p_on"] for row in ranking}
+    without_site = make_genome(
+        [name for name in workspace.families if name != "mix:site"],
+        workspace.profile["genes"]["objectives"][0],
+        DEFAULTS,
+    )
+    result = search(
+        workspace,
+        Budget(population=4, max_generations=2, time_cap=40, seed=42, nthread=1),
+        priors=priors,
+        warm=[without_site.to_dict()],
+    )
+    assert result["best"] is not None
+    assert "mix:site" in result["best"]["families"]
+    report = {
+        "screen_top_five": [
+            {key: row[key] for key in ("family", "score", "p_on")} for row in ranking[:5]
+        ],
+        "winner_families": result["best"]["families"],
+        "seconds": time.perf_counter() - started,
+    }
+    report_path = tmp_path / "input-search-report.json"
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(json.dumps({**report, "report_path": str(report_path)}))

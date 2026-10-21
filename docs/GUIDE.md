@@ -469,8 +469,15 @@ aggregation or the file re-runs prep and nothing stale survives.
 series specs may mark categorical columns as `input` to keep detail beyond the output grain.
 only `dimension` columns define series and scaffold rows; inputs never expand either table.
 prep writes `inputs.parquet` with each input's levels, row counts and the first target's
-aggregation per series and step; null levels become `(none)`. this table is kept for later
-feature generation. the role is unavailable in row mode.
+aggregation per series and step; null levels become `(none)`. the role is unavailable in row mode.
+
+each input adds two switchable feature families. `mix:<column>` holds target shares for up to
+five levels plus `other`; the top five are chosen across all series by target sum before the
+first validation fold, with ties by name. that list stays frozen: remaining and unseen levels
+go to `other`. `spread:<column>` holds the distinct level count and hhi (squared shares summed
+over all levels). shares use the sum of the per-level target aggregates as their total.
+steps without source rows stay missing; an observed zero total gives zero shares and hhi.
+both families use the same four lags as measures, reading only through the forecast origin.
 
 **series feature candidates.** each horizon bucket reads target and measure values only through
 its origin, `target step - bucket end`. the search can choose each family below independently:
