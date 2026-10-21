@@ -590,6 +590,16 @@ stores `finish_estimate_s`, `finish_reserve_s`, and `search_deadline` for inspec
 resume keeps the original run deadline and restores checkpointed candidates;
 time spent stopped still consumes the wall-clock budget.
 
+families run one at a time by default (`max_concurrent_families=1`); the models
+page keeps an opt-in parallel toggle. the run resolves `nthread` once (all logical
+cores when omitted), then uses it for screening, each sequential family, and final
+fits. `coordinator.json` and `result.json` record the machine, library versions,
+thread count, and phase history with finish start/end. each family's `wall_s`
+sums its actual search slices; `candidate_s` sums candidate fit timings. parallel
+families overlap, so their summed wall time can exceed the run's elapsed time.
+if a crash loses a slice's stop timestamp, its `wall_s` and the family total are
+`null`; resume does not count downtime as fitting time.
+
 forecast runs share an exclusive lock, so searches, warm starts, and refits wait
 in `queued` state while another run holds it. a new run's budget starts after
 it acquires the lock; `coordinator.json` records the wait as `queued_s`.

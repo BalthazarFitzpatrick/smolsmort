@@ -1,12 +1,14 @@
 """ridge transforms, closed-form coefficients and production family seams"""
 
 import json
+from contextlib import contextmanager
 
 import numpy as np
 import pytest
 from forecast_fixtures import write_panel
 
 from smolsmort.forecast.families import get_family
+from smolsmort.forecast.families import ridge as ridge_module
 from smolsmort.forecast.model import ModelError
 from smolsmort.forecast.pipeline import load_workspace, make_genome, score
 from smolsmort.forecast.prep import prepare
@@ -68,6 +70,33 @@ def test_recovers_coefficients_and_unpenalised_intercept(family):
     np.testing.assert_allclose(fitted.predict(x), y, rtol=0, atol=1e-6)
     shrunk = family.fit(x, y=np.full(200, 12.0), params={"alpha": 1e4})
     np.testing.assert_array_equal(shrunk.predict(x), 12.0)
+
+
+def test_fit_limits_blas_threads(family, monkeypatch):
+    calls = []
+    active = False
+    solve = np.linalg.solve
+
+    @contextmanager
+    def limit_threads(nthread):
+        nonlocal active
+        calls.append(nthread)
+        active = True
+        try:
+            yield
+        finally:
+            active = False
+
+    def solve_inside_limit(*args):
+        assert active
+        return solve(*args)
+
+    monkeypatch.setattr(ridge_module, "threadpool_limits", limit_threads)
+    monkeypatch.setattr(ridge_module.np.linalg, "solve", solve_inside_limit)
+    fitted = family.fit([[1], [2], [3]], y=[2, 4, 6], nthread=7)
+    assert calls == [7]
+    assert not active
+    assert np.isfinite(fitted.predict([[4]])).all()
 
 
 def test_deterministic_with_missing_categories_and_row_order(family):

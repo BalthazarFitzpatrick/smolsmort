@@ -839,6 +839,7 @@ def test_posted_multi_run_finishes_reports_families_and_lists_as_multi(
     payload = make_payload(
         families=[{"name": name} for name in names],
         time_budget_s=90 if all_available else 60,
+        max_concurrent_families=4,
         nthread=4,
     )
     started = post(app, payload=payload)

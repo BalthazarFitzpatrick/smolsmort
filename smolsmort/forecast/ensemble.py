@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -43,6 +44,8 @@ def run(folder, parent_pid):
     watch_parent(parent_pid)
     job = _Run(folder)
     request = read_json(folder / "request.json")
+    coordinator = read_json(folder / "coordinator.json")
+    nthread = coordinator.get("nthread") or request.get("nthread") or os.cpu_count() or 1
     spec = spec_from_dict(request["spec"])
     ws = load_workspace(
         spec,
@@ -53,7 +56,6 @@ def run(folder, parent_pid):
     ranked = read_json(folder / "finalists.json")
     winner = ranked[0]
     genome = genome_from_dict(winner["genome"])
-    nthread = request.get("nthread") or 1
     prediction_cache = {}
     importance_cache = {}
     final = finish(
@@ -107,7 +109,7 @@ def run(folder, parent_pid):
         recipe["members"] = [entry["family"] for entry in members]
         recipe["genomes"] = [entry["genome"] for entry in members]
     job.save("recipe.json", recipe)
-    states = read_json(folder / "coordinator.json")["families"]
+    states = coordinator["families"]
     summary["families"] = {
         name: {
             "fitness": status.get("best_error"),
