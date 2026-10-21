@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from threadpoolctl import threadpool_limits
 
 from smolsmort.forecast.families.base import Param
 from smolsmort.forecast.model import ModelError
@@ -131,11 +132,12 @@ class RidgeFamily:
         center, target_mean = design.mean(axis=0), float(target.mean())
         centered = design - center
         # centering solves the unpenalised intercept outside the ridge system
-        gram = centered.T @ centered
-        gram.flat[:: gram.shape[0] + 1] += alpha
-        try:
-            fitted.coefficients = np.linalg.solve(gram, centered.T @ (target - target_mean))
-        except np.linalg.LinAlgError as exc:
-            raise ModelError("ridge could not solve the regularised system") from exc
-        fitted.intercept = target_mean - float(center @ fitted.coefficients)
+        with threadpool_limits(nthread):
+            gram = centered.T @ centered
+            gram.flat[:: gram.shape[0] + 1] += alpha
+            try:
+                fitted.coefficients = np.linalg.solve(gram, centered.T @ (target - target_mean))
+            except np.linalg.LinAlgError as exc:
+                raise ModelError("ridge could not solve the regularised system") from exc
+            fitted.intercept = target_mean - float(center @ fitted.coefficients)
         return fitted

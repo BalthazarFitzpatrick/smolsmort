@@ -1324,6 +1324,7 @@ dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pillow" },
+    { name = "threadpoolctl" },
     { name = "ui-base" },
 ]
 
@@ -1370,6 +1371,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.0" },
     { name = "pillow", specifier = ">=11.0" },
     { name = "statsforecast", marker = "extra == 'stats'", specifier = ">=2.1" },
+    { name = "threadpoolctl", specifier = ">=3.1" },
     { name = "torch", marker = "extra == 'coreml'", specifier = ">=2.0" },
     { name = "torch", marker = "extra == 'vision'", specifier = ">=2.0" },
     { name = "ui-base", git = "https://github.com/BalthazarFitzpatrick/smortui.git?rev=7817ce17bd4ad44caabafe03e912a8159bdeddd2" },

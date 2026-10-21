@@ -31,6 +31,17 @@ def read_json(path):
     return json.loads(path.read_text())
 
 
+@pytest.fixture(autouse=True)
+def stub_machine_probe(monkeypatch):
+    from smolsmort.forecast import coordinator
+
+    monkeypatch.setattr(
+        coordinator,
+        "describe_machine",
+        lambda threads, cap: {"nthread": threads, "max_concurrent_families": cap},
+    )
+
+
 @pytest.fixture
 def tunable_race(tmp_path, monkeypatch):
     from smolsmort.forecast import coordinator
@@ -465,6 +476,47 @@ def test_recovery_reconciles_worker_exit_before_coordinator_save(
     assert result["families"]["ridge"]["generation"] == (2 if worker_reason == "time cap" else 1)
 
 
+@pytest.mark.parametrize("recorded_end", [100.25, None])
+def test_recovery_never_counts_downtime_as_family_wall_time(tunable_race, tmp_path, recorded_end):
+    race = tunable_race
+    race.run(["theta"], cap=1)
+    saved = read_json(tmp_path / "coordinator.json")
+    family = saved["families"]["theta"]
+    family.update(state="running", pid=None)
+    family["slice_history"] = [{"phase": "broad", "started_at": 100}]
+    race.save("coordinator.json", saved)
+    race.save(
+        "families/theta/status.json",
+        {
+            "state": "done",
+            "reason": "single candidate",
+            "started_at": 100.01,
+            "ended_at": recorded_end,
+        },
+    )
+    race.clock[0] = 120
+    result = race.run(["theta"], cap=1)
+    expected_wall = 0.25 if recorded_end is not None else None
+    assert result["families"]["theta"]["wall_s"] == expected_wall
+    assert result["families"]["theta"]["slice_history"][-1]["ended_at"] == recorded_end
+    assert read_json(tmp_path / "result.json")["families"]["theta"]["wall_s"] == expected_wall
+
+
+def test_family_candidate_time_includes_sample_and_timeout_attempts(tunable_race, tmp_path):
+    race = tunable_race
+    race.run(["theta"], cap=1)
+    checkpoint = read_json(tmp_path / "families/theta/checkpoint.json")
+    checkpoint["candidate_times"] = [
+        {"elapsed_s": 0.01, "note": "sample"},
+        {"elapsed_s": 0.02, "note": "too slow"},
+        {"elapsed_s": 0.03},
+    ]
+    race.save("families/theta/checkpoint.json", checkpoint)
+    race.run(["theta"], cap=1)
+    summary = read_json(tmp_path / "result.json")["families"]["theta"]
+    assert summary["candidate_s"] == pytest.approx(0.06)
+
+
 def test_cancellation_stops_leftover_workers(tunable_race):
     race = tunable_race
     record_status = race.job.status
@@ -486,7 +538,7 @@ def test_cancellation_stops_leftover_workers(tunable_race):
 
 def test_v2_control_defaults():
     request = parse_request(make_request())
-    assert request["max_concurrent_families"] == 4
+    assert request["max_concurrent_families"] == 1
     assert request["candidate_limit_fraction"] == 0.25
 
 
@@ -517,7 +569,7 @@ def test_invalid_candidate_limit_fraction_is_rejected(value):
         parse_request(make_request(candidate_limit_fraction=value))
 
 
-@pytest.mark.parametrize("concurrency,fraction", [(1, 1), (2, 0.01), (8, 0.5)])
+@pytest.mark.parametrize("concurrency,fraction", [(1, 1), (2, 0.01), (4, 0.25), (8, 0.5)])
 def test_valid_coordinator_controls_are_retained(concurrency, fraction):
     request = parse_request(
         make_request(max_concurrent_families=concurrency, candidate_limit_fraction=fraction)
@@ -540,13 +592,23 @@ def test_cost_calibration_scales_current_population_and_retains_broad_baseline(t
 
     target = tmp_path / "families" / "xgboost"
     target.mkdir(parents=True)
-    entries = [{"fitness": 0.5, "families": 1, "phase": "broad", "elapsed_s": 10, "cost_hint": 20}]
+    entries = [
+        {
+            "fitness": 0.5,
+            "families": 1,
+            "phase": "broad",
+            "elapsed_s": 10,
+            "cost_hint": 20,
+            "nthread": 8,
+        }
+    ]
     checkpoint = {"entries": entries, "cost_hints": {"a": 100, "b": 200}}
     (target / "checkpoint.json").write_text(json.dumps(checkpoint))
     states = {"xgboost": {"state": "paused"}}
     calibration = {}
     calibrate_families(tmp_path, states, calibration, remaining_s=90)
     assert calibration["xgboost"]["seconds_per_cost"] == 0.5
+    assert calibration["xgboost"]["nthread"] == 8
     assert states["xgboost"]["seconds_per_candidate"] == 75
     assert states["xgboost"]["candidates_expected"] == 1
     assert states["xgboost"]["improvement_per_second"] == 0
@@ -568,6 +630,7 @@ def test_cost_calibration_scales_current_population_and_retains_broad_baseline(t
     calibrate_families(tmp_path, states, calibration, remaining_s=90)
     assert calibration["xgboost"]["broad_baseline"] == 0.5
     assert calibration["xgboost"]["measured_seconds"] == 19
+    assert calibration["xgboost"]["nthread"] == 8
     assert states["xgboost"]["seconds_per_candidate"] == 7.5
     assert states["xgboost"]["candidates_expected"] == 12
     assert states["xgboost"]["improvement_per_second"] == pytest.approx(0.3 / 19)
@@ -646,7 +709,11 @@ def test_speed_ranking_prefers_gain_rate_then_candidate_speed():
     ]
 
 
-def test_family_queue_fills_freed_slots_and_records_wave_slices(tmp_path, monkeypatch):
+@pytest.mark.parametrize("cap", [1, 2])
+@pytest.mark.parametrize("requested_threads", [None, 4])
+def test_family_queue_fills_freed_slots_and_records_wave_slices(
+    tmp_path, monkeypatch, cap, requested_threads
+):
     from smolsmort.forecast import coordinator
 
     clock = [100.0]
@@ -661,6 +728,18 @@ def test_family_queue_fills_freed_slots_and_records_wave_slices(tmp_path, monkey
 
     class QueuedProcess:
         def __init__(self, command, **kwargs):
+            if command[2] == "smolsmort.forecast.ensemble":
+                self.name = "finish"
+                self.pid = 2000
+                self.returncode = 0
+                state = read_json(tmp_path / "coordinator.json")
+                assert state["nthread"] == 4
+                assert kwargs["env"]["OMP_NUM_THREADS"] == "4"
+                assert state["phase_history"][-1]["phase"] == "finish_start"
+                clock[0] += 0.25
+                save_json("finish_complete.json", {})
+                save_json("result.json", {"families": {name: {"fitness": 0.2} for name in names}})
+                return
             self.name = command[-1]
             target = tmp_path / "families" / self.name
             self.allocation = read_json(target / "slice.json")
@@ -669,7 +748,10 @@ def test_family_queue_fills_freed_slots_and_records_wave_slices(tmp_path, monkey
             self.returncode = None
             self.observed_threads = set()
             active = sum(process.poll() is None for process in processes)
-            assert active < 2
+            assert active < cap
+            if cap == 1:
+                assert self.allocation["nthread"] == 4
+                assert kwargs["env"]["OMP_NUM_THREADS"] == "4"
             processes.append(self)
             launched.append((self.name, self.allocation["phase"], self.started))
 
@@ -732,12 +814,12 @@ def test_family_queue_fills_freed_slots_and_records_wave_slices(tmp_path, monkey
             return self.returncode
 
     monkeypatch.setattr(coordinator.time, "time", lambda: clock[0])
+    monkeypatch.setattr(coordinator.os, "cpu_count", lambda: 4)
     monkeypatch.setattr(coordinator.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(
         coordinator.time, "sleep", lambda duration: clock.__setitem__(0, clock[0] + duration)
     )
     monkeypatch.setattr(coordinator.subprocess, "Popen", QueuedProcess)
-    save_json("finish_complete.json", {})
     job = SimpleNamespace(
         cancelled=False,
         save=save_json,
@@ -747,7 +829,9 @@ def test_family_queue_fills_freed_slots_and_records_wave_slices(tmp_path, monkey
     result = coordinator.launch_families(
         tmp_path,
         make_request(
-            families=[{"name": name} for name in names], max_concurrent_families=2, nthread=4
+            families=[{"name": name} for name in names],
+            nthread=requested_threads,
+            **({"max_concurrent_families": cap} if cap != 1 else {}),
         ),
         job,
     )
@@ -755,7 +839,10 @@ def test_family_queue_fills_freed_slots_and_records_wave_slices(tmp_path, monkey
     assert {name for name, started in broad} == set(names)
     start_times = dict(broad)
     assert start_times["lightgbm"] >= start_times["snaive"] + 1
-    assert start_times["lightgbm"] < start_times["xgboost"] + 5
+    if cap == 2:
+        assert start_times["lightgbm"] < start_times["xgboost"] + 5
+    else:
+        assert start_times["lightgbm"] >= start_times["xgboost"] + 5
     assert (
         max(
             sum(
@@ -764,7 +851,7 @@ def test_family_queue_fills_freed_slots_and_records_wave_slices(tmp_path, monkey
             )
             for process in processes
         )
-        <= 2
+        <= cap
     )
     for name, state in result["families"].items():
         history = state["slice_history"]
@@ -775,16 +862,20 @@ def test_family_queue_fills_freed_slots_and_records_wave_slices(tmp_path, monkey
             assert allocation["slice_s"] == pytest.approx(
                 allocation["deadline"] - allocation["started_at"]
             )
+            assert allocation["wall_s"] == pytest.approx(
+                allocation["ended_at"] - allocation["started_at"]
+            )
+            assert allocation["wall_s"] >= durations[name]
         assert (tmp_path / "families" / name / "thread.json").exists()
         checkpoint = read_json(tmp_path / "families" / name / "checkpoint.json")
         assert all(1 <= entry["nthread"] <= 4 for entry in checkpoint["entries"])
-    assert any(len(process.observed_threads) > 1 for process in processes)
+    assert any(len(process.observed_threads) > 1 for process in processes) == (cap == 2)
     surviving = [
         process
         for process in processes
         if process.name == "xgboost" and process.allocation["phase"] == "broad"
     ]
-    assert surviving[0].observed_threads == {2, 4}
+    assert surviving[0].observed_threads == ({2, 4} if cap == 2 else {4})
     assert any(
         any(state.get("phase") == "broad" for state in status.get("families", {}).values())
         for status in statuses
@@ -804,6 +895,39 @@ def test_family_queue_fills_freed_slots_and_records_wave_slices(tmp_path, monkey
         assert measured["seconds_per_cost"] == pytest.approx(durations[name])
         assert measured["broad_baseline"] == pytest.approx(0.2)
         assert measured["measured_seconds"] > 0
+        assert 1 <= measured["nthread"] <= 4
+    state = read_json(tmp_path / "coordinator.json")
+    final = read_json(tmp_path / "result.json")
+    assert state["nthread"] == 4
+    assert (
+        final["machine"]
+        == state["machine"]
+        == {
+            "nthread": 4,
+            "max_concurrent_families": cap,
+        }
+    )
+    assert final["phase_history"] == state["phase_history"]
+    assert [item["phase"] for item in state["phase_history"]] == [
+        "broad",
+        "halving",
+        "deep",
+        "finish",
+        "finish_start",
+        "finish_end",
+    ]
+    assert state["phase_history"][-1]["started_at"] == clock[0]
+    assert final["elapsed"] == result["elapsed"] == clock[0] - 100
+    for name, summary in final["families"].items():
+        assert summary["fitness"] == 0.2
+        assert summary["wall_s"] == sum(
+            item["wall_s"] for item in state["families"][name]["slice_history"]
+        )
+        assert summary["candidate_s"] == durations[name]
+        if cap == 1:
+            assert summary["nthread"] == 4
+    if cap == 1:
+        assert sum(summary["wall_s"] for summary in final["families"].values()) <= final["elapsed"]
 
 
 def test_immediate_resume_waits_for_orphan_before_reusing_worker_slot(tmp_path, monkeypatch):

@@ -19,7 +19,7 @@ class ForecastModels {
       minutes: Number.isFinite(saved.minutes) && saved.minutes >= 1 && saved.minutes <= 1440
         ? saved.minutes : 20,
       // parallel is the default; only an explicit off is remembered as off
-      parallel: saved.parallel !== false,
+      parallel: saved.parallel === true,
       atOnce: Number.isInteger(saved.atOnce) && saved.atOnce >= 1 ? saved.atOnce : 4,
     };
   }
