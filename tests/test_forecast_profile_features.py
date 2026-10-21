@@ -15,8 +15,10 @@ from smolsmort.forecast.features import (
     ROLL_STATS,
     WINDOWS,
     buckets_for,
+    family_aliases,
     row_features,
     series_features,
+    split_family_name,
     step_index,
 )
 from smolsmort.forecast.prep import prepare
@@ -112,12 +114,12 @@ def test_row_features_offer_families_and_freeze_levels_on_train(rows):
     spec, table, train = rows
     features = row_features(spec, table, train)
     families = set(features.families)
-    assert {"dim:branch", "freq:branch", "measure:size", "log:size", "date:week"} <= families
-    assert "date:trend" in families
+    assert {"branch:dim", "branch:freq", "size:measure", "size:log", "created:cal:week"} <= families
+    assert "created:cal:trend" in families
     changed = {k: v.copy() for k, v in table.items()}
     changed["branch"] = changed["branch"].astype(object)
     changed["branch"][~train] = "brand new"
-    codes = row_features(spec, changed, train).pick({"dim:branch"})[0][:, 0]
+    codes = row_features(spec, changed, train).pick({"branch:dim"})[0][:, 0]
     assert np.isnan(codes[~train]).all() and np.isfinite(codes[train]).all()
 
 
@@ -226,13 +228,16 @@ def test_each_daily_feature_uses_only_positions_through_origin(daily, bucket):
     spec, table, scaffold, train = daily
     before = series_features(spec, table, scaffold, bucket, "day", train, period=7)
     names, families = before.features.names, before.features.families
-    assert {f"lag+{j}" for j in range(4)} <= set(families)
+    assert {f"units@day:lag+{j}" for j in range(4)} <= set(families)
     new = [
         i
         for i, family in enumerate(families)
-        if family.startswith("lag:")
-        or (family.startswith("roll:") and family.rsplit(":", 1)[1] in LEGACY_ROLL_STATS)
-        or family == "season"
+        if split_family_name(family)[2].startswith("lag:")
+        or (
+            split_family_name(family)[2].startswith("roll:")
+            and family.rsplit(":", 1)[1] in LEGACY_ROLL_STATS
+        )
+        or family == "units@day:season"
     ]
     assert new
     for row in np.flatnonzero(~before.future):
@@ -240,12 +245,16 @@ def test_each_daily_feature_uses_only_positions_through_origin(daily, bucket):
         origin = target - bucket[1]
         for col in new:
             name, family = names[col], families[col]
-            if family.startswith("lag:") or family == "season":
-                lag = int(family.split(":")[1]) if family != "season" else 7
+            if split_family_name(family)[2].startswith("lag:") or family == "units@day:season":
+                lag = (
+                    int(split_family_name(family)[2].split(":")[1])
+                    if family != "units@day:season"
+                    else 7
+                )
                 assert lag >= bucket[1]
                 expected = table["units"][target - lag] if target >= lag else np.nan
             else:
-                window = int(family.split(":")[1])
+                window = int(split_family_name(family)[2].split(":")[1])
                 seen = table["units"][max(0, origin - window + 1) : origin + 1]
                 stat = name.rsplit("_", 1)[1]
                 expected = (
@@ -285,11 +294,13 @@ def test_step_families_and_missing_genome_families(daily, unit, windows, lags):
         scaffold = {STEP: np.array([], dtype="datetime64[D]"), SERIES: np.array([], dtype=str)}
     frame = series_features(spec, table, scaffold, (1, 1), unit, train)
     families = set(frame.features.families)
-    assert {f"roll:{w}:{stat}" for w in windows for stat in ROLL_STATS} == {
-        f for f in families if f.startswith("roll:")
+    assert {f"units@day:roll:{w}:{stat}" for w in windows for stat in ROLL_STATS} == {
+        f for f in families if split_family_name(f)[2].startswith("roll:")
     }
-    assert {f"lag:{k}" for k in lags} == {f for f in families if f.startswith("lag:")}
-    assert frame.features.pick({"lag+0", "absent", "roll:999"})[1] == ["lag_1"]
+    assert {f"units@day:lag:{k}" for k in lags} == {
+        f for f in families if split_family_name(f)[2].startswith("lag:")
+    }
+    assert frame.features.pick({"units@day:lag+0", "absent", "units@day:roll:999"})[1] == ["lag_1"]
 
 
 def test_daily_families_are_capped_by_training_history(daily):
@@ -297,32 +308,40 @@ def test_daily_families_are_capped_by_training_history(daily):
     train = np.arange(len(table[STEP])) < 20
     frame = series_features(spec, table, scaffold, (2, 4), "day", train)
     families = set(frame.features.families)
-    assert {f for f in families if f.startswith("roll:")} == {
-        f"roll:{w}:{stat}" for w in (7, 14) for stat in ROLL_STATS
+    assert {f for f in families if split_family_name(f)[2].startswith("roll:")} == {
+        f"units@day:roll:{w}:{stat}" for w in (7, 14) for stat in ROLL_STATS
     }
-    assert {f for f in families if f.startswith("lag:")} == {"lag:7", "lag:14"}
+    assert {f for f in families if split_family_name(f)[2].startswith("lag:")} == {
+        "units@day:lag:7",
+        "units@day:lag:14",
+    }
 
 
 def test_supplied_periods_become_independent_absolute_families(daily):
     spec, table, scaffold, train = daily
     frame = series_features(spec, table, scaffold, (2, 4), "day", train, period=7, periods=(7, 52))
     families = set(frame.features.families)
-    assert {"lag+3", "season", "lag:7", "lag:52"} <= families
-    for family in ("lag+3", "season", "lag:7"):
+    assert {
+        "units@day:lag+3",
+        "units@day:season",
+        "units@day:lag:7",
+        "units@day:lag:52",
+    } <= families
+    for family in ("units@day:lag+3", "units@day:season", "units@day:lag:7"):
         column = frame.features.pick({family})[0][:, 0]
-        np.testing.assert_array_equal(column, frame.features.pick({"lag:7"})[0][:, 0])
+        np.testing.assert_array_equal(column, frame.features.pick({"units@day:lag:7"})[0][:, 0])
 
 
 def test_weekly_legacy_genomes_keep_their_column_names_and_order(panel):
     spec, table, scaffold, train, _ = panel
     for bucket in buckets_for(spec.horizon):
         frame = series_features(spec, table, scaffold, bucket, "week", train, period=52)
-        assert {f for f in frame.features.families if f.startswith("roll:")} == {
-            f"roll:{w}:{stat}" for w in WINDOWS for stat in ROLL_STATS
-        }
-        assert {f for f in frame.features.families if f.startswith("ewm:")} == {
-            f"ewm:{a}" for a in ALPHAS
-        }
+        assert {
+            f for f in frame.features.families if split_family_name(f)[2].startswith("roll:")
+        } == {f"units@day:roll:{w}:{stat}" for w in WINDOWS for stat in ROLL_STATS}
+        assert {
+            f for f in frame.features.families if split_family_name(f)[2].startswith("ewm:")
+        } == {f"units@day:ewm:{a}" for a in ALPHAS}
         expected = [f"lag_{bucket[1] + j}" for j in range(4)] + ["lag_52"]
         expected += [f"roll{w}_{stat}" for w in WINDOWS for stat in ("mean", "std", "max", "zeros")]
         expected += [f"ewm{a}" for a in ALPHAS]
@@ -340,4 +359,5 @@ def test_weekly_legacy_genomes_keep_their_column_names_and_order(panel):
             "cal:month",
             "cal:quarter",
         }
-        assert frame.features.pick(old_families)[1] == expected
+        aliases = family_aliases(spec, old_families)
+        assert frame.features.pick({aliases[name] for name in old_families})[1] == expected

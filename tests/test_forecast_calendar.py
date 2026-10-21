@@ -14,7 +14,7 @@ import pytest
 from smolsmort.forecast import features
 from smolsmort.forecast.spec import SERIES, STEP, Column, PrepSpec, spec_from_dict
 
-NEW_FAMILIES = {"cal:cyclic", "cal:dom", "cal:holiday"}
+NEW_FAMILIES = {"day:cal:cyclic", "day:cal:dom", "day:cal:holiday"}
 
 
 def make_spec(unit="day", country=None):
@@ -130,17 +130,21 @@ def test_calendar_features_depend_only_on_target_step(country, bucket):
     changed["units"] = np.linspace(-1e6, 1e6, 100)
     changed["orders"] = np.full(100, 1e9)
     after = features.series_features(spec, changed, scaffold, bucket, "day", train, periods=())
-    families = {f for f in before.features.families if f.startswith("cal:")}
+    families = {
+        f for f in before.features.families if features.split_family_name(f)[2].startswith("cal:")
+    }
     np.testing.assert_array_equal(
         before.features.pick(families)[0], after.features.pick(families)[0]
     )
-    expected = features._series_calendar(before.step, "day", country)
+    expected = features._series_calendar(before.step, "day", country, clock="day")
     for name, (family, values) in expected.items():
         assert family in families
         np.testing.assert_allclose(
             before.features.x[:, before.features.names.index(name)], values, atol=1e-7
         )
-    assert not np.array_equal(before.features.pick({"lag+0"})[0], after.features.pick({"lag+0"})[0])
+    assert not np.array_equal(
+        before.features.pick({"units@day:lag+0"})[0], after.features.pick({"units@day:lag+0"})[0]
+    )
 
 
 def test_holiday_flags_and_distances_match_the_library_across_years():

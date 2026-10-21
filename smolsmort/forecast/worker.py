@@ -182,8 +182,8 @@ def run(folder: Path) -> int:
                 ws,
                 budget,
                 warm=warm,
-                priors=read_priors(folder) if ws.mode == "series" else None,
-                top_families=read_top_families(folder) if ws.mode == "series" else None,
+                priors=read_priors(folder, spec) if ws.mode == "series" else None,
+                top_families=read_top_families(folder, spec) if ws.mode == "series" else None,
                 on_event=job.event,
                 on_best=job.record_best,
                 on_generation=job.record_generation,
@@ -209,7 +209,7 @@ def run(folder: Path) -> int:
         if result.get("finalized"):
             final = json.loads((folder / "result.json").read_text())
         else:
-            genome = genome_from_dict({**result["best"], "transform": transform})
+            genome = genome_from_dict({**result["best"], "transform": transform}, spec=spec)
             result["best"] = genome.to_dict()
             final = finish(ws, genome, nthread=budget.nthread, importance_cache={})
             _write_result(folder, spec, result, final)

@@ -61,7 +61,7 @@ worker.read_priors = lambda *args: None
 worker.read_top_families = lambda *args: None
 worker.search = search
 launcher.launch_families = search
-worker.genome_from_dict = lambda data: SimpleNamespace(to_dict=lambda: data)
+worker.genome_from_dict = lambda data, *, spec: SimpleNamespace(to_dict=lambda: data)
 worker.finish = finish
 worker._write_result = write_result
 raise SystemExit(worker.run(folder))

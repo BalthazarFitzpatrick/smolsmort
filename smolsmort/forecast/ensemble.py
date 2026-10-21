@@ -51,6 +51,10 @@ def run(folder, parent_pid):
         transform=request.get("transform", "none"),
     )
     ranked = read_json(folder / "finalists.json")
+    ranked = [
+        {**entry, "genome": genome_from_dict(entry["genome"], spec=spec).to_dict()}
+        for entry in ranked
+    ]
     winner = ranked[0]
     genome = genome_from_dict(winner["genome"])
     nthread = request.get("nthread") or 1

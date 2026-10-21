@@ -269,13 +269,13 @@ def test_search_records_history_failure_and_continues(workspace):
     from smolsmort.forecast.search import Budget, search
 
     ws = workspace
-    ws.families = ["lag+0"]
+    ws.families = ["y@day:lag+0"]
     ws.profile["genes"]["objectives"] = ["squared"]
     cutoff = ws.frames[(1, 1)].origin[ws.series_masks[(1, 1)]["val"]].min()
     keep = ws.panel[STEP] >= cutoff
     ws.panel = {name: values[keep] for name, values in ws.panel.items()}
-    genome = make_genome(["lag+0"], "squared", {}, family="ets")
-    baseline = make_genome(["lag+0"], "squared", {}, family="snaive")
+    genome = make_genome(["y@day:lag+0"], "squared", {}, family="ets")
+    baseline = make_genome(["y@day:lag+0"], "squared", {}, family="snaive")
     result = search(
         ws, Budget(population=2, max_generations=1), warm=[genome.to_dict(), baseline.to_dict()]
     )

@@ -114,7 +114,9 @@ def test_finish_persists_all_family_winners_and_reuses_final_fits(
         y=y,
         step=position,
         series=np.zeros(len(y), dtype=int),
-        features=Features(x, ["lag_1", "lag_2"], ["q", "q"], ["lag", "lag"]),
+        features=Features(
+            x, ["lag_1", "lag_2"], ["q", "q"], ["value@step:lag+0", "value@step:lag+1"]
+        ),
     )
     spec = PrepSpec(
         "synthetic.csv",
@@ -135,7 +137,9 @@ def test_finish_persists_all_family_winners_and_reuses_final_fits(
         {
             "family": name,
             "fitness": fitness,
-            "genome": make_genome(["lag"], "squared", {}, name).to_dict(),
+            "genome": make_genome(
+                ["value@step:lag+0", "value@step:lag+1"], "squared", {}, name
+            ).to_dict(),
             "prediction": (y[masks["val"]] + fitness).tolist(),
         }
         for name, fitness in (("ridge", 0.1), ("xgboost", 0.2), ("snaive", 0.3))

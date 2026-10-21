@@ -280,7 +280,7 @@ def test_checkpoint_resume_skips_completed_scores_and_reproduces_search(monkeypa
     ws = SimpleNamespace(
         mode="row",
         masks={"train": np.ones(20, dtype=bool)},
-        families=["measure:x"],
+        families=["x:measure"],
         profile={"genes": {"objectives": ["squared"]}},
     )
     calls = []

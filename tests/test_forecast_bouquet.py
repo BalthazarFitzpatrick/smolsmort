@@ -34,7 +34,14 @@ def make_workspace(families=None, mode="series"):
         mode=mode,
         unit="week",
         spec=SimpleNamespace(task="regression"),
-        families=families or ["lag+0", "season", "roll:4:mean", "diff:1", "measure:orders"],
+        families=families
+        or [
+            "units@day:lag+0",
+            "units@day:season",
+            "units@day:roll:4:mean",
+            "units@day:diff:1",
+            "orders@day:measure",
+        ],
         profile={"genes": {"objectives": ["squared", "absolute"]}},
         series_masks={"one": {"train": np.ones(20, dtype=bool)}},
         masks={"train": np.ones(20, dtype=bool)},

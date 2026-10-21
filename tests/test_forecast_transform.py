@@ -171,8 +171,8 @@ def test_none_keeps_the_saved_genome_and_golden_key():
 
 @pytest.mark.parametrize("name", ["log1p", "logdiff"])
 def test_nondefault_transform_survives_recipe_and_changes_key(name):
-    raw = make_genome(["lag+0"], "squared", {})
-    transformed = make_genome(["lag+0"], "squared", {}, transform=name)
+    raw = make_genome(["y@day:lag+0"], "squared", {})
+    transformed = make_genome(["y@day:lag+0"], "squared", {}, transform=name)
 
     assert transformed.to_dict()["transform"] == name
     assert transformed.key() != raw.key()
@@ -194,7 +194,7 @@ def test_lag_family_receives_transformed_targets(workspace, monkeypatch, name):
         return original_fit(x, **options)
 
     monkeypatch.setattr(family, "fit", fit)
-    genome = make_genome(["lag+0"], "squared", {"alpha": 1.0}, family="ridge", transform=name)
+    genome = make_genome(["y@day:lag+0"], "squared", {"alpha": 1.0}, family="ridge", transform=name)
     _series_fit(ws, genome, frame, rows, 1)
     order = np.flatnonzero(rows)[np.argsort(frame.step[rows], kind="stable")]
 
@@ -248,7 +248,9 @@ def test_real_families_score_and_finish_on_raw_scale(workspace, name, family_nam
     ws = workspace
     ws.transform = name
     family = get_family(family_name)
-    families = ["lag+0", "lag+1", "cal:weekday"] if family.needs == "lag_features" else []
+    families = (
+        ["y@day:lag+0", "y@day:lag+1", "day:cal:weekday"] if family.needs == "lag_features" else []
+    )
     params = {"max_depth": 3} if family_name == "xgboost" else family.defaults()
     genome = make_genome(families, "squared", params, family=family_name, transform=name)
 
@@ -342,9 +344,11 @@ def test_search_variation_preserves_per_run_transform(workspace, name, family_na
 @pytest.mark.parametrize("name", ["log1p", "logdiff"])
 def test_search_only_reuses_warm_genomes_with_the_same_transform(workspace, name):
     ws = workspace
-    ws.transform, ws.families = name, ["lag+0"]
-    matching = make_genome(["lag+0"], "squared", {"alpha": 19.0}, family="ridge", transform=name)
-    other = make_genome(["lag+0"], "squared", {"alpha": 31.0}, family="ridge")
+    ws.transform, ws.families = name, ["y@day:lag+0"]
+    matching = make_genome(
+        ["y@day:lag+0"], "squared", {"alpha": 19.0}, family="ridge", transform=name
+    )
+    other = make_genome(["y@day:lag+0"], "squared", {"alpha": 31.0}, family="ridge")
 
     result = search(
         ws,
@@ -363,7 +367,7 @@ def test_search_only_reuses_warm_genomes_with_the_same_transform(workspace, name
 @pytest.mark.parametrize("name", ["log1p", "logdiff"])
 def test_resume_preserves_transform_and_reuses_cached_scores(workspace, monkeypatch, name):
     ws = workspace
-    ws.transform, ws.families = name, ["lag+0"]
+    ws.transform, ws.families = name, ["y@day:lag+0"]
     checkpoints, calls = [], []
     module = importlib.import_module("smolsmort.forecast.search")
     original_score = module.score
@@ -396,7 +400,7 @@ def test_logdiff_refuses_positive_only_fit_objectives(workspace, objective):
     pytest.importorskip("xgboost")
     ws = workspace
     bucket = (1, 1)
-    genome = make_genome(["lag+0"], objective, {}, transform="logdiff")
+    genome = make_genome(["y@day:lag+0"], objective, {}, transform="logdiff")
 
     with pytest.raises(PipelineError, match=rf"logdiff.*signed-target objective.*{objective}"):
         _series_fit(ws, genome, ws.frames[bucket], ws.series_masks[bucket]["train"], 1)
@@ -416,7 +420,7 @@ def test_logdiff_search_filters_positive_only_objectives_without_changing_none(w
 def test_v1_worker_ignores_an_unversioned_request_transform(tmp_path):
     pytest.importorskip("xgboost")
     request, spec, prepared = make_request(tmp_path, [{"name": "xgboost"}])
-    genome = make_genome(["lag+0"], "squared", {"max_depth": 3})
+    genome = make_genome(["units@day:lag+0"], "squared", {"max_depth": 3})
     request.pop("version")
     request.pop("families")
     request.pop("time_budget_s")
@@ -492,7 +496,7 @@ def test_calendar_base_uses_exact_origin_position(unit):
 def test_refit_refuses_recipe_transform_mismatch(tmp_path, name, version):
     pytest.importorskip("xgboost")
     _, spec, prepared = make_request(tmp_path, [{"name": "xgboost"}])
-    genome = make_genome(["lag+0"], "squared", {"max_depth": 3}, transform=name)
+    genome = make_genome(["units@day:lag+0"], "squared", {"max_depth": 3}, transform=name)
     request_options = (
         {"version": 2, "families": [{"name": "xgboost"}], "time_budget_s": 2}
         if version == 2
@@ -513,7 +517,7 @@ def test_refit_refuses_recipe_transform_mismatch(tmp_path, name, version):
 def test_v2_refit_preserves_matching_saved_transform(tmp_path, name):
     pytest.importorskip("xgboost")
     _, spec, prepared = make_request(tmp_path, [{"name": "xgboost"}])
-    genome = make_genome(["lag+0"], "squared", {"max_depth": 3}, transform=name)
+    genome = make_genome(["units@day:lag+0"], "squared", {"max_depth": 3}, transform=name)
     run_id = start_run(
         tmp_path / "runs",
         spec,
