@@ -71,7 +71,7 @@ def test_finish_and_importance_use_resolved_threads(
     monkeypatch.setattr(
         ensemble,
         "genome_from_dict",
-        lambda data: SimpleNamespace(key=lambda: data["family"]),
+        lambda data, **kwargs: SimpleNamespace(key=lambda: data["family"], to_dict=lambda: data),
     )
     monkeypatch.setattr(ensemble, "finish", finish_candidate)
     monkeypatch.setattr(ensemble, "fit_importance", fit_family_importance)

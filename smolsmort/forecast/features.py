@@ -3,9 +3,9 @@ horizon bucket, every feature read at the origin d - b, so nothing after the ori
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import numpy as np
 
@@ -29,6 +29,99 @@ STEP_FEATURES = {
     "year": ((2, 3), (2, 3, 5), (1, 2, 3), None),
 }
 LEGACY_WINDOWS = {"week": WINDOWS}
+LEGACY_PREFIXES = {
+    "cal",
+    "date",
+    "dim",
+    "freq",
+    "measure",
+    "log",
+    "lead",
+    "mix",
+    "spread",
+    "lag",
+    "roll",
+    "diff",
+    "slope",
+    "momentum",
+    "ewm",
+}
+
+
+def family_name(op: str, column: str | None = None, clock: str | None = None) -> str:
+    """name an operation by its source column and, when temporal, its source clock"""
+
+    def encode_source(source):
+        encoded = quote(source, safe="")
+        # reserved words must not collide with unversioned saved names such as dim:measure
+        return f"%{ord(encoded[0]):02X}{encoded[1:]}" if encoded in LEGACY_PREFIXES else encoded
+
+    owner = encode_source(column) if column is not None else ""
+    if clock is not None:
+        owner += ("@" if column is not None else "") + encode_source(clock)
+    return f"{owner}:{op}" if column is not None or clock is not None else op
+
+
+def split_family_name(name: str) -> tuple[str | None, str | None, str]:
+    """split source-aware names; an old name remains an unqualified operation"""
+    owner, separator, op = name.partition(":")
+    if owner in LEGACY_PREFIXES:
+        return None, None, name
+    if separator and "@" in owner:
+        column, clock = owner.split("@", 1)
+        return unquote(column), unquote(clock), op
+    if separator and op.partition(":")[0] == "cal":
+        return None, unquote(owner), op
+    if separator and op in {"dim", "freq", "measure", "log", "lead", "mix", "spread"}:
+        return unquote(owner), None, op
+    return None, None, name
+
+
+def family_sort_key(name: str) -> str:
+    """retain the old sampling and tie order when source labels change"""
+    column, clock, op = split_family_name(name)
+    if column is not None and op in {"dim", "freq", "measure", "log", "lead", "mix", "spread"}:
+        return f"{op}:{column}"
+    return op
+
+
+def family_aliases(spec: PrepSpec, names=()) -> dict[str, str]:
+    """old saved names mapped with the prep spec, including detected periods and roll aliases"""
+    clock = spec.named("time" if spec.mode == "series" else "anchor")[0]
+    target = spec.named("target")[0]
+    aliases = {}
+    for column in spec.columns:
+        for op in ("dim", "freq", "measure", "log", "lead", "mix", "spread"):
+            temporal = spec.mode == "series" and op in {"measure", "lead", "mix", "spread"}
+            aliases[f"{op}:{column.name}"] = family_name(
+                op, column.name, clock if temporal else None
+            )
+    for part in ("week", "month", "quarter", "weekday", "cyclic", "dom", "holiday", "trend"):
+        aliases[f"{'cal' if spec.mode == 'series' else 'date'}:{part}"] = family_name(
+            f"cal:{part}", clock=clock
+        )
+    if spec.mode == "series":
+        operations = {"season", "cycle_ratio", *(f"lag+{j}" for j in LAGS)}
+        operations.update(f"ewm:{alpha}" for alpha in ALPHAS)
+        for lags, windows, differences, _ in STEP_FEATURES.values():
+            operations.update(f"lag:{lag}" for lag in lags)
+            operations.update(f"diff:{lag}" for lag in differences)
+            for window in windows:
+                operations.update(f"{op}:{window}" for op in ("roll", "slope", "momentum"))
+                operations.update(f"roll:{window}:{stat}" for stat in ROLL_STATS)
+        for name in names:
+            column, time, op = split_family_name(name)
+            kind = op.partition(":")[0].partition("+")[0]
+            if (
+                column is None
+                and time is None
+                and kind
+                in {"lag", "roll", "diff", "slope", "momentum", "cycle_ratio", "season", "ewm"}
+                and (":" in op or op in {"season", "cycle_ratio"} or "+" in op)
+            ):
+                operations.add(op)
+        aliases.update({op: family_name(op, target, clock) for op in operations})
+    return aliases
 
 
 @dataclass
@@ -37,12 +130,14 @@ class Features:
     names: list[str]
     types: list[str]
     families: list[str]
+    aliases: dict[str, str] = field(default_factory=dict)
 
     def pick(self, families) -> tuple[np.ndarray, list[str], list[str]]:
         """the columns of the chosen families, in table order"""
-        selected = set(families)
+        selected = {self.aliases.get(name, name) for name in families}
         for family in tuple(selected):
-            if family.startswith("roll:") and family.count(":") == 1:
+            _, _, op = split_family_name(family)
+            if op.partition(":")[0] == "roll" and op.count(":") == 1:
                 selected.update(f"{family}:{stat}" for stat in LEGACY_ROLL_STATS)
         keep = [i for i, f in enumerate(self.families) if f in selected]
         return self.x[:, keep], [self.names[i] for i in keep], [self.types[i] for i in keep]
@@ -95,7 +190,9 @@ def _holiday_dates(country: str, first_year: int, last_year: int) -> np.ndarray:
     return np.array(sorted(calendar), dtype="datetime64[D]").astype(int)
 
 
-def _series_calendar(days: np.ndarray, unit: str, country: str | None = None) -> dict:
+def _series_calendar(
+    days: np.ndarray, unit: str, country: str | None = None, *, clock: str | None = None
+) -> dict:
     """additional families read only the target calendar, including known future dates"""
     days = days.astype("datetime64[D]")
     if unit == "week":
@@ -139,7 +236,7 @@ def _series_calendar(days: np.ndarray, unit: str, country: str | None = None) ->
             "days_since_holiday": np.minimum(ordinal - padded[last_index], 30),
         }.items():
             cols[f"cal_{name}"] = ("cal:holiday", values)
-    return cols
+    return {name: (family_name(op, clock=clock), values) for name, (op, values) in cols.items()}
 
 
 def buckets_for(horizon: int) -> list[tuple[int, int]]:
@@ -160,25 +257,32 @@ def row_features(spec: PrepSpec, table: dict, train) -> Features:
         values = table[name]
         if is_text(values):
             codes = _codes(values, train)
-            build.add(f"{name}", codes, "c", f"dim:{name}")
+            build.add(f"{name}", codes, "c", family_name("dim", name))
             counts = np.bincount(codes[train & np.isfinite(codes)].astype(int)) / max(
                 train.sum(), 1
             )
             freq = np.array(
                 [counts[int(c)] if np.isfinite(c) and c < len(counts) else 0 for c in codes]
             )
-            build.add(f"{name}_frequency", freq, family=f"freq:{name}")
+            build.add(f"{name}_frequency", freq, family=family_name("freq", name))
         else:
-            build.add(name, values, family=f"measure:{name}")
+            build.add(name, values, family=family_name("measure", name))
             seen = values[train & np.isfinite(values)]
             if len(seen) and seen.min() >= 0:
-                build.add(f"{name}_log", np.log1p(values), family=f"log:{name}")
+                build.add(f"{name}_log", np.log1p(values), family=family_name("log", name))
     anchors = table[ANCHOR].astype("datetime64[D]")
+    clock = spec.named("anchor")[0]
     for part, values in _calendar(anchors).items():
-        build.add(f"anchor_{part}", values, family=f"date:{part}")
+        build.add(f"anchor_{part}", values, family=family_name(f"cal:{part}", clock=clock))
     start = anchors[train].min() if train.any() else anchors.min()
-    build.add("anchor_years", (anchors - start).astype(int) / 365.25, family="date:trend")
-    return build.done()
+    build.add(
+        "anchor_years",
+        (anchors - start).astype(int) / 365.25,
+        family=family_name("cal:trend", clock=clock),
+    )
+    features = build.done()
+    features.aliases = family_aliases(spec)
+    return features
 
 
 # ---------------------------------------------------------------- series mode
@@ -323,6 +427,7 @@ def _build_input_values(spec: PrepSpec, panel: dict, inputs: dict | None, train)
     input_keys = zip(inputs[SERIES], inputs[STEP].astype("datetime64[D]"), strict=True)
     indices = np.array([positions.get(key, -1) for key in input_keys], dtype=int)
     columns = {}
+    clock = spec.named("time")[0]
     for name in spec.named("input"):
         label = quote(name, safe="")
         keep = (inputs["__column"] == name) & (indices >= 0)
@@ -351,15 +456,24 @@ def _build_input_values(spec: PrepSpec, panel: dict, inputs: dict | None, train)
             )
             level_label = quote(level, safe="")
             columns[f"mix:{label}:level:{level_label}"] = (
-                f"mix:{name}",
+                family_name("mix", name, clock),
                 np.where(count, values, np.nan),
             )
         other = ~np.isin(levels, top_levels)
         values = np.bincount(index[other], weights=shares[other], minlength=rows)
-        columns[f"mix:{label}:other"] = (f"mix:{name}", np.where(count, values, np.nan))
-        columns[f"spread:{label}:count"] = (f"spread:{name}", np.where(count, count, np.nan))
+        columns[f"mix:{label}:other"] = (
+            family_name("mix", name, clock),
+            np.where(count, values, np.nan),
+        )
+        columns[f"spread:{label}:count"] = (
+            family_name("spread", name, clock),
+            np.where(count, count, np.nan),
+        )
         hhi = np.bincount(index, weights=shares**2, minlength=rows)
-        columns[f"spread:{label}:hhi"] = (f"spread:{name}", np.where(count, hhi, np.nan))
+        columns[f"spread:{label}:hhi"] = (
+            family_name("spread", name, clock),
+            np.where(count, hhi, np.nan),
+        )
     return columns
 
 
@@ -380,6 +494,7 @@ def series_features(
     origin d - b sees the target and measures up to the origin only, and the calendar of d"""
     lo, b = bucket
     target = spec.named("target")[0]
+    clock = spec.named("time")[0]
     aggregation = {c.name: c.aggregation for c in spec.columns}
     measures = [m for m in spec.named("measure") if m in panel]
     dims = [d for d in spec.named("dimension") if d in panel]
@@ -424,6 +539,7 @@ def series_features(
             differences=differences,
             dynamics_windows=tuple(w for w in windows if w <= history),
             cycle_period=cycle_period,
+            clock=clock,
         )
         for name, (family, values) in input_values.items():
             extended = _extend(values[mine], length, None)
@@ -446,10 +562,10 @@ def series_features(
         cols = {name: (family, col[origins]) for name, (family, col) in base.items()}
         for part, values in _calendar(step).items():
             if part != "weekday" or unit == "day":
-                cols[f"cal_{part}"] = (f"cal:{part}", values)
+                cols[f"cal_{part}"] = (family_name(f"cal:{part}", clock=clock), values)
         for d in dims:
-            cols[d] = (f"dim:{d}", np.full(len(rows), dim_codes[d][mine[0]]))
-        cols.update(_series_calendar(step, unit, spec.holidays_country))
+            cols[d] = (family_name("dim", d), np.full(len(rows), dim_codes[d][mine[0]]))
+        cols.update(_series_calendar(step, unit, spec.holidays_country, clock=clock))
         parts.append(
             {
                 "cols": cols,
@@ -466,9 +582,11 @@ def series_features(
     for name in names:
         family = parts[0]["cols"][name][0]
         values = np.concatenate([p["cols"][name][1] for p in parts])
-        build.add(name, values, "c" if family.startswith("dim:") else "q", family)
+        build.add(name, values, "c" if split_family_name(family)[2] == "dim" else "q", family)
+    features = build.done()
+    features.aliases = family_aliases(spec, (family_sort_key(name) for name in features.families))
     return SeriesFrame(
-        build.done(),
+        features,
         np.concatenate([p["y"] for p in parts]),
         np.concatenate([p["series"] for p in parts]),
         np.concatenate([p["step"] for p in parts]),
@@ -506,6 +624,7 @@ def _series_base(
     differences=(),
     dynamics_windows=(),
     cycle_period=None,
+    clock=None,
 ) -> dict:
     """name -> (family, values) at every origin position g, built from positions <= g only.
     families are relative to the bucket (lag+0 is the freshest lag any bucket may read), so one
@@ -549,4 +668,12 @@ def _series_base(
         k = measure_lags.get(m)
         if k and k >= b:
             base[f"{m}_lag_{k}"] = (f"lead:{m}", _shift(values[m], k - b))
-    return base
+    return {
+        name: (
+            family_name(op, target, clock)
+            if op.partition(":")[0] not in {"measure", "lead"}
+            else family_name(op.partition(":")[0], op.partition(":")[2], clock),
+            values,
+        )
+        for name, (op, values) in base.items()
+    }

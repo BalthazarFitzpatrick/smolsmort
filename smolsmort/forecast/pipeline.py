@@ -14,7 +14,14 @@ import numpy as np
 
 from smolsmort.forecast import evaluate as ev
 from smolsmort.forecast.families import get_family
-from smolsmort.forecast.features import buckets_for, row_features, series_features
+from smolsmort.forecast.features import (
+    buckets_for,
+    family_aliases,
+    family_sort_key,
+    row_features,
+    series_features,
+    split_family_name,
+)
 from smolsmort.forecast.importance import combine_importance, measure_importance
 from smolsmort.forecast.model import CLASSIFIERS, NONNEGATIVE, fit_model, predict
 from smolsmort.forecast.profile import build_profile
@@ -66,13 +73,20 @@ def make_genome(
     families, objective: str, params: dict, family: str = "xgboost", transform: str = "none"
 ) -> Genome:
     return Genome(
-        tuple(sorted(set(families))), objective, tuple(sorted(params.items())), family, transform
+        tuple(sorted(set(families), key=family_sort_key)),
+        objective,
+        tuple(sorted(params.items())),
+        family,
+        transform,
     )
 
 
-def genome_from_dict(data: dict, family: str | None = None) -> Genome:
+def genome_from_dict(
+    data: dict, family: str | None = None, *, spec: PrepSpec | None = None
+) -> Genome:
+    aliases = family_aliases(spec, data["families"]) if spec is not None else {}
     return make_genome(
-        data["families"],
+        [aliases.get(name, name) for name in data["families"]],
         data["objective"],
         data["params"],
         family=data.get("family", "xgboost") if family is None else family,
@@ -164,7 +178,9 @@ def _row_workspace(spec, folder, summary) -> Workspace:
     ws.masks = {"train": train, "val": val, "test": test}
     ws.bounds = bounds
     ws.predict_rows = np.isin(table[ROW], predict_ids)
-    ws.families = sorted(set(features.families) - _excluded_families(profile))
+    ws.families = sorted(
+        set(features.families) - _excluded_families(profile, features.families), key=family_sort_key
+    )
     return ws
 
 
@@ -214,7 +230,7 @@ def _series_workspace(spec, folder, summary) -> Workspace:
     ws.excluded_series = excluded
     ws.test_steps = int(cuts.steps - cuts.test_start)
     families = set().union(*(set(f.features.families) for f in frames.values()))
-    ws.families = sorted(families - _excluded_families(profile))
+    ws.families = sorted(families - _excluded_families(profile, families), key=family_sort_key)
     return ws
 
 
@@ -245,9 +261,13 @@ def _filter_scaffold(spec, panel, scaffold) -> tuple[dict, list[dict]]:
     return {name: values[keep] for name, values in scaffold.items()}, excluded
 
 
-def _excluded_families(profile) -> set[str]:
+def _excluded_families(profile, families) -> set[str]:
     leaks = set(profile["genes"].get("exclude", []))
-    return {f"{kind}:{name}" for name in leaks for kind in ("measure", "log", "lead")}
+    return {
+        name
+        for name in families
+        if (parts := split_family_name(name))[0] in leaks and parts[2] in {"measure", "log", "lead"}
+    }
 
 
 # ---------------------------------------------------------------- scoring

@@ -85,21 +85,48 @@ function forecastNode(tag, className, text) {
   return node;
 }
 
+function forecastSplitFamilyName(family) {
+  const decode = value => {
+    try { return decodeURIComponent(value); }
+    catch (error) {
+      if (error instanceof URIError) return value;
+      throw error;
+    }
+  };
+  const colon = family.indexOf(':');
+  if (colon < 0) return [null, null, family];
+  const owner = family.slice(0, colon);
+  const op = family.slice(colon + 1);
+  const columnOps = ['dim', 'freq', 'log', 'measure', 'lead', 'mix', 'spread'];
+  if (columnOps.includes(owner)) return [op, null, owner];
+  if (owner === 'date') return [null, null, `cal:${op}`];
+  if (['cal', 'lag', 'roll', 'diff', 'slope', 'momentum', 'ewm'].includes(owner)) {
+    return [null, null, family];
+  }
+  const at = owner.indexOf('@');
+  if (at >= 0) return [decode(owner.slice(0, at)), decode(owner.slice(at + 1)), op];
+  if (op.startsWith('cal:')) return [null, decode(owner), op];
+  if (columnOps.includes(op)) return [decode(owner), null, op];
+  return [null, null, family];
+}
+
 function forecastFamilyGroups(families) {
   if (!Array.isArray(families)) return [];
   const groups = new Map();
   const labels = {
-    roll: 'rolling', cal: 'calendar', date: 'calendar', dim: 'dims',
+    lag: 'lags', roll: 'rolling', cal: 'calendar', dim: 'dims',
     measure: 'measures', log: 'log measures', freq: 'frequencies', lead: 'measure lags',
   };
   families.forEach(family => {
     if (typeof family !== 'string') return;
-    const colon = family.indexOf(':');
-    const kind = family.startsWith('lag+') ? 'lags'
-      : (labels[family.slice(0, colon)] || family.slice(0, colon));
-    const label = colon < 0 && !family.startsWith('lag+') ? 'other' : kind;
-    const value = family.startsWith('lag+') ? family.slice(4)
-      : colon < 0 ? (family === 'season' ? 'seasonal lag' : family) : family.slice(colon + 1);
+    const [column, clock, op] = forecastSplitFamilyName(family);
+    const colon = op.indexOf(':');
+    const kind = op.startsWith('lag+') ? 'lags' : op.split(':', 1)[0];
+    const label = labels[kind] || (colon < 0 && kind !== 'lags' ? 'other' : kind);
+    const context = column && clock ? `${column}@${clock}` : column || clock;
+    const part = op.startsWith('lag+') ? op.slice(4)
+      : colon >= 0 ? op.slice(colon + 1) : op === 'season' ? 'seasonal lag' : op;
+    const value = context ? (colon >= 0 || !labels[kind] ? `${context}:${part}` : context) : part;
     if (!groups.has(label)) groups.set(label, new Set());
     groups.get(label).add(value);
   });
@@ -111,9 +138,12 @@ function forecastFamilyGroups(families) {
     return index(a) - index(b) || a.localeCompare(b);
   }).map(([kind, items]) => {
     const values = [...items].sort((a, b) => {
-      if (['lags', 'rolling', 'ewm'].includes(kind)) return Number(a) - Number(b);
-      if (kind === 'calendar' && calendar.includes(a) && calendar.includes(b)) {
-        return calendar.indexOf(a) - calendar.indexOf(b);
+      if (['lags', 'rolling', 'ewm'].includes(kind)) {
+        return Number(a) - Number(b) || a.localeCompare(b, undefined, {numeric: true});
+      }
+      const part = value => value.slice(value.lastIndexOf(':') + 1);
+      if (kind === 'calendar' && calendar.includes(part(a)) && calendar.includes(part(b))) {
+        return calendar.indexOf(part(a)) - calendar.indexOf(part(b)) || a.localeCompare(b);
       }
       return a.localeCompare(b);
     });

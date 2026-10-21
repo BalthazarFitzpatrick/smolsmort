@@ -142,6 +142,21 @@ error. a ratio below 1 means better than naive; a ratio of 1 or above is in the 
 band coverage, band width, the target's own spread, and test history remain plain facts beside
 the accuracy reading, with no pass thresholds.
 
+feature family names show the source column and, for values built over time, the date column.
+these examples use target `unit`, time `need_by_date`, and row anchor `created_at`; actual names
+come from the spec. source names escape reserved operation words and delimiter characters
+with percent encoding.
+
+| family kind | naming rule | example |
+|---|---|---|
+| target history, series measures and inputs | `<column>@<date>:<operation>` | `unit@need_by_date:lag+0`, `lead_days@need_by_date:measure`, `site@need_by_date:mix` |
+| calendar | `<date>:cal:<part>` | `need_by_date:cal:week`, `created_at:cal:trend` |
+| dimensions and row values | `<column>:<operation>` | `product_group:dim`, `site:freq`, `lead_days:measure`, `lead_days:log` |
+
+saved recipes and search files with older family names are mapped using their spec. feature
+columns, values and search behaviour stay the same. the full family list is in
+[series feature candidates](docs/GUIDE.md#16-the-regression-and-classification-topics).
+
 ### Sweep, and where the loop closes
 
 A sweep runs the weights over a recording and writes what it finds as candidates, capped per frame

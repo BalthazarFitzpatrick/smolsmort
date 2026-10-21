@@ -391,7 +391,7 @@ def test_run_polling_sends_only_updated_leaderboards(app, tab, cursor):
     )
     (root / "status.json").write_text(json.dumps({"state": "done", "stopped": "plateau"}))
     (root / "leaderboard_generation.json").write_text("0")
-    board = [{"fitness": 0.3, "genome": {"families": ["lag+1"]}}]
+    board = [{"fitness": 0.3, "genome": {"families": ["units@day:lag+1"]}}]
     (root / "leaderboard.json").write_text(json.dumps(board))
     complete = _get(app, tab, "/api/forecast-run", {"id": "fixture"})
     assert complete["leaderboard"] == [{**entry, "family": "xgboost"} for entry in board]

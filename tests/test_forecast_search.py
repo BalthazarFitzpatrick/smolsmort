@@ -15,6 +15,7 @@ from forecast_fixtures import write_panel, write_rows
 from smolsmort.forecast import pipeline, worker
 from smolsmort.forecast import runs as run_store
 from smolsmort.forecast.families import get_family
+from smolsmort.forecast.features import family_sort_key
 from smolsmort.forecast.pipeline import Scored, load_workspace, make_genome, score
 from smolsmort.forecast.prep import prepare
 from smolsmort.forecast.runs import cancel_run, run_state, start_run, wait_run
@@ -37,28 +38,29 @@ TINY = {"population": 6, "plateau": 2, "max_generations": 3, "time_cap": 120, "s
 
 def make_candidate_search(unit, family):
     legacy = {
-        "lag+0",
-        "lag+1",
-        "lag+2",
-        "lag+3",
-        "season",
-        "roll:4",
-        "ewm:0.1",
-        "measure:orders",
-        "lead:orders",
-        "dim:product",
-        "cal:week",
-        "cal:cyclic",
+        "units@day:lag+0",
+        "units@day:lag+1",
+        "units@day:lag+2",
+        "units@day:lag+3",
+        "units@day:season",
+        "units@day:roll:4",
+        "units@day:ewm:0.1",
+        "orders@day:measure",
+        "orders@day:lead",
+        "product:dim",
+        "day:cal:week",
+        "day:cal:cyclic",
     }
     novel = {
-        f"roll:4:{stat}" for stat in ("mean", "std", "max", "zeros", "min", "median", "q10", "q90")
-    } | {"diff:1", "slope:4", "cycle_ratio", "momentum:4"}
-    (novel if unit == "week" else legacy).add("lag:12")
+        f"units@day:roll:4:{stat}"
+        for stat in ("mean", "std", "max", "zeros", "min", "median", "q10", "q90")
+    } | {"units@day:diff:1", "units@day:slope:4", "units@day:cycle_ratio", "units@day:momentum:4"}
+    (novel if unit == "week" else legacy).add("units@day:lag:12")
     ws = SimpleNamespace(
         mode="series",
         unit=unit,
         spec=SimpleNamespace(task="regression"),
-        families=sorted((legacy - {"roll:4"}) | novel),
+        families=sorted((legacy - {"units@day:roll:4"}) | novel, key=family_sort_key),
         profile={"genes": {"objectives": ["squared", "absolute"]}},
     )
     rng = np.random.default_rng(17)
@@ -97,19 +99,22 @@ def test_candidate_mutation_keeps_the_full_pool_flip_rate(family, below_rate):
     genome = var.make_genome(legacy, var.objectives[0], var.params_for(var.objectives[0]))
     rate = 1 / len(var.families)
     draws = iter(
-        [rate - 1e-9 if name == "diff:1" and below_rate else rate for name in var.families]
+        [
+            rate - 1e-9 if name == "units@day:diff:1" and below_rate else rate
+            for name in var.families
+        ]
         + [1.0] * 100
     )
     var.rng = SimpleNamespace(random=lambda: next(draws))
     mutated = var.mutate(genome)
-    assert set(mutated.families) == legacy | ({"diff:1"} if below_rate else set())
+    assert set(mutated.families) == legacy | ({"units@day:diff:1"} if below_rate else set())
 
 
 @pytest.mark.parametrize("family", [None, "lightgbm"])
 def test_candidate_warm_seeds_keep_aliases_and_previously_selected_new_families(family):
     ws, var, _legacy, _novel = make_candidate_search("week", family)
     saved = var.make_genome(
-        ["roll:4", "diff:1"],
+        ["units@day:roll:4", "units@day:diff:1"],
         var.objectives[0],
         var.params_for(var.objectives[0]),
         family or "xgboost",
@@ -140,7 +145,7 @@ def test_candidate_broad_defaults_use_legacy_families(monkeypatch, family):
 def test_candidate_birth_rule_preserves_row_and_raw_series_searches():
     ws, _var, _legacy, _novel = make_candidate_search("week", None)
     ws.mode = "row"
-    ws.families = ["measure:x", "log:x", "dim:group", "freq:group", "date:trend"]
+    ws.families = ["x:measure", "x:log", "group:dim", "group:freq", "created:cal:trend"]
     assert _Variation(ws, np.random.default_rng(0)).birth_families == ws.families
     ws.mode = "series"
     var = _FamilyVariation(ws, np.random.default_rng(0), get_family("snaive"), {})
@@ -373,7 +378,7 @@ def test_best_history_replaced_before_generation_events_and_cleared_when_unusabl
     ws = SimpleNamespace(
         mode="row",
         masks={"train": np.ones(20, dtype=bool)},
-        families=["measure:x"],
+        families=["x:measure"],
         profile={"genes": {"objectives": ["squared"]}},
     )
     genomes = [
@@ -420,7 +425,7 @@ def test_generation_curves_use_the_generation_winner_even_without_a_new_best(mon
     ws = SimpleNamespace(
         mode="row",
         masks={"train": np.ones(20, dtype=bool)},
-        families=["measure:x"],
+        families=["x:measure"],
         profile={"genes": {"objectives": ["squared"]}},
     )
     genomes = [make_genome(ws.families, "squared", {"max_depth": depth}) for depth in range(6, 14)]
@@ -529,7 +534,7 @@ def test_worker_publishes_bounded_atomic_leaderboards_before_generation_events(
     ws = SimpleNamespace(
         mode="row",
         masks={"train": np.ones(20, dtype=bool)},
-        families=["measure:x"],
+        families=["x:measure"],
         profile={"genes": {"objectives": ["squared"]}},
     )
     genomes = [make_genome(ws.families, "squared", {"max_depth": n}) for n in range(12, 0, -1)]
@@ -656,7 +661,7 @@ def test_progress_events_follow_each_candidate_and_stop_at_cancellation(monkeypa
     ws = SimpleNamespace(
         mode="row",
         masks={"train": np.ones(20, dtype=bool)},
-        families=["measure:x"],
+        families=["x:measure"],
         profile={"genes": {"objectives": ["squared"]}},
     )
     genomes = [make_genome(ws.families, "squared", {"max_depth": n}) for n in range(1, 5)]
@@ -725,7 +730,7 @@ def test_progress_includes_cached_candidates_and_full_sample_rescores(monkeypatc
     ws = SimpleNamespace(
         mode="row",
         masks={"train": np.ones(20, dtype=bool)},
-        families=["measure:x"],
+        families=["x:measure"],
         profile={"genes": {"objectives": ["squared"]}},
     )
     genomes = [make_genome(ws.families, "squared", {"max_depth": n}) for n in range(1, 5)]

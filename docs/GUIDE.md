@@ -471,33 +471,57 @@ only `dimension` columns define series and scaffold rows; inputs never expand ei
 prep writes `inputs.parquet` with each input's levels, row counts and the first target's
 aggregation per series and step; null levels become `(none)`. the role is unavailable in row mode.
 
-each input adds two switchable feature families. `mix:<column>` holds target shares for up to
+each input adds two switchable feature families. `<column>@<date>:mix` holds target shares for up to
 five levels plus `other`; the top five are chosen across all series by target sum before the
 first validation fold, with ties by name. that list stays frozen: remaining and unseen levels
-go to `other`. `spread:<column>` holds the distinct level count and hhi (squared shares summed
+go to `other`. `<column>@<date>:spread` holds the distinct level count and hhi (squared shares summed
 over all levels). shares use the sum of the per-level target aggregates as their total.
 steps without source rows stay missing; an observed zero total gives zero shares and hhi.
 both families use the same four lags as measures, reading only through the forecast origin.
 
+**feature family names.** names identify the source column, plus the date column when values
+are built over time. the spec supplies both names; `<date>` is the time column in series mode
+and the anchor in row mode. source names escape reserved operation words and delimiter
+characters with percent encoding.
+
+| family kind | naming rule | example |
+|---|---|---|
+| target history, series measures and inputs | `<column>@<date>:<operation>` | `unit@need_by_date:lag+0`, `lead_days@need_by_date:measure`, `site@need_by_date:mix` |
+| calendar | `<date>:cal:<part>` | `need_by_date:cal:week`, `created_at:cal:trend` |
+| dimensions and row values | `<column>:<operation>` | `product_group:dim`, `site:freq`, `lead_days:measure`, `lead_days:log` |
+
+row dimensions use `<column>:dim` and `<column>:freq`; row measures use `<column>:measure`
+and, when available, `<column>:log`. row calendar families use the anchor, including
+`<anchor>:cal:trend`. saved recipes, checkpoints, warm starts and screens with older names are
+mapped using the spec. cost calibrations use model-family names and stay unchanged. feature
+columns, values and search behaviour stay the same.
+
 **series feature candidates.** each horizon bucket reads target and measure values only through
-its origin, `target step - bucket end`. the search can choose each family below independently:
+its origin, `target step - bucket end`. the examples below use target `unit` and time column
+`need_by_date`; `k`, `w` and `a` stand for the lag, window and alpha. the search can choose each
+family below independently:
 
 | family | candidate inputs |
 |---|---|
-| `lag+0` through `lag+3` | the origin value and its previous three steps |
-| `season` | the target's seasonal lag, when it reaches back to the origin or earlier |
-| `lag:k` | individual absolute lags; weekly: 1 through 13, 26 and 52; only `bucket end <= k < training history` |
-| `roll:w:mean`, `roll:w:std`, `roll:w:max`, `roll:w:zeros` | separate rolling mean, population standard deviation, maximum and zero share |
-| `roll:w:min`, `roll:w:median`, `roll:w:q10`, `roll:w:q90` | separate rolling minimum, median and interpolated 10th/90th percentiles |
-| `diff:k` | origin value minus the value `k` steps before it |
-| `slope:w` | least-squares change per step over the window ending at the origin |
-| `cycle_ratio` | origin value divided by the value one season earlier; missing for a zero or missing denominator |
-| `momentum:w` | mean of the latest `floor(w/2)` steps minus the preceding `floor(w/2)` steps |
-| `ewm:a` | exponential means with alpha 0.1, 0.3 or 0.5 |
-| `measure:m`, `lead:m`, `dim:d`, `cal:*` | existing measure lags, detected measure leads, dimensions and target calendars |
+| `unit@need_by_date:lag+0` through `unit@need_by_date:lag+3` | the origin value and its previous three steps |
+| `unit@need_by_date:season` | the target's seasonal lag, when it reaches back to the origin or earlier |
+| `unit@need_by_date:lag:k` | individual absolute lags; weekly: 1 through 13, 26 and 52; only `bucket end <= k < training history` |
+| `unit@need_by_date:roll:w:mean`, `unit@need_by_date:roll:w:std`, `unit@need_by_date:roll:w:max`, `unit@need_by_date:roll:w:zeros` | separate rolling mean, population standard deviation, maximum and zero share |
+| `unit@need_by_date:roll:w:min`, `unit@need_by_date:roll:w:median`, `unit@need_by_date:roll:w:q10`, `unit@need_by_date:roll:w:q90` | separate rolling minimum, median and interpolated 10th/90th percentiles |
+| `unit@need_by_date:diff:k` | origin value minus the value `k` steps before it |
+| `unit@need_by_date:slope:w` | least-squares change per step over the window ending at the origin |
+| `unit@need_by_date:cycle_ratio` | origin value divided by the value one season earlier; missing for a zero or missing denominator |
+| `unit@need_by_date:momentum:w` | mean of the latest `floor(w/2)` steps minus the preceding `floor(w/2)` steps |
+| `unit@need_by_date:ewm:a` | exponential means with alpha 0.1, 0.3 or 0.5 |
+| `lead_days@need_by_date:measure`, `components@need_by_date:lead` | existing measure lags and detected measure leads |
+| `product_group:dim` | dimensions |
+| `need_by_date:cal:week`, `need_by_date:cal:month`, `need_by_date:cal:quarter` | target calendar parts |
+| `need_by_date:cal:cyclic`, `need_by_date:cal:dom`, `need_by_date:cal:holiday` | cyclic calendar parts, day-of-month features and holidays |
+| `site@need_by_date:mix`, `project@need_by_date:spread` | input shares and input diversity |
 
 the unit tables set the windows, differences and fallback season. supplied or detected periods
-also enter the absolute lag pool; the selected profile period takes priority for `cycle_ratio`.
+also enter the absolute lag pool; the selected profile period takes priority for
+`unit@need_by_date:cycle_ratio`.
 
 | unit | windows `w` | differences `k` | fallback season |
 |---|---|---|---|
@@ -512,8 +536,9 @@ windows must fit training history. rolling windows do too, except weekly rolling
 available for saved recipes. rolling statistics ignore non-finite values and need at least
 `max(floor(w/2), 1)` observations. slope needs at least two observations and keeps their original
 step positions. momentum uses the same mean threshold within each half-window; an odd window
-uses two equal halves. an old `roll:w` recipe still selects exactly mean, std, max and zeros,
-in their original order. the four new statistics require their own family names.
+uses two equal halves. the legacy alias `unit@need_by_date:roll:w` still selects exactly mean,
+std, max and zeros, in their original order. old recipes map to this alias. the four new
+statistics require their own family names.
 
 **family screen.** series runs write `screen.json` before search. only rows before the first
 validation fold are scored against seasonal-naive residuals: the latest same-season value

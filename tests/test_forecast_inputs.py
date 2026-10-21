@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from smolsmort.forecast import pipeline
-from smolsmort.forecast.features import LAGS, series_features
+from smolsmort.forecast.features import LAGS, family_sort_key, series_features
 from smolsmort.forecast.pipeline import load_workspace, make_genome
 from smolsmort.forecast.prep import prepare
 from smolsmort.forecast.screen import screen_families
@@ -390,13 +390,13 @@ def test_input_features_keep_grain_and_use_origin_lags(bucket):
     for name in ("y", "series", "step", "origin", "future", "base"):
         np.testing.assert_array_equal(getattr(frame, name), getattr(original, name))
     assert set(frame.features.families) - set(original.features.families) == {
-        "mix:site",
-        "spread:site",
+        "site@day:mix",
+        "site@day:spread",
     }
     input_columns = [
         index
         for index, family in enumerate(frame.features.families)
-        if family in {"mix:site", "spread:site"}
+        if family in {"site@day:mix", "site@day:spread"}
     ]
     assert len(input_columns) == (6 + 2) * len(LAGS)
     assert all(frame.features.types[index] == "q" for index in input_columns)
@@ -458,7 +458,7 @@ def test_input_features_stay_missing_beyond_an_ended_series():
     frame = series_features(spec, panel, scaffold, (1, 1), "week", train[keep], inputs=inputs)
     ended_future = (frame.series == "a") & frame.future
     assert ended_future.any()
-    values = frame.features.pick({"mix:site", "spread:site"})[0]
+    values = frame.features.pick({"site@day:mix", "site@day:spread"})[0]
     assert np.isnan(values[ended_future]).all()
 
 
@@ -488,7 +488,7 @@ def test_workspace_freezes_input_levels_at_first_validation_fold(monkeypatch):
     workspace = load_workspace(spec, Path("synthetic"), {"step": "week"})
     cutoff = workspace.series_folds[0][0]
     assert cutoff == steps[26]
-    assert {"mix:site", "spread:site"} <= set(workspace.families)
+    assert {"site@day:mix", "site@day:spread"} <= set(workspace.families)
     for bucket, frame in workspace.frames.items():
         assert not any(":level:unseen_" in name for name in frame.features.names)
         rows = frame.origin >= cutoff
@@ -508,8 +508,8 @@ def test_input_column_and_level_names_cannot_overwrite_another_family():
     keep = np.array([0, 5])
     combined = {name: np.concatenate([first[name][keep], second[name][keep]]) for name in inputs}
     frame = series_features(spec, panel, scaffold, (1, 1), "week", train, inputs=combined)
-    assert len(frame.features.pick({"mix:site"})[1]) == 2 * len(LAGS)
-    assert len(frame.features.pick({"mix:site:level:x"})[1]) == 2 * len(LAGS)
+    assert len(frame.features.pick({"site@day:mix"})[1]) == 2 * len(LAGS)
+    assert len(frame.features.pick({"site%3Alevel%3Ax@day:mix"})[1]) == 2 * len(LAGS)
     assert len(frame.features.names) == len(set(frame.features.names))
 
 
@@ -517,9 +517,15 @@ def test_input_families_are_available_to_births_without_screen_priors():
     workspace = SimpleNamespace(
         mode="series",
         unit="week",
-        families=["lag+0", "mix:site", "spread:site", "mix:segment", "spread:segment"],
+        families=[
+            "units@day:lag+0",
+            "site@day:mix",
+            "site@day:spread",
+            "segment@day:mix",
+            "segment@day:spread",
+        ],
     )
-    assert _select_birth_families(workspace) == sorted(workspace.families)
+    assert _select_birth_families(workspace) == sorted(workspace.families, key=family_sort_key)
 
 
 def write_leading_input_source(folder):
@@ -569,10 +575,10 @@ def test_leading_site_mix_ranks_near_top_and_wins_short_search(tmp_path):
     prepared = prepare(spec, tmp_path / "cache")
     workspace = load_workspace(spec, prepared.folder, prepared.summary)
     ranking = screen_families(workspace)
-    assert "mix:site" in [row["family"] for row in ranking[:3]]
+    assert "site@day:mix" in [row["family"] for row in ranking[:3]]
     priors = {row["family"]: row["p_on"] for row in ranking}
     without_site = make_genome(
-        [name for name in workspace.families if name != "mix:site"],
+        [name for name in workspace.families if name != "site@day:mix"],
         workspace.profile["genes"]["objectives"][0],
         DEFAULTS,
     )
@@ -583,7 +589,7 @@ def test_leading_site_mix_ranks_near_top_and_wins_short_search(tmp_path):
         warm=[without_site.to_dict()],
     )
     assert result["best"] is not None
-    assert "mix:site" in result["best"]["families"]
+    assert "site@day:mix" in result["best"]["families"]
     report = {
         "screen_top_five": [
             {key: row[key] for key in ("family", "score", "p_on")} for row in ranking[:5]

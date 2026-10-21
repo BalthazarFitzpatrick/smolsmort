@@ -149,8 +149,8 @@ def run(folder: Path, name: str) -> int:
                 method=selection.get("method", "genetic"),
                 space=selection.get("space"),
                 warm=warm,
-                priors=read_priors(folder) if getattr(ws, "mode", None) == "series" else None,
-                top_families=read_top_families(folder)
+                priors=read_priors(folder, spec) if getattr(ws, "mode", None) == "series" else None,
+                top_families=read_top_families(folder, spec)
                 if getattr(ws, "mode", None) == "series"
                 else None,
                 resume=resume,

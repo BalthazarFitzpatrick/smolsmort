@@ -18,6 +18,7 @@ from smolsmort.forecast.features import (
     _slope,
     buckets_for,
     series_features,
+    split_family_name,
     step_index,
 )
 from smolsmort.forecast.spec import SERIES, STEP, Column, PrepSpec
@@ -131,7 +132,7 @@ def test_every_candidate_family_ignores_values_after_its_origin(unit, bucket):
     )
     assert before.features.names == after.features.names
     assert before.features.families == after.features.families
-    assert {"mix:site", "spread:site"} <= set(before.features.families)
+    assert {"site@day:mix", "site@day:spread"} <= set(before.features.families)
     origins = step_index(before.step, unit) - step_index(panel[STEP], unit).min() - bucket[1]
     safe = origins <= origin
     assert safe.any() and (~safe).any()
@@ -141,7 +142,7 @@ def test_every_candidate_family_ignores_values_after_its_origin(unit, bucket):
         assert np.isfinite(old[origins == origin]).all(), family
         np.testing.assert_array_equal(old[safe], new[safe], err_msg=family)
     assert not np.array_equal(before.features.x[~safe], after.features.x[~safe], equal_nan=True)
-    for family in ("mix:site", "spread:site"):
+    for family in ("site@day:mix", "site@day:spread"):
         assert not np.array_equal(
             before.features.pick({family})[0][~safe],
             after.features.pick({family})[0][~safe],
@@ -161,7 +162,8 @@ def test_candidates_match_origin_based_formulas(unit, bucket):
     row = np.flatnonzero(origins == 600)[0]
     y = panel["units"]
     for col, family in enumerate(frame.features.families):
-        parts = family.split(":")
+        op = split_family_name(family)[2]
+        parts = op.split(":")
         if parts[0] == "lag":
             expected = y[600 + bucket[1] - int(parts[1])]
         elif parts[0] == "roll":
@@ -188,7 +190,7 @@ def test_candidates_match_origin_based_formulas(unit, bucket):
         elif parts[0] == "momentum":
             half = int(parts[1]) // 2
             expected = np.nanmean(y[601 - half : 601]) - np.nanmean(y[601 - 2 * half : 601 - half])
-        elif family == "cycle_ratio":
+        elif op == "cycle_ratio":
             expected = y[600] / y[600 - period]
         else:
             continue
@@ -242,25 +244,25 @@ def test_saved_roll_genomes_select_only_original_columns_in_original_order(unit)
     spec, panel, scaffold, train = make_candidate_panel(unit, 400, series_count=1)
     frame = series_features(spec, panel, scaffold, (2, 4), unit, train, periods=())
     windows = STEP_FEATURES[unit][1]
-    aliases = {f"roll:{w}" for w in windows}
+    aliases = {f"units@day:roll:{w}" for w in windows}
     old, names, types = frame.features.pick(aliases)
     assert names == [f"roll{w}_{stat}" for w in windows for stat in LEGACY_ROLL_STATS]
     assert types == ["q"] * len(names)
-    explicit = {f"roll:{w}:{stat}" for w in windows for stat in LEGACY_ROLL_STATS}
+    explicit = {f"units@day:roll:{w}:{stat}" for w in windows for stat in LEGACY_ROLL_STATS}
     np.testing.assert_array_equal(old, frame.features.pick(explicit)[0])
     np.testing.assert_array_equal(old, frame.features.pick(aliases | explicit)[0])
     for window in windows:
         for stat in ROLL_STATS:
-            _, picked, _ = frame.features.pick({f"roll:{window}:{stat}"})
+            _, picked, _ = frame.features.pick({f"units@day:roll:{window}:{stat}"})
             assert picked == [f"roll{window}_{stat}"]
-    added = frame.features.pick(aliases | {f"roll:{windows[0]}:q10"})[1]
+    added = frame.features.pick(aliases | {f"units@day:roll:{windows[0]}:q10"})[1]
     assert len(added) == len(names) + 1
 
 
 def test_saved_roll_values_equal_original_statistics():
     spec, panel, scaffold, train = make_candidate_panel(series_count=1)
     frame = series_features(spec, panel, scaffold, (2, 4), "week", train, periods=())
-    old, names, _ = frame.features.pick({"roll:4"})
+    old, names, _ = frame.features.pick({"units@day:roll:4"})
     assert names == ["roll4_mean", "roll4_std", "roll4_max", "roll4_zeros"]
     for row, step in enumerate(frame.step):
         origin = (
@@ -288,19 +290,19 @@ def test_candidate_history_limits_come_only_from_training(unit, history):
     frame = series_features(spec, panel, scaffold, (2, 4), unit, train, periods=())
     lags, windows, differences, period = STEP_FEATURES[unit]
     families = set(frame.features.families)
-    assert {f for f in families if f.startswith("lag:")} == {
-        f"lag:{k}" for k in lags if 4 <= k < history
+    assert {f for f in families if split_family_name(f)[2].startswith("lag:")} == {
+        f"units@day:lag:{k}" for k in lags if 4 <= k < history
     }
-    assert {f for f in families if f.startswith("diff:")} == {
-        f"diff:{k}" for k in differences if k < history
+    assert {f for f in families if split_family_name(f)[2].startswith("diff:")} == {
+        f"units@day:diff:{k}" for k in differences if k < history
     }
     for kind in ("slope", "momentum"):
-        assert {f for f in families if f.startswith(f"{kind}:")} == {
-            f"{kind}:{w}" for w in windows if w <= history
+        assert {f for f in families if split_family_name(f)[2].startswith(f"{kind}:")} == {
+            f"units@day:{kind}:{w}" for w in windows if w <= history
         }
-    assert ("cycle_ratio" in families) == (period is not None and period < history)
+    assert ("units@day:cycle_ratio" in families) == (period is not None and period < history)
     if unit == "week":
-        assert frame.features.pick({"roll:52"})[1] == [
+        assert frame.features.pick({"units@day:roll:52"})[1] == [
             f"roll52_{stat}" for stat in LEGACY_ROLL_STATS
         ]
 
@@ -310,7 +312,7 @@ def test_cycle_ratio_is_missing_for_zero_or_missing_season(denominator):
     spec, panel, scaffold, train = make_candidate_panel(series_count=1)
     panel["units"][8] = denominator
     frame = series_features(spec, panel, scaffold, (1, 1), "week", train, periods=())
-    ratio = frame.features.pick({"cycle_ratio"})[0][:, 0]
+    ratio = frame.features.pick({"units@day:cycle_ratio"})[0][:, 0]
     assert np.isnan(ratio[60])
     assert np.isnan(ratio[:52]).all()
     assert not np.isinf(ratio).any()
@@ -321,18 +323,18 @@ def test_cycle_ratio_uses_the_selected_period_even_beyond_the_bucket():
     frame = series_features(
         spec, panel, scaffold, (27, 52), "day", train, period=7, periods=(7, 365)
     )
-    assert frame.features.pick({"season"})[1] == []
-    ratio = frame.features.pick({"cycle_ratio"})[0][:, 0]
+    assert frame.features.pick({"units@day:season"})[1] == []
+    ratio = frame.features.pick({"units@day:cycle_ratio"})[0][:, 0]
     assert ratio[60] == pytest.approx(panel["units"][60] / panel["units"][53])
 
 
 def test_weekly_season_collision_keeps_saved_genome_columns():
     spec, panel, scaffold, train = make_candidate_panel(series_count=1)
     frame = series_features(spec, panel, scaffold, (27, 52), "week", train, period=52)
-    assert frame.features.pick({"season"})[1] == ["lag_52"]
-    assert frame.features.pick({"lag+0"})[1] == []
-    assert frame.features.pick({"lag+0", "season"})[1] == ["lag_52"]
-    for family in ("season", "lag:52"):
+    assert frame.features.pick({"units@day:season"})[1] == ["lag_52"]
+    assert frame.features.pick({"units@day:lag+0"})[1] == []
+    assert frame.features.pick({"units@day:lag+0", "units@day:season"})[1] == ["lag_52"]
+    for family in ("units@day:season", "units@day:lag:52"):
         values = frame.features.pick({family})[0][:, 0]
         np.testing.assert_array_equal(values, frame.base.astype(np.float32))
 
@@ -347,9 +349,9 @@ def test_weekly_156_step_candidate_pool_size():
     assert [len(set(frame.features.families)) for frame in frames] == [84, 81, 77, 72, 71, 69]
     assert len(set().union(*(frame.features.families for frame in frames))) == 84
     for bucket, frame in zip(buckets_for(52), frames, strict=True):
-        assert {f for f in frame.features.families if f.startswith("lag:")} == {
-            f"lag:{k}" for k in (*range(1, 14), 26, 52) if k >= bucket[1]
-        }
+        assert {
+            f for f in frame.features.families if split_family_name(f)[2].startswith("lag:")
+        } == {f"units@day:lag:{k}" for k in (*range(1, 14), 26, 52) if k >= bucket[1]}
         assert frame.features.x.dtype == np.float32
         assert len(frame.features.names) == len(set(frame.features.names))
 

@@ -46,7 +46,7 @@ def workspace(monkeypatch):
         horizon=horizon,
     )
     ws = load_workspace(spec, Path("synthetic"), {"step": "week"})
-    ws.families = ["lag+0", "lag+1"]
+    ws.families = ["y@day:lag+0", "y@day:lag+1"]
     return ws
 
 
@@ -119,7 +119,7 @@ def test_fold_wapes_have_equal_weights_and_stable_paired_contributions():
     reversed_score = pipeline._fitness(ws, (truth + errors)[order], truth[order], periods[order])
     np.testing.assert_array_equal(reversed_score.contrib, scored.contrib)
     better = pipeline._fitness(ws, truth + errors / 2, truth, periods)
-    genome = make_genome(["lag+0"], "squared", {}, "ridge")
+    genome = make_genome(["y@day:lag+0"], "squared", {}, "ridge")
     assert _significant(
         Entry(genome, better.fitness, better.contrib, better.metrics, 0),
         Entry(genome, scored.fitness, scored.contrib, scored.metrics, 0),
