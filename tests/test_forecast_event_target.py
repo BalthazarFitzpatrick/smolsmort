@@ -146,6 +146,9 @@ def test_default_event_keeps_the_prepared_cache_key_and_duration_bounds(tmp_path
     legacy["mode"] = "row"
     legacy.pop("holidays_country")
     legacy["censor"].pop("event")
+    # pre-flag specs never carried skip_missing
+    for column in legacy["columns"]:
+        column.pop("skip_missing")
     digest = hashlib.sha256(json.dumps(legacy, sort_keys=True, default=str).encode()).hexdigest()[
         :16
     ]
