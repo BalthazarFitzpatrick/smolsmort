@@ -207,7 +207,10 @@ def test_finish_includes_open_test_bounds_and_keeps_train_censoring_weights(
     assert result["test"]["rows"] == 2
     assert len(result["test"]["prediction"]) == 2
     assert result["verdict"]["accuracy"]["metric"] == "ibs"
-    assert all(check["group"] != "band" for check in result["verdict"]["checks"])
+    # the curve's 80% band is reported as a fact next to the ibs verdict
+    assert [c["check"] for c in result["verdict"]["checks"] if c["group"] == "band"] == [
+        "band coverage"
+    ]
     facts = {check["check"]: check["detail"] for check in result["verdict"]["checks"]}
     assert "c-index" in facts["concordance"]
     assert "1 open test entities included" in facts["survival scoring"]
@@ -309,3 +312,16 @@ def test_geometric_hazard_beats_pooled_km_and_matches_per_dimension_km():
     assert model_ibs / pooled_ibs < 0.9
     assert model_ibs / per_dim_ibs == pytest.approx(1.0, abs=0.1)
     assert per_dim_ibs / truth_ibs == pytest.approx(1.0, abs=0.1)
+
+
+def test_curve_band_coverage_counts_closed_events_inside_the_central_band():
+    from smolsmort.forecast.evaluate import curve_band_coverage
+
+    weeks = np.arange(1, 6, dtype=float)
+    # one shared curve: survival 0.95, 0.85, 0.5, 0.2, 0.05 -> band from week 2 to week 5
+    survival = np.tile([0.95, 0.85, 0.5, 0.2, 0.05], (4, 1))
+    lower = np.array([3.0, 0.0, 9.0, 2.0])
+    upper = np.array([3.0, 0.0, 9.0, np.inf])
+    # closed events 3 (inside), 0 (before), 9 (after); the open entity is ignored
+    assert curve_band_coverage(lower, upper, survival, weeks) == pytest.approx(1 / 3)
+    assert curve_band_coverage(lower[3:], upper[3:], survival[3:], weeks) is None

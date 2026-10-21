@@ -255,6 +255,25 @@ def group_median(keys_train, y_train, keys_test) -> np.ndarray:
     return np.array([medians.get(key, overall) for key in keys_test], dtype=float)
 
 
+def curve_band_coverage(lower, upper, survival, weeks, level=0.8) -> float | None:
+    """share of closed entities whose event week lies inside the curve's central band.
+    the band runs from the week survival first drops to (1+level)/2 to where it reaches (1-level)/2"""
+    lower, upper = np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)
+    survival, weeks = np.asarray(survival, dtype=float), np.asarray(weeks, dtype=float)
+    closed = np.isfinite(lower) & (lower == upper)
+    if not closed.any():
+        return None
+
+    def first_week(threshold):
+        crossed = survival[closed] <= threshold
+        return np.where(crossed.any(axis=1), weeks[crossed.argmax(axis=1)], np.inf)
+
+    start, end = first_week((1 + level) / 2), first_week((1 - level) / 2)
+    # weeks are whole periods: an event in week k counts as reaching the band starting at k
+    event = lower[closed]
+    return float(np.mean((np.ceil(event) >= start - 1) & (np.floor(event) <= end)))
+
+
 def judge(
     *,
     model_error: float,

@@ -897,12 +897,13 @@ def _entity_survival_verdict(ws, genome, nthread):
         test["lower"], test["upper"], test["survival"], weeks, censor_km
     )
     val_error = ev.integrated_brier(val["lower"], val["upper"], val["survival"], weeks, censor_km)
+    band_coverage = ev.curve_band_coverage(test["lower"], test["upper"], test["survival"], weeks)
     verdict = ev.judge(
         model_error=model_error,
         baseline_error=baseline_error,
-        band_coverage=None,
+        band_coverage=band_coverage,
         test_rows=len(test["lower"]),
-        needs_band=False,
+        needs_band=band_coverage is not None,
         metric="ibs",
         val_error=val_error,
     )
