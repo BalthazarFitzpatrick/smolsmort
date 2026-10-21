@@ -89,6 +89,7 @@ class Entry:
     nthread: int | None = None
     cost_hint: float | None = None
     phase: str | None = None
+    screened_families: int | None = None
 
     def rank(self):
         # ties go to the smaller recipe
@@ -111,6 +112,8 @@ class Entry:
                 cost_hint=self.cost_hint,
                 phase=self.phase,
             )
+        if self.screened_families is not None:
+            data["screened_families"] = self.screened_families
         return data
 
 
@@ -133,9 +136,19 @@ def _select_birth_families(ws):
 
 
 class _Variation:
-    def __init__(self, ws: Workspace, rng: np.random.Generator):
+    def __init__(self, ws: Workspace, rng: np.random.Generator, priors=None, top_families=None):
         self.transform = getattr(ws, "transform", "none")
-        self.birth_families = _select_birth_families(ws)
+        self.priors = dict(priors) if priors and getattr(ws, "mode", None) != "row" else None
+        if self.priors is None:
+            self.birth_families = _select_birth_families(ws)
+        else:
+            if any(not np.isfinite(p) or not 0 <= p <= 1 for p in self.priors.values()):
+                raise ValueError("family priors must be finite probabilities between 0 and 1")
+            top = [name for name in top_families or [] if name in ws.families]
+            ranked = sorted(ws.families, key=lambda name: (-self.priors.get(name, 0.5), name))
+            count = max(3, sum(self.priors.get(name, 0.5) >= 0.5 for name in ranked))
+            # the screen's own top set excludes wildcards; the prior ranking is the fallback
+            self.birth_families = top or ranked[:count]
         self.families = list(dict.fromkeys([*ws.families, *self.birth_families]))
         self.objectives = list(ws.profile["genes"]["objectives"])
         self.rng = rng
@@ -161,9 +174,12 @@ class _Variation:
         return params
 
     def random(self) -> Genome:
-        keep = [f for f in self.birth_families if self.rng.random() < 0.7] or [
-            self.rng.choice(self.birth_families)
-        ]
+        if self.priors is not None:
+            keep = self._draw_prior_families()
+        else:
+            keep = [f for f in self.birth_families if self.rng.random() < 0.7] or [
+                self.rng.choice(self.birth_families)
+            ]
         objective = str(self.rng.choice(self.objectives))
         params = {name: self._draw(spec) for name, spec in self.space.items()}
         params.update({n: self._draw(s) for n, s in OBJECTIVE_SPACE.get(objective, {}).items()})
@@ -187,11 +203,7 @@ class _Variation:
         )
 
     def mutate(self, genome: Genome) -> Genome:
-        families = set(genome.families)
-        rate = 1 / max(len(self.families), 1)
-        for f in self.families:
-            if self.rng.random() < rate:
-                families ^= {f}
+        families = self._mutate_families(genome.families)
         objective = genome.objective
         params = dict(genome.params)
         if len(self.objectives) > 1 and self.rng.random() < 0.1:
@@ -200,9 +212,30 @@ class _Variation:
         for name, spec in {**self.space, **OBJECTIVE_SPACE.get(objective, {})}.items():
             if self.rng.random() < 0.3:
                 params[name] = self._nudge(params.get(name), spec)
-        return self.make_genome(
-            families or [self.rng.choice(self.families)], objective, params, family=genome.family
-        )
+        if not families and self.priors is None:
+            families = [self.rng.choice(self.families)]
+        return self.make_genome(families, objective, params, family=genome.family)
+
+    def _draw_prior_families(self):
+        # forcing a nonempty draw would inflate the screened probabilities
+        return [name for name in self.families if self.rng.random() < self.priors.get(name, 0.5)]
+
+    def _mutate_families(self, families):
+        keep = set(families)
+        rates = [1 / max(len(self.families), 1)] * len(self.families)
+        if self.priors is not None:
+            weights = [self.priors.get(name, 0.5) for name in self.families]
+            weights = [
+                1 - weight if name in keep else weight
+                for name, weight in zip(self.families, weights, strict=True)
+            ]
+            # normalize direction weights to retain one expected family flip
+            total = sum(weights)
+            rates = [weight / total if total else 0.0 for weight in weights]
+        for name, rate in zip(self.families, rates, strict=True):
+            if self.rng.random() < rate:
+                keep ^= {name}
+        return keep
 
     def _draw(self, spec):
         if isinstance(spec[0], str):
@@ -226,8 +259,8 @@ class _Variation:
 
 
 class _FamilyVariation(_Variation):
-    def __init__(self, ws, rng, family, overrides):
-        super().__init__(ws, rng)
+    def __init__(self, ws, rng, family, overrides, priors=None, top_families=None):
+        super().__init__(ws, rng, priors, top_families)
         self.family = family
         self.space = {}
         self.defaults = {}
@@ -279,9 +312,12 @@ class _FamilyVariation(_Variation):
 
     def random(self):
         objective = str(self.rng.choice(self.objectives))
-        keep = [name for name in self.birth_families if self.rng.random() < 0.7]
-        if self.birth_families and not keep:
-            keep = [str(self.rng.choice(self.birth_families))]
+        if self.priors is not None:
+            keep = self._draw_prior_families()
+        else:
+            keep = [name for name in self.birth_families if self.rng.random() < 0.7]
+            if self.birth_families and not keep:
+                keep = [str(self.rng.choice(self.birth_families))]
         params = {
             name: self._draw(spec) if name not in self.choices else self.rng.choice(spec).item()
             for name, spec in self.space.items()
@@ -305,10 +341,7 @@ class _FamilyVariation(_Variation):
 
     def mutate(self, genome):
         params = dict(genome.params)
-        keep = set(genome.families)
-        for name in self.families:
-            if self.rng.random() < 1 / len(self.families):
-                keep ^= {name}
+        keep = self._mutate_families(genome.families)
         objective = genome.objective
         if len(self.objectives) > 1 and self.rng.random() < 0.1:
             objective = str(
@@ -322,7 +355,7 @@ class _FamilyVariation(_Variation):
                     else self._nudge(params.get(name), spec)
                 )
         return self.make_genome(
-            keep or genome.families,
+            keep if self.priors is not None else keep or genome.families,
             objective,
             self.params_for(objective, params),
             self.family.name,
@@ -353,6 +386,17 @@ def _family_population(var, size, warm, method):
         var.make_genome(var.birth_families, o, var.params_for(o), var.family.name)
         for o in var.objectives
     )
+    if var.priors is not None:
+        seeds.insert(
+            0,
+            var.make_genome(
+                var.birth_families,
+                var.objectives[0],
+                var.params_for(var.objectives[0]),
+                var.family.name,
+            ),
+        )
+        seeds = list({genome.key(): genome for genome in seeds}.values())
     while len(seeds) < size:
         seeds.append(var.random())
     return seeds[:size]
@@ -378,6 +422,8 @@ def _seed_population(ws, var: _Variation, size: int, warm) -> list[Genome]:
                     family=data.get("family", "xgboost"),
                 ),
             )
+    if var.priors is not None:
+        seeds.insert(0, var.make_genome(everything, first, var.params_for(first)))
     unique = list({g.key(): g for g in seeds}.values())
     while len(unique) < size:
         genome = var.random()
@@ -425,6 +471,8 @@ def search(
     budget: Budget,
     *,
     warm: list[dict] | None = None,
+    priors: dict[str, float] | None = None,
+    top_families: list[str] | None = None,
     on_event: Callable[[dict], None] | None = None,
     on_best: Callable[[dict | None], None] | None = None,
     on_generation: Callable[[dict], None] | None = None,
@@ -449,7 +497,15 @@ def search(
     if isinstance(family, str):
         family = get_family(family)
     legacy = family is None or (family.name == "xgboost" and not space and method == "genetic")
-    var = _Variation(ws, rng) if legacy else _FamilyVariation(ws, rng, family, space)
+    if priors is None:
+        priors = (resume or {}).get("priors")
+    if top_families is None:
+        top_families = (resume or {}).get("top_families")
+    var = (
+        _Variation(ws, rng, priors, top_families)
+        if legacy
+        else _FamilyVariation(ws, rng, family, space, priors, top_families)
+    )
     started = time.monotonic()
     sample = None if defaults_only or (family and not family.space()) else _sample(ws, rng)
     scored: dict[str, Entry] = {}
@@ -479,6 +535,9 @@ def search(
                 state["candidate_times"] = candidate_times
             if validation_folds:
                 state["validation_folds"] = validation_folds
+            if var.priors is not None:
+                state["priors"] = var.priors
+                state["top_families"] = var.birth_families
             on_checkpoint(state)
 
     def evaluate(genome: Genome, generation: int, rows=None) -> Entry:
@@ -516,6 +575,8 @@ def search(
                 generation,
                 "too slow" if getattr(exc, "too_slow", False) else f"failed: {exc}",
             )
+        if var.priors is not None:
+            entry.screened_families = len(set(genome.families) & set(var.birth_families))
         if evaluate_score:
             entry.elapsed_s = (
                 elapsed_s if elapsed_s is not None else time.monotonic() - candidate_started
@@ -565,6 +626,9 @@ def search(
                 data.get("nthread"),
                 data.get("cost_hint"),
                 data.get("phase"),
+                len(set(data["genome"]["families"]) & set(var.birth_families))
+                if var.priors is not None
+                else data.get("screened_families"),
             )
             scored[entry.genome.key()] = entry
         best = scored.get(resume.get("best_key"))

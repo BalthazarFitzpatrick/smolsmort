@@ -15,6 +15,7 @@ from smolsmort.forecast.families import get_family
 from smolsmort.forecast.pipeline import genome_from_dict, load_workspace
 from smolsmort.forecast.processes import watch_parent as watch_parent
 from smolsmort.forecast.requests import parse_request
+from smolsmort.forecast.screen import read_priors, read_top_families
 from smolsmort.forecast.search import Budget, search
 from smolsmort.forecast.spec import spec_from_dict
 from smolsmort.forecast.worker import _Run, _warm_start
@@ -148,6 +149,8 @@ def run(folder: Path, name: str) -> int:
                 method=selection.get("method", "genetic"),
                 space=selection.get("space"),
                 warm=warm,
+                priors=read_priors(folder) if ws.mode == "series" else None,
+                top_families=read_top_families(folder) if ws.mode == "series" else None,
                 resume=resume,
                 on_checkpoint=checkpoint,
                 on_event=event,
