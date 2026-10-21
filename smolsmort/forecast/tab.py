@@ -103,8 +103,9 @@ def _parse_spec(app, payload):
                 "last",
             ):
                 raise SpecError(f"unknown aggregation for column {column['name']!r}")
-            if "known" in column and type(column["known"]) is not bool:
-                raise SpecError("column.known must be a boolean")
+            for flag in ("known", "skip_missing"):
+                if flag in column and type(column[flag]) is not bool:
+                    raise SpecError(f"column.{flag} must be a boolean")
         return spec_from_dict(data)
     except (SpecError, TypeError, ValueError) as exc:
         raise RequestError(str(exc)) from exc

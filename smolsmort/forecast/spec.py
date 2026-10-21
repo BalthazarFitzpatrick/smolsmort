@@ -73,6 +73,14 @@ class Column:
     # entity mode: whether the value exists when a prediction is made. a column set later than the
     # anchor (a value recorded only once the outcome is known) must never become an input
     known: bool = True
+    # input shares and spread use only levels with a value
+    skip_missing: bool = False
+
+    def __post_init__(self):
+        if type(self.skip_missing) is not bool:
+            raise SpecError("column.skip_missing must be a boolean")
+        if self.skip_missing and self.role != "input":
+            raise SpecError("column.skip_missing is only supported for input columns")
 
 
 @dataclass(frozen=True)
@@ -148,6 +156,9 @@ class PrepSpec:
         """the spec half of the cache key; prep adds the source file's content hash"""
         data = asdict(self)
         data["mode"] = next(old for old, mode in MODE_ALIASES.items() if mode == self.mode)
+        for column in data["columns"]:
+            if not column["skip_missing"]:
+                column.pop("skip_missing")
         if self.holidays_country is None:
             data.pop("holidays_country")
         if self.censor and self.censor.event is None:
