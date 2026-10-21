@@ -87,6 +87,7 @@ def _parse_spec(app, payload):
                 "time",
                 "anchor",
                 "dimension",
+                "input",
                 "measure",
                 "target",
                 "ignore",
