@@ -137,7 +137,7 @@ def _lead_lag(measure_series, target_series) -> tuple[int, float, int]:
 
 
 def build_profile(spec: PrepSpec, table: dict, train: np.ndarray) -> dict:
-    """the profile of `table`'s training rows; nothing outside `train` is ever read. row mode:
+    """the profile of `table`'s training rows; nothing outside `train` is ever read. entity mode:
     pass bounds relabelled as of the train cut (splits.labels_as_of), as training will see them"""
     train = np.asarray(train, dtype=bool)
     target = spec.named("target")[0]
@@ -152,12 +152,12 @@ def build_profile(spec: PrepSpec, table: dict, train: np.ndarray) -> dict:
             reason = _leak(table[name][train], y) if name in table else None
             if reason:
                 profile["leaks"][name] = reason
-    if spec.mode == "row":
+    if spec.mode == "entity":
         if LOWER in table:
             open_rows = np.isfinite(table[LOWER][train]) & np.isinf(table[UPPER][train])
             profile["censored"] = float(open_rows.mean()) if len(open_rows) else 0.0
     else:
-        profile.update(_series_profile(spec, table, train, target))
+        profile.update(_timeseries_profile(spec, table, train, target))
     profile["genes"] = suggest_genes(spec, profile)
     return profile
 
@@ -173,7 +173,7 @@ def _series_totals(table, train, target):
     return steps, totals
 
 
-def _series_profile(spec, table, train, target) -> dict:
+def _timeseries_profile(spec, table, train, target) -> dict:
     target_series = _series_arrays(table, target, train)
     steps, totals = _series_totals(table, train, target)
     unit = _step_unit(spec, steps)
@@ -215,7 +215,7 @@ def suggest_genes(spec: PrepSpec, profile: dict) -> dict:
         if profile.get("censored", 0) > 0:
             objectives.append("aft")
     genes = {"objectives": objectives, "exclude": sorted(profile["leaks"])}
-    if spec.mode == "series":
+    if spec.mode == "timeseries":
         genes["period"] = profile.get("period")
         # outside the ~95% band a correlation of pure noise stays inside: 2 / sqrt(n)
         genes["measure_lags"] = {

@@ -4,7 +4,7 @@ measured 2026-10-09 on macos, python 3.13.13, statsforecast 2.1.1. target os: wi
 
 raw-series families use `cross_validation(h=b, step_size=1, n_windows=evaluation_step_count, refit=False)` per bucket. input ends at the phase's last evaluated target. predictions join exactly on series, target step and inclusive origin, preserving frame order. missing, duplicate or nonfinite matches fail the candidate. library history errors become named `PipelineError` failures, which the existing search records.
 
-future evaluation extends the input through the last future target with placeholder values. all evaluated origins stay at or before the last observed step; placeholders never enter an origin's training history. snaive calls production `_series_baseline`, including its origin-value fallback for buckets longer than the season. statistical families take no tunable parameters in u5; arima uses the spike's fixed caps.
+future evaluation extends the input through the last future target with placeholder values. all evaluated origins stay at or before the last observed step; placeholders never enter an origin's training history. snaive calls production `_timeseries_baseline`, including its origin-value fallback for buckets longer than the season. statistical families take no tunable parameters in u5; arima uses the spike's fixed caps.
 
 effective season length comes from the train-only profile, falling back to 1. scores include it in metrics; finished results and saved recipes include `season_length`. the existing xgboost fit implementation, recipe keys and golden leaderboard are unchanged.
 

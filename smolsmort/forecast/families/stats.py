@@ -166,7 +166,7 @@ class StatsFamily:
         nthread: int = 1,
         **options,
     ) -> StatsFitted:
-        from smolsmort.forecast.pipeline import PipelineError, _series_baseline
+        from smolsmort.forecast.pipeline import PipelineError, _timeseries_baseline
 
         available, reason = self.available()
         if not available:
@@ -176,7 +176,7 @@ class StatsFamily:
         notices = []
         try:
             if self.name == "snaive":
-                prediction = _series_baseline(x.frame, x.rows, x.bucket, x.season_length)
+                prediction = _timeseries_baseline(x.frame, x.rows, x.bucket, x.season_length)
             else:
                 with warnings.catch_warnings(record=True) as notices:
                     prediction = forecast_rows(x, self.name, nthread)

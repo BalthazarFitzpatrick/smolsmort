@@ -145,7 +145,7 @@ def visit_control_states(page, *, source, targets, run_id, capture, set_results_
 
     for name in ("regression", "classification"):
         if set_results_mode:
-            set_results_mode("series")
+            set_results_mode("timeseries")
         topic(name)
         tab(f"{name}-data")
         page.click(f"#{name}-data-source")
@@ -199,7 +199,7 @@ def visit_control_states(page, *, source, targets, run_id, capture, set_results_
         page.keyboard.press("Escape")
         for picker in ("breakdown", "group"):
             if picker == "group" and set_results_mode:
-                set_results_mode("row")
+                set_results_mode("entity")
                 page.click(f"#{name}-results-run")
                 page.locator(f'.menu-panel .menu-item[data-id="{run_id}"]').click()
                 page.locator(f"#{name}-group-head").wait_for()
@@ -211,7 +211,7 @@ def visit_control_states(page, *, source, targets, run_id, capture, set_results_
             page.keyboard.press("Escape")
 
     topic("regression")
-    page.select_option("#topic-flavour", "series")
+    page.select_option("#topic-flavour", "timeseries")
     tab("regression-data")
     page.click("#regression-setup-predict")
     for target in targets:

@@ -32,7 +32,7 @@ def make_request(folder, families, duration=15):
     truth = write_panel(folder)
     spec = PrepSpec(
         str(truth.path),
-        "series",
+        "timeseries",
         "regression",
         (
             Column("day", "time"),
@@ -135,7 +135,7 @@ def test_invalid_v2_request_is_rejected(changes):
 def test_empty_spaces_score_exactly_once(name, monkeypatch):
     module = importlib.import_module("smolsmort.forecast.search")
     ws = SimpleNamespace(
-        mode="row",
+        mode="entity",
         spec=SimpleNamespace(task="regression"),
         masks={"train": np.ones(20, dtype=bool)},
         families=["lag"],
@@ -278,7 +278,7 @@ def test_family_worker_refuses_torch(tmp_path, monkeypatch):
 def test_checkpoint_resume_skips_completed_scores_and_reproduces_search(monkeypatch):
     module = importlib.import_module("smolsmort.forecast.search")
     ws = SimpleNamespace(
-        mode="row",
+        mode="entity",
         masks={"train": np.ones(20, dtype=bool)},
         families=["x:measure"],
         profile={"genes": {"objectives": ["squared"]}},
@@ -322,7 +322,7 @@ def test_search_uses_provider_space_objectives_and_grid_overrides(monkeypatch):
         objectives=lambda task: ("custom",),
     )
     ws = SimpleNamespace(
-        mode="row",
+        mode="entity",
         spec=SimpleNamespace(task="regression"),
         masks={"train": np.ones(20, dtype=bool)},
         families=["lag"],
@@ -356,7 +356,7 @@ def test_grid_deadline_keeps_best_and_reports_time_cap(monkeypatch):
         objectives=lambda task: ("squared",),
     )
     ws = SimpleNamespace(
-        mode="row",
+        mode="entity",
         spec=SimpleNamespace(task="regression"),
         masks={"train": np.ones(20, dtype=bool)},
         families=["lag"],
@@ -386,7 +386,7 @@ def test_statistical_search_fits_one_real_candidate(tmp_path, monkeypatch, name)
     source = write_bike_daily(tmp_path, days=140)
     spec = PrepSpec(
         str(source),
-        "series",
+        "timeseries",
         "regression",
         (Column("dteday", "time"), Column("cnt", "target", aggregation="sum")),
         step="day",

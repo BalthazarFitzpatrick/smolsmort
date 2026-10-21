@@ -21,7 +21,7 @@ class SplitError(ValueError):
 
 
 @dataclass(frozen=True)
-class RowCuts:
+class EntityCuts:
     """train < val_start <= val < test_start <= test < test_end <= as_of"""
 
     val_start: dt.date
@@ -39,14 +39,14 @@ def _days(anchors) -> np.ndarray:
     return np.asarray(anchors).astype("datetime64[D]")
 
 
-def row_cuts(
+def entity_cuts(
     anchors,
     as_of: dt.date,
     *,
     maturity_weeks: int = MATURITY_WEEKS,
     val_weeks: int = VAL_WEEKS,
     test_weeks: int = TEST_WEEKS,
-) -> RowCuts:
+) -> EntityCuts:
     """test ends `maturity_weeks` before the export so its rows had time to resolve; maturity 0
     suits a target that is known the moment a row exists"""
     test_end = as_of - dt.timedelta(weeks=maturity_weeks)
@@ -58,7 +58,7 @@ def row_cuts(
             f"no rows before {val_start} to train on - history is shorter than "
             f"maturity {maturity_weeks} + val {val_weeks} + test {test_weeks} weeks"
         )
-    return RowCuts(val_start, test_start, test_end, as_of)
+    return EntityCuts(val_start, test_start, test_end, as_of)
 
 
 def labels_as_of(anchors, lower, upper, cut: dt.date, unit_days: float):
@@ -76,7 +76,7 @@ def labels_as_of(anchors, lower, upper, cut: dt.date, unit_days: float):
 
 
 @dataclass(frozen=True)
-class SeriesCuts:
+class TimeseriesCuts:
     """step indices into the sorted distinct steps: train < val_start <= val < test_start <= test"""
 
     val_start: int
@@ -85,7 +85,7 @@ class SeriesCuts:
     folds: tuple[tuple[int, int], ...] = ()
 
 
-def series_cuts(steps: int, horizon: int, *, min_train: int = 26) -> SeriesCuts:
+def timeseries_cuts(steps: int, horizon: int, *, min_train: int = 26) -> TimeseriesCuts:
     """test = max(horizon, 13) steps, val = max(26, 2 x horizon) steps, shortened when the history
     cannot hold them and still leave `min_train` steps to learn from"""
     test = max(horizon, 13)
@@ -104,4 +104,6 @@ def series_cuts(steps: int, horizon: int, *, min_train: int = 26) -> SeriesCuts:
     fold_steps = max(1, max(26, 2 * horizon) // FOLDS)
     count = min(FOLDS, max(1, val // fold_steps))
     edges = [val_start + i * val // count for i in range(count + 1)]
-    return SeriesCuts(val_start, test_start, steps, tuple(zip(edges[:-1], edges[1:], strict=True)))
+    return TimeseriesCuts(
+        val_start, test_start, steps, tuple(zip(edges[:-1], edges[1:], strict=True))
+    )

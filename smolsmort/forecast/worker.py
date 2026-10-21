@@ -154,7 +154,7 @@ def run(folder: Path) -> int:
                 "nthread": nthread,
             }
         )
-        if ws.mode == "series" and not (folder / "screen.json").exists():
+        if ws.mode == "timeseries" and not (folder / "screen.json").exists():
             job.save("screen.json", screen_families(ws, seed=budget.seed, nthread=nthread))
         warm = _warm_start(request.get("warm_from"))
         if request.get("recipe"):
@@ -178,8 +178,8 @@ def run(folder: Path) -> int:
                 ws,
                 budget,
                 warm=warm,
-                priors=read_priors(folder, spec) if ws.mode == "series" else None,
-                top_families=read_top_families(folder, spec) if ws.mode == "series" else None,
+                priors=read_priors(folder, spec) if ws.mode == "timeseries" else None,
+                top_families=read_top_families(folder, spec) if ws.mode == "timeseries" else None,
                 on_event=job.event,
                 on_best=job.record_best,
                 on_generation=job.record_generation,
@@ -283,7 +283,7 @@ def _write_result(folder, spec, result, final):
             phase_history=coordinator.get("phase_history", []),
             elapsed=max(0, time.time() - coordinator["started_at"]),
         )
-    if spec.mode == "series":
+    if spec.mode == "timeseries":
         summary["excluded_series"] = final.get("excluded_series", [])
         for key in ("fold_scores", "fold_count", "val_error", "val_test_gap"):
             summary[key] = final.get(key)

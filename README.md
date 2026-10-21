@@ -120,18 +120,21 @@ another width is resampled to it, run at the weights' own downscale, and the box
 frame's own pixels. A `heatmap` set must use one capture resolution - mixing is refused, since the
 object is a different pixel size on each - while `box` scales every frame to one working size.
 
-### Prediction topics: regression and classification
+### prediction topics: regression and classification
 
-Beside the vision loop sit two more topics, picked from the first row of the page, each with its own
-tabs and a dropdown for the backend and flavour. They predict from a table rather than from frames:
-a CSV or JSON file, one role per column (time or anchor, dimension, measure, target, ignore).
+beside the vision loop sit two more topics, picked from the first row of the page, each with its own
+tabs and a dropdown for the flavour. they predict from a table rather than from frames:
+a csv or json file, one role per column (time or anchor, dimension, measure, target, ignore).
 
-- **Per row.** Each row is one case - an order, a campaign - and the target is one value per row:
-  a number (regression) or a class (classification). Rows without a target get a prediction and an
-  80% interval. A target that is a waiting time can be *censored*: a row still open says "at least
-  this long", and the search can fit that directly rather than pretend the row does not exist.
-- **Time series.** A measure per time step and per combination of dimensions, forecast over a
-  horizon. Future rows are every combination of the chosen dimensions, crossed with the steps
+the two modes are `timeseries` (time series): one row per series per time step, predicting
+quantities over time; and `entity`: one row per thing, such as an order, ticket or customer, with
+its own attributes and one outcome, anchored at its start date.
+
+- **entity.** the outcome is a number (regression) or a class (classification). rows without a
+  target get a prediction and an 80% interval. a waiting-time target can be *censored*: an open
+  entity says "at least this long", and the search can fit that directly.
+- **time series.** a measure per time step and per combination of dimensions, forecast over a
+  horizon. future rows are every combination of the chosen dimensions, crossed with the steps
   ahead; measures are never extended into the future, only read from the past.
 
 Nobody judges these by hand. **The holdout is the judge:** rows are cut by time into training,
@@ -143,19 +146,19 @@ band coverage, band width, the target's own spread, and test history remain plai
 the accuracy reading, with no pass thresholds.
 
 feature family names show the source column and, for values built over time, the date column.
-these examples use target `unit`, time `need_by_date`, and row anchor `created_at`; actual names
+these examples use target `unit`, time `need_by_date`, and entity anchor `created_at`; actual names
 come from the spec. source names escape reserved operation words and delimiter characters
 with percent encoding.
 
 | family kind | naming rule | example |
 |---|---|---|
-| target history, series measures and inputs | `<column>@<date>:<operation>` | `unit@need_by_date:lag+0`, `lead_days@need_by_date:measure`, `site@need_by_date:mix` |
+| target history, timeseries measures and inputs | `<column>@<date>:<operation>` | `unit@need_by_date:lag+0`, `lead_days@need_by_date:measure`, `site@need_by_date:mix` |
 | calendar | `<date>:cal:<part>` | `need_by_date:cal:week`, `created_at:cal:trend` |
-| dimensions and row values | `<column>:<operation>` | `product_group:dim`, `site:freq`, `lead_days:measure`, `lead_days:log` |
+| dimensions and entity values | `<column>:<operation>` | `product_group:dim`, `site:freq`, `lead_days:measure`, `lead_days:log` |
 
 saved recipes and search files with older family names are mapped using their spec. feature
 columns, values and search behaviour stay the same. the full family list is in
-[series feature candidates](docs/GUIDE.md#16-the-regression-and-classification-topics).
+[timeseries feature candidates](docs/GUIDE.md#16-the-regression-and-classification-topics).
 
 ### Sweep, and where the loop closes
 
@@ -392,8 +395,8 @@ verdict on every run is what tells you whether they served:
 | setting | default | where it lives |
 |---|---|---|
 | horizon buckets | one model each for steps 1, 2-4, 5-8, 9-13, 14-26 | `forecast.features.BUCKETS` |
-| row maturity before test | 26 weeks | `forecast.splits.MATURITY_WEEKS` |
-| validation / test length (series) | max(26, 2 x horizon) / max(horizon, 13) steps | `forecast.splits.series_cuts` |
+| entity maturity before test | 26 weeks | `forecast.splits.MATURITY_WEEKS` |
+| validation / test length (timeseries) | max(26, 2 x horizon) / max(horizon, 13) steps | `forecast.splits.timeseries_cuts` |
 | search population / elite / plateau | 16 / 3 / 5 generations | `forecast.search.POPULATION`, `ELITE`, `PLATEAU` |
 | search time cap | 20 minutes | `forecast.search.TIME_CAP` |
 | v2 family pruning threshold | `prune_sigma=1.0` | `forecast.requests.parse_request`, `forecast.runs.start_run` |

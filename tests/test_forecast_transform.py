@@ -16,13 +16,13 @@ from test_forecast_runs_v2 import make_request
 
 from smolsmort.forecast import evaluate as ev
 from smolsmort.forecast.families import get_family
-from smolsmort.forecast.features import buckets_for, series_features, step_index
+from smolsmort.forecast.features import buckets_for, step_index, timeseries_features
 from smolsmort.forecast.pipeline import (
     PipelineError,
     Workspace,
-    _series_baseline,
-    _series_fit,
-    _series_predict,
+    _timeseries_baseline,
+    _timeseries_fit,
+    _timeseries_predict,
     finish,
     genome_from_dict,
     load_workspace,
@@ -50,7 +50,7 @@ def workspace(tmp_path):
     scaffold = {SERIES: np.repeat(["a", "b"], horizon), STEP: np.tile(future, 2)}
     spec = PrepSpec(
         source="synthetic.csv",
-        mode="series",
+        mode="timeseries",
         task="regression",
         step="day",
         horizon=horizon,
@@ -62,7 +62,7 @@ def workspace(tmp_path):
     ws.panel, ws.frames, ws.series_masks = panel, {}, {}
     ws.test_steps = 13
     for bucket in buckets_for(horizon):
-        frame = series_features(
+        frame = timeseries_features(
             spec, panel, scaffold, bucket, "day", panel[STEP] < days[100], period=7
         )
         ws.frames[bucket] = frame
@@ -111,7 +111,7 @@ def test_logdiff_uses_each_rows_origin_value():
     np.testing.assert_array_equal(transform.fwd(values, base), np.log1p(values) - np.log1p(base))
 
 
-def test_series_base_matches_every_origin_and_ignores_later_values(workspace):
+def test_timeseries_base_matches_every_origin_and_ignores_later_values(workspace):
     ws = workspace
     scaffold = {
         SERIES: np.repeat(["a", "b"], ws.spec.horizon),
@@ -135,7 +135,7 @@ def test_series_base_matches_every_origin_and_ignores_later_values(workspace):
             lookup[(key, index)] for key, index in zip(frame.series, origin_index, strict=True)
         ]
         np.testing.assert_array_equal(frame.base, expected)
-        changed = series_features(
+        changed = timeseries_features(
             ws.spec,
             changed_panel,
             scaffold,
@@ -195,7 +195,7 @@ def test_lag_family_receives_transformed_targets(workspace, monkeypatch, name):
 
     monkeypatch.setattr(family, "fit", fit)
     genome = make_genome(["y@day:lag+0"], "squared", {"alpha": 1.0}, family="ridge", transform=name)
-    _series_fit(ws, genome, frame, rows, 1)
+    _timeseries_fit(ws, genome, frame, rows, 1)
     order = np.flatnonzero(rows)[np.argsort(frame.step[rows], kind="stable")]
 
     expected = get_transform(name).fwd(frame.y[order], frame.base[order])
@@ -225,7 +225,7 @@ def test_stats_fit_sees_log_history_and_returns_raw_cutoff_predictions(
 
     monkeypatch.setattr(family, "fit", fit)
     genome = make_genome([], "squared", {}, family="ets", transform=name)
-    predicted = _series_predict(ws, genome, frame, fit_rows, eval_rows, bucket, 1)
+    predicted = _timeseries_predict(ws, genome, frame, fit_rows, eval_rows, bucket, 1)
 
     visible = ws.panel[STEP] <= frame.step[eval_rows].max()
     np.testing.assert_array_equal(captured["history"], np.log1p(original_values[visible]))
@@ -276,7 +276,7 @@ def test_real_families_score_and_finish_on_raw_scale(workspace, name, family_nam
     baseline, actual = [], []
     for bucket, frame in ws.frames.items():
         rows = ws.series_masks[bucket]["test"]
-        baseline.append(_series_baseline(frame, rows, bucket, 7))
+        baseline.append(_timeseries_baseline(frame, rows, bucket, 7))
         actual.append(frame.y[rows])
     assert final["baseline_error"] == ev.wape(np.concatenate(actual), np.concatenate(baseline))
 
@@ -403,7 +403,7 @@ def test_logdiff_refuses_positive_only_fit_objectives(workspace, objective):
     genome = make_genome(["y@day:lag+0"], objective, {}, transform="logdiff")
 
     with pytest.raises(PipelineError, match=rf"logdiff.*signed-target objective.*{objective}"):
-        _series_fit(ws, genome, ws.frames[bucket], ws.series_masks[bucket]["train"], 1)
+        _timeseries_fit(ws, genome, ws.frames[bucket], ws.series_masks[bucket]["train"], 1)
 
 
 def test_logdiff_search_filters_positive_only_objectives_without_changing_none(workspace):
@@ -468,7 +468,7 @@ def test_calendar_base_uses_exact_origin_position(unit):
     scaffold = {SERIES: np.repeat(["a", "b"], horizon), STEP: np.tile(future, 2)}
     spec = PrepSpec(
         "calendar.csv",
-        "series",
+        "timeseries",
         "regression",
         (Column("day", "time"), Column("y", "target", "sum")),
         step=unit,
@@ -481,7 +481,7 @@ def test_calendar_base_uses_exact_origin_position(unit):
         )
     }
     for bucket in buckets_for(horizon):
-        frame = series_features(spec, panel, scaffold, bucket, unit, panel[STEP] < steps[40])
+        frame = timeseries_features(spec, panel, scaffold, bucket, unit, panel[STEP] < steps[40])
         origins = step_index(frame.step, unit) - bucket[1]
         expected = [
             lookup[(key, position)] for key, position in zip(frame.series, origins, strict=True)
