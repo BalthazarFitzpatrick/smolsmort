@@ -9,7 +9,7 @@ import json
 from dataclasses import asdict, dataclass
 from typing import Literal
 
-Role = Literal["time", "anchor", "dimension", "measure", "target", "ignore"]
+Role = Literal["time", "anchor", "dimension", "input", "measure", "target", "ignore"]
 Mode = Literal["row", "series"]
 Task = Literal["regression", "classification"]
 Aggregation = Literal["sum", "mean", "median", "min", "max", "count", "last"]
@@ -79,6 +79,8 @@ class PrepSpec:
         names = [c.name for c in self.columns]
         if len(set(names)) != len(names):
             raise SpecError("a column appears twice in the spec")
+        if self.mode == "row" and "input" in roles:
+            raise SpecError("the input role is only supported in series mode")
         if "target" not in roles:
             raise SpecError("the spec names no target column")
         clock = "time" if self.mode == "series" else "anchor"

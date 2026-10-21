@@ -114,6 +114,8 @@ def _source_facts(con, read_expr: str, spec: PrepSpec, source_bytes: bytes) -> d
 def _is_complete(spec: PrepSpec, folder: Path) -> bool:
     if not (folder / "prep.json").exists():
         return False
+    if spec.named("input") and not (folder / "inputs.parquet").exists():
+        return False
     return all((folder / name).exists() for name in FILES[spec.mode])
 
 
@@ -308,6 +310,7 @@ def _fill_expr(col: str, aggregation: str) -> str:
 
 def _prep_series(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[str, dict]:
     dims = spec.named("dimension")
+    inputs = spec.named("input")
     time_col = spec.named("time")[0]
     col_by_name = {c.name: c for c in spec.columns}
     measure_names = spec.named("measure") + spec.named("target")
@@ -335,6 +338,9 @@ def _prep_series(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[str, d
     ]
 
     typed_cols = [f"CAST({_quote(c)} AS VARCHAR) AS {_quote(c)}" for c in dims]
+    typed_cols += [
+        f"COALESCE(CAST({_quote(c)} AS VARCHAR), '(none)') AS {_quote(c)}" for c in inputs
+    ]
     # a count reads presence, not value, so a text key (an order id) stays text
     typed_cols += [
         f"CAST({_quote(c)} AS "
@@ -359,6 +365,25 @@ def _prep_series(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[str, d
         "CREATE OR REPLACE TEMP VIEW keyed AS\n"
         f"SELECT *, {_series_expr(dims)} AS {series_q} FROM grouped;"
     )
+
+    if inputs:
+        target = spec.named("target")[0]
+        target_agg = _agg_expr(target, col_by_name[target].aggregation, time_q)
+        if col_by_name[target].aggregation == "sum":
+            target_agg = f"COALESCE({target_agg}, 0)"
+        # keep each input's levels at the output grain without expanding the panel or scaffold
+        input_queries = [
+            f"SELECT {_series_expr(dims)} AS {series_q}, {step_q}, "
+            f"{_literal(c)} AS __column, {_quote(c)} AS __level, "
+            f"COUNT(*) AS rows, {target_agg} AS target\n"
+            f"FROM typed\nGROUP BY {_series_expr(dims)}, {step_q}, {_quote(c)}"
+            for c in inputs
+        ]
+        stmts.append(
+            "CREATE OR REPLACE TEMP VIEW inputs AS\n" + "\nUNION ALL\n".join(input_queries) + ";"
+        )
+        inputs_path = str(out / "inputs.parquet")
+        stmts.append(f"COPY (SELECT * FROM inputs) TO {_literal(inputs_path)} (FORMAT PARQUET);")
 
     dims_and_series = f"{series_q}" + (f", {dims_sel}" if dims else "")
     stmts.append(

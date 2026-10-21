@@ -466,6 +466,12 @@ the work:
 cache as `prep.sql`. the cache key is the spec plus the file's content hash, so changing a role, an
 aggregation or the file re-runs prep and nothing stale survives.
 
+series specs may mark categorical columns as `input` to keep detail beyond the output grain.
+only `dimension` columns define series and scaffold rows; inputs never expand either table.
+prep writes `inputs.parquet` with each input's levels, row counts and the first target's
+aggregation per series and step; null levels become `(none)`. this table is kept for later
+feature generation. the role is unavailable in row mode.
+
 **series feature candidates.** each horizon bucket reads target and measure values only through
 its origin, `target step - bucket end`. the search can choose each family below independently:
 
