@@ -502,9 +502,6 @@ step positions. momentum uses the same mean threshold within each half-window; a
 uses two equal halves. an old `roll:w` recipe still selects exactly mean, std, max and zeros,
 in their original order. the four new statistics require their own family names.
 
-until search consumes screening priors, fresh search births and seeds use the legacy families,
-including `roll:w` aliases. mutation can add any family from the full candidate pool.
-
 **family screen.** series runs write `screen.json` before search. only rows before the first
 validation fold are scored against seasonal-naive residuals: the latest same-season value
 available at the bucket's origin, using the detected or calendar season (origin value for yearly
@@ -517,8 +514,13 @@ priors scale relative to the highest score: `p_on = 0.1 + 0.8 * (score / top_sco
 `[0.1, 0.9]`. zero scores or a zero top score start at 0.1; equal positive scores all get 0.9.
 a seeded sample of about 10% of all families from the bottom half gets
 `wildcard: true` and `p_on` raised to at least 0.5. each entry stores `family`, `score`, `rank_corr`, `gain`,
-`p_on` and `wildcard`. these priors are saved for the later bouquet search; search does not use
-them yet. validation and test targets stay sealed throughout the screen.
+`p_on` and `wildcard`. validation and test targets stay sealed throughout the screen.
+
+bouquet search uses each family's `p_on` for fresh births and weights mutations toward on with
+`p_on` and off with `1 - p_on`. its top-k set contains all families with `p_on >= 0.5`, padded
+to at least three with the highest remaining priors when available. an extra initial genome
+uses this set, as do default, grid and seeded genomes that previously used the birth families.
+without `screen.json`, row mode and older runs keep their legacy births, seeds and mutations.
 
 **validation.** series validation splits the existing pre-test validation block into three disjoint windows.
 each window fits on all known steps before its start; cached lag features retain their existing

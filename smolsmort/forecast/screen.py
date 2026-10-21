@@ -1,8 +1,10 @@
-"""train-only feature-family priors, saved before search for future bouquet sampling"""
+"""train-only feature-family priors, saved before search for bouquet sampling"""
 
 from __future__ import annotations
 
 import importlib
+import json
+from pathlib import Path
 
 import numpy as np
 
@@ -11,6 +13,29 @@ from smolsmort.forecast.features import STEP_FEATURES, step_index
 from smolsmort.forecast.importance import measure_importance
 from smolsmort.forecast.pipeline import Workspace, _validation_masks
 from smolsmort.forecast.spec import SERIES, STEP
+
+
+def read_priors(folder: Path) -> dict[str, float] | None:
+    """older runs without a screen keep the legacy search"""
+    try:
+        ranking = json.loads((folder / "screen.json").read_text())
+    except FileNotFoundError:
+        return None
+    return {entry["family"]: entry["p_on"] for entry in ranking} or None
+
+
+def read_top_families(folder: Path) -> list[str] | None:
+    """the screen's strongest families for the seed genome; wildcards share 0.5 but are not top"""
+    try:
+        ranking = json.loads((folder / "screen.json").read_text())
+    except FileNotFoundError:
+        return None
+    screened = sorted(
+        (entry for entry in ranking if not entry.get("wildcard")),
+        key=lambda entry: (-entry["score"], entry["family"]),
+    )
+    strong = [entry["family"] for entry in screened if entry["p_on"] >= 0.5]
+    return strong if len(strong) >= 3 else [entry["family"] for entry in screened[:3]] or None
 
 
 def _rank_values(values: np.ndarray) -> np.ndarray:
