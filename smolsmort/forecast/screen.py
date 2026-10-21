@@ -131,12 +131,9 @@ def _fit_gain(x, residual, columns, seed):
 
 
 def screen_families(ws: Workspace, *, seed: int = 0, max_rows: int = 20_000) -> list[dict]:
-    """rank candidate families using only rows before the first validation fold.
-
-    pooled bucket columns share one small fit; rank correlation is the strongest column per
-    family, gain is the family's share of total gain. only the top decile gets priors above 0.35;
-    a seeded tenth of all families, drawn from the bottom half, remain wildcards
-    """
+    """rank families on pre-validation rows by blended max rank correlation and gain share.
+    priors are 0.1 + 0.8 * score / top_score, clipped to [0.1, 0.9]; zero scores start at 0.1.
+    a seeded 10% of families from the bottom half get priors raised to at least 0.5"""
     if ws.mode != "series":
         raise ValueError("feature screening requires series mode")
     if max_rows < 1:
@@ -161,11 +158,12 @@ def screen_families(ws: Workspace, *, seed: int = 0, max_rows: int = 20_000) -> 
             (entry["rank_corr"] + entry["gain"]) / 2 if has_gain else entry["rank_corr"]
         )
     ranked = sorted(scores.values(), key=lambda entry: (-entry["score"], entry["family"]))
-    values = np.array([entry["score"] for entry in ranked])
-    ranks = _rank_values(values) / max(len(ranked) - 1, 1)
-    for entry, rank in zip(ranked, ranks, strict=True):
+    top_score = ranked[0]["score"]
+    for entry in ranked:
         entry["p_on"] = (
-            float(np.interp(rank, [0, 0.9, 1], [0.1, 0.35, 0.9])) if entry["score"] > 0 else 0.1
+            float(np.clip(0.1 + 0.8 * (entry["score"] / top_score), 0.1, 0.9))
+            if entry["score"] > 0 and top_score > 0
+            else 0.1
         )
         entry["wildcard"] = False
     count = int(np.floor(len(ranked) * 0.1 + 0.5))

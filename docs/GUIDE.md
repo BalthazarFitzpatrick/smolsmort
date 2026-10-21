@@ -513,10 +513,10 @@ across horizon buckets, using at most 20,000 sampled
 training rows. each family gets its strongest absolute spearman correlation and its share of
 gain from one 40-round lightgbm fit, blended equally; without lightgbm or with fewer than 20
 usable rows, correlation alone is used.
-rank percentiles map linearly through `(0, 0.1)`, `(0.9, 0.35)` and `(1, 0.9)`, reserving priors
-above 0.35 for the top decile. tied scores share a rank; zero scores start at 0.1.
+priors scale relative to the highest score: `p_on = 0.1 + 0.8 * (score / top_score)`, clipped to
+`[0.1, 0.9]`. zero scores or a zero top score start at 0.1; equal positive scores all get 0.9.
 a seeded sample of about 10% of all families from the bottom half gets
-`wildcard: true` and `p_on` raised to 0.5. each entry stores `family`, `score`, `rank_corr`, `gain`,
+`wildcard: true` and `p_on` raised to at least 0.5. each entry stores `family`, `score`, `rank_corr`, `gain`,
 `p_on` and `wildcard`. these priors are saved for the later bouquet search; search does not use
 them yet. validation and test targets stay sealed throughout the screen.
 

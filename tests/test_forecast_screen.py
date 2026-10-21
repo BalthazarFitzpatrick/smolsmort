@@ -75,7 +75,11 @@ def noise_median(ranking):
 def test_planted_measure_ranks_first(workspace):
     ranking = screen_families(workspace)
     assert ranking[0]["family"] in {"lead:orders", "measure:orders"}
-    assert noise_median(ranking) <= 0.35
+    assert ranking[0]["p_on"] == 0.9
+    assert all(
+        row["p_on"] <= 0.35 for row in ranking if ":noise_" in row["family"] and not row["wildcard"]
+    )
+    assert noise_median(ranking) <= 0.2
     assert [row["score"] for row in ranking] == sorted(
         (row["score"] for row in ranking), reverse=True
     )
@@ -190,6 +194,14 @@ def test_constant_and_missing_features_share_finite_priors(workspace):
     assert all(row["score"] == row["rank_corr"] == row["gain"] == 0 for row in ranking)
     assert all(row["p_on"] == (0.5 if row["wildcard"] else 0.1) for row in ranking)
     json.dumps(ranking, allow_nan=False)
+
+
+def test_equal_positive_scores_get_maximum_priors(workspace, monkeypatch):
+    monkeypatch.setattr(screen, "_rank_correlation", lambda values, residual: 0.5)
+    monkeypatch.setattr(screen, "_fit_gain", lambda *args: None)
+    ranking = screen_families(workspace)
+    assert all(row["score"] == 0.5 for row in ranking)
+    assert all(row["p_on"] == 0.9 for row in ranking if not row["wildcard"])
 
 
 def test_spearman_uses_average_ranks_and_pairwise_finite_values():
