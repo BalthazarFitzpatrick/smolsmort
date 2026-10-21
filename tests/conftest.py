@@ -24,3 +24,8 @@ if sys.platform == "darwin":
 @pytest.fixture(autouse=True)
 def isolate_forecast_run_lock(tmp_path, monkeypatch):
     monkeypatch.setenv("SMOLSMORT_RUN_LOCK", str(tmp_path / "forecast.lock"))
+
+
+@pytest.fixture(autouse=True)
+def isolate_forecast_machine_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("SMOLSMORT_FORECAST_CONFIG", str(tmp_path / "forecast.toml"))

@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 import re
 
+from smolsmort.forecast.machine_config import load_machine_config
+
 
 def parse_request(request: dict) -> dict:
     if "version" not in request:
@@ -39,7 +41,19 @@ def parse_request(request: dict) -> dict:
         type(request["nthread"]) is not int or request["nthread"] < 1
     ):
         raise ValueError("nthread must be a positive integer")
-    concurrency = request.get("max_concurrent_families", 1)
+    explicit_concurrency = request.get(
+        "_max_concurrent_families_explicit", "max_concurrent_families" in request
+    )
+    if type(explicit_concurrency) is not bool or (
+        "_max_concurrent_families_explicit" in request and "max_concurrent_families" not in request
+    ):
+        raise ValueError("_max_concurrent_families_explicit must be a boolean with a resolved cap")
+    # persisted requests keep their resolved cap; workers need no live config to validate them
+    concurrency = (
+        request["max_concurrent_families"]
+        if "max_concurrent_families" in request
+        else load_machine_config()["max_concurrent_families"]
+    )
     if type(concurrency) is not int or concurrency < 1:
         raise ValueError("max_concurrent_families must be a positive integer")
     fraction = request.get("candidate_limit_fraction", 0.25)
@@ -78,6 +92,7 @@ def parse_request(request: dict) -> dict:
         "transform": transform,
         "ensemble": ensemble,
         "max_concurrent_families": concurrency,
+        "_max_concurrent_families_explicit": explicit_concurrency,
         "candidate_limit_fraction": fraction,
         "plateau": plateau,
         "min_generations": min_generations,

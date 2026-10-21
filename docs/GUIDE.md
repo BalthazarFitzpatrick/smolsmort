@@ -590,15 +590,56 @@ stores `finish_estimate_s`, `finish_reserve_s`, and `search_deadline` for inspec
 resume keeps the original run deadline and restores checkpointed candidates;
 time spent stopped still consumes the wall-clock budget.
 
-families run one at a time by default (`max_concurrent_families=1`); the models
+families run one at a time without a machine config (`max_concurrent_families=1`); the models
 page keeps an opt-in parallel toggle. the run resolves `nthread` once (all logical
-cores when omitted), then uses it for screening, each sequential family, and final
-fits. `coordinator.json` and `result.json` record the machine, library versions,
+cores when omitted), then uses it for screening and final fits. family searches
+use the machine thread setting below, or split that total among active families.
+`coordinator.json` and `result.json` record the machine, library versions,
 thread count, and phase history with finish start/end. each family's `wall_s`
 sums its actual search slices; `candidate_s` sums candidate fit timings. parallel
 families overlap, so their summed wall time can exceed the run's elapsed time.
 if a crash loses a slice's stop timestamp, its `wall_s` and the family total are
 `null`; resume does not count downtime as fitting time.
+
+#### machine forecast config
+
+set `SMOLSMORT_FORECAST_CONFIG` to choose the file. otherwise macos/linux use
+`$XDG_CONFIG_HOME/smolsmort/forecast.toml`, falling back to
+`~/.config/smolsmort/forecast.toml`; windows uses `%APPDATA%\smolsmort\forecast.toml`.
+
+```toml
+max_concurrent_families = 3
+threads_per_family = 3
+calibrated_at = "2026-10-21T12:00:00+00:00"
+
+[calibration]
+"1" = 8.0
+"3" = 5.5
+```
+
+both parallelism keys must be positive integers. an explicit request cap wins over
+the config; the built-in cap is 1. `threads_per_family` is optional: when set, each
+family keeps that count, limited so `cap * threads <= min(nthread, logical cores)`.
+if the cap exceeds that budget, it is reduced too. without it, workers share the
+total and gain released threads. `calibrated_at` and the `calibration` table are
+optional; table keys are thread counts and values are positive finite seconds.
+the machine block records `config_path` and the effective `config_values`; resume
+keeps the recorded allocation. invalid files report their path and invalid setting.
+
+```sh
+uv run smolsmort forecast calibrate --threads 1,2,3,5,10 --max-families 3 --write
+```
+
+calibration fits and predicts on a fixed weekly panel with about 2,000 training
+rows and 60 features. it sums xgboost and lightgbm median times from three repeats
+after a warm-up per family/thread count; lightgbm is skipped when unavailable.
+thread counts are limited to logical cores, with 1 always measured. for each cap
+`c` from 1 to `min(cores, max_families)`, throughput is
+`c / time(cores // c)`, using the nearest lower measured thread count when needed.
+the highest throughput wins; ties prefer fewer families. `--max-families` defaults
+to 3 for xgboost, lightgbm, and ridge; ridge is not timed. the recommendation uses
+`threads_per_family = cores // cap`. omit `--write` to only print the table and
+recommendation; `--write` saves settings and timings, keeping unknown toml keys.
 
 forecast runs share an exclusive lock, so searches, warm starts, and refits wait
 in `queued` state while another run holds it. a new run's budget starts after

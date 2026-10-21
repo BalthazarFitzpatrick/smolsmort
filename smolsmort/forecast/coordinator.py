@@ -14,6 +14,11 @@ import numpy as np
 from smolsmort.forecast.families import get_family
 from smolsmort.forecast.family_worker import read_json
 from smolsmort.forecast.machine import describe_machine
+from smolsmort.forecast.machine_config import (
+    forecast_config_path,
+    load_machine_config,
+    resolve_parallelism,
+)
 from smolsmort.forecast.pipeline import genome_from_dict
 from smolsmort.forecast.processes import is_process_alive
 from smolsmort.forecast.search import Entry, _significant
@@ -32,9 +37,17 @@ def initialize_state(folder, request, *, started_at=None):
     }
     if "nthread" not in state:
         state["nthread"] = request.get("nthread") or os.cpu_count() or 1
-    if "machine" not in state:
-        state["machine"] = describe_machine(
-            state["nthread"], request.get("max_concurrent_families", 1)
+    if "config_values" not in state.get("machine", {}):
+        path = forecast_config_path()
+        values = resolve_parallelism(
+            request, load_machine_config(path), state["nthread"], os.cpu_count() or 1
+        )
+        if "machine" not in state:
+            state["machine"] = describe_machine(state["nthread"], values["max_concurrent_families"])
+        state["machine"].update(
+            max_concurrent_families=values["max_concurrent_families"],
+            config_path=str(path),
+            config_values=values,
         )
     state.setdefault(
         "phase_history", [{"phase": state["phase"], "started_at": state["started_at"]}]
@@ -187,7 +200,9 @@ def launch_families(folder, request, job):
     search_deadline = min(deadline, state["started_at"] + request["time_budget_s"] * 0.7)
     search_span = search_deadline - state["started_at"]
     states = state["families"]
-    cap = request.get("max_concurrent_families", 1)
+    config_values = state["machine"]["config_values"]
+    cap = config_values["max_concurrent_families"]
+    configured_threads = config_values["threads_per_family"]
     total_threads = state["nthread"]
     calibration = read_json(folder / "cost-calibration.json", {})
     orphan_pids = {
@@ -365,7 +380,7 @@ def launch_families(folder, request, job):
         allocations = {}
 
         def split_threads():
-            nthread = max(1, total_threads // max(1, len(active)))
+            nthread = configured_threads or max(1, total_threads // max(1, len(active)))
             for name in active:
                 if states[name].get("nthread") != nthread:
                     job.save(f"families/{name}/thread.json", {"nthread": nthread})
@@ -417,7 +432,9 @@ def launch_families(folder, request, job):
                     states[name].update(
                         state="running", phase=state["phase"], slice_s=allocation["slice_s"]
                     )
-                    nthread = max(1, total_threads // min(cap, len(active) + len(queue) + 1))
+                    nthread = configured_threads or max(
+                        1, total_threads // min(cap, len(active) + len(queue) + 1)
+                    )
                     allocation["nthread"] = nthread
                     job.save(
                         f"families/{name}/slice.json",
