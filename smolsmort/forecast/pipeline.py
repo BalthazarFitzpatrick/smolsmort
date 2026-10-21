@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 
 from smolsmort.forecast import evaluate as ev
+from smolsmort.forecast.aggregate import build_curve_table
 from smolsmort.forecast.families import get_family
 from smolsmort.forecast.features import (
     buckets_for,
@@ -755,7 +756,7 @@ def _finish_entities(ws, genome, nthread) -> dict:
             anchor = ws.table[ANCHOR][rows].astype("datetime64[D]")
             out["predicted_date"] = anchor + (pred * days).round().astype("timedelta64[D]")
     return {
-        **({"curves": curves} if curves is not None else {}),
+        **({"curves": curves, "curve": build_curve_table(curves)} if curves is not None else {}),
         "verdict": verdict,
         "band": None if band is None else band.__dict__,
         "test": {
