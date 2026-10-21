@@ -18,7 +18,7 @@ SOURCE = Path("/Users/fabianzimmer/Documents/dev/ai_lab/smolsmort/sample_data/bi
 def bike_workspace(source=SOURCE, unit="day", horizon=30):
     spec = PrepSpec(
         source=str(source),
-        mode="series",
+        mode="timeseries",
         task="regression",
         columns=(Column("dteday", "time"), Column("cnt", "target", "sum")),
         step=unit,

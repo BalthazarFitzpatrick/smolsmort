@@ -17,6 +17,7 @@ from smolsmort.forecast.machine import describe_machine
 from smolsmort.forecast.pipeline import genome_from_dict
 from smolsmort.forecast.processes import is_process_alive
 from smolsmort.forecast.search import Entry, _significant
+from smolsmort.forecast.spec import normalize_mode
 
 GRACE_S = 2.0
 SHORT_BUDGET_S = 1800
@@ -174,8 +175,9 @@ def estimate_finish_seconds(folder, names, calibration, request):
             return None
         costs.append(max(estimates))
     # test and forecast fits cover each winner, including family importance fits
-    # row finishing also refits validation; the reserve adds a further safety factor
-    fits = 3 if request.get("spec", {}).get("mode") == "row" else 2
+    # entity finishing also refits validation; the reserve adds a further safety factor
+    mode = normalize_mode(request.get("spec", {}).get("mode") or "timeseries")
+    fits = 3 if mode == "entity" else 2
     return fits * sum(costs) if costs else None
 
 

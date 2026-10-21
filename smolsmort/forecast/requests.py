@@ -1,12 +1,15 @@
-"""validate the new request while leaving unversioned requests untouched"""
+"""normalize saved modes and validate versioned requests"""
 
 from __future__ import annotations
 
 import math
 import re
 
+from smolsmort.forecast.spec import normalize_saved_modes
+
 
 def parse_request(request: dict) -> dict:
+    request = normalize_saved_modes(request)
     if "version" not in request:
         return request
     if request["version"] != 2:

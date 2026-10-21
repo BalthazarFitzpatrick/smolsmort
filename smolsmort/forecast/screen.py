@@ -167,8 +167,8 @@ def screen_families(
     """rank families on pre-validation rows by blended max rank correlation and gain share.
     priors are 0.1 + 0.8 * score / top_score, clipped to [0.1, 0.9]; zero scores start at 0.1.
     a seeded 10% of families from the bottom half get priors raised to at least 0.5"""
-    if ws.mode != "series":
-        raise ValueError("feature screening requires series mode")
+    if ws.mode != "timeseries":
+        raise ValueError("feature screening requires time series mode")
     if max_rows < 1:
         raise ValueError("screening max_rows must be positive")
     if not ws.families:

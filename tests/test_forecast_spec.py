@@ -10,10 +10,10 @@ from forecast_fixtures import write_panel, write_rows
 from smolsmort.forecast.spec import Censor, Column, PrepSpec, SpecError, spec_from_dict
 
 
-def _row_spec(**changes):
+def _entity_spec(**changes):
     base = {
         "source": "rows.csv",
-        "mode": "row",
+        "mode": "entity",
         "task": "regression",
         "columns": (
             Column("created", "anchor"),
@@ -26,15 +26,15 @@ def _row_spec(**changes):
     return PrepSpec(**{**base, **changes})
 
 
-def test_a_valid_row_spec_hashes_stably_and_lists_only_known_inputs():
-    spec = _row_spec()
-    assert spec.digest() == _row_spec().digest()
+def test_a_valid_entity_spec_hashes_stably_and_lists_only_known_inputs():
+    spec = _entity_spec()
+    assert spec.digest() == _entity_spec().digest()
     assert spec.inputs() == ["branch"]
     assert spec.named("target") == ["lead_weeks"]
 
 
 def test_changing_one_choice_changes_the_digest():
-    assert _row_spec().digest() != _row_spec(horizon=9).digest()
+    assert _entity_spec().digest() != _entity_spec(horizon=9).digest()
 
 
 @pytest.mark.parametrize(
@@ -48,24 +48,24 @@ def test_changing_one_choice_changes_the_digest():
 )
 def test_a_broken_spec_is_refused_by_name(changes, message):
     with pytest.raises(SpecError, match=message):
-        _row_spec(**changes)
+        _entity_spec(**changes)
 
 
-def test_a_series_measure_needs_an_aggregation():
+def test_a_timeseries_measure_needs_an_aggregation():
     with pytest.raises(SpecError, match="needs an aggregation"):
         PrepSpec(
             "panel.csv",
-            "series",
+            "timeseries",
             "regression",
             (Column("day", "time"), Column("units", "target")),
         )
 
 
 def test_the_json_form_round_trips():
-    spec = _row_spec()
+    spec = _entity_spec()
     data = {
         "source": "rows.csv",
-        "mode": "row",
+        "mode": "entity",
         "task": "regression",
         "columns": [c.__dict__ for c in spec.columns],
         "censor": {"anchor": "created", "unit": "week", "as_of": None},

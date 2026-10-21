@@ -24,6 +24,7 @@ from smolsmort.forecast.spec import (
     UNIT_DAYS,
     UPPER,
     PrepSpec,
+    normalize_saved_modes,
 )
 from smolsmort.forecast.tables import connect, resolve_encoding, type_source
 
@@ -82,10 +83,10 @@ def prepare(spec: PrepSpec, cache_root: Path) -> Prepared:
         # single-threaded: row_number() over the raw scan must match source file order
         con.execute("SET threads=1")
         read_expr = type_source(con, _load_source(spec, source_path, source_bytes, tmp))
-        if spec.mode == "row":
-            sql, summary = _prep_row(con, spec, read_expr, tmp)
+        if spec.mode == "entity":
+            sql, summary = _prep_entity(con, spec, read_expr, tmp)
         else:
-            sql, summary = _prep_series(con, spec, read_expr, tmp)
+            sql, summary = _prep_timeseries(con, spec, read_expr, tmp)
         summary.update(_source_facts(con, read_expr, spec, source_bytes))
         con.close()
         # runs on absolute temp paths, stored relative: the text replays from inside the cache
@@ -121,7 +122,7 @@ def _is_complete(spec: PrepSpec, folder: Path) -> bool:
 
 def _load_cached(folder: Path) -> Prepared:
     sql = (folder / "prep.sql").read_text()
-    summary = json.loads((folder / "prep.json").read_text())
+    summary = normalize_saved_modes(json.loads((folder / "prep.json").read_text()))
     return Prepared(folder, sql, summary, reused=True)
 
 
@@ -141,11 +142,11 @@ def _load_source(spec: PrepSpec, source_path: Path, source_bytes: bytes, out: Pa
 
 
 # ---------------------------------------------------------------------------
-# row mode
+# entity mode
 # ---------------------------------------------------------------------------
 
 
-def _prep_row(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[str, dict]:
+def _prep_entity(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[str, dict]:
     dims = spec.named("dimension")
     measures = spec.named("measure")
     target = spec.named("target")[0]
@@ -232,7 +233,7 @@ def _prep_row(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[str, dict
     ).fetchone()[0]
 
     summary = {
-        "mode": "row",
+        "mode": "entity",
         "task": spec.task,
         "source_rows": source_rows,
         "rows_after_where": filtered_rows,
@@ -247,7 +248,7 @@ def _prep_row(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[str, dict
 
 
 # ---------------------------------------------------------------------------
-# series mode
+# time series mode
 # ---------------------------------------------------------------------------
 
 
@@ -308,7 +309,7 @@ def _fill_expr(col: str, aggregation: str) -> str:
     return q  # mean/median/min/max: a gap stays null, nothing to fill
 
 
-def _prep_series(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[str, dict]:
+def _prep_timeseries(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[str, dict]:
     dims = spec.named("dimension")
     inputs = spec.named("input")
     time_col = spec.named("time")[0]
@@ -457,7 +458,7 @@ def _prep_series(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[str, d
     global_last = con.execute(f"SELECT MAX({step_q}) FROM panel").fetchone()[0]
 
     summary = {
-        "mode": "series",
+        "mode": "timeseries",
         "step": step,
         "source_rows": source_rows,
         "dropped_null_time": source_rows - valid_rows,

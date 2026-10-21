@@ -20,7 +20,7 @@ def test_worker_persists_threads_before_screen_and_recipe_refit(
 ):
     spec = PrepSpec(
         "unused.csv",
-        "series",
+        "timeseries",
         "regression",
         (Column("day", "time"), Column("units", "target", aggregation="sum")),
     )
@@ -50,7 +50,7 @@ def test_worker_persists_threads_before_screen_and_recipe_refit(
                 }
             )
         )
-    workspace = SimpleNamespace(mode="series", excluded_series=[], profile={})
+    workspace = SimpleNamespace(mode="timeseries", excluded_series=[], profile={})
     calls = []
     cpu_calls = []
     lock = SimpleNamespace(try_acquire=lambda: True, close=lambda: calls.append("closed"))

@@ -17,9 +17,9 @@ from smolsmort.forecast.features import (
     _rolling,
     _slope,
     buckets_for,
-    series_features,
     split_family_name,
     step_index,
+    timeseries_features,
 )
 from smolsmort.forecast.spec import SERIES, STEP, Column, PrepSpec
 
@@ -38,7 +38,7 @@ def make_candidate_panel(unit="week", count=156, series_count=12, horizon=60):
     values += rng.normal(0, 0.5, len(position))
     spec = PrepSpec(
         "synthetic.csv",
-        "series",
+        "timeseries",
         "regression",
         (
             Column("day", "time"),
@@ -68,7 +68,7 @@ def measure_candidate_pool(repeats=11):
 
     def build_frames():
         return [
-            series_features(spec, panel, scaffold, bucket, "week", train, period=52)
+            timeseries_features(spec, panel, scaffold, bucket, "week", train, period=52)
             for bucket in buckets_for(52)
         ]
 
@@ -109,7 +109,7 @@ def test_every_candidate_family_ignores_values_after_its_origin(unit, bucket):
         "target": (panel["units"][:, None] * np.column_stack([share, 1 - share])).ravel(),
     }
     period = STEP_FEATURES[unit][3]
-    before = series_features(
+    before = timeseries_features(
         spec, panel, scaffold, bucket, unit, train, period=period, periods=(), inputs=inputs
     )
     changed = {name: values.copy() for name, values in panel.items()}
@@ -119,7 +119,7 @@ def test_every_candidate_family_ignores_values_after_its_origin(unit, bucket):
     late = np.repeat(indices > origin, 2) & (inputs["__level"] == "s1")
     changed_inputs["target"][late] *= 17
     changed_inputs["__level"][late] = "unseen"
-    after = series_features(
+    after = timeseries_features(
         spec,
         changed,
         scaffold,
@@ -157,7 +157,9 @@ def test_candidates_match_origin_based_formulas(unit, bucket):
     panel["units"][::17] = 0
     panel["units"][9::23] = np.nan
     period = STEP_FEATURES[unit][3]
-    frame = series_features(spec, panel, scaffold, bucket, unit, train, period=period, periods=())
+    frame = timeseries_features(
+        spec, panel, scaffold, bucket, unit, train, period=period, periods=()
+    )
     origins = step_index(frame.step, unit) - step_index(panel[STEP], unit).min() - bucket[1]
     row = np.flatnonzero(origins == 600)[0]
     y = panel["units"]
@@ -242,7 +244,7 @@ def test_slope_needs_two_points_and_preserves_missing_step_positions(window):
 @pytest.mark.parametrize("unit", STEP_FEATURES)
 def test_saved_roll_genomes_select_only_original_columns_in_original_order(unit):
     spec, panel, scaffold, train = make_candidate_panel(unit, 400, series_count=1)
-    frame = series_features(spec, panel, scaffold, (2, 4), unit, train, periods=())
+    frame = timeseries_features(spec, panel, scaffold, (2, 4), unit, train, periods=())
     windows = STEP_FEATURES[unit][1]
     aliases = {f"units@day:roll:{w}" for w in windows}
     old, names, types = frame.features.pick(aliases)
@@ -261,7 +263,7 @@ def test_saved_roll_genomes_select_only_original_columns_in_original_order(unit)
 
 def test_saved_roll_values_equal_original_statistics():
     spec, panel, scaffold, train = make_candidate_panel(series_count=1)
-    frame = series_features(spec, panel, scaffold, (2, 4), "week", train, periods=())
+    frame = timeseries_features(spec, panel, scaffold, (2, 4), "week", train, periods=())
     old, names, _ = frame.features.pick({"units@day:roll:4"})
     assert names == ["roll4_mean", "roll4_std", "roll4_max", "roll4_zeros"]
     for row, step in enumerate(frame.step):
@@ -287,7 +289,7 @@ def test_pick_still_accepts_old_feature_tables():
 def test_candidate_history_limits_come_only_from_training(unit, history):
     spec, panel, scaffold, _ = make_candidate_panel(unit, 400, series_count=1)
     train = np.arange(400) < history
-    frame = series_features(spec, panel, scaffold, (2, 4), unit, train, periods=())
+    frame = timeseries_features(spec, panel, scaffold, (2, 4), unit, train, periods=())
     lags, windows, differences, period = STEP_FEATURES[unit]
     families = set(frame.features.families)
     assert {f for f in families if split_family_name(f)[2].startswith("lag:")} == {
@@ -311,7 +313,7 @@ def test_candidate_history_limits_come_only_from_training(unit, history):
 def test_cycle_ratio_is_missing_for_zero_or_missing_season(denominator):
     spec, panel, scaffold, train = make_candidate_panel(series_count=1)
     panel["units"][8] = denominator
-    frame = series_features(spec, panel, scaffold, (1, 1), "week", train, periods=())
+    frame = timeseries_features(spec, panel, scaffold, (1, 1), "week", train, periods=())
     ratio = frame.features.pick({"units@day:cycle_ratio"})[0][:, 0]
     assert np.isnan(ratio[60])
     assert np.isnan(ratio[:52]).all()
@@ -320,7 +322,7 @@ def test_cycle_ratio_is_missing_for_zero_or_missing_season(denominator):
 
 def test_cycle_ratio_uses_the_selected_period_even_beyond_the_bucket():
     spec, panel, scaffold, train = make_candidate_panel("day", 800, series_count=1)
-    frame = series_features(
+    frame = timeseries_features(
         spec, panel, scaffold, (27, 52), "day", train, period=7, periods=(7, 365)
     )
     assert frame.features.pick({"units@day:season"})[1] == []
@@ -330,7 +332,7 @@ def test_cycle_ratio_uses_the_selected_period_even_beyond_the_bucket():
 
 def test_weekly_season_collision_keeps_saved_genome_columns():
     spec, panel, scaffold, train = make_candidate_panel(series_count=1)
-    frame = series_features(spec, panel, scaffold, (27, 52), "week", train, period=52)
+    frame = timeseries_features(spec, panel, scaffold, (27, 52), "week", train, period=52)
     assert frame.features.pick({"units@day:season"})[1] == ["lag_52"]
     assert frame.features.pick({"units@day:lag+0"})[1] == []
     assert frame.features.pick({"units@day:lag+0", "units@day:season"})[1] == ["lag_52"]
@@ -342,7 +344,7 @@ def test_weekly_season_collision_keeps_saved_genome_columns():
 def test_weekly_156_step_candidate_pool_size():
     spec, panel, scaffold, train = make_candidate_panel(horizon=52)
     frames = [
-        series_features(spec, panel, scaffold, bucket, "week", train, period=52)
+        timeseries_features(spec, panel, scaffold, bucket, "week", train, period=52)
         for bucket in buckets_for(52)
     ]
     assert [len(frame.features.names) for frame in frames] == [90, 87, 83, 78, 77, 75]

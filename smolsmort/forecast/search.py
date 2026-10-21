@@ -124,7 +124,7 @@ class Entry:
 
 
 def _select_birth_families(ws):
-    if getattr(ws, "mode", None) != "series":
+    if getattr(ws, "mode", None) != "timeseries":
         return list(ws.families)
     # placeholder until screening priors replace legacy-only births and seeds
     # mutation still explores the full pool, including the saved rolling aliases
@@ -147,7 +147,7 @@ def _select_birth_families(ws):
 class _Variation:
     def __init__(self, ws: Workspace, rng: np.random.Generator, priors=None, top_families=None):
         self.transform = getattr(ws, "transform", "none")
-        self.priors = dict(priors) if priors and getattr(ws, "mode", None) != "row" else None
+        self.priors = dict(priors) if priors and getattr(ws, "mode", None) != "entity" else None
         if self.priors is None:
             self.birth_families = _select_birth_families(ws)
         else:
@@ -445,7 +445,7 @@ def _seed_population(ws, var: _Variation, size: int, warm) -> list[Genome]:
 
 def _sample(ws, rng) -> np.ndarray | None:
     """training rows (or series) to score new candidates on, when the data is large"""
-    if ws.mode == "row":
+    if ws.mode == "entity":
         train = ws.masks["train"]
         if train.sum() <= HALVING_ROWS:
             return None

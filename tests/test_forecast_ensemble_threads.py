@@ -43,7 +43,7 @@ def test_finish_and_importance_use_resolved_threads(
 
     frame = SimpleNamespace(y=np.array([10, 10]), step=np.array([1, 2]))
     workspace = SimpleNamespace(
-        mode="series",
+        mode="timeseries",
         frames={"series": frame},
         series_masks={"series": {"val": np.array([True, True])}},
     )

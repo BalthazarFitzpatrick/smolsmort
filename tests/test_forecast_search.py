@@ -57,7 +57,7 @@ def make_candidate_search(unit, family):
     } | {"units@day:diff:1", "units@day:slope:4", "units@day:cycle_ratio", "units@day:momentum:4"}
     (novel if unit == "week" else legacy).add("units@day:lag:12")
     ws = SimpleNamespace(
-        mode="series",
+        mode="timeseries",
         unit=unit,
         spec=SimpleNamespace(task="regression"),
         families=sorted((legacy - {"units@day:roll:4"}) | novel, key=family_sort_key),
@@ -142,12 +142,12 @@ def test_candidate_broad_defaults_use_legacy_families(monkeypatch, family):
     assert set(evaluated[0].families) == legacy
 
 
-def test_candidate_birth_rule_preserves_row_and_raw_series_searches():
+def test_candidate_birth_rule_preserves_entity_and_raw_timeseries_searches():
     ws, _var, _legacy, _novel = make_candidate_search("week", None)
-    ws.mode = "row"
+    ws.mode = "entity"
     ws.families = ["x:measure", "x:log", "group:dim", "group:freq", "created:cal:trend"]
     assert _Variation(ws, np.random.default_rng(0)).birth_families == ws.families
-    ws.mode = "series"
+    ws.mode = "timeseries"
     var = _FamilyVariation(ws, np.random.default_rng(0), get_family("snaive"), {})
     assert var.birth_families == var.families == []
     assert _family_population(var, 16, [], "genetic")[0].families == ()
@@ -157,7 +157,7 @@ def _series(folder):
     truth = write_panel(folder)
     spec = PrepSpec(
         str(truth.path),
-        "series",
+        "timeseries",
         "regression",
         (
             Column("day", "time"),
@@ -174,7 +174,7 @@ def _rows(folder, n=3000):
     truth = write_rows(folder, n=n)
     spec = PrepSpec(
         str(truth.path),
-        "row",
+        "entity",
         "regression",
         (
             Column("created", "anchor"),
@@ -205,30 +205,30 @@ def row_ws(tmp_path_factory):
 def test_a_genome_scores_in_both_modes_and_the_leak_is_never_offered(
     series_ws, row_ws, monkeypatch
 ):
-    row_fit, series_fit = pipeline._row_fit, pipeline._series_fit
+    entity_fit, timeseries_fit = pipeline._entity_fit, pipeline._timeseries_fit
 
-    def check_row_fit(ws, genome, rows, phase, nthread):
+    def check_entity_fit(ws, genome, rows, phase, nthread):
         assert phase == "val" and np.array_equal(rows, ws.masks["train"])
         assert not np.any(rows & ws.masks["test"])
-        return row_fit(ws, genome, rows, phase, nthread)
+        return entity_fit(ws, genome, rows, phase, nthread)
 
-    def check_series_fit(ws, genome, frame, rows, nthread):
+    def check_timeseries_fit(ws, genome, frame, rows, nthread):
         bucket = next(key for key, value in ws.frames.items() if value is frame)
         assert any(
             np.array_equal(rows, fit_rows) for fit_rows, _ in pipeline._validation_masks(ws, bucket)
         )
         assert not np.any(rows & ws.series_masks[bucket]["test"])
-        return series_fit(ws, genome, frame, rows, nthread)
+        return timeseries_fit(ws, genome, frame, rows, nthread)
 
-    monkeypatch.setattr(pipeline, "_row_fit", check_row_fit)
-    monkeypatch.setattr(pipeline, "_series_fit", check_series_fit)
+    monkeypatch.setattr(pipeline, "_entity_fit", check_entity_fit)
+    monkeypatch.setattr(pipeline, "_timeseries_fit", check_timeseries_fit)
     for ws, _ in (series_ws, row_ws):
         genome = make_genome(ws.families, "squared", {"max_depth": 4, "eta": 0.1})
         result = score(ws, genome)
         assert np.isfinite(result.fitness) and result.fitness == pytest.approx(result.contrib.sum())
         assert result.eval_history["metric"] == "rmse"
         assert len(result.eval_history["training"]) == len(result.eval_history["validation"])
-        if ws.mode == "series":
+        if ws.mode == "timeseries":
             assert result.eval_history["bucket"] == list(next(iter(ws.frames)))
     ws, truth = row_ws
     assert not [f for f in ws.families if truth.leak in f]
@@ -305,7 +305,7 @@ def test_a_run_ends_with_a_forecast_and_a_verdict(tmp_path):
     assert json.loads((folder / "recipe.json").read_text())["genome"]["families"]
 
 
-def test_a_row_run_predicts_every_open_row(tmp_path):
+def test_an_entity_run_predicts_every_open_row(tmp_path):
     spec, prepared, truth = _rows(tmp_path, n=2000)
     run_id = start_run(tmp_path / "runs", spec, prepared, budget=TINY, nthread=1)
     state = wait_run(tmp_path / "runs", run_id, timeout=300)
@@ -376,7 +376,7 @@ def test_best_history_replaced_before_generation_events_and_cleared_when_unusabl
 
     search_module = importlib.import_module("smolsmort.forecast.search")
     ws = SimpleNamespace(
-        mode="row",
+        mode="entity",
         masks={"train": np.ones(20, dtype=bool)},
         families=["x:measure"],
         profile={"genes": {"objectives": ["squared"]}},
@@ -423,7 +423,7 @@ def test_generation_curves_use_the_generation_winner_even_without_a_new_best(mon
 
     search_module = importlib.import_module("smolsmort.forecast.search")
     ws = SimpleNamespace(
-        mode="row",
+        mode="entity",
         masks={"train": np.ones(20, dtype=bool)},
         families=["x:measure"],
         profile={"genes": {"objectives": ["squared"]}},
@@ -532,7 +532,7 @@ def test_worker_publishes_bounded_atomic_leaderboards_before_generation_events(
     job = worker._Run(tmp_path)
     job.status("done")
     ws = SimpleNamespace(
-        mode="row",
+        mode="entity",
         masks={"train": np.ones(20, dtype=bool)},
         families=["x:measure"],
         profile={"genes": {"objectives": ["squared"]}},
@@ -659,7 +659,7 @@ def test_progress_events_follow_each_candidate_and_stop_at_cancellation(monkeypa
 
     search_module = importlib.import_module("smolsmort.forecast.search")
     ws = SimpleNamespace(
-        mode="row",
+        mode="entity",
         masks={"train": np.ones(20, dtype=bool)},
         families=["x:measure"],
         profile={"genes": {"objectives": ["squared"]}},
@@ -728,7 +728,7 @@ def test_progress_includes_cached_candidates_and_full_sample_rescores(monkeypatc
 
     search_module = importlib.import_module("smolsmort.forecast.search")
     ws = SimpleNamespace(
-        mode="row",
+        mode="entity",
         masks={"train": np.ones(20, dtype=bool)},
         families=["x:measure"],
         profile={"genes": {"objectives": ["squared"]}},

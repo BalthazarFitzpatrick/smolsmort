@@ -17,12 +17,12 @@ from smolsmort.forecast.families.stats import (
     join_predictions,
     season_length,
 )
-from smolsmort.forecast.features import buckets_for, series_features
+from smolsmort.forecast.features import buckets_for, timeseries_features
 from smolsmort.forecast.pipeline import (
     PipelineError,
     Workspace,
-    _series_baseline,
-    _series_raw_fit,
+    _timeseries_baseline,
+    _timeseries_raw_fit,
     finish,
     make_genome,
     score,
@@ -44,7 +44,7 @@ def workspace(tmp_path):
     scaffold = {SERIES: np.repeat(["a", "b"], horizon), STEP: np.tile(future, 2)}
     spec = PrepSpec(
         source="synthetic.csv",
-        mode="series",
+        mode="timeseries",
         task="regression",
         step="day",
         horizon=horizon,
@@ -54,7 +54,7 @@ def workspace(tmp_path):
     ws.panel, ws.frames, ws.series_masks = panel, {}, {}
     ws.test_steps = 13
     for bucket in buckets_for(horizon):
-        frame = series_features(
+        frame = timeseries_features(
             spec, panel, scaffold, bucket, "day", panel[STEP] < days[100], period=7
         )
         ws.frames[bucket] = frame
@@ -130,7 +130,7 @@ def test_validation_maps_every_bucket_once_in_frame_order(workspace, name):
     genome = make_genome([], "squared", {}, family=name)
     for bucket, frame in ws.frames.items():
         task = make_task(ws, bucket)
-        fitted, actual_task = _series_raw_fit(ws, genome, frame, task.rows, bucket, 1)
+        fitted, actual_task = _timeseries_raw_fit(ws, genome, frame, task.rows, bucket, 1)
         model = build_model(name, 7)
         raw = pd.DataFrame(
             {
@@ -243,7 +243,9 @@ def test_snaive_matches_production_baseline_in_every_phase(workspace):
         for phase in ("val", "test", "future"):
             task = make_task(ws, bucket, phase)
             predicted = get_family("snaive").fit(task, objective="squared").predict(task)
-            np.testing.assert_array_equal(predicted, _series_baseline(frame, task.rows, bucket, 7))
+            np.testing.assert_array_equal(
+                predicted, _timeseries_baseline(frame, task.rows, bucket, 7)
+            )
     result = finish(ws, make_genome([], "squared", {}, family="snaive"))
     assert result["season_length"] == 7
     assert len(result["forecast"]["prediction"]) == 26

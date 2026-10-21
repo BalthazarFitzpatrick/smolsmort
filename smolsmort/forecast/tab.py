@@ -13,7 +13,7 @@ from smolsmort.forecast.families import get_family
 from smolsmort.forecast.prep import Prepared, prepare
 from smolsmort.forecast.requests import parse_request
 from smolsmort.forecast.runs import RunError
-from smolsmort.forecast.spec import SpecError, spec_from_dict
+from smolsmort.forecast.spec import SpecError, normalize_mode, normalize_saved_modes, spec_from_dict
 from smolsmort.forecast.tables import connect, resolve_encoding, type_source
 from smolsmort.review.routes import RequestError, Tab
 
@@ -64,12 +64,11 @@ def _spec_from_payload(app, payload: dict, *, resolve_source: bool = True) -> di
 def _parse_spec(app, payload):
     try:
         data = _spec_from_payload(app, payload)
-        if data.get("mode") not in ("row", "series"):
-            raise SpecError("spec.mode must be row or series")
+        data["mode"] = normalize_mode(data.get("mode"))
         if data.get("task") not in ("regression", "classification"):
             raise SpecError("spec.task must be regression or classification")
-        if data["mode"] == "series" and data["task"] != "regression":
-            raise SpecError("time-series runs require regression")
+        if data["mode"] == "timeseries" and data["task"] != "regression":
+            raise SpecError("time series runs require regression")
         if data.get("step") not in (None, "day", "week", "month", "quarter", "year"):
             raise SpecError("spec.step must be day, week, month, quarter or year")
         if type(data.get("horizon", 8)) is not int:
@@ -185,7 +184,7 @@ def _columns(app, payload: dict) -> dict:
     read_expr = type_source(con, read_expr)
     described = con.execute(f"DESCRIBE SELECT * FROM {read_expr}").fetchall()
     row_count = con.execute(f"SELECT count(*) FROM {read_expr}").fetchone()[0]
-    mode = payload.get("mode") or "series"
+    mode = normalize_mode(payload.get("mode") or "timeseries")
     out = []
     for name, duckdb_type, *_rest in described:
         kind = _column_kind(duckdb_type)
@@ -200,7 +199,7 @@ def _columns(app, payload: dict) -> dict:
             ).fetchall()
         ]
         if kind == "date":
-            suggested = "anchor" if mode == "row" else "time"
+            suggested = "anchor" if mode == "entity" else "time"
         elif kind == "text":
             suggested = "dimension"
         else:
@@ -248,7 +247,7 @@ def _families(app, query: dict) -> dict:
             raise RequestError("prepared folder is outside the forecast cache")
         try:
             spec = views.read_prepared_spec(folder, _runs_root(app))
-            summary = json.loads((folder / "prep.json").read_text())
+            summary = normalize_saved_modes(json.loads((folder / "prep.json").read_text()))
         except (OSError, ValueError, TypeError) as exc:
             raise RequestError("prepared folder has no saved spec; provide spec") from exc
         prepared = Prepared(folder, "", summary, reused=True)
@@ -282,8 +281,8 @@ def _validate_selections(payload, spec):
             family = get_family(name)
         except KeyError as exc:
             raise RequestError(f"unknown family {name!r}") from exc
-        if spec.mode == "row" and name != "xgboost":
-            raise RequestError("per-row runs support xgboost only")
+        if spec.mode == "entity" and name != "xgboost":
+            raise RequestError("entity runs support xgboost only")
         try:
             objectives = family.objectives(spec.task)
         except ValueError as exc:
