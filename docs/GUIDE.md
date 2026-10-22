@@ -551,6 +551,13 @@ over all levels). shares use the sum of the per-level target aggregates as their
 steps without source rows stay missing; an observed zero total gives zero shares and hhi.
 both families use the same four lags as measures, reading only through the forecast origin.
 
+set `"skip_missing": true` on an `input` column to exclude `(none)` from its top-five levels,
+share totals, `other` bucket, distinct count and hhi. shares then use only real levels' target
+aggregates, so changing source coverage alone does not create a mix trend. a step with only
+missing levels stays missing (`NaN`) in both families. prep still writes `(none)` to
+`inputs.parquet`; no coverage feature is added. the flag defaults to `false`, preserving existing
+features and cache keys, and can only be enabled for the input role.
+
 **feature family names.** names identify the source column, plus the date column when values
 are built over time. the spec supplies both names; `<date>` is the time column for timeseries
 and the anchor for entities. source names escape reserved operation words and delimiter
