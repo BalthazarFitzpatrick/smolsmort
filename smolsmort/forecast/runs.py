@@ -63,7 +63,7 @@ def start_run(
     transform: str = "none",
     aggregate: str = "none",
     ensemble: dict | None = None,
-    max_concurrent_families: int = 4,
+    max_concurrent_families: int | None = None,
     candidate_limit_fraction: float = 0.25,
     plateau: int = 5,
     min_generations: int = 0,
@@ -92,12 +92,13 @@ def start_run(
             time_budget_s=time_budget_s,
             transform=transform,
             ensemble=ensemble if ensemble is not None else {"enabled": True, "top": 3},
-            max_concurrent_families=max_concurrent_families,
             candidate_limit_fraction=candidate_limit_fraction,
             plateau=plateau,
             min_generations=min_generations,
             prune_sigma=prune_sigma,
         )
+        if max_concurrent_families is not None:
+            request["max_concurrent_families"] = max_concurrent_families
     request = parse_request(request)
     folder.mkdir(parents=True)
     (folder / "request.json").write_text(json.dumps(request, indent=2, default=str))

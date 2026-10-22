@@ -905,6 +905,8 @@ def test_family_queue_fills_freed_slots_and_records_wave_slices(
         == {
             "nthread": 4,
             "max_concurrent_families": cap,
+            "config_path": str(tmp_path / "forecast.toml"),
+            "config_values": {"max_concurrent_families": cap, "threads_per_family": None},
         }
     )
     assert final["phase_history"] == state["phase_history"]

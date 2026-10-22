@@ -325,6 +325,12 @@ def test_entity_finish_passes_the_long_curve_to_result_writing(monkeypatch, spec
     phase = (np.array([1.0, 2.0, 3.0]), np.array([1.0, 2.0, 3.0]), np.arange(3))
     monkeypatch.setattr(pipeline, "_entity_phase", lambda *args: phase)
     monkeypatch.setattr(pipeline, "_entity_baseline", lambda *args: phase[0])
+    # survival scoring has its own tests, this one checks the curve hand-off
+    scored = {"prediction": phase[0], "truth": phase[1]}
+    verdict = {"accuracy": {"model_error": 0.2, "baseline_error": 0.4}}
+    monkeypatch.setattr(
+        pipeline, "_entity_survival_verdict", lambda *args: (scored, scored, verdict)
+    )
     monkeypatch.setattr(
         pipeline, "_entity_fit", lambda *args: (SimpleNamespace(cap=2), np.zeros((3, 1)))
     )

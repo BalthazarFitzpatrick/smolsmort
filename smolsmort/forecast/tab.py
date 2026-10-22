@@ -398,6 +398,8 @@ def _start(app, payload: dict) -> dict:
             )
             if key in payload
         }
+        if not payload["_max_concurrent_families_explicit"]:
+            options.pop("max_concurrent_families", None)
         try:
             run_id = runs.start_run(
                 _runs_root(app), spec, prepared, version=2, warm_from=warm, **options
