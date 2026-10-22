@@ -9,22 +9,25 @@ from pathlib import Path
 import numpy as np
 
 from smolsmort.forecast.families.lightgbm import LightgbmFamily
-from smolsmort.forecast.features import STEP_FEATURES, step_index
+from smolsmort.forecast.features import STEP_FEATURES, family_aliases, family_sort_key, step_index
 from smolsmort.forecast.importance import measure_importance
 from smolsmort.forecast.pipeline import Workspace, _validation_masks
 from smolsmort.forecast.spec import SERIES, STEP
 
 
-def read_priors(folder: Path) -> dict[str, float] | None:
+def read_priors(folder: Path, spec=None) -> dict[str, float] | None:
     """older runs without a screen keep the legacy search"""
     try:
         ranking = json.loads((folder / "screen.json").read_text())
     except FileNotFoundError:
         return None
-    return {entry["family"]: entry["p_on"] for entry in ranking} or None
+    aliases = family_aliases(spec, (entry["family"] for entry in ranking)) if spec else {}
+    return {
+        aliases.get(entry["family"], entry["family"]): entry["p_on"] for entry in ranking
+    } or None
 
 
-def read_top_families(folder: Path) -> list[str] | None:
+def read_top_families(folder: Path, spec=None) -> list[str] | None:
     """the screen's strongest families for the seed genome; wildcards share 0.5 but are not top"""
     try:
         ranking = json.loads((folder / "screen.json").read_text())
@@ -32,10 +35,12 @@ def read_top_families(folder: Path) -> list[str] | None:
         return None
     screened = sorted(
         (entry for entry in ranking if not entry.get("wildcard")),
-        key=lambda entry: (-entry["score"], entry["family"]),
+        key=lambda entry: (-entry["score"], family_sort_key(entry["family"])),
     )
     strong = [entry["family"] for entry in screened if entry["p_on"] >= 0.5]
-    return strong if len(strong) >= 3 else [entry["family"] for entry in screened[:3]] or None
+    top = strong if len(strong) >= 3 else [entry["family"] for entry in screened[:3]]
+    aliases = family_aliases(spec, top) if spec else {}
+    return [aliases.get(name, name) for name in top] or None
 
 
 def _rank_values(values: np.ndarray) -> np.ndarray:
@@ -65,7 +70,8 @@ def _training_data(ws, max_rows, rng):
                 frame.features.families, frame.features.names, frame.features.types, strict=True
             )
             if family in candidates
-        }
+        },
+        key=lambda column: (family_sort_key(column[0]), *column[1:]),
     )
     column_index = {column: index for index, column in enumerate(columns)}
     xs, ys = [], []
@@ -161,8 +167,8 @@ def screen_families(
     """rank families on pre-validation rows by blended max rank correlation and gain share.
     priors are 0.1 + 0.8 * score / top_score, clipped to [0.1, 0.9]; zero scores start at 0.1.
     a seeded 10% of families from the bottom half get priors raised to at least 0.5"""
-    if ws.mode != "series":
-        raise ValueError("feature screening requires series mode")
+    if ws.mode != "timeseries":
+        raise ValueError("feature screening requires time series mode")
     if max_rows < 1:
         raise ValueError("screening max_rows must be positive")
     if not ws.families:
@@ -174,7 +180,7 @@ def screen_families(
         gains = np.zeros(len(columns))
     scores = {
         family: {"family": family, "score": 0.0, "rank_corr": 0.0, "gain": 0.0}
-        for family in sorted(set(ws.families))
+        for family in sorted(set(ws.families), key=family_sort_key)
     }
     for index, (family, _, _) in enumerate(columns):
         entry = scores[family]
@@ -184,7 +190,9 @@ def screen_families(
         entry["score"] = (
             (entry["rank_corr"] + entry["gain"]) / 2 if has_gain else entry["rank_corr"]
         )
-    ranked = sorted(scores.values(), key=lambda entry: (-entry["score"], entry["family"]))
+    ranked = sorted(
+        scores.values(), key=lambda entry: (-entry["score"], family_sort_key(entry["family"]))
+    )
     top_score = ranked[0]["score"]
     for entry in ranked:
         entry["p_on"] = (

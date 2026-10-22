@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from smolsmort.forecast import pipeline, screen, worker
-from smolsmort.forecast.features import step_index
+from smolsmort.forecast.features import split_family_name, step_index
 from smolsmort.forecast.pipeline import load_workspace
 from smolsmort.forecast.screen import screen_families
 from smolsmort.forecast.spec import SERIES, STEP, Column, PrepSpec
@@ -47,7 +47,7 @@ def make_panel():
     scaffold = {SERIES: np.repeat(keys, horizon), STEP: np.tile(future, series)}
     spec = PrepSpec(
         "synthetic.csv",
-        "series",
+        "timeseries",
         "regression",
         (
             Column("day", "time"),
@@ -69,15 +69,23 @@ def workspace(monkeypatch):
 
 
 def noise_median(ranking):
-    return float(np.median([row["p_on"] for row in ranking if ":noise_" in row["family"]]))
+    priors = [
+        row["p_on"]
+        for row in ranking
+        if (split_family_name(row["family"])[0] or "").startswith("noise_")
+    ]
+    assert priors
+    return float(np.median(priors))
 
 
 def test_planted_measure_ranks_first(workspace):
     ranking = screen_families(workspace)
-    assert ranking[0]["family"] in {"lead:orders", "measure:orders"}
+    assert ranking[0]["family"] in {"orders@day:lead", "orders@day:measure"}
     assert ranking[0]["p_on"] == 0.9
     assert all(
-        row["p_on"] <= 0.35 for row in ranking if ":noise_" in row["family"] and not row["wildcard"]
+        row["p_on"] <= 0.35
+        for row in ranking
+        if (split_family_name(row["family"])[0] or "").startswith("noise_") and not row["wildcard"]
     )
     assert noise_median(ranking) <= 0.2
     assert [row["score"] for row in ranking] == sorted(
@@ -89,7 +97,7 @@ def test_planted_measure_ranks_first(workspace):
 def test_missing_lightgbm_uses_only_rank_correlation(workspace, monkeypatch):
     monkeypatch.setitem(sys.modules, "lightgbm", None)
     ranking = screen_families(workspace)
-    assert ranking[0]["family"] in {"lead:orders", "measure:orders"}
+    assert ranking[0]["family"] in {"orders@day:lead", "orders@day:measure"}
     assert noise_median(ranking) <= 0.35
     assert all(row["gain"] == 0 and row["score"] == row["rank_corr"] for row in ranking)
 
@@ -240,7 +248,7 @@ def test_seasonal_residual_and_row_cap(workspace):
 
 
 @pytest.mark.parametrize("version", [1, 2])
-def test_series_worker_writes_screen_before_search(workspace, tmp_path, monkeypatch, version):
+def test_timeseries_worker_writes_screen_before_search(workspace, tmp_path, monkeypatch, version):
     request = {
         "spec": asdict(workspace.spec),
         "prepared": "synthetic",

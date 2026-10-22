@@ -30,7 +30,7 @@ def app(tmp_path):
 def make_spec():
     return {
         "source": "panel.csv",
-        "mode": "series",
+        "mode": "timeseries",
         "task": "regression",
         "step": "week",
         "horizon": 4,
@@ -381,7 +381,7 @@ def test_stats_suitability_needs_two_training_seasons_and_prepared_query_works(
 
 def test_lag_suitability_uses_the_smallest_bucket_training_split():
     masks = {"train": np.ones(19, dtype=bool)}
-    ws = SimpleNamespace(mode="series", series_masks={(1, 1): masks})
+    ws = SimpleNamespace(mode="timeseries", series_masks={(1, 1): masks})
     reason = views._suitability_reason(get_family("ridge"), ws)
     assert "20 usable training rows" in reason and "19" in reason
     masks["train"] = np.ones(20, dtype=bool)
@@ -400,14 +400,14 @@ def test_prepared_query_recovers_a_legacy_spec_from_its_run(app, tmp_path):
     assert get(app, "/api/forecast-families", prepared=str(prepared)) == expected
 
 
-def test_row_classification_suitability_counts_known_labels():
+def test_entity_classification_suitability_counts_known_labels():
     from smolsmort.forecast.spec import Column, PrepSpec
 
     spec = PrepSpec(
-        "rows.csv", "row", "classification", (Column("day", "anchor"), Column("label", "target"))
+        "rows.csv", "entity", "classification", (Column("day", "anchor"), Column("label", "target"))
     )
     ws = SimpleNamespace(
-        mode="row",
+        mode="entity",
         spec=spec,
         masks={"train": np.ones(24, dtype=bool)},
         table={"label": np.array(["open", "closed"] * 12)},

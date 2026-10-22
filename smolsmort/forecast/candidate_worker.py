@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from smolsmort.forecast.families import get_family
+from smolsmort.forecast.features import family_aliases
 from smolsmort.forecast.model import ModelError
 from smolsmort.forecast.pipeline import PipelineError, score
 from smolsmort.forecast.processes import watch_parent
@@ -54,15 +55,17 @@ def score_candidates(connection, ws, parent_pid, score_fn, target):
 def estimate_cost(ws, genome):
     family = get_family(genome.family)
     params = dict(genome.params)
-    if ws.mode == "row":
-        columns = sum(name in genome.families for name in ws.features.families)
+    aliases = family_aliases(ws.spec, genome.families)
+    families = {aliases.get(name, name) for name in genome.families}
+    if ws.mode == "entity":
+        columns = sum(name in families for name in ws.features.families)
         return max(float(family.cost((int(ws.masks["train"].sum()), columns), params)), 1e-9)
     hints = []
     for bucket, frame in ws.frames.items():
         if family.needs == "raw_series":
             shape = (len(frame.y), len(np.unique(frame.series)))
         else:
-            columns = sum(name in genome.families for name in frame.features.families)
+            columns = sum(name in families for name in frame.features.families)
             shape = (int(ws.series_masks[bucket]["train"].sum()), columns)
         hints.append(family.cost(shape, params))
     return max(float(sum(hints)), 1e-9)

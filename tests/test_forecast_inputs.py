@@ -12,12 +12,12 @@ import numpy as np
 import pytest
 
 from smolsmort.forecast import pipeline
-from smolsmort.forecast.features import LAGS, series_features
+from smolsmort.forecast.features import LAGS, family_sort_key, timeseries_features
 from smolsmort.forecast.pipeline import load_workspace, make_genome
 from smolsmort.forecast.prep import prepare
 from smolsmort.forecast.screen import screen_families
 from smolsmort.forecast.search import DEFAULTS, Budget, _select_birth_families, search
-from smolsmort.forecast.spec import FILES, SERIES, STEP, Column, PrepSpec, SpecError
+from smolsmort.forecast.spec import FILES, SERIES, STEP, Column, PrepSpec, SpecError, spec_from_dict
 
 duckdb = pytest.importorskip("duckdb")
 
@@ -42,7 +42,7 @@ def input_source(tmp_path):
 def _make_spec(source, **changes):
     spec = PrepSpec(
         str(source),
-        "series",
+        "timeseries",
         "regression",
         (
             Column("day", "time"),
@@ -53,6 +53,16 @@ def _make_spec(source, **changes):
         step="day",
     )
     return replace(spec, **changes)
+
+
+def set_skip_missing(spec, enabled=True):
+    return replace(
+        spec,
+        columns=tuple(
+            replace(column, skip_missing=enabled) if column.role == "input" else column
+            for column in spec.columns
+        ),
+    )
 
 
 def test_inputs_preserve_group_grain_and_reconcile_target_and_rows(input_source, tmp_path):
@@ -137,7 +147,7 @@ def test_multiple_inputs_are_independent_long_tables(input_source, tmp_path):
 def test_no_inputs_keep_legacy_digest():
     spec = PrepSpec(
         "source.csv",
-        "series",
+        "timeseries",
         "regression",
         (Column("day", "time"), Column("group", "dimension"), Column("units", "target", "sum")),
         step="day",
@@ -145,12 +155,37 @@ def test_no_inputs_keep_legacy_digest():
     assert spec.digest() == "0ce3495b28183342"
 
 
+def test_input_default_keeps_legacy_digest():
+    spec = _make_spec("source.csv")
+    legacy = asdict(spec)
+    for column in legacy["columns"]:
+        column.pop("skip_missing", None)
+    assert spec.digest() == "b2e466d90ff8b191"
+    assert set_skip_missing(spec, False).digest() == spec.digest()
+    assert spec_from_dict(legacy) == spec
+    flagged = set_skip_missing(spec)
+    assert flagged.digest() != spec.digest()
+    assert spec_from_dict(asdict(flagged)) == flagged
+
+
+@pytest.mark.parametrize("role", ["time", "anchor", "dimension", "measure", "target", "ignore"])
+def test_skip_missing_rejects_non_input_columns(role):
+    with pytest.raises(SpecError, match="skip_missing.*input"):
+        Column("column", role, skip_missing=True)
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, "false", "true"])
+def test_skip_missing_requires_a_boolean(value):
+    with pytest.raises(SpecError, match="skip_missing.*boolean"):
+        Column("site", "input", skip_missing=value)
+
+
 def test_no_inputs_keep_original_files_and_reuse_cache(input_source, tmp_path):
     spec = _make_spec(input_source)
     spec = replace(spec, columns=tuple(column for column in spec.columns if column.role != "input"))
     prepared = prepare(spec, tmp_path / "cache")
     assert not prepared.reused
-    assert set(FILES["series"]) == {"panel.parquet", "scaffold.parquet"}
+    assert set(FILES["timeseries"]) == {"panel.parquet", "scaffold.parquet"}
     assert {path.name for path in prepared.folder.iterdir()} == {
         "panel.parquet",
         "scaffold.parquet",
@@ -177,11 +212,11 @@ def test_input_cache_rebuilds_when_inputs_file_is_missing(input_source, tmp_path
     assert prepare(spec, cache).reused
 
 
-def test_row_mode_rejects_input_role():
+def test_entity_mode_rejects_input_role():
     with pytest.raises(SpecError, match="input.*series"):
         PrepSpec(
             "source.csv",
-            "row",
+            "entity",
             "regression",
             (Column("day", "anchor"), Column("site", "input"), Column("units", "target")),
         )
@@ -211,7 +246,7 @@ def test_input_target_uses_first_target_aggregation(tmp_path, aggregation, expec
     )
     spec = PrepSpec(
         str(source),
-        "series",
+        "timeseries",
         "regression",
         (
             Column("day", "time"),
@@ -244,7 +279,7 @@ def test_input_count_target_accepts_text_and_counts_only_nonnull_values(tmp_path
     )
     spec = PrepSpec(
         str(source),
-        "series",
+        "timeseries",
         "regression",
         (Column("day", "time"), Column("site", "input"), Column("order_id", "target", "count")),
         step="week",
@@ -314,8 +349,8 @@ def test_inputs_apply_source_and_history_filters(tmp_path):
     assert prepared.summary["dropped_after_as_of"] == 1
 
 
-@pytest.mark.parametrize("mode", ["series", "row"])
-def test_parse_spec_accepts_inputs_only_in_series_mode(input_source, tmp_path, mode):
+@pytest.mark.parametrize("mode", ["timeseries", "entity"])
+def test_parse_spec_accepts_inputs_only_in_timeseries_mode(input_source, tmp_path, mode):
     from smolsmort.forecast.tab import _parse_spec
     from smolsmort.review.routes import RequestError
 
@@ -323,7 +358,7 @@ def test_parse_spec_accepts_inputs_only_in_series_mode(input_source, tmp_path, m
     data = asdict(_make_spec(input_source))
     data["source"] = input_source.name
     data["mode"] = mode
-    if mode == "row":
+    if mode == "entity":
         data["columns"][0]["role"] = "anchor"
         with pytest.raises(RequestError, match="input.*series"):
             _parse_spec(app, {"spec": data})
@@ -331,11 +366,38 @@ def test_parse_spec_accepts_inputs_only_in_series_mode(input_source, tmp_path, m
         assert _parse_spec(app, {"spec": data}).named("input") == ["site"]
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_parse_spec_accepts_skip_missing(input_source, tmp_path, enabled):
+    from smolsmort.forecast.tab import _parse_spec
+
+    app = SimpleNamespace(state=SimpleNamespace(bases={"forecast": tmp_path}))
+    spec = set_skip_missing(_make_spec(input_source), enabled)
+    data = asdict(spec)
+    data["source"] = input_source.name
+    assert _parse_spec(app, {"spec": data}) == spec
+
+
+@pytest.mark.parametrize(
+    ("role", "value", "message"),
+    [("dimension", True, "skip_missing.*input"), ("input", "false", "skip_missing.*boolean")],
+)
+def test_parse_spec_rejects_invalid_skip_missing(input_source, tmp_path, role, value, message):
+    from smolsmort.forecast.tab import _parse_spec
+    from smolsmort.review.routes import RequestError
+
+    app = SimpleNamespace(state=SimpleNamespace(bases={"forecast": tmp_path}))
+    data = asdict(_make_spec(input_source))
+    data["source"] = input_source.name
+    data["columns"][2].update(role=role, skip_missing=value)
+    with pytest.raises(RequestError, match=message):
+        _parse_spec(app, {"spec": data})
+
+
 def make_input_panel():
     steps = np.datetime64("2025-01-06") + np.arange(12) * np.timedelta64(7, "D")
     spec = PrepSpec(
         "synthetic.csv",
-        "series",
+        "timeseries",
         "regression",
         (
             Column("day", "time"),
@@ -382,21 +444,129 @@ def make_input_panel():
     return spec, panel, scaffold, inputs, panel[STEP] < steps[3]
 
 
+@pytest.fixture
+def coverage_panel():
+    spec, panel, scaffold, _, train = make_input_panel()
+    steps = np.unique(panel[STEP])
+    coverage = np.linspace(0.1, 0.55, len(steps))
+    levels = ["alpha", "beta", "charlie", "delta", "epsilon", "foxtrot", "golf", "(none)"]
+    proportions = np.array([0.3, 0.25, 0.15, 0.1, 0.08, 0.07, 0.05])
+    counts = np.rint(
+        np.column_stack((coverage[:, None] * proportions, 1 - coverage)) * 22_000
+    ).astype(int)
+    inputs = {
+        SERIES: np.repeat(panel[SERIES], len(levels)),
+        STEP: np.repeat(panel[STEP], len(levels)),
+        "__column": np.full(len(panel[STEP]) * len(levels), "site"),
+        "__level": np.tile(levels, len(panel[STEP])),
+        "rows": np.tile(counts.ravel(), 2),
+        "target": np.tile(counts.ravel(), 2).astype(float),
+    }
+    return spec, panel, scaffold, inputs, train
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_skip_missing_removes_coverage_trend(coverage_panel, enabled):
+    spec, panel, scaffold, inputs, train = coverage_panel
+    spec = set_skip_missing(spec, enabled)
+    frame = timeseries_features(spec, panel, scaffold, (1, 1), "week", train, inputs=inputs)
+    names = frame.features.names
+    values = frame.features.x
+    steps = np.unique(panel[STEP])
+    coverage = np.linspace(0.1, 0.55, len(steps))[np.searchsorted(steps, frame.origin)]
+    alpha = values[:, names.index("mix:site:level:alpha_lag_1")]
+    other = values[:, names.index("mix:site:other_lag_1")]
+    count = values[:, names.index("spread:site:count_lag_1")]
+    hhi = values[:, names.index("spread:site:hhi_lag_1")]
+    selected = {
+        name.removeprefix("mix:site:level:").removesuffix("_lag_1")
+        for name in names
+        if name.startswith("mix:site:level:") and name.endswith("_lag_1")
+    }
+    if enabled:
+        assert selected == {"alpha", "beta", "charlie", "delta", "epsilon"}
+        for level, share in zip(sorted(selected), [0.3, 0.25, 0.15, 0.1, 0.08], strict=True):
+            np.testing.assert_allclose(
+                values[:, names.index(f"mix:site:level:{level}_lag_1")], share
+            )
+        np.testing.assert_allclose(other, 0.12)
+        np.testing.assert_array_equal(count, 7)
+        np.testing.assert_allclose(hhi, 0.1988)
+    else:
+        assert selected == {"%28none%29", "alpha", "beta", "charlie", "delta"}
+        np.testing.assert_allclose(alpha, 0.3 * coverage)
+        np.testing.assert_allclose(other, 0.2 * coverage)
+        np.testing.assert_array_equal(count, 8)
+        np.testing.assert_allclose(hhi, 0.1988 * coverage**2 + (1 - coverage) ** 2)
+        np.testing.assert_allclose(
+            values[:, names.index("mix:site:level:%28none%29_lag_1")], 1 - coverage
+        )
+        assert alpha.max() - alpha.min() == pytest.approx(0.135)
+    assert len(frame.features.pick({"site@day:mix", "site@day:spread"})[1]) == 8 * len(LAGS)
+
+
+@pytest.mark.parametrize("bucket", [(1, 1), (2, 2)])
+@pytest.mark.parametrize("all_steps", [False, True])
+def test_skip_missing_keeps_all_missing_steps_nan(coverage_panel, bucket, all_steps):
+    spec, panel, scaffold, inputs, train = coverage_panel
+    missing_step = np.unique(panel[STEP])[4]
+    keep = inputs["__level"] == "(none)"
+    if not all_steps:
+        keep |= inputs[STEP] != missing_step
+    inputs = {name: values[keep] for name, values in inputs.items()}
+    frame = timeseries_features(
+        set_skip_missing(spec), panel, scaffold, bucket, "week", train, inputs=inputs
+    )
+    values, names, _ = frame.features.pick({"site@day:mix", "site@day:spread"})
+    for lag in LAGS:
+        rows = (
+            np.ones(len(frame.origin), dtype=bool)
+            if all_steps
+            else (frame.origin == missing_step + np.timedelta64(lag * 7, "D"))
+        )
+        columns = [
+            index for index, name in enumerate(names) if name.endswith(f"_lag_{bucket[1] + lag}")
+        ]
+        assert rows.any() and columns
+        assert np.isnan(values[np.ix_(rows, columns)]).all()
+
+
+def test_skip_missing_is_per_column_and_false_keeps_feature_values(coverage_panel):
+    spec, panel, scaffold, inputs, train = coverage_panel
+    original = timeseries_features(spec, panel, scaffold, (1, 1), "week", train, inputs=inputs)
+    explicit = timeseries_features(
+        set_skip_missing(spec, False), panel, scaffold, (1, 1), "week", train, inputs=inputs
+    )
+    assert explicit.features.names == original.features.names
+    np.testing.assert_array_equal(explicit.features.x, original.features.x)
+    flagged = replace(
+        set_skip_missing(spec), columns=(*set_skip_missing(spec).columns, Column("copy", "input"))
+    )
+    copied = {name: values.copy() for name, values in inputs.items()}
+    copied["__column"] = np.full(len(inputs[STEP]), "copy")
+    combined = {name: np.concatenate([inputs[name], copied[name]]) for name in inputs}
+    frame = timeseries_features(flagged, panel, scaffold, (1, 1), "week", train, inputs=combined)
+    np.testing.assert_array_equal(
+        frame.features.pick({"copy@day:mix", "copy@day:spread"})[0],
+        original.features.pick({"site@day:mix", "site@day:spread"})[0],
+    )
+
+
 @pytest.mark.parametrize("bucket", [(1, 1), (2, 2)])
 def test_input_features_keep_grain_and_use_origin_lags(bucket):
     spec, panel, scaffold, inputs, train = make_input_panel()
-    original = series_features(spec, panel, scaffold, bucket, "week", train)
-    frame = series_features(spec, panel, scaffold, bucket, "week", train, inputs=inputs)
+    original = timeseries_features(spec, panel, scaffold, bucket, "week", train)
+    frame = timeseries_features(spec, panel, scaffold, bucket, "week", train, inputs=inputs)
     for name in ("y", "series", "step", "origin", "future", "base"):
         np.testing.assert_array_equal(getattr(frame, name), getattr(original, name))
     assert set(frame.features.families) - set(original.features.families) == {
-        "mix:site",
-        "spread:site",
+        "site@day:mix",
+        "site@day:spread",
     }
     input_columns = [
         index
         for index, family in enumerate(frame.features.families)
-        if family in {"mix:site", "spread:site"}
+        if family in {"site@day:mix", "site@day:spread"}
     ]
     assert len(input_columns) == (6 + 2) * len(LAGS)
     assert all(frame.features.types[index] == "q" for index in input_columns)
@@ -427,7 +597,7 @@ def test_input_features_keep_grain_and_use_origin_lags(bucket):
 
 def test_input_levels_freeze_globally_on_train_rows_with_name_ties():
     spec, panel, scaffold, inputs, train = make_input_panel()
-    frame = series_features(spec, panel, scaffold, (1, 1), "week", train, inputs=inputs)
+    frame = timeseries_features(spec, panel, scaffold, (1, 1), "week", train, inputs=inputs)
     names = frame.features.names
     selected = {
         name.removeprefix("mix:site:level:").removesuffix("_lag_1")
@@ -438,14 +608,14 @@ def test_input_levels_freeze_globally_on_train_rows_with_name_ties():
     assert not any(":new_" in name or ":epsilon_" in name for name in names)
     changed = {name: values.copy() for name, values in inputs.items()}
     changed["target"][changed[STEP] >= np.datetime64("2025-01-27")] *= 1000
-    rebuilt = series_features(spec, panel, scaffold, (1, 1), "week", train, inputs=changed)
+    rebuilt = timeseries_features(spec, panel, scaffold, (1, 1), "week", train, inputs=changed)
     assert rebuilt.features.names == names
 
 
 def test_input_level_named_other_does_not_collide_with_other_bucket():
     spec, panel, scaffold, inputs, train = make_input_panel()
     inputs["__level"][inputs["__level"] == "zeta"] = "other"
-    frame = series_features(spec, panel, scaffold, (1, 1), "week", train, inputs=inputs)
+    frame = timeseries_features(spec, panel, scaffold, (1, 1), "week", train, inputs=inputs)
     assert "mix:site:level:other_lag_1" in frame.features.names
     assert "mix:site:other_lag_1" in frame.features.names
     assert len(frame.features.names) == len(set(frame.features.names))
@@ -455,10 +625,10 @@ def test_input_features_stay_missing_beyond_an_ended_series():
     spec, panel, scaffold, inputs, train = make_input_panel()
     keep = (panel[SERIES] != "a") | (panel[STEP] <= np.datetime64("2025-02-03"))
     panel = {name: values[keep] for name, values in panel.items()}
-    frame = series_features(spec, panel, scaffold, (1, 1), "week", train[keep], inputs=inputs)
+    frame = timeseries_features(spec, panel, scaffold, (1, 1), "week", train[keep], inputs=inputs)
     ended_future = (frame.series == "a") & frame.future
     assert ended_future.any()
-    values = frame.features.pick({"mix:site", "spread:site"})[0]
+    values = frame.features.pick({"site@day:mix", "site@day:spread"})[0]
     assert np.isnan(values[ended_future]).all()
 
 
@@ -488,7 +658,7 @@ def test_workspace_freezes_input_levels_at_first_validation_fold(monkeypatch):
     workspace = load_workspace(spec, Path("synthetic"), {"step": "week"})
     cutoff = workspace.series_folds[0][0]
     assert cutoff == steps[26]
-    assert {"mix:site", "spread:site"} <= set(workspace.families)
+    assert {"site@day:mix", "site@day:spread"} <= set(workspace.families)
     for bucket, frame in workspace.frames.items():
         assert not any(":level:unseen_" in name for name in frame.features.names)
         rows = frame.origin >= cutoff
@@ -507,19 +677,25 @@ def test_input_column_and_level_names_cannot_overwrite_another_family():
     # one source level per series and step matches the prepared table's unique grain
     keep = np.array([0, 5])
     combined = {name: np.concatenate([first[name][keep], second[name][keep]]) for name in inputs}
-    frame = series_features(spec, panel, scaffold, (1, 1), "week", train, inputs=combined)
-    assert len(frame.features.pick({"mix:site"})[1]) == 2 * len(LAGS)
-    assert len(frame.features.pick({"mix:site:level:x"})[1]) == 2 * len(LAGS)
+    frame = timeseries_features(spec, panel, scaffold, (1, 1), "week", train, inputs=combined)
+    assert len(frame.features.pick({"site@day:mix"})[1]) == 2 * len(LAGS)
+    assert len(frame.features.pick({"site%3Alevel%3Ax@day:mix"})[1]) == 2 * len(LAGS)
     assert len(frame.features.names) == len(set(frame.features.names))
 
 
 def test_input_families_are_available_to_births_without_screen_priors():
     workspace = SimpleNamespace(
-        mode="series",
+        mode="timeseries",
         unit="week",
-        families=["lag+0", "mix:site", "spread:site", "mix:segment", "spread:segment"],
+        families=[
+            "units@day:lag+0",
+            "site@day:mix",
+            "site@day:spread",
+            "segment@day:mix",
+            "segment@day:spread",
+        ],
     )
-    assert _select_birth_families(workspace) == sorted(workspace.families)
+    assert _select_birth_families(workspace) == sorted(workspace.families, key=family_sort_key)
 
 
 def write_leading_input_source(folder):
@@ -548,7 +724,7 @@ def write_leading_input_source(folder):
                     )
     return PrepSpec(
         str(source),
-        "series",
+        "timeseries",
         "regression",
         (
             Column("day", "time"),
@@ -569,10 +745,10 @@ def test_leading_site_mix_ranks_near_top_and_wins_short_search(tmp_path):
     prepared = prepare(spec, tmp_path / "cache")
     workspace = load_workspace(spec, prepared.folder, prepared.summary)
     ranking = screen_families(workspace)
-    assert "mix:site" in [row["family"] for row in ranking[:3]]
+    assert "site@day:mix" in [row["family"] for row in ranking[:3]]
     priors = {row["family"]: row["p_on"] for row in ranking}
     without_site = make_genome(
-        [name for name in workspace.families if name != "mix:site"],
+        [name for name in workspace.families if name != "site@day:mix"],
         workspace.profile["genes"]["objectives"][0],
         DEFAULTS,
     )
@@ -583,7 +759,7 @@ def test_leading_site_mix_ranks_near_top_and_wins_short_search(tmp_path):
         warm=[without_site.to_dict()],
     )
     assert result["best"] is not None
-    assert "mix:site" in result["best"]["families"]
+    assert "site@day:mix" in result["best"]["families"]
     report = {
         "screen_top_five": [
             {key: row[key] for key in ("family", "score", "p_on")} for row in ranking[:5]

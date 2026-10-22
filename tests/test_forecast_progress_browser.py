@@ -34,7 +34,7 @@ def write_multifamily_run(root, *, version=2):
         path.write_text(json.dumps(value), encoding="utf-8")
 
     spec = {
-        "mode": "series",
+        "mode": "timeseries",
         "task": "regression",
         "step": "week",
         "horizon": 2,
@@ -444,7 +444,7 @@ def test_multifamily_saved_run_named_models_and_explained_importance(tmp_path):
         page.set_viewport_size({"width": 1440, "height": 1500})
         run_id = write_multifamily_run(tmp_path / "forecast_root")
         switch_to_regression(page)
-        page.select_option("#topic-flavour", "series")
+        page.select_option("#topic-flavour", "timeseries")
         show_tab(page, "regression-search")
         page.locator(f'#regression-runs-list [data-run-id="{run_id}"]').click()
         board = page.locator("#regression-leaderboard-table")
@@ -543,7 +543,7 @@ def test_legacy_saved_run_defaulted_to_xgboost_without_comparison(tmp_path):
     with session(tmp_path) as (page, _):
         run_id = write_multifamily_run(tmp_path / "forecast_root", version=1)
         switch_to_regression(page)
-        page.select_option("#topic-flavour", "series")
+        page.select_option("#topic-flavour", "timeseries")
         show_tab(page, "regression-search")
         page.locator(f'#regression-runs-list [data-run-id="{run_id}"]').click()
         board = page.locator("#regression-leaderboard-table")
@@ -566,7 +566,7 @@ def test_result_and_run_banners_compared_ratios_and_kept_plain_facts(tmp_path):
     with session(tmp_path) as (page, _):
         run_id = write_multifamily_run(tmp_path / "forecast_root")
         switch_to_regression(page)
-        page.select_option("#topic-flavour", "series")
+        page.select_option("#topic-flavour", "timeseries")
         show_tab(page, "regression-search")
         page.locator(f'#regression-runs-list [data-run-id="{run_id}"]').click()
         page.locator("#regression-run-verdict").wait_for()
@@ -631,7 +631,7 @@ def test_results_kept_latest_model_importance_and_table_after_delayed_responses(
     with session(tmp_path, width=1440) as (page, _):
         run_id = write_multifamily_run(tmp_path / "forecast_root")
         switch_to_regression(page)
-        page.select_option("#topic-flavour", "series")
+        page.select_option("#topic-flavour", "timeseries")
         show_tab(page, "regression-search")
         page.locator(f'#regression-runs-list [data-run-id="{run_id}"]').click()
         page.click("#regression-run-open")

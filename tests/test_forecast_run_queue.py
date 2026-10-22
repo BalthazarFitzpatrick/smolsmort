@@ -32,7 +32,7 @@ folder = Path(sys.argv[1])
 
 def load_workspace(spec, prepared, summary, **kwargs):
     (folder / "load.started").write_text(str(time.time()))
-    return SimpleNamespace(mode="series", profile={}, excluded_series=[], hold=summary["hold"])
+    return SimpleNamespace(mode="timeseries", profile={}, excluded_series=[], hold=summary["hold"])
 
 def screen_families(*args, **kwargs):
     (folder / "screen.started").write_text(str(time.time()))
@@ -61,7 +61,7 @@ worker.read_priors = lambda *args: None
 worker.read_top_families = lambda *args: None
 worker.search = search
 launcher.launch_families = search
-worker.genome_from_dict = lambda data: SimpleNamespace(to_dict=lambda: data)
+worker.genome_from_dict = lambda data, *, spec: SimpleNamespace(to_dict=lambda: data)
 worker.finish = finish
 worker._write_result = write_result
 raise SystemExit(worker.run(folder))
@@ -131,7 +131,7 @@ def start_worker(tmp_path, monkeypatch):
     roots = tmp_path / "runs"
     spec = PrepSpec(
         str(tmp_path / "source.csv"),
-        "series",
+        "timeseries",
         "regression",
         (Column("day", "time"), Column("value", "target", aggregation="sum")),
     )

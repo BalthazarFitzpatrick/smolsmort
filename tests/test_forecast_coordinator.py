@@ -137,7 +137,7 @@ def test_ensemble_band_uses_stored_validation_average(monkeypatch, cached_winner
     truth = np.array([8, 10, 14, 18, 22, 26, 30, np.nan], dtype=float)
     frame = SimpleNamespace(y=truth, step=np.arange(8), series=np.zeros(8, dtype=int))
     ws = SimpleNamespace(
-        mode="series",
+        mode="timeseries",
         spec=SimpleNamespace(task="regression"),
         profile={"genes": {}},
         frames={(1, 1): frame},
@@ -156,9 +156,11 @@ def test_ensemble_band_uses_stored_validation_average(monkeypatch, cached_winner
         calls.append(member.family)
         return np.full(eval_rows.sum(), 25 if member.family == "xgboost" else 27)
 
-    monkeypatch.setattr(pipeline, "_series_predict", predict_member)
+    monkeypatch.setattr(pipeline, "_timeseries_predict", predict_member)
     monkeypatch.setattr(
-        pipeline, "_series_baseline", lambda frame, mask, bucket, period: np.full(mask.sum(), 20)
+        pipeline,
+        "_timeseries_baseline",
+        lambda frame, mask, bucket, period: np.full(mask.sum(), 20),
     )
     prediction_cache = {} if cached_winner else None
     if cached_winner:
@@ -251,7 +253,7 @@ def test_broad_defaults_retains_population_for_deeper_search(monkeypatch):
         objectives=lambda task: ("squared",),
     )
     ws = SimpleNamespace(
-        mode="row",
+        mode="entity",
         spec=SimpleNamespace(task="regression"),
         masks={"train": np.ones(20, dtype=bool)},
         families=["lag"],
@@ -303,7 +305,7 @@ def test_recipe_selection_uses_validation_even_when_test_error_disagrees(
 
     spec = PrepSpec(
         "unused.csv",
-        "series",
+        "timeseries",
         "regression",
         (Column("day", "time"), Column("units", "target", aggregation="sum")),
     )
@@ -332,7 +334,7 @@ def test_recipe_selection_uses_validation_even_when_test_error_disagrees(
         (tmp_path / name).write_text(json.dumps(value))
     frame = SimpleNamespace(y=np.array([10, 10]), step=np.array([1, 2]))
     ws = SimpleNamespace(
-        mode="series",
+        mode="timeseries",
         frames={(1, 1): frame},
         series_masks={(1, 1): {"val": np.array([True, True])}},
     )
@@ -404,7 +406,7 @@ def make_trending_panel(folder):
             writer.writerow(row)
     spec = PrepSpec(
         str(truth.path),
-        "series",
+        "timeseries",
         "regression",
         (
             Column("day", "time"),

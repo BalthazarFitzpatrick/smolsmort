@@ -18,7 +18,7 @@ def test_killed_long_run_worker_preserves_checkpointed_leaderboard(tmp_path):
         "version": 2,
         "spec": {
             "source": "synthetic.csv",
-            "mode": "series",
+            "mode": "timeseries",
             "task": "regression",
             "columns": [
                 {"name": "day", "role": "time"},
@@ -78,7 +78,7 @@ def test_killed_long_run_worker_preserves_checkpointed_leaderboard(tmp_path):
             search_module.time = clock
             family_worker.time = clock
             workspace = SimpleNamespace(
-                mode="series",
+                mode="timeseries",
                 spec=SimpleNamespace(task="regression"),
                 series_masks={"one": {"train": np.ones(20, dtype=bool)}},
                 families=["lag"],

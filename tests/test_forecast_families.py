@@ -17,7 +17,7 @@ from smolsmort.forecast.model import fit_model, predict
 from smolsmort.forecast.pipeline import (
     Genome,
     PipelineError,
-    _series_fit,
+    _timeseries_fit,
     genome_from_dict,
     make_genome,
 )
@@ -79,7 +79,7 @@ def test_xgboost_genome_keeps_the_known_golden_key():
 
 @pytest.mark.parametrize("explicit", [False, True])
 def test_xgboost_genome_roundtrip(explicit):
-    data = {"families": ["lag+0"], "objective": "squared", "params": {"eta": 0.1}}
+    data = {"families": ["units@day:lag+0"], "objective": "squared", "params": {"eta": 0.1}}
     if explicit:
         data["family"] = "xgboost"
     genome = genome_from_dict(data)
@@ -88,15 +88,17 @@ def test_xgboost_genome_roundtrip(explicit):
 
 
 def test_registered_family_roundtrip_and_distinct_key(other_family):
-    genome = make_genome(["lag+0"], "squared", {}, family=other_family.name)
+    genome = make_genome(["units@day:lag+0"], "squared", {}, family=other_family.name)
     assert genome.to_dict()["family"] == other_family.name
     assert genome_from_dict(genome.to_dict()) == genome
     assert genome_from_dict(genome.to_dict(), family="xgboost").family == "xgboost"
-    assert genome.key() != make_genome(["lag+0"], "squared", {}).key()
+    assert genome.key() != make_genome(["units@day:lag+0"], "squared", {}).key()
 
 
 def test_search_preserves_family_in_variation_and_warm_starts(other_family):
-    ws = SimpleNamespace(families=["lag+0"], profile={"genes": {"objectives": ["squared"]}})
+    ws = SimpleNamespace(
+        families=["units@day:lag+0"], profile={"genes": {"objectives": ["squared"]}}
+    )
     variation = _Variation(ws, np.random.default_rng(0))
     genome = make_genome(ws.families, "squared", DEFAULTS, family=other_family.name)
     assert variation.mutate(genome).family == other_family.name
@@ -106,16 +108,16 @@ def test_search_preserves_family_in_variation_and_warm_starts(other_family):
 
 def test_unknown_family_names_the_family_and_install_command():
     with pytest.raises(PipelineError, match="unknown family 'missing'.*uv sync --extra missing"):
-        make_genome(["lag+0"], "squared", {}, family="missing")
+        make_genome(["units@day:lag+0"], "squared", {}, family="missing")
 
 
 def test_unavailable_family_names_its_install_extra(other_family):
     other_family.available = lambda: (False, "uv sync --extra test-extra (missing dependency)")
     assert other_family not in available_families()
-    genome = Genome(("lag+0",), "squared", (), family=other_family.name)
+    genome = Genome(("units@day:lag+0",), "squared", (), family=other_family.name)
     assert genome_from_dict(genome.to_dict()) == genome
     with pytest.raises(PipelineError, match="test-family.*uv sync --extra test-extra"):
-        _series_fit(None, genome, None, None, 1)
+        _timeseries_fit(None, genome, None, None, 1)
 
 
 def test_genome_construction_and_search_never_probe_availability(other_family):
@@ -123,9 +125,11 @@ def test_genome_construction_and_search_never_probe_availability(other_family):
         raise AssertionError("recipe operations must not probe optional libraries")
 
     other_family.available = refuse_probe
-    genome = make_genome(["lag+0"], "squared", DEFAULTS, family=other_family.name)
+    genome = make_genome(["units@day:lag+0"], "squared", DEFAULTS, family=other_family.name)
     assert genome_from_dict(genome.to_dict()) == genome
-    ws = SimpleNamespace(families=["lag+0"], profile={"genes": {"objectives": ["squared"]}})
+    ws = SimpleNamespace(
+        families=["units@day:lag+0"], profile={"genes": {"objectives": ["squared"]}}
+    )
     variation = _Variation(ws, np.random.default_rng(0))
     assert variation.mutate(genome).family == other_family.name
     assert variation.crossover(genome, genome).family == other_family.name
@@ -134,10 +138,10 @@ def test_genome_construction_and_search_never_probe_availability(other_family):
 
 def test_missing_xgboost_is_reported_only_at_fit_with_one_install_command(monkeypatch):
     monkeypatch.setitem(sys.modules, "xgboost", None)
-    genome = make_genome(["lag+0"], "squared", {})
+    genome = make_genome(["units@day:lag+0"], "squared", {})
     assert genome_from_dict(genome.to_dict()) == genome
     with pytest.raises(PipelineError, match="family 'xgboost' is unavailable") as error:
-        _series_fit(None, genome, None, None, 1)
+        _timeseries_fit(None, genome, None, None, 1)
     assert str(error.value).count("uv sync --extra forecast") == 1
 
 
@@ -191,7 +195,7 @@ def test_xgboost_wrapper_predictions_and_history_match_bit_for_bit():
     assert wrapped.fitted.rounds == direct.rounds
 
 
-def test_series_fit_dispatches_sorted_rows_to_the_selected_family(other_family):
+def test_timeseries_fit_dispatches_sorted_rows_to_the_selected_family(other_family):
     captured = {}
     fitted = SimpleNamespace(eval_history=None, predict=lambda x: x[:, 0])
 
@@ -206,8 +210,8 @@ def test_series_fit_dispatches_sorted_rows_to_the_selected_family(other_family):
         step=np.array([4, 1, 3, 2]),
         y=np.array([40, 10, 30, 20]),
     )
-    genome = make_genome(["lag+0"], "squared", {"eta": 0.1}, family=other_family.name)
-    actual, design = _series_fit(None, genome, frame, np.ones(4, dtype=bool), 2)
+    genome = make_genome(["units@day:lag+0"], "squared", {"eta": 0.1}, family=other_family.name)
+    actual, design = _timeseries_fit(None, genome, frame, np.ones(4, dtype=bool), 2)
     assert actual is fitted and design is x
     np.testing.assert_array_equal(captured.pop("x"), x[[1, 3, 2, 0]])
     np.testing.assert_array_equal(captured.pop("y"), [10, 20, 30, 40])

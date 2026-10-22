@@ -118,7 +118,7 @@ def test_decimal_comma_export_lists_numbers_and_preps(app, tab):
 
     spec = {
         "source": "sales.csv",
-        "mode": "series",
+        "mode": "timeseries",
         "task": "regression",
         "step": "month",
         "horizon": 3,
@@ -129,7 +129,7 @@ def test_decimal_comma_export_lists_numbers_and_preps(app, tab):
         ],
     }
     prepared = _post(app, tab, "/api/forecast-prep", {"spec": spec})
-    assert prepared["summary"]["mode"] == "series"
+    assert prepared["summary"]["mode"] == "timeseries"
     assert prepared["summary"]["source_rows"] == 60
     assert prepared["summary"]["source_columns"] == 3
     assert prepared["summary"]["encoding"] == "utf-16"
@@ -144,10 +144,10 @@ def _forecast_path(app):
 # ---------------------------------------------------------------- prep
 
 
-def _series_spec(source_name: str) -> dict:
+def _timeseries_spec(source_name: str) -> dict:
     return {
         "source": source_name,
-        "mode": "series",
+        "mode": "timeseries",
         "task": "regression",
         "columns": [
             {"name": "day", "role": "time"},
@@ -159,10 +159,10 @@ def _series_spec(source_name: str) -> dict:
     }
 
 
-def _row_spec(source_name: str) -> dict:
+def _entity_spec(source_name: str) -> dict:
     return {
         "source": source_name,
-        "mode": "row",
+        "mode": "entity",
         "task": "regression",
         "columns": [
             {"name": "created", "role": "anchor"},
@@ -179,10 +179,10 @@ def _row_spec(source_name: str) -> dict:
 
 def test_prep_summarises_and_reuses_cache(app, tab):
     write_panel(_forecast_path(app), weeks=60)
-    spec = _series_spec("panel.csv")
+    spec = _timeseries_spec("panel.csv")
     first = _post(app, tab, "/api/forecast-prep", {"spec": spec})
     assert first["reused"] is False
-    assert "sql" in first and first["summary"]["mode"] == "series"
+    assert "sql" in first and first["summary"]["mode"] == "timeseries"
     assert first["summary"]["source_columns"] == 5
     assert first["summary"]["encoding"] == "utf-8"
     second = _post(app, tab, "/api/forecast-prep", {"spec": spec})
@@ -201,7 +201,7 @@ def test_prep_scaffolded_numeric_bike_dimensions(app, tab):
     assert by_name["dteday"]["kind"] == "date"
     spec = {
         "source": "bike_daily.csv",
-        "mode": "series",
+        "mode": "timeseries",
         "task": "regression",
         "step": "week",
         "horizon": 3,
@@ -227,7 +227,7 @@ def test_prep_scaffolded_numeric_bike_dimensions(app, tab):
 
 def test_prep_reads_known_facts_for_an_old_cache_without_rebuilding(app, tab):
     write_panel(_forecast_path(app), weeks=60)
-    spec = _series_spec("panel.csv")
+    spec = _timeseries_spec("panel.csv")
     first = _post(app, tab, "/api/forecast-prep", {"spec": spec})
     prep_file = next((_forecast_path(app) / ".forecast-cache").glob("*/prep.json"))
     old_summary = dict(first["summary"])
@@ -250,7 +250,7 @@ def test_run_actions_prepare_current_picks_and_report_cache_facts(app, tab, monk
         return "new-run"
 
     monkeypatch.setattr("smolsmort.forecast.tab.runs.start_run", record_run)
-    payload = {"spec": _series_spec("panel.csv"), "budget": TINY_BUDGET}
+    payload = {"spec": _timeseries_spec("panel.csv"), "budget": TINY_BUDGET}
     route = "/api/forecast-runs"
     if action == "warm":
         payload["warm_from"] = "saved-run"
@@ -344,7 +344,7 @@ def series_run(tmp_path_factory):
     yield _run_to_done(
         tmp_path_factory.mktemp("series_run"),
         lambda root: write_panel(root, weeks=60),
-        _series_spec,
+        _timeseries_spec,
         "panel.csv",
         TINY_BUDGET,
     )
@@ -352,13 +352,13 @@ def series_run(tmp_path_factory):
 
 def test_a_search_run_reaches_done_and_reports_a_verdict(app, tab):
     write_panel(_forecast_path(app), weeks=60)
-    spec = _series_spec("panel.csv")
+    spec = _timeseries_spec("panel.csv")
     started = _post(app, tab, "/api/forecast-runs", {"spec": spec, "budget": TINY_BUDGET})
     run_id = started["run_id"]
     state = _wait_done(app, tab, run_id)
     assert state["state"] == "done", state
     assert set(state["verdict"]) == {"summary", "accuracy", "checks"}
-    assert state["spec"]["mode"] == "series"
+    assert state["spec"]["mode"] == "timeseries"
     assert isinstance(state["leaderboard"], list)
 
 
@@ -391,7 +391,7 @@ def test_run_polling_sends_only_updated_leaderboards(app, tab, cursor):
     )
     (root / "status.json").write_text(json.dumps({"state": "done", "stopped": "plateau"}))
     (root / "leaderboard_generation.json").write_text("0")
-    board = [{"fitness": 0.3, "genome": {"families": ["lag+1"]}}]
+    board = [{"fitness": 0.3, "genome": {"families": ["units@day:lag+1"]}}]
     (root / "leaderboard.json").write_text(json.dumps(board))
     complete = _get(app, tab, "/api/forecast-run", {"id": "fixture"})
     assert complete["leaderboard"] == [{**entry, "family": "xgboost"} for entry in board]
@@ -487,10 +487,10 @@ def test_generation_event_arriving_after_its_curve_is_not_lost(app, tab):
     assert second["generation_curves"] == []
 
 
-def test_view_series_mode_has_a_band_within_bounds(series_run):
+def test_view_timeseries_mode_has_a_band_within_bounds(series_run):
     app, tab, run_id, _root = series_run
     payload = _get(app, tab, "/api/forecast-view", {"id": run_id})
-    assert payload["mode"] == "series"
+    assert payload["mode"] == "timeseries"
     assert {"actual", "forecast"} <= {s["id"] for s in payload["series"]}
     forecast_line = next(s for s in payload["series"] if s["id"] == "forecast")
     assert forecast_line["dashed"] is True
@@ -557,7 +557,7 @@ def test_export_carries_the_ratio_on_every_row(series_run):
 
 def test_cancel_stops_a_run(app, tab):
     write_panel(_forecast_path(app), weeks=60)
-    spec = _series_spec("panel.csv")
+    spec = _timeseries_spec("panel.csv")
     big_budget = {"population": 8, "max_generations": 200, "plateau": 200, "nthread": 1}
     started = _post(app, tab, "/api/forecast-runs", {"spec": spec, "budget": big_budget})
     run_id = started["run_id"]
@@ -576,7 +576,7 @@ def test_cancel_stops_a_run(app, tab):
 def test_refit_reuses_the_saved_recipe(series_run):
     app, tab, run_id, root = series_run
     newer = write_panel(root, weeks=68)
-    spec = _series_spec("panel.csv")
+    spec = _timeseries_spec("panel.csv")
     started = _post(app, tab, "/api/forecast-refit", {"spec": spec, "run_id": run_id})
     refit_id = started["run_id"]
     state = _wait_done(app, tab, refit_id)
@@ -585,7 +585,7 @@ def test_refit_reuses_the_saved_recipe(series_run):
     assert newer.weeks == 68
 
 
-# ---------------------------------------------------------------- row mode
+# ---------------------------------------------------------------- entity mode
 
 
 @pytest.fixture(scope="module")
@@ -593,16 +593,16 @@ def row_run(tmp_path_factory):
     yield _run_to_done(
         tmp_path_factory.mktemp("row_run"),
         lambda root: write_rows(root, n=2000),
-        _row_spec,
+        _entity_spec,
         "rows.csv",
         TINY_BUDGET,
     )
 
 
-def test_row_mode_view_has_load_line_and_mc_band(row_run):
+def test_entity_mode_view_has_load_line_and_mc_band(row_run):
     app, tab, run_id, _root = row_run
     payload = _get(app, tab, "/api/forecast-view", {"id": run_id})
-    assert payload["mode"] == "row"
+    assert payload["mode"] == "entity"
     ids = {s["id"] for s in payload["series"]}
     assert "load" in ids
     load_line = next(s for s in payload["series"] if s["id"] == "load")
@@ -612,7 +612,7 @@ def test_row_mode_view_has_load_line_and_mc_band(row_run):
     assert any(v is not None for v in band["lo"])
 
 
-def test_row_mode_table_grouped_carries_earliest_latest(row_run):
+def test_entity_mode_table_grouped_carries_earliest_latest(row_run):
     app, tab, run_id, _root = row_run
     payload = _get(app, tab, "/api/forecast-table", {"id": run_id, "group": "branch", "size": 1000})
     assert "groups" in payload

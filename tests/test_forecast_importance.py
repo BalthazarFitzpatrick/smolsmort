@@ -114,16 +114,18 @@ def test_finish_persists_all_family_winners_and_reuses_final_fits(
         y=y,
         step=position,
         series=np.zeros(len(y), dtype=int),
-        features=Features(x, ["lag_1", "lag_2"], ["q", "q"], ["lag", "lag"]),
+        features=Features(
+            x, ["lag_1", "lag_2"], ["q", "q"], ["value@step:lag+0", "value@step:lag+1"]
+        ),
     )
     spec = PrepSpec(
         "synthetic.csv",
-        "series",
+        "timeseries",
         "regression",
         (Column("step", "time"), Column("value", "target", aggregation="sum")),
     )
     ws = SimpleNamespace(
-        mode="series",
+        mode="timeseries",
         spec=spec,
         profile={"genes": {}},
         frames={(1, 1): frame},
@@ -135,7 +137,9 @@ def test_finish_persists_all_family_winners_and_reuses_final_fits(
         {
             "family": name,
             "fitness": fitness,
-            "genome": make_genome(["lag"], "squared", {}, name).to_dict(),
+            "genome": make_genome(
+                ["value@step:lag+0", "value@step:lag+1"], "squared", {}, name
+            ).to_dict(),
             "prediction": (y[masks["val"]] + fitness).tolist(),
         }
         for name, fitness in (("ridge", 0.1), ("xgboost", 0.2), ("snaive", 0.3))
@@ -164,7 +168,7 @@ def test_finish_persists_all_family_winners_and_reuses_final_fits(
         )
         return fitted, x
 
-    monkeypatch.setattr(pipeline, "_series_fit", fit_model)
+    monkeypatch.setattr(pipeline, "_timeseries_fit", fit_model)
     monkeypatch.setattr(ensemble, "load_workspace", lambda *args, **kwargs: ws)
     monkeypatch.setattr(ensemble, "watch_parent", lambda pid: None)
     ensemble.run(tmp_path, 1)
@@ -194,7 +198,7 @@ def test_v1_result_keeps_importance_without_changing_recipe_family(tmp_path):
 
     spec = PrepSpec(
         "synthetic.csv",
-        "row",
+        "entity",
         "regression",
         (Column("step", "anchor"), Column("value", "target")),
     )

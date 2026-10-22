@@ -54,6 +54,10 @@ def run(folder, parent_pid):
         transform=request.get("transform", "none"),
     )
     ranked = read_json(folder / "finalists.json")
+    ranked = [
+        {**entry, "genome": genome_from_dict(entry["genome"], spec=spec).to_dict()}
+        for entry in ranked
+    ]
     winner = ranked[0]
     genome = genome_from_dict(winner["genome"])
     prediction_cache = {}
@@ -73,7 +77,7 @@ def run(folder, parent_pid):
     ensemble = None
     config = request.get("ensemble", {})
     members = ranked[: config.get("top", 3)]
-    if config.get("enabled", True) and members and ws.mode == "series":
+    if config.get("enabled", True) and members and ws.mode == "timeseries":
         prediction = np.mean([entry["prediction"] for entry in members], axis=0)
         truth = np.concatenate(
             [frame.y[ws.series_masks[bucket]["val"]] for bucket, frame in ws.frames.items()]
@@ -125,7 +129,7 @@ def run(folder, parent_pid):
         if name not in states:
             continue
         member = genome_from_dict(entry["genome"])
-        if ws.mode == "row":
+        if ws.mode == "entity":
             importance = final.get("importance")
         else:
             if member.key() not in importance_cache:

@@ -24,6 +24,7 @@ from smolsmort.forecast.spec import (
     UNIT_DAYS,
     UPPER,
     PrepSpec,
+    normalize_saved_modes,
 )
 from smolsmort.forecast.tables import connect, resolve_encoding, type_source
 
@@ -82,10 +83,10 @@ def prepare(spec: PrepSpec, cache_root: Path) -> Prepared:
         # single-threaded: row_number() over the raw scan must match source file order
         con.execute("SET threads=1")
         read_expr = type_source(con, _load_source(spec, source_path, source_bytes, tmp))
-        if spec.mode == "row":
-            sql, summary = _prep_row(con, spec, read_expr, tmp)
+        if spec.mode == "entity":
+            sql, summary = _prep_entity(con, spec, read_expr, tmp)
         else:
-            sql, summary = _prep_series(con, spec, read_expr, tmp)
+            sql, summary = _prep_timeseries(con, spec, read_expr, tmp)
         summary.update(_source_facts(con, read_expr, spec, source_bytes))
         con.close()
         # runs on absolute temp paths, stored relative: the text replays from inside the cache
@@ -121,7 +122,7 @@ def _is_complete(spec: PrepSpec, folder: Path) -> bool:
 
 def _load_cached(folder: Path) -> Prepared:
     sql = (folder / "prep.sql").read_text()
-    summary = json.loads((folder / "prep.json").read_text())
+    summary = normalize_saved_modes(json.loads((folder / "prep.json").read_text()))
     return Prepared(folder, sql, summary, reused=True)
 
 
@@ -141,11 +142,11 @@ def _load_source(spec: PrepSpec, source_path: Path, source_bytes: bytes, out: Pa
 
 
 # ---------------------------------------------------------------------------
-# row mode
+# entity mode
 # ---------------------------------------------------------------------------
 
 
-def _prep_row(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[str, dict]:
+def _prep_entity(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[str, dict]:
     dims = spec.named("dimension")
     measures = spec.named("measure")
     target = spec.named("target")[0]
@@ -179,24 +180,40 @@ def _prep_row(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[str, dict
         f"CREATE OR REPLACE TEMP VIEW valid AS\nSELECT * FROM anchored WHERE {anchor_q} IS NOT NULL;"
     )
 
-    target_type = "VARCHAR" if spec.task == "classification" else "DOUBLE"
-    select_cols = [row_q, anchor_q, _quote(PREDICT)]
-    select_cols += [f"CAST({_quote(c)} AS VARCHAR) AS {_quote(c)}" for c in dims]
-    select_cols += [f"CAST({_quote(c)} AS DOUBLE) AS {_quote(c)}" for c in measures]
-    select_cols.append(f"CAST({target_q} AS {target_type}) AS {target_q}")
-    _run(f"CREATE OR REPLACE TEMP VIEW typed AS\nSELECT {', '.join(select_cols)} FROM valid;")
-
     as_of_value = None
-    if spec.task == "classification":
-        lower_sql = upper_sql = "CAST(NULL AS DOUBLE)"
-    elif spec.censor:
+    if spec.censor and spec.task != "classification":
         if spec.censor.as_of:
             as_of_sql = f"CAST({_literal(spec.censor.as_of)} AS DATE)"
             as_of_value = spec.censor.as_of
         else:
-            as_of_sql = f"(SELECT MAX({anchor_q}) FROM typed)"
-            as_of_value = con.execute(f"SELECT MAX({anchor_q}) FROM typed").fetchone()[0]
+            as_of_sql = f"(SELECT MAX({anchor_q}) FROM valid)"
+            as_of_value = con.execute(f"SELECT MAX({anchor_q}) FROM valid").fetchone()[0]
         unit_days = UNIT_DAYS[spec.censor.unit]
+
+    target_type = "VARCHAR" if spec.task == "classification" else "DOUBLE"
+    target_sql = f"CAST({target_q} AS {target_type})"
+    event_target = spec.censor is not None and spec.censor.event is not None
+    event_filter = ""
+    if event_target:
+        event_sql = f"CAST({target_q} AS DATE)"
+        # keep numeric targets and null open rows for the existing model and prediction paths
+        target_sql = (
+            f"CASE WHEN {event_sql} <= {as_of_sql} "
+            f"THEN date_diff('day', {anchor_q}, {event_sql}) / {unit_days} END"
+        )
+        event_filter = f"\nWHERE {event_sql} IS NULL OR {event_sql} >= {anchor_q}"
+    select_cols = [row_q, anchor_q, _quote(PREDICT)]
+    select_cols += [f"CAST({_quote(c)} AS VARCHAR) AS {_quote(c)}" for c in dims]
+    select_cols += [f"CAST({_quote(c)} AS DOUBLE) AS {_quote(c)}" for c in measures]
+    select_cols.append(f"{target_sql} AS {target_q}")
+    _run(
+        f"CREATE OR REPLACE TEMP VIEW typed AS\n"
+        f"SELECT {', '.join(select_cols)} FROM valid{event_filter};"
+    )
+
+    if spec.task == "classification":
+        lower_sql = upper_sql = "CAST(NULL AS DOUBLE)"
+    elif spec.censor:
         lower_sql = (
             f"CASE WHEN {target_q} IS NOT NULL THEN {target_q} "
             f"ELSE date_diff('day', {anchor_q}, {as_of_sql}) / {unit_days} END"
@@ -226,28 +243,31 @@ def _prep_row(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[str, dict
     source_rows = con.execute("SELECT count(*) FROM source").fetchone()[0]
     filtered_rows = con.execute("SELECT count(*) FROM filtered").fetchone()[0]
     valid_rows = con.execute("SELECT count(*) FROM valid").fetchone()[0]
+    rows = con.execute("SELECT count(*) FROM bounds").fetchone()[0]
     open_rows = con.execute(f"SELECT count(*) FROM bounds WHERE {target_q} IS NULL").fetchone()[0]
     predict_rows = con.execute(
         f"SELECT count(*) FROM read_parquet({_literal(predict_path)})"
     ).fetchone()[0]
 
     summary = {
-        "mode": "row",
+        "mode": "entity",
         "task": spec.task,
         "source_rows": source_rows,
         "rows_after_where": filtered_rows,
         "dropped_null_anchor": filtered_rows - valid_rows,
-        "rows": valid_rows,
+        "rows": rows,
         "open_rows": open_rows,
-        "known_rows": valid_rows - open_rows,
+        "known_rows": rows - open_rows,
         "predict_rows": predict_rows,
         "as_of": str(as_of_value)[:10] if as_of_value is not None else None,
     }
+    if event_target:
+        summary["refused_event_before_start"] = valid_rows - rows
     return "\n\n".join(stmts), summary
 
 
 # ---------------------------------------------------------------------------
-# series mode
+# time series mode
 # ---------------------------------------------------------------------------
 
 
@@ -308,7 +328,7 @@ def _fill_expr(col: str, aggregation: str) -> str:
     return q  # mean/median/min/max: a gap stays null, nothing to fill
 
 
-def _prep_series(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[str, dict]:
+def _prep_timeseries(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[str, dict]:
     dims = spec.named("dimension")
     inputs = spec.named("input")
     time_col = spec.named("time")[0]
@@ -457,7 +477,7 @@ def _prep_series(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[str, d
     global_last = con.execute(f"SELECT MAX({step_q}) FROM panel").fetchone()[0]
 
     summary = {
-        "mode": "series",
+        "mode": "timeseries",
         "step": step,
         "source_rows": source_rows,
         "dropped_null_time": source_rows - valid_rows,

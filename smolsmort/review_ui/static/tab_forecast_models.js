@@ -114,8 +114,8 @@ class ForecastModels {
       // a slow catalog for an earlier flavour must never replace the current choices
       if (request !== this.catalogRequest) return;
       this.catalogSpec = spec ? JSON.stringify(spec) : null;
-      this.catalog = res.families.filter(family => mode !== 'row' || family.name === 'xgboost');
-      this.say(reason || (mode === 'row' ? 'per-row runs support xgboost only' : ''));
+      this.catalog = res.families.filter(family => mode !== 'entity' || family.name === 'xgboost');
+      this.say(reason || (mode === 'entity' ? 'entity runs support xgboost only' : ''));
     } catch (err) {
       if (request !== this.catalogRequest) return;
       this.say(err.message);

@@ -95,8 +95,8 @@ def run(folder: Path, name: str) -> int:
         if not available:
             raise ValueError(f"family {name!r} is unavailable; {reason}")
         spec = spec_from_dict(request["spec"])
-        if spec.mode == "row" and name != "xgboost":
-            raise ValueError("per-row runs support xgboost only")
+        if spec.mode == "entity" and name != "xgboost":
+            raise ValueError("entity runs support xgboost only")
         ws = load_workspace(
             spec,
             Path(request["prepared"]),
@@ -149,9 +149,11 @@ def run(folder: Path, name: str) -> int:
                 method=selection.get("method", "genetic"),
                 space=selection.get("space"),
                 warm=warm,
-                priors=read_priors(folder) if getattr(ws, "mode", None) == "series" else None,
-                top_families=read_top_families(folder)
-                if getattr(ws, "mode", None) == "series"
+                priors=read_priors(folder, spec)
+                if getattr(ws, "mode", None) == "timeseries"
+                else None,
+                top_families=read_top_families(folder, spec)
+                if getattr(ws, "mode", None) == "timeseries"
                 else None,
                 resume=resume,
                 on_checkpoint=checkpoint,

@@ -14,12 +14,20 @@ import numpy as np
 
 from smolsmort.forecast import evaluate as ev
 from smolsmort.forecast.families import get_family
-from smolsmort.forecast.features import buckets_for, row_features, series_features
+from smolsmort.forecast.features import (
+    buckets_for,
+    entity_features,
+    family_aliases,
+    family_sort_key,
+    split_family_name,
+    timeseries_features,
+)
+from smolsmort.forecast.hazard import FEATURE_NAMES, HazardFitted, expand_periods, predict_hazard
 from smolsmort.forecast.importance import combine_importance, measure_importance
 from smolsmort.forecast.model import CLASSIFIERS, NONNEGATIVE, fit_model, predict
 from smolsmort.forecast.profile import build_profile
 from smolsmort.forecast.spec import ANCHOR, LOWER, ROW, SERIES, STEP, UNIT_DAYS, UPPER, PrepSpec
-from smolsmort.forecast.splits import labels_as_of, row_cuts, series_cuts
+from smolsmort.forecast.splits import entity_cuts, labels_as_of, timeseries_cuts
 from smolsmort.forecast.tables import is_text, read_table
 from smolsmort.forecast.transform import get_transform
 
@@ -66,13 +74,20 @@ def make_genome(
     families, objective: str, params: dict, family: str = "xgboost", transform: str = "none"
 ) -> Genome:
     return Genome(
-        tuple(sorted(set(families))), objective, tuple(sorted(params.items())), family, transform
+        tuple(sorted(set(families), key=family_sort_key)),
+        objective,
+        tuple(sorted(params.items())),
+        family,
+        transform,
     )
 
 
-def genome_from_dict(data: dict, family: str | None = None) -> Genome:
+def genome_from_dict(
+    data: dict, family: str | None = None, *, spec: PrepSpec | None = None
+) -> Genome:
+    aliases = family_aliases(spec, data["families"]) if spec is not None else {}
     return make_genome(
-        data["families"],
+        [aliases.get(name, name) for name in data["families"]],
         data["objective"],
         data["params"],
         family=data.get("family", "xgboost") if family is None else family,
@@ -100,13 +115,13 @@ class Workspace:
     profile: dict
     families: list[str]
     unit: str
-    # row mode
+    # entity mode
     table: dict | None = None
     features: object = None
     masks: dict | None = None
     bounds: dict | None = None
     predict_rows: np.ndarray | None = None
-    # series mode
+    # time series mode
     frames: dict | None = None
     series_masks: dict | None = None
     test_steps: int = 0
@@ -126,26 +141,24 @@ def load_workspace(
     """everything a search needs, read and built once: tables, cuts, profile, candidate features"""
     folder = Path(folder)
     target_transform = get_transform(transform)
-    if spec.mode == "row":
+    if spec.mode == "entity":
         if transform != "none":
-            raise PipelineError("target transforms require time-series regression")
-        return _row_workspace(spec, folder, summary)
+            raise PipelineError("target transforms require time series regression")
+        return _entity_workspace(spec, folder, summary)
     if spec.task == "classification":
-        raise PipelineError(
-            "classification runs per row only; the time-series flavour is regression"
-        )
-    ws = _series_workspace(spec, folder, summary)
+        raise PipelineError("classification requires entity mode; time series runs use regression")
+    ws = _timeseries_workspace(spec, folder, summary)
     ws.transform = transform
     if transform != "none":
         target_transform.validate_target(ws.panel[spec.named("target")[0]])
     return ws
 
 
-def _row_workspace(spec, folder, summary) -> Workspace:
+def _entity_workspace(spec, folder, summary) -> Workspace:
     table = read_table(folder / "rows.parquet", order_by=f"{ANCHOR}, {ROW}")
     as_of = dt.date.fromisoformat(summary["as_of"])
     censored = spec.censor is not None
-    cuts = row_cuts(table[ANCHOR], as_of, maturity_weeks=26 if censored else 0)
+    cuts = entity_cuts(table[ANCHOR], as_of, maturity_weeks=26 if censored else 0)
     train, val, test = cuts.masks(table[ANCHOR])
     unit_days = UNIT_DAYS[spec.censor.unit] if censored else 7.0
     bounds = {"final": (table[LOWER], table[UPPER])}
@@ -157,24 +170,26 @@ def _row_workspace(spec, folder, summary) -> Workspace:
     profiled = dict(table)
     profiled[LOWER], profiled[UPPER] = bounds["val"]
     profile = build_profile(spec, profiled, train)
-    features = row_features(spec, table, train)
+    features = entity_features(spec, table, train)
     predict_ids = read_table(folder / "predict.parquet")[ROW]
     ws = Workspace(spec, folder, summary, profile, [], spec.censor.unit if censored else "week")
     ws.table, ws.features = table, features
     ws.masks = {"train": train, "val": val, "test": test}
     ws.bounds = bounds
     ws.predict_rows = np.isin(table[ROW], predict_ids)
-    ws.families = sorted(set(features.families) - _excluded_families(profile))
+    ws.families = sorted(
+        set(features.families) - _excluded_families(profile, features.families), key=family_sort_key
+    )
     return ws
 
 
-def _series_workspace(spec, folder, summary) -> Workspace:
+def _timeseries_workspace(spec, folder, summary) -> Workspace:
     panel = read_table(folder / "panel.parquet", order_by=f"{SERIES}, {STEP}")
     scaffold = read_table(folder / "scaffold.parquet")
     inputs = read_table(folder / "inputs.parquet") if spec.named("input") else None
     scaffold, excluded = _filter_scaffold(spec, panel, scaffold)
     steps = np.unique(panel[STEP])
-    cuts = series_cuts(len(steps), spec.horizon)
+    cuts = timeseries_cuts(len(steps), spec.horizon)
     val_start, test_start = steps[cuts.val_start], steps[cuts.test_start]
     train = panel[STEP] < val_start
     profile = build_profile(spec, panel, train)
@@ -182,7 +197,7 @@ def _series_workspace(spec, folder, summary) -> Workspace:
     unit = summary["step"]
     frames, masks = {}, {}
     for bucket in buckets_for(spec.horizon):
-        frame = series_features(
+        frame = timeseries_features(
             spec,
             panel,
             scaffold,
@@ -214,7 +229,7 @@ def _series_workspace(spec, folder, summary) -> Workspace:
     ws.excluded_series = excluded
     ws.test_steps = int(cuts.steps - cuts.test_start)
     families = set().union(*(set(f.features.families) for f in frames.values()))
-    ws.families = sorted(families - _excluded_families(profile))
+    ws.families = sorted(families - _excluded_families(profile, families), key=family_sort_key)
     return ws
 
 
@@ -245,9 +260,13 @@ def _filter_scaffold(spec, panel, scaffold) -> tuple[dict, list[dict]]:
     return {name: values[keep] for name, values in scaffold.items()}, excluded
 
 
-def _excluded_families(profile) -> set[str]:
+def _excluded_families(profile, families) -> set[str]:
     leaks = set(profile["genes"].get("exclude", []))
-    return {f"{kind}:{name}" for name in leaks for kind in ("measure", "log", "lead")}
+    return {
+        name
+        for name in families
+        if (parts := split_family_name(name))[0] in leaks and parts[2] in {"measure", "log", "lead"}
+    }
 
 
 # ---------------------------------------------------------------- scoring
@@ -257,14 +276,16 @@ def score(
     ws: Workspace, genome: Genome, *, nthread: int = 1, sample: np.ndarray | None = None
 ) -> Scored:
     """validation fitness for one genome; `sample` restricts the training rows (successive halving)"""
+    if genome.objective == "hazard":
+        return _score_hazard(ws, genome, nthread, sample)
     histories = []
-    if ws.mode == "row":
-        pred, truth, periods = _row_phase(ws, genome, "val", nthread, sample, histories)
+    if ws.mode == "entity":
+        pred, truth, periods = _entity_phase(ws, genome, "val", nthread, sample, histories)
     else:
-        pred, truth, periods = _series_phase(ws, genome, "val", nthread, sample, histories)
+        pred, truth, periods = _timeseries_phase(ws, genome, "val", nthread, sample, histories)
     result = _fitness(ws, pred, truth, periods)
     result.prediction = pred
-    if ws.mode == "series" and get_family(genome.family).needs == "raw_series":
+    if ws.mode == "timeseries" and get_family(genome.family).needs == "raw_series":
         from smolsmort.forecast.families.stats import season_length
 
         result.metrics["season_length"] = season_length(ws.profile)
@@ -299,8 +320,9 @@ def _fitness(ws, pred, truth, periods) -> Scored:
     )
 
 
-def _period_fitness(ws, pred, truth, periods) -> Scored:
-    classification = ws.spec.task == "classification"
+def _period_fitness(ws, pred, truth, periods, *, classification=None) -> Scored:
+    if classification is None:
+        classification = ws.spec.task == "classification"
     if classification:
         codes, probs = truth, pred
         losses = -np.log(np.clip(probs[np.arange(len(codes)), codes], 1e-12, 1))
@@ -310,22 +332,52 @@ def _period_fitness(ws, pred, truth, periods) -> Scored:
         per_row, denom = np.abs(truth - pred), max(float(np.abs(truth).sum()), 1e-12)
         metrics = {"wape": ev.wape(truth, pred), "mae": ev.mae(truth, pred)}
     unique, inverse = np.unique(periods, return_inverse=True)
+    if getattr(ws, "mode", None) == "entity":
+        # objectives can observe different entities; paired search scores need the same weeks
+        unique = np.union1d(unique, _weeks(ws.table[ANCHOR][ws.masks["val"]]))
+        inverse = np.searchsorted(unique, periods)
     contrib = np.bincount(inverse, weights=per_row, minlength=len(unique)) / denom
     return Scored(float(contrib.sum()), contrib, metrics)
 
 
-def _row_design(ws, genome):
+def _entity_design(ws, genome):
     x, _, types = ws.features.pick(set(genome.families))
     if not x.shape[1]:
         raise PipelineError("a genome with no feature families cannot be fitted")
     return x, types
 
 
-def _row_fit(ws, genome, rows, phase, nthread):
-    x, types = _row_design(ws, genome)
+def _entity_fit(ws, genome, rows, phase, nthread):
+    x, types = _entity_design(ws, genome)
     lower, upper = ws.bounds[phase]
     target = ws.table[ws.spec.named("target")[0]]
     params = dict(genome.params)
+    if genome.objective == "hazard":
+        _validate_hazard(ws, genome)
+        lower, upper = _hazard_bounds(ws, phase)
+        train_lower, _ = _hazard_bounds(ws, "val")
+        durations = train_lower[ws.masks["train"] & np.isfinite(train_lower) & (train_lower >= 0)]
+        if not len(durations):
+            raise PipelineError("hazard needs finite non-negative training durations")
+        cap = int(np.floor(np.percentile(durations, 95)))
+        periods = expand_periods(
+            x[rows],
+            lower[rows],
+            upper[rows],
+            ws.table[ANCHOR][rows],
+            cap=cap,
+            entity=np.flatnonzero(rows),
+        )
+        order = np.argsort(periods.date, kind="stable")
+        fitted = fit_model(
+            periods.x[order],
+            objective="hazard",
+            y=periods.y[order],
+            feature_types=[*types, "q", "q"],
+            params=params,
+            nthread=nthread,
+        )
+        return HazardFitted(fitted, cap), x
     if genome.objective in CLASSIFIERS:
         return fit_model(
             x[rows],
@@ -357,7 +409,52 @@ def _row_fit(ws, genome, rows, phase, nthread):
     ), x
 
 
-def _row_phase(ws, genome, phase, nthread, sample=None, histories=None):
+def _validate_hazard(ws, genome):
+    if ws.mode != "entity" or ws.spec.task != "regression" or ws.spec.censor is None:
+        raise PipelineError("hazard requires censored entity regression")
+    if genome.family != "xgboost":
+        raise PipelineError("hazard requires xgboost")
+
+
+def _hazard_bounds(ws, phase):
+    """hazard always uses weeks internally; entity outputs keep the target's configured unit"""
+    weeks_per_unit = UNIT_DAYS[ws.spec.censor.unit] / 7
+    return tuple(np.asarray(bound, dtype=float) * weeks_per_unit for bound in ws.bounds[phase])
+
+
+def _score_hazard(ws, genome, nthread, sample):
+    _validate_hazard(ws, genome)
+    train = ws.masks["train"]
+    fitted, x = _entity_fit(ws, genome, train if sample is None else train & sample, "val", nthread)
+    rows = ws.masks["val"]
+    # val bounds seal training; test bounds seal validation at the next split boundary
+    lower, upper = _hazard_bounds(ws, "test")
+    periods = expand_periods(
+        x[rows],
+        lower[rows],
+        upper[rows],
+        ws.table[ANCHOR][rows],
+        cap=fitted.cap,
+        entity=np.flatnonzero(rows),
+    )
+    if not len(periods.y):
+        raise PipelineError("hazard has no observed validation periods to score")
+    hazards = predict(fitted.fitted, periods.x)
+    probs = np.column_stack([1 - hazards, hazards])
+    result = _period_fitness(
+        ws,
+        probs,
+        periods.y.astype(int),
+        _weeks(ws.table[ANCHOR][periods.entity]),
+        classification=True,
+    )
+    result.eval_history = fitted.eval_history
+    curves = predict_hazard(fitted, x[rows], ws.table[ANCHOR][rows])
+    result.prediction = curves["prediction"] * 7 / UNIT_DAYS[ws.spec.censor.unit]
+    return result
+
+
+def _entity_phase(ws, genome, phase, nthread, sample=None, histories=None):
     """(predictions, truth, period keys) on the phase's evaluation rows"""
     masks = ws.masks
     fit_rows = masks["train"] if phase == "val" else masks["train"] | masks["val"]
@@ -365,7 +462,7 @@ def _row_phase(ws, genome, phase, nthread, sample=None, histories=None):
         fit_rows = fit_rows & sample
     eval_rows = masks["val"] if phase == "val" else masks["test"]
     target = ws.table[ws.spec.named("target")[0]]
-    fitted, x = _row_fit(ws, genome, fit_rows, phase, nthread)
+    fitted, x = _entity_fit(ws, genome, fit_rows, phase, nthread)
     if histories is not None:
         histories.append(fitted.eval_history)
     if ws.spec.task == "classification":
@@ -376,6 +473,10 @@ def _row_phase(ws, genome, phase, nthread, sample=None, histories=None):
         codes = np.array([index[str(v)] for v in target[keep]])
         return predict(fitted, x[keep]), codes, _weeks(ws.table[ANCHOR][keep])
     keep = eval_rows & np.isfinite(target)
+    if genome.objective == "hazard":
+        curves = predict_hazard(fitted, x[keep], ws.table[ANCHOR][keep])
+        pred = curves["prediction"] * 7 / UNIT_DAYS[ws.spec.censor.unit]
+        return pred, target[keep], _weeks(ws.table[ANCHOR][keep])
     return predict(fitted, x[keep]), target[keep], _weeks(ws.table[ANCHOR][keep])
 
 
@@ -383,7 +484,7 @@ def _weeks(days) -> np.ndarray:
     return (np.asarray(days).astype("datetime64[D]").astype(int) - 4) // 7
 
 
-def _series_phase(ws, genome, phase, nthread, sample=None, histories=None):
+def _timeseries_phase(ws, genome, phase, nthread, sample=None, histories=None):
     preds, truths, periods = [], [], []
     for bucket, frame in ws.frames.items():
         masks = ws.series_masks[bucket]
@@ -393,14 +494,14 @@ def _series_phase(ws, genome, phase, nthread, sample=None, histories=None):
             def predict_fold(fit_rows, fold_rows, frame=frame, bucket=bucket):
                 if sample is not None:
                     fit_rows = fit_rows & np.isin(frame.series, sample)
-                return _series_predict(
+                return _timeseries_predict(
                     ws, genome, frame, fit_rows, fold_rows, bucket, nthread, histories
                 )
 
-            prediction = _series_validation(ws, bucket, predict_fold)
+            prediction = _timeseries_validation(ws, bucket, predict_fold)
         else:
             fit_rows = masks["train"] | masks["val"]
-            prediction = _series_predict(
+            prediction = _timeseries_predict(
                 ws, genome, frame, fit_rows, eval_rows, bucket, nthread, histories
             )
         preds.append(prediction)
@@ -423,7 +524,7 @@ def _validation_masks(ws, bucket):
         )
 
 
-def _series_validation(ws, bucket, predict_fold):
+def _timeseries_validation(ws, bucket, predict_fold):
     masks = ws.series_masks[bucket]
     prediction = np.empty(int(masks["val"].sum()))
     for fit_rows, eval_rows in _validation_masks(ws, bucket):
@@ -435,7 +536,9 @@ def _series_validation(ws, bucket, predict_fold):
     return prediction
 
 
-def _series_fit(ws, genome, frame, rows, nthread):
+def _timeseries_fit(ws, genome, frame, rows, nthread):
+    if genome.objective == "hazard":
+        raise PipelineError("hazard requires censored entity regression")
     family = get_family(genome.family)
     available, reason = family.available()
     if not available:
@@ -461,7 +564,7 @@ def _series_fit(ws, genome, frame, rows, nthread):
     return fitted, x
 
 
-def _series_raw_fit(ws, genome, frame, rows, bucket, nthread):
+def _timeseries_raw_fit(ws, genome, frame, rows, bucket, nthread):
     from smolsmort.forecast.families.stats import RawSeriesTask, season_length
 
     # bound raw target reads before transforms or statistical providers can inspect them
@@ -493,12 +596,12 @@ def _series_raw_fit(ws, genome, frame, rows, bucket, nthread):
     return fitted, task
 
 
-def _series_predict(
+def _timeseries_predict(
     ws, genome, frame, fit_rows, eval_rows, bucket, nthread, histories=None, importance=None
 ):
     transform = get_transform(genome.transform)
     if get_family(genome.family).needs == "raw_series":
-        fitted, task = _series_raw_fit(ws, genome, frame, eval_rows, bucket, nthread)
+        fitted, task = _timeseries_raw_fit(ws, genome, frame, eval_rows, bucket, nthread)
         prediction = fitted.predict(task)
         if genome.transform != "none":
             base = _raw_origin_base(ws, frame, eval_rows)
@@ -508,7 +611,7 @@ def _series_predict(
                 prediction = prediction - np.log1p(base)
             prediction = transform.inv(prediction, base)
     else:
-        fitted, x = _series_fit(ws, genome, frame, fit_rows, nthread)
+        fitted, x = _timeseries_fit(ws, genome, frame, fit_rows, nthread)
         if importance is not None:
             _, names, _ = frame.features.pick(set(genome.families))
             importance.append(
@@ -550,7 +653,7 @@ def fit_importance(ws, genome, *, nthread=1):
     for bucket, frame in ws.frames.items():
         masks = ws.series_masks[bucket]
         rows = masks["train"] | masks["val"] | masks["test"]
-        fitted, x = _series_fit(ws, genome, frame, rows, nthread)
+        fitted, x = _timeseries_fit(ws, genome, frame, rows, nthread)
         _, names, _ = frame.features.pick(set(genome.families))
         scores.append(
             measure_importance(genome.family, fitted, names, x[rows & np.isfinite(frame.y)])
@@ -572,20 +675,20 @@ def finish(
     importance_cache=None,
 ) -> dict:
     """band from validation, the verdict from the untouched test split, and the forecast itself"""
-    if ws.mode == "row":
-        result = _finish_rows(ws, genome, nthread)
+    if ws.mode == "entity":
+        result = _finish_entities(ws, genome, nthread)
     else:
-        result = _finish_series(
+        result = _finish_timeseries(
             ws, genome, nthread, members, validation, prediction_cache, importance_cache
         )
     return {**result, "transform": genome.transform}
 
 
-def _finish_rows(ws, genome, nthread) -> dict:
+def _finish_entities(ws, genome, nthread) -> dict:
     spec = ws.spec
     classification = spec.task == "classification"
-    val_pred, val_truth, _ = _row_phase(ws, genome, "val", nthread)
-    test_pred, test_truth, _ = _row_phase(ws, genome, "test", nthread)
+    val_pred, val_truth, _ = _entity_phase(ws, genome, "val", nthread)
+    test_pred, test_truth, _ = _entity_phase(ws, genome, "test", nthread)
     target = ws.table[spec.named("target")[0]]
     if classification:
         prior = _class_prior(ws, target)
@@ -607,7 +710,7 @@ def _finish_rows(ws, genome, nthread) -> dict:
             or ws.profile["columns"][spec.named("target")[0]].get("min", -1) >= 0
         )
         lo, hi = ev.apply_band(band, test_pred, nonnegative)
-        baseline = _row_baseline(ws, target)
+        baseline = _entity_baseline(ws, target)
         model_error = ev.wape(test_truth, test_pred)
         baseline_error = ev.wape(test_truth, baseline)
         lower_t, upper_t = ws.bounds["test"]
@@ -621,24 +724,38 @@ def _finish_rows(ws, genome, nthread) -> dict:
             spread=_spread(lower_t[seen]),
         )
     everything = np.ones(len(target), dtype=bool)
-    fitted, x = _row_fit(ws, genome, everything, "final", nthread)
+    fitted, x = _entity_fit(ws, genome, everything, "final", nthread)
     _, names, _ = ws.features.pick(set(genome.families))
+    if genome.objective == "hazard":
+        names = [*names, *FEATURE_NAMES]
     importance = combine_importance("xgboost", [measure_importance("xgboost", fitted, names)])
     rows = ws.predict_rows
     out = {"row": ws.table[ROW][rows], "anchor": ws.table[ANCHOR][rows]}
+    curves = None
     if classification:
         probs = predict(fitted, x[rows])
         out["class"] = np.array(fitted.classes, dtype=object)[probs.argmax(axis=1)]
         out["probability"] = probs.max(axis=1)
     else:
-        pred = predict(fitted, x[rows])
-        lo, hi = ev.apply_band(band, pred, nonnegative=True)
+        if genome.objective == "hazard":
+            lower, upper = _hazard_bounds(ws, "final")
+            waited = np.where(np.isinf(upper[rows]), lower[rows], 0)
+            curves = predict_hazard(fitted, x[rows], ws.table[ANCHOR][rows], waited=waited)
+            units_per_week = 7 / UNIT_DAYS[spec.censor.unit]
+            pred, lo, hi = (
+                curves[key] * units_per_week for key in ("prediction", "lower", "upper")
+            )
+            curves = {**out, "cap": fitted.cap, **curves}
+        else:
+            pred = predict(fitted, x[rows])
+            lo, hi = ev.apply_band(band, pred, nonnegative=True)
         out.update(prediction=pred, lower=lo, upper=hi)
         if spec.censor:
             days = UNIT_DAYS[spec.censor.unit]
             anchor = ws.table[ANCHOR][rows].astype("datetime64[D]")
             out["predicted_date"] = anchor + (pred * days).round().astype("timedelta64[D]")
     return {
+        **({"curves": curves} if curves is not None else {}),
         "verdict": verdict,
         "band": None if band is None else band.__dict__,
         "test": {
@@ -661,7 +778,7 @@ def _class_prior(ws, target) -> np.ndarray:
     return counts / counts.sum()
 
 
-def _row_baseline(ws, target) -> np.ndarray:
+def _entity_baseline(ws, target) -> np.ndarray:
     """the group median of the dimension that best predicts validation - the naive answer"""
     masks, spec = ws.masks, ws.spec
     lower, upper = ws.bounds["val"]
@@ -682,7 +799,7 @@ def _row_baseline(ws, target) -> np.ndarray:
     return ev.group_median(keys[known_test], lower_t[known_test], keys[test_rows])
 
 
-def _finish_series(
+def _finish_timeseries(
     ws, genome, nthread, members=None, validation=None, prediction_cache=None, importance_cache=None
 ) -> dict:
     profile = ws.profile
@@ -703,7 +820,7 @@ def _finish_series(
                 options = {}
                 if collect and importance_cache is not None:
                     options["importance"] = importance_cache.setdefault(member.key(), [])
-                prediction = _series_predict(
+                prediction = _timeseries_predict(
                     ws, member, frame, fit_rows, eval_rows, bucket, nthread, **options
                 )
                 if prediction_cache is not None:
@@ -717,7 +834,7 @@ def _finish_series(
         val_pred = (
             np.asarray(validation)[offset : offset + count]
             if validation is not None
-            else _series_validation(
+            else _timeseries_validation(
                 ws,
                 bucket,
                 lambda fit_rows, eval_rows, frame=frame, bucket=bucket: predict_members(
@@ -728,15 +845,15 @@ def _finish_series(
         offset += count
         band = ev.fit_band(frame.y[masks["val"]], val_pred)
         bands[f"{bucket[0]}-{bucket[1]}"] = None if band is None else band.__dict__
-        val_rows.append(_series_rows(frame, masks["val"], val_pred, bucket))
+        val_rows.append(_timeseries_rows(frame, masks["val"], val_pred, bucket))
         test_pred = predict_members(frame, masks["train"] | masks["val"], masks["test"], bucket)
         lo, hi = ev.apply_band(band, test_pred, nonnegative=True)
         test_pred_all.append(test_pred)
         test_truth_all.append(frame.y[masks["test"]])
         test_lo.append(lo)
         test_hi.append(hi)
-        base_all.append(_series_baseline(frame, masks["test"], bucket, period))
-        test_rows.append(_series_rows(frame, masks["test"], test_pred, bucket))
+        base_all.append(_timeseries_baseline(frame, masks["test"], bucket, period))
+        test_rows.append(_timeseries_rows(frame, masks["test"], test_pred, bucket))
         future_pred = predict_members(
             frame,
             masks["train"] | masks["val"] | masks["test"],
@@ -745,7 +862,7 @@ def _finish_series(
             collect=True,
         )
         lo, hi = ev.apply_band(band, future_pred, nonnegative=True)
-        rows = _series_rows(frame, masks["future"], future_pred, bucket)
+        rows = _timeseries_rows(frame, masks["future"], future_pred, bucket)
         rows.update(lower=lo, upper=hi)
         forecast.append(rows)
     truth, pred = np.concatenate(test_truth_all), np.concatenate(test_pred_all)
@@ -794,7 +911,7 @@ def _finish_series(
     }
 
 
-def _series_rows(frame, mask, pred, bucket) -> dict:
+def _timeseries_rows(frame, mask, pred, bucket) -> dict:
     return {
         "series": frame.series[mask],
         "step": frame.step[mask],
@@ -804,7 +921,7 @@ def _series_rows(frame, mask, pred, bucket) -> dict:
     }
 
 
-def _series_baseline(frame, mask, bucket, period) -> np.ndarray:
+def _timeseries_baseline(frame, mask, bucket, period) -> np.ndarray:
     """seasonal naive when a season reaches past the bucket, else the value at the origin"""
     names = frame.features.names
     column = (

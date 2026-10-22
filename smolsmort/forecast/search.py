@@ -11,6 +11,12 @@ from dataclasses import dataclass
 import numpy as np
 
 from smolsmort.forecast.families import get_family
+from smolsmort.forecast.features import (
+    family_aliases,
+    family_name,
+    family_sort_key,
+    split_family_name,
+)
 from smolsmort.forecast.model import ModelError
 from smolsmort.forecast.pipeline import (
     Genome,
@@ -118,36 +124,39 @@ class Entry:
 
 
 def _select_birth_families(ws):
-    if getattr(ws, "mode", None) != "series":
+    if getattr(ws, "mode", None) != "timeseries":
         return list(ws.families)
     # placeholder until screening priors replace legacy-only births and seeds
     # mutation still explores the full pool, including the saved rolling aliases
     legacy = set()
     for name in ws.families:
-        if name.startswith("roll:"):
-            legacy.add(":".join(name.split(":")[:2]))
+        column, clock, op = split_family_name(name)
+        kind = op.partition(":")[0]
+        if kind == "roll":
+            legacy.add(family_name(":".join(op.split(":")[:2]), column, clock))
         elif (
-            name == "season"
-            or name.startswith(
-                ("lag+", "ewm:", "measure:", "lead:", "dim:", "cal:", "mix:", "spread:")
-            )
-            or (name.startswith("lag:") and ws.unit != "week")
+            kind in {"season", "ewm", "measure", "lead", "dim", "cal", "mix", "spread"}
+            or kind.partition("+")[0] == "lag"
+            and "+" in kind
+            or (kind == "lag" and ":" in op and ws.unit != "week")
         ):
             legacy.add(name)
-    return sorted(legacy)
+    return sorted(legacy, key=family_sort_key)
 
 
 class _Variation:
     def __init__(self, ws: Workspace, rng: np.random.Generator, priors=None, top_families=None):
         self.transform = getattr(ws, "transform", "none")
-        self.priors = dict(priors) if priors and getattr(ws, "mode", None) != "row" else None
+        self.priors = dict(priors) if priors and getattr(ws, "mode", None) != "entity" else None
         if self.priors is None:
             self.birth_families = _select_birth_families(ws)
         else:
             if any(not np.isfinite(p) or not 0 <= p <= 1 for p in self.priors.values()):
                 raise ValueError("family priors must be finite probabilities between 0 and 1")
             top = [name for name in top_families or [] if name in ws.families]
-            ranked = sorted(ws.families, key=lambda name: (-self.priors.get(name, 0.5), name))
+            ranked = sorted(
+                ws.families, key=lambda name: (-self.priors.get(name, 0.5), family_sort_key(name))
+            )
             count = max(3, sum(self.priors.get(name, 0.5) >= 0.5 for name in ranked))
             # the screen's own top set excludes wildcards; the prior ranking is the fallback
             self.birth_families = top or ranked[:count]
@@ -435,8 +444,9 @@ def _seed_population(ws, var: _Variation, size: int, warm) -> list[Genome]:
 
 
 def _sample(ws, rng) -> np.ndarray | None:
-    """training rows (or series) to score new candidates on, when the data is large"""
-    if ws.mode == "row":
+    """training entities (or series) to score new candidates on, when the data is large"""
+    if ws.mode == "entity":
+        # one workspace row per entity; hazard expansion happens after this selection
         train = ws.masks["train"]
         if train.sum() <= HALVING_ROWS:
             return None
@@ -466,6 +476,48 @@ def check_validation_folds(ws, checkpoint):
     if checkpoint and folds and checkpoint.get("validation_folds") != folds:
         raise PipelineError("checkpoint validation folds differ; start a new search")
     return folds
+
+
+def _map_saved_names(ws, warm, resume, priors, top_families):
+    """migrate persisted labels and their genome keys without changing cached scores or rng"""
+    spec = getattr(ws, "spec", None)
+    if not hasattr(spec, "named"):
+        return warm, resume, priors, top_families
+
+    def map_genome(data):
+        return genome_from_dict(data, spec=spec).to_dict()
+
+    if resume:
+        resume = dict(resume)
+        keys = {}
+        for field in ("entries", "candidate_times"):
+            entries = []
+            for saved in resume.get(field, []):
+                genome = genome_from_dict(saved["genome"], spec=spec)
+                keys[saved["key"]] = genome.key()
+                entries.append({**saved, "genome": genome.to_dict(), "key": genome.key()})
+            if field in resume:
+                resume[field] = entries
+        population = []
+        for data in resume["population"]:
+            genome = genome_from_dict(data, spec=spec)
+            keys[genome_from_dict(data).key()] = genome.key()
+            population.append(genome.to_dict())
+        resume["population"] = population
+        resume["best_key"] = keys.get(resume.get("best_key"), resume.get("best_key"))
+        if "cost_hints" in resume:
+            resume["cost_hints"] = {
+                keys.get(key, key): value for key, value in resume["cost_hints"].items()
+            }
+    if warm:
+        warm = [map_genome(data) for data in warm]
+    names = [*(priors or {}), *(top_families or [])]
+    aliases = family_aliases(spec, names)
+    if priors is not None:
+        priors = {aliases.get(name, name): value for name, value in priors.items()}
+    if top_families is not None:
+        top_families = [aliases.get(name, name) for name in top_families]
+    return warm, resume, priors, top_families
 
 
 def search(
@@ -503,6 +555,7 @@ def search(
         priors = (resume or {}).get("priors")
     if top_families is None:
         top_families = (resume or {}).get("top_families")
+    warm, resume, priors, top_families = _map_saved_names(ws, warm, resume, priors, top_families)
     var = (
         _Variation(ws, rng, priors, top_families)
         if legacy

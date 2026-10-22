@@ -425,12 +425,16 @@ uv sync --extra forecast        # xgboost + duckdb
 
 **the data.** a csv or json file under the forecast root (a base folder like `sessions`, set with
 `set-bases`; by default `forecast/` beside `sessions/`, and never committed). the data tab reads its
-columns and their kinds, samples and distinct counts. per row, it suggests anchor for a date,
+columns and their kinds, samples and distinct counts. for entities, it suggests anchor for a date,
 dimension for text and measure for a number. you pick the targets; nothing suggests one.
 
 **the two flavours.**
 
-- *per row* - one prediction per row. rows with an empty target are predicted. mark a measure as
+`timeseries` (time series) uses one row per series per time step to predict quantities over time.
+`entity` uses one row per thing, such as an order, ticket or customer, with its own attributes and
+one outcome, anchored at its start date.
+
+- *entity* - one prediction per entity. rows with an empty target are predicted. mark a measure as
   not known when predicting if it is only recorded afterwards; it never becomes an input. for a
   waiting-time target, turn on censoring: an open row then counts as "at least this long", measured
   from its anchor to the export date.
@@ -440,10 +444,10 @@ dimension for text and measure for a number. you pick the targets; nothing sugge
   ends before it and later rows - scheduled, not happened - are dropped and counted.
 
 **on the page.** pick the topic in the first row, then the flavour beside it (regression offers
-*xgboost - per row* and *xgboost - time series*; classification offers per row). three tabs follow
+*entity* and *time series*; classification offers entity). three tabs follow
 the work:
 
-- **data** - pick the file (the forecast root is shown); encoding defaults to `auto`. per row,
+- **data** - pick the file (the forecast root is shown); encoding defaults to `auto`. for entities,
   give every column a role through its dropdown, untick "known when predicting" for anything
   recorded after the fact and, for a waiting time, switch censoring on with its anchor, unit and
   export date. time series uses four dropdown heads: `predict` chooses numeric targets;
@@ -453,7 +457,7 @@ the work:
   scaffold rows show `[n]` distinct values; the live product shows combinations, such as
   `4 x 3 = 12 series`. heads and field lists are 260px wide. the one-line readout below the heads
   shows saved picks. the export date and optional source filter still apply. `prepare` shows
-  what prep did and the sql. saved series picks and per-row roles stay separate.
+  what prep did and the sql. saved timeseries picks and entity roles stay separate.
   prep aggregates every selected target; the existing search and results model the first target
   in source-column order.
 - **search** - set the budget (population, plateau generations, a generation cap, a time cap in
@@ -466,38 +470,97 @@ the work:
 cache as `prep.sql`. the cache key is the spec plus the file's content hash, so changing a role, an
 aggregation or the file re-runs prep and nothing stale survives.
 
-series specs may mark categorical columns as `input` to keep detail beyond the output grain.
+for an entity regression target stored as an event date, name it in `censor.event` and use the
+start date as both the anchor column and `censor.anchor`. prep converts elapsed days to the
+chosen unit (including fractional weeks). a missing event or one after `as_of` stays open;
+an event before its start is excluded and counted as `refused_event_before_start`. without
+`as_of`, the latest anchor remains the export date. for example:
+
+```json
+{
+  "source": "orders.csv",
+  "mode": "entity",
+  "task": "regression",
+  "columns": [
+    {"name": "created", "role": "anchor"},
+    {"name": "delivered", "role": "target"}
+  ],
+  "censor": {"anchor": "created", "event": "delivered", "unit": "week", "as_of": "2026-10-01"}
+}
+```
+
+for censored entity targets, search offers `hazard` alongside `aft`. hazard learns each week's
+event probability from completed and still-open entities; aft fits a continuous positive duration
+distribution. hazard adds elapsed week and the exposure date's calendar iso week as inputs. its
+last bucket is the floored 95th percentile of training lower bounds, converted to weeks and frozen
+for later phases; durations beyond it share that bucket. predictions include p10, median and p90
+durations. an open entity's survival curve is conditioned on the weeks it has already waited.
+quantiles that never cross their threshold use the cap, including entities already waiting longer
+than that cap. returned curves distinguish survival at the start and end of each week.
+
+timeseries specs may mark categorical columns as `input` to keep detail beyond the output grain.
 only `dimension` columns define series and scaffold rows; inputs never expand either table.
 prep writes `inputs.parquet` with each input's levels, row counts and the first target's
-aggregation per series and step; null levels become `(none)`. the role is unavailable in row mode.
+aggregation per series and step; null levels become `(none)`. the role is unavailable for entities.
 
-each input adds two switchable feature families. `mix:<column>` holds target shares for up to
+each input adds two switchable feature families. `<column>@<date>:mix` holds target shares for up to
 five levels plus `other`; the top five are chosen across all series by target sum before the
 first validation fold, with ties by name. that list stays frozen: remaining and unseen levels
-go to `other`. `spread:<column>` holds the distinct level count and hhi (squared shares summed
+go to `other`. `<column>@<date>:spread` holds the distinct level count and hhi (squared shares summed
 over all levels). shares use the sum of the per-level target aggregates as their total.
 steps without source rows stay missing; an observed zero total gives zero shares and hhi.
 both families use the same four lags as measures, reading only through the forecast origin.
 
-**series feature candidates.** each horizon bucket reads target and measure values only through
-its origin, `target step - bucket end`. the search can choose each family below independently:
+set `"skip_missing": true` on an `input` column to exclude `(none)` from its top-five levels,
+share totals, `other` bucket, distinct count and hhi. shares then use only real levels' target
+aggregates, so changing source coverage alone does not create a mix trend. a step with only
+missing levels stays missing (`NaN`) in both families. prep still writes `(none)` to
+`inputs.parquet`; no coverage feature is added. the flag defaults to `false`, preserving existing
+features and cache keys, and can only be enabled for the input role.
+
+**feature family names.** names identify the source column, plus the date column when values
+are built over time. the spec supplies both names; `<date>` is the time column for timeseries
+and the anchor for entities. source names escape reserved operation words and delimiter
+characters with percent encoding.
+
+| family kind | naming rule | example |
+|---|---|---|
+| target history, timeseries measures and inputs | `<column>@<date>:<operation>` | `unit@need_by_date:lag+0`, `lead_days@need_by_date:measure`, `site@need_by_date:mix` |
+| calendar | `<date>:cal:<part>` | `need_by_date:cal:week`, `created_at:cal:trend` |
+| dimensions and entity values | `<column>:<operation>` | `product_group:dim`, `site:freq`, `lead_days:measure`, `lead_days:log` |
+
+entity dimensions use `<column>:dim` and `<column>:freq`; entity measures use `<column>:measure`
+and, when available, `<column>:log`. entity calendar families use the anchor, including
+`<anchor>:cal:trend`. saved recipes, checkpoints, warm starts and screens with older names are
+mapped using the spec. cost calibrations use model-family names and stay unchanged. feature
+columns, values and search behaviour stay the same.
+
+**timeseries feature candidates.** each horizon bucket reads target and measure values only through
+its origin, `target step - bucket end`. the examples below use target `unit` and time column
+`need_by_date`; `k`, `w` and `a` stand for the lag, window and alpha. the search can choose each
+family below independently:
 
 | family | candidate inputs |
 |---|---|
-| `lag+0` through `lag+3` | the origin value and its previous three steps |
-| `season` | the target's seasonal lag, when it reaches back to the origin or earlier |
-| `lag:k` | individual absolute lags; weekly: 1 through 13, 26 and 52; only `bucket end <= k < training history` |
-| `roll:w:mean`, `roll:w:std`, `roll:w:max`, `roll:w:zeros` | separate rolling mean, population standard deviation, maximum and zero share |
-| `roll:w:min`, `roll:w:median`, `roll:w:q10`, `roll:w:q90` | separate rolling minimum, median and interpolated 10th/90th percentiles |
-| `diff:k` | origin value minus the value `k` steps before it |
-| `slope:w` | least-squares change per step over the window ending at the origin |
-| `cycle_ratio` | origin value divided by the value one season earlier; missing for a zero or missing denominator |
-| `momentum:w` | mean of the latest `floor(w/2)` steps minus the preceding `floor(w/2)` steps |
-| `ewm:a` | exponential means with alpha 0.1, 0.3 or 0.5 |
-| `measure:m`, `lead:m`, `dim:d`, `cal:*` | existing measure lags, detected measure leads, dimensions and target calendars |
+| `unit@need_by_date:lag+0` through `unit@need_by_date:lag+3` | the origin value and its previous three steps |
+| `unit@need_by_date:season` | the target's seasonal lag, when it reaches back to the origin or earlier |
+| `unit@need_by_date:lag:k` | individual absolute lags; weekly: 1 through 13, 26 and 52; only `bucket end <= k < training history` |
+| `unit@need_by_date:roll:w:mean`, `unit@need_by_date:roll:w:std`, `unit@need_by_date:roll:w:max`, `unit@need_by_date:roll:w:zeros` | separate rolling mean, population standard deviation, maximum and zero share |
+| `unit@need_by_date:roll:w:min`, `unit@need_by_date:roll:w:median`, `unit@need_by_date:roll:w:q10`, `unit@need_by_date:roll:w:q90` | separate rolling minimum, median and interpolated 10th/90th percentiles |
+| `unit@need_by_date:diff:k` | origin value minus the value `k` steps before it |
+| `unit@need_by_date:slope:w` | least-squares change per step over the window ending at the origin |
+| `unit@need_by_date:cycle_ratio` | origin value divided by the value one season earlier; missing for a zero or missing denominator |
+| `unit@need_by_date:momentum:w` | mean of the latest `floor(w/2)` steps minus the preceding `floor(w/2)` steps |
+| `unit@need_by_date:ewm:a` | exponential means with alpha 0.1, 0.3 or 0.5 |
+| `lead_days@need_by_date:measure`, `components@need_by_date:lead` | existing measure lags and detected measure leads |
+| `product_group:dim` | dimensions |
+| `need_by_date:cal:week`, `need_by_date:cal:month`, `need_by_date:cal:quarter` | target calendar parts |
+| `need_by_date:cal:cyclic`, `need_by_date:cal:dom`, `need_by_date:cal:holiday` | cyclic calendar parts, day-of-month features and holidays |
+| `site@need_by_date:mix`, `project@need_by_date:spread` | input shares and input diversity |
 
 the unit tables set the windows, differences and fallback season. supplied or detected periods
-also enter the absolute lag pool; the selected profile period takes priority for `cycle_ratio`.
+also enter the absolute lag pool; the selected profile period takes priority for
+`unit@need_by_date:cycle_ratio`.
 
 | unit | windows `w` | differences `k` | fallback season |
 |---|---|---|---|
@@ -512,10 +575,11 @@ windows must fit training history. rolling windows do too, except weekly rolling
 available for saved recipes. rolling statistics ignore non-finite values and need at least
 `max(floor(w/2), 1)` observations. slope needs at least two observations and keeps their original
 step positions. momentum uses the same mean threshold within each half-window; an odd window
-uses two equal halves. an old `roll:w` recipe still selects exactly mean, std, max and zeros,
-in their original order. the four new statistics require their own family names.
+uses two equal halves. the legacy alias `unit@need_by_date:roll:w` still selects exactly mean,
+std, max and zeros, in their original order. old recipes map to this alias. the four new
+statistics require their own family names.
 
-**family screen.** series runs write `screen.json` before search. only rows before the first
+**family screen.** timeseries runs write `screen.json` before search. only rows before the first
 validation fold are scored against seasonal-naive residuals: the latest same-season value
 available at the bucket's origin, using the detected or calendar season (origin value for yearly
 data without a detected season). rows lacking that history are skipped. columns are pooled
@@ -533,9 +597,9 @@ bouquet search uses each family's `p_on` for fresh births and weights mutations 
 `p_on` and off with `1 - p_on`. its top-k set contains all families with `p_on >= 0.5`, padded
 to at least three with the highest remaining priors when available. an extra initial genome
 uses this set, as do default, grid and seeded genomes that previously used the birth families.
-without `screen.json`, row mode and older runs keep their legacy births, seeds and mutations.
+without `screen.json`, entity mode and older runs keep their legacy births, seeds and mutations.
 
-**validation.** series validation splits the existing pre-test validation block into three disjoint windows.
+**validation.** timeseries validation splits the existing pre-test validation block into three disjoint windows.
 each window fits on all known steps before its start; cached lag features retain their existing
 per-row forecast origins. shortened histories use fewer windows (at least one), based on
 one nominal third of the full validation length, rounded down. statistical families also fit
@@ -575,8 +639,8 @@ budgets up to 1800 seconds keep the original 30% finish reserve. longer runs use
 `min(0.3 * time_budget_s, max(2 * finish_estimate_s, 300))`. the coordinator
 updates this estimate from checkpointed winner timings and cost calibration,
 using the larger of a winner's measured time and its calibrated candidate cost.
-it budgets two fits per family winner for series test/forecast and importance work,
-or three for rows, which also refit validation. this is an estimate, not a guarantee;
+it budgets two fits per family winner for timeseries test/forecast and importance work,
+or three for entities, which also refit validation. this is an estimate, not a guarantee;
 the reserve doubles it and keeps a five-minute floor. missing usable costs retain
 the original 30% reserve until measurements arrive.
 
@@ -652,7 +716,7 @@ across workers. the os releases the lock when its worker exits, even after a cra
 (sum of absolute errors over the sum of actuals), next to the same metric for the naive baseline.
 the error ratio is model error divided by baseline error: below 1 means better than naive;
 1 or above is in the worse category. for example, wape 22.0% against baseline wape 25.0% gives
-a ratio of 0.88, or 12% better. the baseline is the group median per row or seasonal naive per
+a ratio of 0.88, or 12% better. the baseline is the group median per entity or seasonal naive per
 series. the results also show these plain facts, with no pass thresholds:
 
 | fact | reading |

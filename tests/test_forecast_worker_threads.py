@@ -20,7 +20,7 @@ def test_worker_persists_threads_before_screen_and_recipe_refit(
 ):
     spec = PrepSpec(
         "unused.csv",
-        "series",
+        "timeseries",
         "regression",
         (Column("day", "time"), Column("units", "target", aggregation="sum")),
     )
@@ -50,7 +50,7 @@ def test_worker_persists_threads_before_screen_and_recipe_refit(
                 }
             )
         )
-    workspace = SimpleNamespace(mode="series", excluded_series=[], profile={})
+    workspace = SimpleNamespace(mode="timeseries", excluded_series=[], profile={})
     calls = []
     cpu_calls = []
     lock = SimpleNamespace(try_acquire=lambda: True, close=lambda: calls.append("closed"))
@@ -93,7 +93,7 @@ def test_worker_persists_threads_before_screen_and_recipe_refit(
     monkeypatch.setattr(worker, "load_workspace", load_workspace)
     monkeypatch.setattr(worker, "screen_families", screen_families)
     monkeypatch.setattr(
-        worker, "genome_from_dict", lambda data: SimpleNamespace(to_dict=lambda: data)
+        worker, "genome_from_dict", lambda data, **kwargs: SimpleNamespace(to_dict=lambda: data)
     )
     monkeypatch.setattr(worker, "finish", finish_recipe)
 

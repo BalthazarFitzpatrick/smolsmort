@@ -29,12 +29,19 @@ PRIORS = {"a": 0.9, "b": 0.1, "c": 0.7, "d": 0.2, "e": 0.4}
 TOP = {"a", "c", "e"}
 
 
-def make_workspace(families=None, mode="series"):
+def make_workspace(families=None, mode="timeseries"):
     return SimpleNamespace(
         mode=mode,
         unit="week",
         spec=SimpleNamespace(task="regression"),
-        families=families or ["lag+0", "season", "roll:4:mean", "diff:1", "measure:orders"],
+        families=families
+        or [
+            "units@day:lag+0",
+            "units@day:season",
+            "units@day:roll:4:mean",
+            "units@day:diff:1",
+            "orders@day:measure",
+        ],
         profile={"genes": {"objectives": ["squared", "absolute"]}},
         series_masks={"one": {"train": np.ones(20, dtype=bool)}},
         masks={"train": np.ones(20, dtype=bool)},
@@ -89,7 +96,7 @@ def test_mutation_weights_both_directions_and_keeps_one_expected_flip(family, pr
 
 
 # version-independent: a pinned genome hash differed between numpy 2.5.2 and 2.4.6
-@pytest.mark.parametrize("mode", ["series", "row"])
+@pytest.mark.parametrize("mode", ["timeseries", "entity"])
 @pytest.mark.parametrize("family", [None, "lightgbm", "ridge"])
 def test_missing_screen_keeps_the_legacy_family_rules(tmp_path, mode, family):
     ws = make_workspace(mode=mode)
@@ -108,8 +115,8 @@ def test_missing_screen_keeps_the_legacy_family_rules(tmp_path, mode, family):
 
 
 @pytest.mark.parametrize("family", [None, "lightgbm", "ridge"])
-def test_row_mode_ignores_priors(family):
-    ws = make_workspace(mode="row")
+def test_entity_mode_ignores_priors(family):
+    ws = make_workspace(mode="entity")
     old = make_variation(ws, family)
     screened = make_variation(ws, family, dict.fromkeys(ws.families, 0.1))
     assert [old.random() for _ in range(30)] == [screened.random() for _ in range(30)]
@@ -251,7 +258,7 @@ def write_request(folder, mode, version=2):
             "mode": mode,
             "task": "regression",
             "columns": [
-                {"name": "day", "role": "time" if mode == "series" else "anchor"},
+                {"name": "day", "role": "time" if mode == "timeseries" else "anchor"},
                 {"name": "value", "role": "target", "aggregation": "sum"},
             ],
         },
@@ -264,7 +271,7 @@ def write_request(folder, mode, version=2):
     (folder / "request.json").write_text(json.dumps(request))
 
 
-@pytest.mark.parametrize("mode", ["series", "row"])
+@pytest.mark.parametrize("mode", ["timeseries", "entity"])
 @pytest.mark.parametrize("has_screen", [False, True])
 def test_family_worker_reads_parent_screen_and_passes_priors(
     tmp_path, monkeypatch, mode, has_screen
@@ -295,10 +302,10 @@ def test_family_worker_reads_parent_screen_and_passes_priors(
 
     monkeypatch.setattr(family_worker, "search", capture_search)
     assert family_worker.run(tmp_path, "xgboost") == 0, (target / "status.json").read_text()
-    assert captured == [PRIORS if has_screen and mode == "series" else None]
+    assert captured == [PRIORS if has_screen and mode == "timeseries" else None]
 
 
-@pytest.mark.parametrize("mode", ["series", "row"])
+@pytest.mark.parametrize("mode", ["timeseries", "entity"])
 @pytest.mark.parametrize("has_screen", [False, True])
 def test_v1_worker_passes_saved_or_new_screen_priors(tmp_path, monkeypatch, mode, has_screen):
     write_request(tmp_path, mode, version=1)
@@ -310,7 +317,7 @@ def test_v1_worker_passes_saved_or_new_screen_priors(tmp_path, monkeypatch, mode
     monkeypatch.setattr(worker, "load_workspace", lambda *args, **kwargs: ws)
 
     def screen(*args, **kwargs):
-        assert not has_screen and mode == "series"
+        assert not has_screen and mode == "timeseries"
         return ranking
 
     monkeypatch.setattr(worker, "screen_families", screen)
@@ -328,7 +335,7 @@ def test_v1_worker_passes_saved_or_new_screen_priors(tmp_path, monkeypatch, mode
 
     monkeypatch.setattr(worker, "search", capture_search)
     assert worker.run(tmp_path) == 0, (tmp_path / "status.json").read_text()
-    assert captured == [PRIORS if mode == "series" else None]
+    assert captured == [PRIORS if mode == "timeseries" else None]
 
 
 def test_top_families_skip_wildcards_raised_to_the_same_prior(tmp_path):

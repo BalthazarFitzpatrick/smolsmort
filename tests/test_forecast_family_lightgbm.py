@@ -9,7 +9,7 @@ from forecast_fixtures import write_bike_daily, write_panel
 
 from smolsmort.forecast.families import base, get_family
 from smolsmort.forecast.model import ModelError
-from smolsmort.forecast.pipeline import _series_fit, load_workspace, make_genome, score
+from smolsmort.forecast.pipeline import _timeseries_fit, load_workspace, make_genome, score
 from smolsmort.forecast.prep import prepare
 from smolsmort.forecast.spec import Column, PrepSpec
 
@@ -67,7 +67,7 @@ def test_daily_nan_features_fit_and_predict(family, tmp_path):
     source = write_bike_daily(tmp_path)
     spec = PrepSpec(
         str(source),
-        "series",
+        "timeseries",
         "regression",
         (Column("dteday", "time"), Column("cnt", "target", aggregation="sum")),
         step="day",
@@ -78,7 +78,7 @@ def test_daily_nan_features_fit_and_predict(family, tmp_path):
     bucket = next(iter(ws.frames))
     frame = ws.frames[bucket]
     genome = make_genome(ws.families, "regression_l1", family.defaults(), family="lightgbm")
-    fitted, x = _series_fit(ws, genome, frame, ws.series_masks[bucket]["train"], 1)
+    fitted, x = _timeseries_fit(ws, genome, frame, ws.series_masks[bucket]["train"], 1)
     assert x.dtype == np.float32
     assert np.isnan(x[ws.series_masks[bucket]["train"]]).any()
     values = fitted.predict(x[ws.series_masks[bucket]["val"]])
@@ -181,7 +181,7 @@ def test_genome_runs_through_production_score(family, tmp_path):
     truth = write_panel(tmp_path)
     spec = PrepSpec(
         str(truth.path),
-        "series",
+        "timeseries",
         "regression",
         (
             Column("day", "time"),
