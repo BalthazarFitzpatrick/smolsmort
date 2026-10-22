@@ -1474,6 +1474,7 @@ class ForecastTopic {
           </div>
         </div>
         <div id="${this.topic}-filter-chips" class="label-columns"></div>
+        <div id="${this.topic}-chart-status" class="stat hidden"></div>
         <div id="${this.topic}-chart" class="forecast-chart"></div>
         <div class="run-controls hidden" id="${this.topic}-group-row">
           <span class="field-label">group by</span>
@@ -1733,6 +1734,15 @@ class ForecastTopic {
 
   paintChart(view) {
     const el = document.getElementById(`${this.topic}-chart`);
+    const status = document.getElementById(`${this.topic}-chart-status`);
+    const hazard = view.objective === 'hazard';
+    const aggregate = view.aggregate;
+    status.textContent = hazard ? view.note || (aggregate
+      ? `weekly ${aggregate.rule.replaceAll('_', ' ')}`
+      : 'weekly aggregation is off; entity dates and duration quantiles are below') : '';
+    status.classList.toggle('hidden', !status.textContent);
+    el.classList.toggle('hidden', hazard && !aggregate);
+    if (hazard && !aggregate) return;
     if (!this.chart) this.chart = timeChart(el, {height: 220});
     this.chart.update({x: view.x, series: view.series, bands: view.bands, markers: view.markers});
   }
@@ -1765,9 +1775,11 @@ class ForecastTopic {
     const table = document.getElementById(`${this.topic}-results-table`);
     table.innerHTML = '';
     const head = document.createElement('tr');
+    const labels = data.objective === 'hazard'
+      ? {median_weeks: 'median weeks', p10_weeks: 'p10 weeks', p90_weeks: 'p90 weeks', predicted_date: 'predicted date'} : {};
     data.columns.forEach(col => {
       const th = document.createElement('th');
-      th.textContent = col;
+      th.textContent = labels[col] || col;
       th.classList.add('sortable');
       th.onclick = () => {
         this.tableState.desc = this.tableState.sort === col ? !this.tableState.desc : false;

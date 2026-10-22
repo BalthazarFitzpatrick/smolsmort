@@ -371,6 +371,10 @@ def _start(app, payload: dict) -> dict:
         spec = _parse_spec(app, payload)
         payload = _validate_selections(payload, spec)
     else:
+        try:
+            payload = parse_request(payload)
+        except ValueError as exc:
+            raise RequestError(str(exc)) from exc
         spec = None
     try:
         spec = spec or spec_from_dict(_spec_from_payload(app, payload))
@@ -385,6 +389,7 @@ def _start(app, payload: dict) -> dict:
                 "families",
                 "time_budget_s",
                 "transform",
+                "aggregate",
                 "max_concurrent_families",
                 "candidate_limit_fraction",
                 "prune_sigma",
@@ -406,6 +411,7 @@ def _start(app, payload: dict) -> dict:
             prepared,
             budget=payload.get("budget"),
             warm_from=payload.get("warm_from"),
+            aggregate=payload.get("aggregate", "none"),
         )
     return {
         "run_id": run_id,
@@ -456,11 +462,18 @@ def _refit(app, payload: dict) -> dict:
             families=[{"name": genome["family"]}],
             time_budget_s=previous["time_budget_s"],
             transform=previous.get("transform", "none"),
+            aggregate=previous.get("aggregate", "none"),
             nthread=previous.get("nthread"),
             ensemble={"enabled": False},
         )
     else:
-        run_id = runs.start_run(_runs_root(app), spec, prepared, recipe=genome)
+        run_id = runs.start_run(
+            _runs_root(app),
+            spec,
+            prepared,
+            recipe=genome,
+            aggregate=previous.get("aggregate", "none"),
+        )
     return {
         "run_id": run_id,
         "prepared": {"summary": prepared.summary, "sql": prepared.sql, "reused": prepared.reused},

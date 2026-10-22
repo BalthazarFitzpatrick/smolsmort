@@ -35,6 +35,10 @@ RUN_FILES = (
     "forecast.parquet",
     "validation.parquet",
     "test.parquet",
+    "curve.parquet",
+    "aggregate.parquet",
+    "winner_curve.parquet",
+    "winner_aggregate.parquet",
 )
 
 _PROCESSES: dict[int, subprocess.Popen] = {}
@@ -57,6 +61,7 @@ def start_run(
     families: list[dict] | None = None,
     time_budget_s: float | None = None,
     transform: str = "none",
+    aggregate: str = "none",
     ensemble: dict | None = None,
     max_concurrent_families: int = 4,
     candidate_limit_fraction: float = 0.25,
@@ -77,6 +82,7 @@ def start_run(
         "warm_from": warm,
         "recipe": recipe,
         "nthread": nthread,
+        "aggregate": aggregate,
     }
     if version is not None or families is not None:
         request.pop("budget")

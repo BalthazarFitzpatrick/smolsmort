@@ -460,6 +460,14 @@ def _prediction_path(run_dir: Path, query: dict, kind: str) -> Path:
     return run_dir / f"{kind}.parquet"
 
 
+def _optional_prediction_path(run_dir: Path, query: dict, kind: str) -> Path | None:
+    selected = _select_model(run_dir, _require_done(run_dir), query)
+    path = run_dir / f"{selected['model']}_{kind}.parquet"
+    if not path.exists() and selected["model"] == selected["default_model"]:
+        path = run_dir / f"{kind}.parquet"
+    return path if path.exists() else None
+
+
 def result_details(run_dir: Path, request: dict, query: dict) -> dict:
     """comparison uses validation scores; only the winner and ensemble have test verdicts"""
     result = _require_done(run_dir)
@@ -750,7 +758,101 @@ def _weekify(days: np.ndarray) -> np.ndarray:
     return (days - weekday.astype("timedelta64[D]")).astype("datetime64[D]")
 
 
+def _is_hazard_entity(run_dir: Path, query: dict) -> bool:
+    if _optional_prediction_path(run_dir, query, "curve") is not None:
+        return True
+    selected = _select_model(run_dir, _require_done(run_dir), query)
+    recipe = _read_json(run_dir / "recipe.json", {})
+    genome = recipe.get("genome") or {}
+    return selected["model"] == "winner" and genome.get("objective") == "hazard"
+
+
+def _hazard_entity_view(run_dir: Path, request: dict, query: dict) -> dict:
+    from smolsmort.forecast.aggregate import REGISTRY
+
+    result = _require_done(run_dir)
+    out = {
+        "x": [],
+        "series": [],
+        "bands": [],
+        "markers": [],
+        "verdict": result["verdict"],
+        "mode": "entity",
+        "objective": "hazard",
+        "aggregate": None,
+    }
+    aggregate_path = _optional_prediction_path(run_dir, query, "aggregate")
+    if aggregate_path is None:
+        return out
+
+    spec = request["spec"]
+    dims = _spec_dims(spec)
+    filters = _parse_filters(query.get("filters"))
+    breakdown = _parse_breakdown(query.get("breakdown"), dims)
+    recipe = _read_json(run_dir / "recipe.json", {})
+    name = request.get("aggregate", recipe.get("aggregate", "none"))
+    label = name.replace("_", " ")
+    con = connect()
+    if not filters and not breakdown:
+        values = _fetch_series(
+            con, f"SELECT step, prediction FROM read_parquet({_lit(str(aggregate_path))})"
+        )
+        lines = [("aggregate", label, values)]
+    else:
+        curve_path = _optional_prediction_path(run_dir, query, "curve")
+        rule = REGISTRY.get(name)
+        if curve_path is None or rule is None or name == "none":
+            out["note"] = "weekly series unavailable for this selection"
+            return out
+        rows_path = Path(request["prepared"]) / "rows.parquet"
+        where = _filter_clause(filters, dims)
+        combos = _series_combos(con, rows_path, breakdown, where)
+        if len(combos) > MAX_LINES:
+            out["note"] = f"capped at {MAX_LINES} of {len(combos)} lines"
+            combos = combos[:MAX_LINES]
+        keymap_sql = _entity_keymap_sql(rows_path, dims)
+        unit = (spec.get("censor") or {}).get("unit", "week")
+        lines = []
+        for combo in combos:
+            combo_where = f"{where} AND {_combo_clause(breakdown, combo)}"
+            curves = con.execute(
+                f"""
+                WITH keymap AS ({keymap_sql}),
+                selected_rows AS (SELECT row FROM keymap WHERE {combo_where})
+                SELECT c.* FROM read_parquet({_lit(str(curve_path))}) c
+                JOIN selected_rows k ON c.row = k.row
+                """
+            ).fetchnumpy()
+            summary = rule(curves, unit)
+            if summary is None:
+                continue
+            values = {
+                _iso(step): float(prediction)
+                for step, prediction in zip(summary["step"], summary["prediction"], strict=True)
+            }
+            combo_label = _combo_label(combo)
+            lines.append(
+                (
+                    f"aggregate:{combo_label}" if breakdown else "aggregate",
+                    f"{label}: {combo_label}" if breakdown else label,
+                    values,
+                )
+            )
+    x = sorted({step for _sid, _label, values in lines for step in values})
+    out.update(
+        x=x,
+        series=[
+            {"id": sid, "label": line_label, "values": _align(values, x), "dashed": True}
+            for sid, line_label, values in lines
+        ],
+        aggregate={"rule": name, "unit": "week"},
+    )
+    return out
+
+
 def entity_view(run_dir: Path, request: dict, query: dict) -> dict:
+    if _is_hazard_entity(run_dir, query):
+        return _hazard_entity_view(run_dir, request, query)
     prepared = Path(request["prepared"])
     spec = request["spec"]
     dims = _spec_dims(spec)
@@ -989,11 +1091,18 @@ def entity_table(run_dir: Path, request: dict, query: dict) -> dict:
     keymap_sql = _entity_keymap_sql(rows_path, dims)
     dims_sel = ", ".join(f"k.{_quote(d)}" for d in dims)
     con = connect()
+    hazard = _is_hazard_entity(run_dir, query)
+    values_sql = (
+        f"f.prediction * {unit_days / 7} AS median_weeks, "
+        f"f.lower * {unit_days / 7} AS p10_weeks, f.upper * {unit_days / 7} AS p90_weeks"
+        if hazard
+        else "f.prediction, "
+        f"f.anchor + CAST(ROUND(f.lower * {unit_days}) AS INTEGER) * INTERVAL 1 DAY AS lower, "
+        f"f.anchor + CAST(ROUND(f.upper * {unit_days}) AS INTEGER) * INTERVAL 1 DAY AS upper"
+    )
     sql = f"""
         WITH keymap AS ({keymap_sql})
-        SELECT f.row, {dims_sel + "," if dims else ""} f.anchor, f.predicted_date, f.prediction,
-               f.anchor + CAST(ROUND(f.lower * {unit_days}) AS INTEGER) * INTERVAL 1 DAY AS lower,
-               f.anchor + CAST(ROUND(f.upper * {unit_days}) AS INTEGER) * INTERVAL 1 DAY AS upper
+        SELECT f.row, {dims_sel + "," if dims else ""} f.anchor, f.predicted_date, {values_sql}
         FROM read_parquet({_lit(str(forecast_path))}) f
         JOIN keymap k ON f.row = k.row
     """
@@ -1004,7 +1113,10 @@ def entity_table(run_dir: Path, request: dict, query: dict) -> dict:
     order = "DESC" if query.get("desc") == "1" else "ASC"
     sql += f" ORDER BY {_quote(sort)} {order}"
     rows = con.execute(sql).fetchall()
-    columns = ["row", *dims, "anchor", "predicted_date", "prediction", "lower", "upper"]
+    value_columns = (
+        ["median_weeks", "p10_weeks", "p90_weeks"] if hazard else ["prediction", "lower", "upper"]
+    )
+    columns = ["row", *dims, "anchor", "predicted_date", *value_columns]
 
     group = query.get("group")
     groups = None
@@ -1023,6 +1135,8 @@ def entity_table(run_dir: Path, request: dict, query: dict) -> dict:
     page_rows, total = _paginate(rows, page, size)
     out_rows = [_row_to_json(r) for r in page_rows]
     out = {"columns": columns, "rows": out_rows, "total": total, "page": page}
+    if hazard:
+        out["objective"] = "hazard"
     if groups is not None:
         out["groups"] = groups
     return out
