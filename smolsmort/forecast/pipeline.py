@@ -22,6 +22,7 @@ from smolsmort.forecast.features import (
     split_family_name,
     timeseries_features,
 )
+from smolsmort.forecast.hazard import FEATURE_NAMES, HazardFitted, expand_periods, predict_hazard
 from smolsmort.forecast.importance import combine_importance, measure_importance
 from smolsmort.forecast.model import CLASSIFIERS, NONNEGATIVE, fit_model, predict
 from smolsmort.forecast.profile import build_profile
@@ -275,6 +276,8 @@ def score(
     ws: Workspace, genome: Genome, *, nthread: int = 1, sample: np.ndarray | None = None
 ) -> Scored:
     """validation fitness for one genome; `sample` restricts the training rows (successive halving)"""
+    if genome.objective == "hazard":
+        return _score_hazard(ws, genome, nthread, sample)
     histories = []
     if ws.mode == "entity":
         pred, truth, periods = _entity_phase(ws, genome, "val", nthread, sample, histories)
@@ -317,8 +320,9 @@ def _fitness(ws, pred, truth, periods) -> Scored:
     )
 
 
-def _period_fitness(ws, pred, truth, periods) -> Scored:
-    classification = ws.spec.task == "classification"
+def _period_fitness(ws, pred, truth, periods, *, classification=None) -> Scored:
+    if classification is None:
+        classification = ws.spec.task == "classification"
     if classification:
         codes, probs = truth, pred
         losses = -np.log(np.clip(probs[np.arange(len(codes)), codes], 1e-12, 1))
@@ -328,6 +332,10 @@ def _period_fitness(ws, pred, truth, periods) -> Scored:
         per_row, denom = np.abs(truth - pred), max(float(np.abs(truth).sum()), 1e-12)
         metrics = {"wape": ev.wape(truth, pred), "mae": ev.mae(truth, pred)}
     unique, inverse = np.unique(periods, return_inverse=True)
+    if getattr(ws, "mode", None) == "entity":
+        # objectives can observe different entities; paired search scores need the same weeks
+        unique = np.union1d(unique, _weeks(ws.table[ANCHOR][ws.masks["val"]]))
+        inverse = np.searchsorted(unique, periods)
     contrib = np.bincount(inverse, weights=per_row, minlength=len(unique)) / denom
     return Scored(float(contrib.sum()), contrib, metrics)
 
@@ -344,6 +352,32 @@ def _entity_fit(ws, genome, rows, phase, nthread):
     lower, upper = ws.bounds[phase]
     target = ws.table[ws.spec.named("target")[0]]
     params = dict(genome.params)
+    if genome.objective == "hazard":
+        _validate_hazard(ws, genome)
+        lower, upper = _hazard_bounds(ws, phase)
+        train_lower, _ = _hazard_bounds(ws, "val")
+        durations = train_lower[ws.masks["train"] & np.isfinite(train_lower) & (train_lower >= 0)]
+        if not len(durations):
+            raise PipelineError("hazard needs finite non-negative training durations")
+        cap = int(np.floor(np.percentile(durations, 95)))
+        periods = expand_periods(
+            x[rows],
+            lower[rows],
+            upper[rows],
+            ws.table[ANCHOR][rows],
+            cap=cap,
+            entity=np.flatnonzero(rows),
+        )
+        order = np.argsort(periods.date, kind="stable")
+        fitted = fit_model(
+            periods.x[order],
+            objective="hazard",
+            y=periods.y[order],
+            feature_types=[*types, "q", "q"],
+            params=params,
+            nthread=nthread,
+        )
+        return HazardFitted(fitted, cap), x
     if genome.objective in CLASSIFIERS:
         return fit_model(
             x[rows],
@@ -375,6 +409,51 @@ def _entity_fit(ws, genome, rows, phase, nthread):
     ), x
 
 
+def _validate_hazard(ws, genome):
+    if ws.mode != "entity" or ws.spec.task != "regression" or ws.spec.censor is None:
+        raise PipelineError("hazard requires censored entity regression")
+    if genome.family != "xgboost":
+        raise PipelineError("hazard requires xgboost")
+
+
+def _hazard_bounds(ws, phase):
+    """hazard always uses weeks internally; entity outputs keep the target's configured unit"""
+    weeks_per_unit = UNIT_DAYS[ws.spec.censor.unit] / 7
+    return tuple(np.asarray(bound, dtype=float) * weeks_per_unit for bound in ws.bounds[phase])
+
+
+def _score_hazard(ws, genome, nthread, sample):
+    _validate_hazard(ws, genome)
+    train = ws.masks["train"]
+    fitted, x = _entity_fit(ws, genome, train if sample is None else train & sample, "val", nthread)
+    rows = ws.masks["val"]
+    # val bounds seal training; test bounds seal validation at the next split boundary
+    lower, upper = _hazard_bounds(ws, "test")
+    periods = expand_periods(
+        x[rows],
+        lower[rows],
+        upper[rows],
+        ws.table[ANCHOR][rows],
+        cap=fitted.cap,
+        entity=np.flatnonzero(rows),
+    )
+    if not len(periods.y):
+        raise PipelineError("hazard has no observed validation periods to score")
+    hazards = predict(fitted.fitted, periods.x)
+    probs = np.column_stack([1 - hazards, hazards])
+    result = _period_fitness(
+        ws,
+        probs,
+        periods.y.astype(int),
+        _weeks(ws.table[ANCHOR][periods.entity]),
+        classification=True,
+    )
+    result.eval_history = fitted.eval_history
+    curves = predict_hazard(fitted, x[rows], ws.table[ANCHOR][rows])
+    result.prediction = curves["prediction"] * 7 / UNIT_DAYS[ws.spec.censor.unit]
+    return result
+
+
 def _entity_phase(ws, genome, phase, nthread, sample=None, histories=None):
     """(predictions, truth, period keys) on the phase's evaluation rows"""
     masks = ws.masks
@@ -394,6 +473,10 @@ def _entity_phase(ws, genome, phase, nthread, sample=None, histories=None):
         codes = np.array([index[str(v)] for v in target[keep]])
         return predict(fitted, x[keep]), codes, _weeks(ws.table[ANCHOR][keep])
     keep = eval_rows & np.isfinite(target)
+    if genome.objective == "hazard":
+        curves = predict_hazard(fitted, x[keep], ws.table[ANCHOR][keep])
+        pred = curves["prediction"] * 7 / UNIT_DAYS[ws.spec.censor.unit]
+        return pred, target[keep], _weeks(ws.table[ANCHOR][keep])
     return predict(fitted, x[keep]), target[keep], _weeks(ws.table[ANCHOR][keep])
 
 
@@ -454,6 +537,8 @@ def _timeseries_validation(ws, bucket, predict_fold):
 
 
 def _timeseries_fit(ws, genome, frame, rows, nthread):
+    if genome.objective == "hazard":
+        raise PipelineError("hazard requires censored entity regression")
     family = get_family(genome.family)
     available, reason = family.available()
     if not available:
@@ -641,22 +726,36 @@ def _finish_entities(ws, genome, nthread) -> dict:
     everything = np.ones(len(target), dtype=bool)
     fitted, x = _entity_fit(ws, genome, everything, "final", nthread)
     _, names, _ = ws.features.pick(set(genome.families))
+    if genome.objective == "hazard":
+        names = [*names, *FEATURE_NAMES]
     importance = combine_importance("xgboost", [measure_importance("xgboost", fitted, names)])
     rows = ws.predict_rows
     out = {"row": ws.table[ROW][rows], "anchor": ws.table[ANCHOR][rows]}
+    curves = None
     if classification:
         probs = predict(fitted, x[rows])
         out["class"] = np.array(fitted.classes, dtype=object)[probs.argmax(axis=1)]
         out["probability"] = probs.max(axis=1)
     else:
-        pred = predict(fitted, x[rows])
-        lo, hi = ev.apply_band(band, pred, nonnegative=True)
+        if genome.objective == "hazard":
+            lower, upper = _hazard_bounds(ws, "final")
+            waited = np.where(np.isinf(upper[rows]), lower[rows], 0)
+            curves = predict_hazard(fitted, x[rows], ws.table[ANCHOR][rows], waited=waited)
+            units_per_week = 7 / UNIT_DAYS[spec.censor.unit]
+            pred, lo, hi = (
+                curves[key] * units_per_week for key in ("prediction", "lower", "upper")
+            )
+            curves = {**out, "cap": fitted.cap, **curves}
+        else:
+            pred = predict(fitted, x[rows])
+            lo, hi = ev.apply_band(band, pred, nonnegative=True)
         out.update(prediction=pred, lower=lo, upper=hi)
         if spec.censor:
             days = UNIT_DAYS[spec.censor.unit]
             anchor = ws.table[ANCHOR][rows].astype("datetime64[D]")
             out["predicted_date"] = anchor + (pred * days).round().astype("timedelta64[D]")
     return {
+        **({"curves": curves} if curves is not None else {}),
         "verdict": verdict,
         "band": None if band is None else band.__dict__,
         "test": {

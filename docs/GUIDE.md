@@ -489,6 +489,15 @@ an event before its start is excluded and counted as `refused_event_before_start
 }
 ```
 
+for censored entity targets, search offers `hazard` alongside `aft`. hazard learns each week's
+event probability from completed and still-open entities; aft fits a continuous positive duration
+distribution. hazard adds elapsed week and the exposure date's calendar iso week as inputs. its
+last bucket is the floored 95th percentile of training lower bounds, converted to weeks and frozen
+for later phases; durations beyond it share that bucket. predictions include p10, median and p90
+durations. an open entity's survival curve is conditioned on the weeks it has already waited.
+quantiles that never cross their threshold use the cap, including entities already waiting longer
+than that cap. returned curves distinguish survival at the start and end of each week.
+
 timeseries specs may mark categorical columns as `input` to keep detail beyond the output grain.
 only `dimension` columns define series and scaffold rows; inputs never expand either table.
 prep writes `inputs.parquet` with each input's levels, row counts and the first target's

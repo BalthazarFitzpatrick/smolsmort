@@ -444,8 +444,9 @@ def _seed_population(ws, var: _Variation, size: int, warm) -> list[Genome]:
 
 
 def _sample(ws, rng) -> np.ndarray | None:
-    """training rows (or series) to score new candidates on, when the data is large"""
+    """training entities (or series) to score new candidates on, when the data is large"""
     if ws.mode == "entity":
+        # one workspace row per entity; hazard expansion happens after this selection
         train = ws.masks["train"]
         if train.sum() <= HALVING_ROWS:
             return None

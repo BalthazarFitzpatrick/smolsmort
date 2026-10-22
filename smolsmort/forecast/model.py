@@ -14,12 +14,13 @@ OBJECTIVES = {
     # aft with the logistic distribution diverged to predictions of 1e17+ on test data
     # (2026-09-23), so only normal and extreme are ever offered
     "aft": {"objective": "survival:aft", "aft_loss_distribution": "normal"},
+    "hazard": {"objective": "binary:logistic", "eval_metric": "logloss"},
     "logistic": {"objective": "binary:logistic"},
     "softprob": {"objective": "multi:softprob"},
 }
 CLASSIFIERS = {"logistic", "softprob"}
 # these model a non-negative quantity; a negative target is refused rather than silently clipped
-NONNEGATIVE = {"tweedie", "poisson", "aft"}
+NONNEGATIVE = {"tweedie", "poisson", "aft", "hazard"}
 
 
 class ModelError(ValueError):
@@ -120,7 +121,9 @@ def fit_model(
     cut = int(len(rows) * (1 - inner))
     head, tail = rows[:cut], rows[cut:]
     config = {**OBJECTIVES[objective], "seed": seed, "nthread": nthread, **(params or {})}
-    if objective in CLASSIFIERS and len(classes) > 2:
+    if objective == "hazard":
+        config = {**config, **OBJECTIVES["hazard"], "scale_pos_weight": 1.0}
+    elif objective in CLASSIFIERS and len(classes) > 2:
         config = {**config, **OBJECTIVES["softprob"], "num_class": len(classes)}
     elif objective in CLASSIFIERS:
         config = {**config, **OBJECTIVES["logistic"]}
@@ -165,7 +168,7 @@ def fit_model(
 
 
 def predict(fitted: Fitted, x) -> np.ndarray:
-    """values for regression and aft (in the target's own unit), class probabilities otherwise"""
+    """target values, per-period hazard probabilities, or classifier probability columns"""
     out = fitted.booster.predict(_matrix(x, fitted.feature_types))
     if fitted.objective in CLASSIFIERS and out.ndim == 1:
         return np.column_stack([1 - out, out])
