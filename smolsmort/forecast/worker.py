@@ -15,6 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
+from smolsmort.forecast.aggregate import get_aggregator
 from smolsmort.forecast.pipeline import finish, genome_from_dict, load_workspace
 from smolsmort.forecast.requests import parse_request
 from smolsmort.forecast.run_lock import RunLock
@@ -222,6 +223,7 @@ def run(folder: Path) -> int:
                         {"phase": "finish_end", "started_at": time.time()}
                     )
                     job.save("coordinator.json", coordinator)
+            result["aggregate"] = request.get("aggregate", "none")
             _write_result(folder, spec, result, final)
         if request.get("version") == 2 and not result.get("finalized"):
             recipe = json.loads((folder / "recipe.json").read_text())
@@ -260,11 +262,13 @@ def _warm_start(previous) -> list[dict] | None:
 
 def _write_result(folder, spec, result, final):
     transform = final.get("transform", result["best"].get("transform", "none"))
+    aggregate = result.get("aggregate", "none")
     recipe = {
         "genome": result["best"],
         "spec": asdict(spec),
         "stopped": result["stopped"],
         "transform": transform,
+        "aggregate": aggregate,
     }
     summary = {
         "transform": transform,
@@ -296,14 +300,24 @@ def _write_result(folder, spec, result, final):
         os.replace(tmp, folder / name)
     if final.get("importance") is not None:
         _Run(folder).save("importance.json", final["importance"])
-    for name in ("forecast", "validation", "test"):
-        columns = final.get(name)
+    _write_tables(folder, spec, final, aggregate=aggregate)
+
+
+def _write_tables(folder, spec, final, *, prefix="", aggregate="none"):
+    tables = {name: final.get(name) for name in ("forecast", "validation", "test", "curve")}
+    rule = get_aggregator(aggregate)
+    if tables["curve"] is not None:
+        censor = getattr(spec, "censor", None)
+        unit = censor.unit if censor else "week"
+        tables["aggregate"] = rule(tables["curve"], unit)
+    for name, columns in tables.items():
         if (
             isinstance(columns, dict)
             and columns
             and all(isinstance(v, np.ndarray) for v in columns.values())
         ):
-            write_table(folder / f"{name}.parquet", columns)
+            filename = f"{prefix}_{name}" if prefix else name
+            write_table(folder / f"{filename}.parquet", columns)
 
 
 if __name__ == "__main__":

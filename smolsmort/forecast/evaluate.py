@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import erfc
 
 import numpy as np
 
@@ -38,6 +39,152 @@ def open_consistency(p, lower) -> float:
     """share of still-open rows predicted at or beyond what they have already waited"""
     p, lower = np.asarray(p, dtype=float), np.asarray(lower, dtype=float)
     return float((p >= lower).mean()) if len(p) else float("nan")
+
+
+def _survival_bounds(lower, upper):
+    lower, upper = np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)
+    if lower.ndim != 1 or upper.shape != lower.shape:
+        raise ValueError("survival bounds must be matching one-dimensional arrays")
+    closed = np.isfinite(upper) & (lower == upper)
+    if not np.all(np.isfinite(lower) & (lower >= 0) & (closed | np.isposinf(upper))):
+        raise ValueError("survival metrics need exact events or finite right-censoring times")
+    return lower, upper, closed
+
+
+def concordance(lower, upper, risk) -> float:
+    """harrell's c; risk is a predicted duration, so larger values mean later events"""
+    lower, _, closed = _survival_bounds(lower, upper)
+    risk = np.asarray(risk, dtype=float)
+    if risk.shape != lower.shape or not np.isfinite(risk).all():
+        raise ValueError("concordance needs one finite predicted duration per entity")
+    correct, pairs = 0.0, 0
+    for i in np.flatnonzero(closed):
+        # event/event time ties are unknown order; an event precedes censoring at the same time
+        later = (lower > lower[i]) | ((lower == lower[i]) & ~closed)
+        correct += np.count_nonzero(risk[later] > risk[i])
+        correct += 0.5 * np.count_nonzero(risk[later] == risk[i])
+        pairs += np.count_nonzero(later)
+    return float(correct / pairs) if pairs else float("nan")
+
+
+def _step_survival(times, survival, query, *, left=False):
+    positions = np.searchsorted(times, query, side="left" if left else "right")
+    return np.r_[1.0, survival][positions]
+
+
+def kaplan_meier(lower, upper, weeks, *, censoring=False) -> np.ndarray:
+    """survival at each requested time; censoring=True fits the reverse km distribution"""
+    lower, _, closed = _survival_bounds(lower, upper)
+    times, inverse, counts = np.unique(lower, return_inverse=True, return_counts=True)
+    events = np.bincount(inverse, weights=closed, minlength=len(times))
+    at_risk = len(lower) - np.cumsum(counts) + counts
+    if censoring:
+        # events precede censoring at ties, so they leave the reverse km risk set first
+        at_risk = at_risk - events
+        events = counts - events
+    hazard = np.divide(events, at_risk, out=np.zeros(len(times)), where=at_risk > 0)
+    survival = np.cumprod(1 - hazard)
+    return _step_survival(times, survival, np.asarray(weeks, dtype=float))
+
+
+def integrated_brier(lower, upper, survival_curves, weeks, censor_km) -> float:
+    """ipcw brier score integrated by trapezoids over weeks 1..h (one week uses its score).
+    censor_km is (all train time knots, reverse km survival at those knots), preserving g(t-)
+    for fractional event times; censored rows stay in the denominator, never become events"""
+    lower, _, closed = _survival_bounds(lower, upper)
+    weeks = np.asarray(weeks, dtype=float)
+    survival = np.asarray(survival_curves, dtype=float)
+    if weeks.ndim != 1 or survival.shape != (len(lower), len(weeks)):
+        raise ValueError("survival curves must have one row per entity and one column per week")
+    if not np.all(np.isfinite(weeks) & (weeks > 0)) or np.any(np.diff(weeks) <= 0):
+        raise ValueError("scoring weeks must be finite, positive and increasing")
+    if not np.all(np.isfinite(survival) & (survival >= 0) & (survival <= 1)):
+        raise ValueError("survival probabilities must be finite and between zero and one")
+    if not len(lower) or not len(weeks):
+        return float("nan")
+    times, probabilities = (np.asarray(values, dtype=float) for values in censor_km)
+    if (
+        times.ndim != 1
+        or probabilities.shape != times.shape
+        or not np.isfinite(times).all()
+        or np.any(np.diff(times) <= 0)
+        or not np.all(np.isfinite(probabilities) & (probabilities >= 0) & (probabilities <= 1))
+        or np.any(np.diff(probabilities) > 0)
+    ):
+        raise ValueError("censor_km needs sorted train knots and non-increasing survival")
+    event_weights = _step_survival(times, probabilities, lower, left=True)
+    week_weights = _step_survival(times, probabilities, weeks)
+    occurred = closed[:, None] & (lower[:, None] <= weeks)
+    alive = lower[:, None] > weeks
+    if np.any(week_weights <= 0) or np.any((event_weights <= 0) & occurred.any(axis=1)):
+        raise ValueError("scoring horizon exceeds positive train censoring survival")
+    errors = np.divide(
+        survival**2, event_weights[:, None], out=np.zeros_like(survival), where=occurred
+    )
+    errors += np.where(alive, (1 - survival) ** 2 / week_weights, 0)
+    scores = errors.mean(axis=0)
+    if len(weeks) == 1:
+        return float(scores[0])
+    return float(np.trapezoid(scores, weeks) / (weeks[-1] - weeks[0]))
+
+
+def group_kaplan_meier(keys_train, lower, upper, keys_test, weeks, *, waited=None):
+    """group survival with pooled fallback; condition on completed weeks as hazard does"""
+    lower, upper, _ = _survival_bounds(lower, upper)
+    keys_train, keys_test = (
+        np.asarray(keys_train, dtype=object),
+        np.asarray(keys_test, dtype=object),
+    )
+    weeks = np.asarray(weeks, dtype=float)
+    waited = np.zeros(len(keys_test)) if waited is None else np.floor(np.maximum(waited, 0))
+    result = np.empty((len(keys_test), len(weeks)))
+    for key in dict.fromkeys(keys_test):
+        train, test = keys_train == key, keys_test == key
+        if not train.any():
+            train = np.ones(len(lower), dtype=bool)
+        survival = kaplan_meier(lower[train], upper[train], weeks)
+        start = kaplan_meier(lower[train], upper[train], np.nextafter(waited[test], -np.inf))
+        # an exhausted empirical tail has no remaining observed events; keep it flat at one
+        conditional = np.divide(
+            survival[None, :],
+            start[:, None],
+            out=np.ones((test.sum(), len(weeks))),
+            where=start[:, None] > 0,
+        )
+        result[test] = np.where(weeks < waited[test, None], 1, np.minimum(conditional, 1))
+    return result
+
+
+def aft_survival(prediction, weeks, *, scale=1.0, distribution="normal", waited=None):
+    """convert xgboost's exp(mu) predictions to conditional duration survival, in matching units"""
+    prediction, weeks = np.asarray(prediction, dtype=float), np.asarray(weeks, dtype=float)
+    waited = np.zeros(len(prediction)) if waited is None else np.asarray(waited, dtype=float)
+    if scale is None:
+        return (weeks[None, :] < np.maximum(prediction, waited)[:, None]).astype(float)
+    if not np.isfinite(scale) or scale <= 0:
+        raise ValueError("aft survival needs a positive distribution scale")
+
+    def log_survival(times):
+        with np.errstate(divide="ignore"):
+            z = (np.log(times) - np.log(prediction)[:, None]) / scale
+        if distribution == "normal":
+            tail = np.fromiter((0.5 * erfc(v / np.sqrt(2)) for v in z.flat), float).reshape(z.shape)
+            with np.errstate(divide="ignore"):
+                return np.log(tail)
+        if distribution == "extreme":
+            return -np.exp(np.minimum(z, 700))
+        if distribution == "logistic":
+            return -np.logaddexp(0, z)
+        raise ValueError(f"unknown aft distribution {distribution!r}")
+
+    log_curve, log_start = log_survival(weeks[None, :]), log_survival(waited[:, None])
+    with np.errstate(invalid="ignore"):
+        conditional = np.exp(np.minimum(log_curve - log_start, 0))
+    # if even the starting tail underflows, the duration step is the available fallback
+    step = (weeks[None, :] < np.maximum(prediction, waited)[:, None]).astype(float)
+    return np.where(
+        weeks[None, :] < waited[:, None], 1, np.where(np.isnan(conditional), step, conditional)
+    )
 
 
 @dataclass(frozen=True)
@@ -106,6 +253,25 @@ def group_median(keys_train, y_train, keys_test) -> np.ndarray:
         groups.setdefault(key, []).append(value)
     medians = {key: float(np.median(values)) for key, values in groups.items()}
     return np.array([medians.get(key, overall) for key in keys_test], dtype=float)
+
+
+def curve_band_coverage(lower, upper, survival, weeks, level=0.8) -> float | None:
+    """share of closed entities whose event week lies inside the curve's central band.
+    the band runs from the week survival first drops to (1+level)/2 to where it reaches (1-level)/2"""
+    lower, upper = np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)
+    survival, weeks = np.asarray(survival, dtype=float), np.asarray(weeks, dtype=float)
+    closed = np.isfinite(lower) & (lower == upper)
+    if not closed.any():
+        return None
+
+    def first_week(threshold):
+        crossed = survival[closed] <= threshold
+        return np.where(crossed.any(axis=1), weeks[crossed.argmax(axis=1)], np.inf)
+
+    start, end = first_week((1 + level) / 2), first_week((1 - level) / 2)
+    # weeks are whole periods: an event in week k counts as reaching the band starting at k
+    event = lower[closed]
+    return float(np.mean((np.ceil(event) >= start - 1) & (np.floor(event) <= end)))
 
 
 def judge(

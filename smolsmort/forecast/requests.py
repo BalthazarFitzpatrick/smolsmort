@@ -5,12 +5,15 @@ from __future__ import annotations
 import math
 import re
 
+from smolsmort.forecast.aggregate import get_aggregator
 from smolsmort.forecast.machine_config import load_machine_config
 from smolsmort.forecast.spec import normalize_saved_modes
 
 
 def parse_request(request: dict) -> dict:
     request = normalize_saved_modes(request)
+    aggregate = request.get("aggregate", "none")
+    get_aggregator(aggregate)
     if "version" not in request:
         return request
     if request["version"] != 2:
@@ -91,6 +94,7 @@ def parse_request(request: dict) -> dict:
         raise ValueError("ensemble.enabled must be a boolean")
     return {
         **request,
+        "aggregate": aggregate,
         "transform": transform,
         "ensemble": ensemble,
         "max_concurrent_families": concurrency,

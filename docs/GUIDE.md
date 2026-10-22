@@ -495,8 +495,64 @@ distribution. hazard adds elapsed week and the exposure date's calendar iso week
 last bucket is the floored 95th percentile of training lower bounds, converted to weeks and frozen
 for later phases; durations beyond it share that bucket. predictions include p10, median and p90
 durations. an open entity's survival curve is conditioned on the weeks it has already waited.
-quantiles that never cross their threshold use the cap, including entities already waiting longer
-than that cap. returned curves distinguish survival at the start and end of each week.
+quantiles beyond that grid repeat the pooled tail hazard, so they never precede an entity's
+observed wait. returned curves distinguish survival at the start and end of each week.
+
+#### entity curves and weekly aggregation
+
+hazard runs save `curve.parquet`: one row per open entity and elapsed week, with columns
+`row` (entity id), `anchor`, `week`, `date`, `hazard`, and `survival`. `week` always counts
+weeks from zero, even when the target uses days or months; `date = anchor + week * 7 days`.
+`survival` is conditional on the entity still being open at the export date. completed waiting
+weeks have survival 1 and contribute no expected events, even if their raw hazard is positive.
+the entity table shows median, p10 and p90 durations in weeks, plus the predicted date.
+
+the run request field `"aggregate": "none"` is the default: it saves curves without a weekly
+summary. set `"aggregate": "expected_events"` in the api request to also save `aggregate.parquet`
+and display the weekly series. its `step` is the monday of each calendar week; `prediction` sums
+`survival_start - survival` across open entities whose curve date falls in that week. counts may
+be fractional. this run setting is separate from a prep column's aggregation setting.
+
+the saved curve covers weeks zero through the fitted cap. aggregation covers only those dates;
+survival remaining after the cap is not forced into the final week or extrapolated. an entity
+already waiting beyond the cap contributes zero on this grid, even though its duration quantiles
+can extend beyond it.
+
+rules live in `smolsmort.forecast.aggregate.REGISTRY`: register a name with a function taking
+`(curve_table, unit)` and returning numpy columns `step` and `prediction`, or `None` to omit
+the summary. `unit` is the target's configured censor unit; the built-in rule uses curve dates.
+custom rules must be registered in each worker process that uses them. filters and breakdowns
+recompute the rule on the selected entities' complete curves.
+
+to compute the same weekly total yourself from the saved curve, using duckdb sql:
+
+```sql
+with probabilities as (
+    select date,
+           lag(survival, 1, 1.0) over (partition by row order by week) - survival as probability
+    from read_parquet('curve.parquet')
+)
+select cast(date_trunc('week', date) as date) as step, sum(probability) as prediction
+from probabilities
+group by step
+order by step;
+```
+
+**censored forecast accuracy.** hazard and aft verdicts use ibs (integrated brier score): the
+average squared error of the survival probabilities across the scored weeks. lower is better.
+open test entities count too; after their last observation their outcome is unknown, so that
+part contributes no error. inverse censoring weights, estimated from train only, account for
+missing follow-up. the weekly horizon is fixed from train's 95th percentile and stops before
+those weights lose support. scores use trapezoids between weeks, or the single week's score.
+
+the baseline is a kaplan-meier (km) survival curve for each level of the dimension that scores
+best on validation. unseen levels use the pooled curve. model and baseline curves for open
+entities account for the completed weeks already waited; an exhausted km tail stays flat.
+an ibs ratio below 1 means the model beats that baseline. aft uses its fitted duration
+distribution and scale on the same weekly grid. c-index is a separate fact: how often predicted
+durations put comparable events in the right order, with half credit for tied predictions.
+1 means all comparable pairs were ordered correctly; 0.5 means chance ordering. it does not
+decide the verdict, and no band coverage check is required for these survival scores.
 
 timeseries specs may mark categorical columns as `input` to keep detail beyond the output grain.
 only `dimension` columns define series and scaffold rows; inputs never expand either table.
@@ -712,12 +768,13 @@ queued runs can be cancelled before they start. the default lock file is
 `~/.cache/smolsmort/forecast.lock`; set `SMOLSMORT_RUN_LOCK` to share another path
 across workers. the os releases the lock when its worker exits, even after a crash.
 
-**results.** every run reports accuracy on the untouched test rows. the accuracy metric is wape
+**results.** every run reports accuracy on the untouched test rows. ordinary regression uses wape
 (sum of absolute errors over the sum of actuals), next to the same metric for the naive baseline.
 the error ratio is model error divided by baseline error: below 1 means better than naive;
 1 or above is in the worse category. for example, wape 22.0% against baseline wape 25.0% gives
 a ratio of 0.88, or 12% better. the baseline is the group median per entity or seasonal naive per
-series. the results also show these plain facts, with no pass thresholds:
+series; censored hazard and aft runs use ibs against km as described above. the results also
+show these plain facts where applicable, with no pass thresholds:
 
 | fact | reading |
 |---|---|

@@ -18,8 +18,7 @@ from smolsmort.forecast.pipeline import (
     load_workspace,
 )
 from smolsmort.forecast.spec import spec_from_dict
-from smolsmort.forecast.tables import write_table
-from smolsmort.forecast.worker import _Run, _write_result
+from smolsmort.forecast.worker import _Run, _write_result, _write_tables
 
 
 def summarize(final):
@@ -105,7 +104,11 @@ def run(folder, parent_pid):
         }
         if scored.fitness < winner["fitness"]:
             chosen = "ensemble"
-    result = {"best": winner["genome"], "stopped": "families complete"}
+    result = {
+        "best": winner["genome"],
+        "stopped": "families complete",
+        "aggregate": request.get("aggregate", "none"),
+    }
     _write_result(folder, spec, result, ensemble if chosen == "ensemble" else final)
     recipe = read_json(folder / "recipe.json")
     recipe.update(family=chosen, transform=request.get("transform", "none"))
@@ -140,14 +143,7 @@ def run(folder, parent_pid):
             job.save(f"families/{name}/importance.json", importance)
     for label, fitted in (("winner", final), ("ensemble", ensemble)):
         if fitted:
-            for kind in ("validation", "test", "forecast"):
-                columns = fitted.get(kind)
-                if (
-                    isinstance(columns, dict)
-                    and columns
-                    and all(isinstance(v, np.ndarray) for v in columns.values())
-                ):
-                    write_table(folder / f"{label}_{kind}.parquet", columns)
+            _write_tables(folder, spec, fitted, prefix=label, aggregate=result["aggregate"])
     job.save("result.json", {**read_json(folder / "result.json"), **summary})
     job.save("finish_complete.json", {"family": chosen})
 

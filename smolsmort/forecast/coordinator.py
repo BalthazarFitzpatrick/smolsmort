@@ -40,9 +40,10 @@ def initialize_state(folder, request, *, started_at=None):
         state["nthread"] = request.get("nthread") or os.cpu_count() or 1
     if "config_values" not in state.get("machine", {}):
         path = forecast_config_path()
-        values = resolve_parallelism(
-            request, load_machine_config(path), state["nthread"], os.cpu_count() or 1
-        )
+        config = load_machine_config(path)
+        # cores only matter when the config pins threads per family
+        cores = os.cpu_count() or 1 if config["threads_per_family"] is not None else 1
+        values = resolve_parallelism(request, config, state["nthread"], cores)
         if "machine" not in state:
             state["machine"] = describe_machine(state["nthread"], values["max_concurrent_families"])
         state["machine"].update(
