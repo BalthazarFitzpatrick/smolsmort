@@ -410,13 +410,15 @@ def test_one_generation_search_finishes_with_one_forecast_per_open_entity(
         forecast["anchor"].astype("datetime64[D]")
         + (forecast["prediction"] * 7).round().astype("timedelta64[D]"),
     )
-    known_test = ws.masks["test"] & np.isfinite(ws.table["lead_weeks"])
-    assert result["test"]["rows"] == int(known_test.sum())
+    lower, upper = ws.bounds["final"]
+    test_rows = ws.masks["test"] & np.isfinite(lower) & ((lower == upper) | np.isposinf(upper))
+    assert result["test"]["rows"] == int(test_rows.sum())
     test_prediction = np.asarray(result["test"]["prediction"])
-    assert test_prediction.shape == ws.table["lead_weeks"][known_test].shape
-    assert result["model_error"] == pytest.approx(
-        pipeline.ev.wape(ws.table["lead_weeks"][known_test], test_prediction)
-    )
+    assert test_prediction.shape == lower[test_rows].shape
+    assert result["verdict"]["accuracy"]["metric"] == "ibs"
+    assert np.isfinite(result["model_error"])
+    assert result["verdict"]["accuracy"]["model_error"] == result["model_error"]
+    assert not any(check["group"] == "band" for check in result["verdict"]["checks"])
     if objective == "hazard":
         assert best["metrics"]["log_loss"] == pytest.approx(best["fitness"])
         curves = result["curves"]

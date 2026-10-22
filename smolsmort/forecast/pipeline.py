@@ -687,8 +687,14 @@ def finish(
 def _finish_entities(ws, genome, nthread) -> dict:
     spec = ws.spec
     classification = spec.task == "classification"
-    val_pred, val_truth, _ = _entity_phase(ws, genome, "val", nthread)
-    test_pred, test_truth, _ = _entity_phase(ws, genome, "test", nthread)
+    survival = spec.censor is not None and genome.objective in {"hazard", "aft"}
+    if survival:
+        val, test, verdict = _entity_survival_verdict(ws, genome, nthread)
+        val_pred, val_truth = val["prediction"], val["truth"]
+        test_pred, test_truth = test["prediction"], test["truth"]
+    else:
+        val_pred, val_truth, _ = _entity_phase(ws, genome, "val", nthread)
+        test_pred, test_truth, _ = _entity_phase(ws, genome, "test", nthread)
     target = ws.table[spec.named("target")[0]]
     if classification:
         prior = _class_prior(ws, target)
@@ -703,6 +709,10 @@ def _finish_entities(ws, genome, nthread) -> dict:
             metric="log_loss",
         )
         band = None
+    elif survival:
+        model_error = verdict["accuracy"]["model_error"]
+        baseline_error = verdict["accuracy"]["baseline_error"]
+        band = ev.fit_band(val_truth, val_pred) if genome.objective == "aft" else None
     else:
         band = ev.fit_band(val_truth, val_pred)
         nonnegative = (
@@ -797,6 +807,127 @@ def _entity_baseline(ws, target) -> np.ndarray:
     test_rows = masks["test"] & np.isfinite(target)
     keys = ws.table[best] if best else np.zeros(len(target), dtype=object)
     return ev.group_median(keys[known_test], lower_t[known_test], keys[test_rows])
+
+
+def _entity_survival_phase(ws, genome, phase, nthread, weeks):
+    fit_rows = ws.masks["train"]
+    if phase == "test":
+        fit_rows = fit_rows | ws.masks["val"]
+    fitted, x = _entity_fit(ws, genome, fit_rows, phase, nthread)
+    # phase bounds seal fitting; outcomes are observed at the following cut, or the final export
+    lower, upper = _hazard_bounds(ws, "test" if phase == "val" else "final")
+    rows = ws.masks[phase] & np.isfinite(lower) & (lower >= 0)
+    rows &= (lower == upper) | np.isposinf(upper)
+    if not rows.any():
+        raise PipelineError(f"no observed {phase} entities for survival scoring")
+    lower, upper = lower[rows], upper[rows]
+    waited = np.floor(np.where(np.isposinf(upper), lower, 0))
+    units_per_week = 7 / UNIT_DAYS[ws.spec.censor.unit]
+    if genome.objective == "hazard":
+        curves = predict_hazard(fitted, x[rows], ws.table[ANCHOR][rows], waited=waited)
+        prediction = curves["prediction"] * units_per_week
+        survival = curves["survival"][:, np.minimum(weeks.astype(int), fitted.cap)]
+        # a cap of zero still needs week one; repeat the same pooled tail as predict_hazard
+        extra = np.maximum(weeks - np.maximum(fitted.cap + 1, waited[:, None]) + 1, 0)
+        survival = survival * (1 - curves["hazard"][:, -1, None]) ** extra
+    else:
+        prediction = predict(fitted, x[rows])
+        params = dict(genome.params)
+        survival = ev.aft_survival(
+            prediction / units_per_week,
+            weeks,
+            scale=params.get("aft_loss_distribution_scale", 1.0),
+            distribution=params.get("aft_loss_distribution", "normal"),
+            waited=waited,
+        )
+    return {
+        "rows": rows,
+        "lower": lower,
+        "upper": upper,
+        "waited": waited,
+        "survival": survival,
+        "prediction": prediction,
+        "truth": np.where(lower == upper, lower * units_per_week, np.nan),
+    }
+
+
+def _entity_survival_verdict(ws, genome, nthread):
+    lower, upper = _hazard_bounds(ws, "val")
+    train = ws.masks["train"] & np.isfinite(lower) & (lower >= 0)
+    train &= (lower == upper) | np.isposinf(upper)
+    if not train.any():
+        raise PipelineError("survival scoring needs observed training durations")
+    knots = np.unique(lower[train])
+    censor_km = (knots, ev.kaplan_meier(lower[train], upper[train], knots, censoring=True))
+    horizon = max(1, int(np.floor(np.percentile(lower[train], 95))))
+    weeks = np.arange(1, horizon + 1)
+    supported = ev.kaplan_meier(lower[train], upper[train], weeks, censoring=True) > 0
+    weeks = weeks[supported]
+    if not len(weeks):
+        raise PipelineError("no scoring week has positive train censoring survival")
+    val = _entity_survival_phase(ws, genome, "val", nthread, weeks)
+    test = _entity_survival_phase(ws, genome, "test", nthread, weeks)
+
+    def baseline(dim, phase, data):
+        keys = ws.table[dim] if dim else np.zeros(len(lower), dtype=object)
+        fit_lower, fit_upper = _hazard_bounds(ws, phase)
+        fit_rows = train if phase == "val" else ws.masks["train"] | ws.masks["val"]
+        fit_rows = fit_rows & np.isfinite(fit_lower) & (fit_lower >= 0)
+        fit_rows &= (fit_lower == fit_upper) | np.isposinf(fit_upper)
+        return ev.group_kaplan_meier(
+            keys[fit_rows],
+            fit_lower[fit_rows],
+            fit_upper[fit_rows],
+            keys[data["rows"]],
+            weeks,
+            waited=data["waited"],
+        )
+
+    candidates = [dim for dim in ws.spec.inputs() if is_text(ws.table[dim])] or [None]
+    best, best_error = None, np.inf
+    for dim in candidates:
+        curves = baseline(dim, "val", val)
+        error = ev.integrated_brier(val["lower"], val["upper"], curves, weeks, censor_km)
+        if error < best_error:
+            best, best_error = dim, error
+    baseline_error = ev.integrated_brier(
+        test["lower"], test["upper"], baseline(best, "test", test), weeks, censor_km
+    )
+    model_error = ev.integrated_brier(
+        test["lower"], test["upper"], test["survival"], weeks, censor_km
+    )
+    val_error = ev.integrated_brier(val["lower"], val["upper"], val["survival"], weeks, censor_km)
+    band_coverage = ev.curve_band_coverage(test["lower"], test["upper"], test["survival"], weeks)
+    verdict = ev.judge(
+        model_error=model_error,
+        baseline_error=baseline_error,
+        band_coverage=band_coverage,
+        test_rows=len(test["lower"]),
+        needs_band=band_coverage is not None,
+        metric="ibs",
+        val_error=val_error,
+    )
+    c_index = ev.concordance(test["lower"], test["upper"], test["prediction"])
+    detail = f"c-index {c_index:.3g}; higher predicted duration means later events"
+    if not np.isfinite(c_index):
+        detail = "c-index unavailable: no comparable event pairs"
+    verdict["checks"].extend(
+        [
+            {"check": "concordance", "group": "accuracy", "detail": detail},
+            {
+                "check": "kaplan-meier baseline",
+                "group": "accuracy",
+                "detail": f"grouped by {best}" if best else "pooled training survival",
+            },
+            {
+                "check": "survival scoring",
+                "group": "history",
+                "detail": f"weeks 1-{weeks[-1]}; train-only censoring weights; "
+                f"{int(np.isposinf(test['upper']).sum())} open test entities included",
+            },
+        ]
+    )
+    return val, test, verdict
 
 
 def _finish_timeseries(
