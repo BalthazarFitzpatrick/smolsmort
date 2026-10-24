@@ -11,6 +11,7 @@ from smolsmort.crops.dataset import Example
 from smolsmort.crops.model import INPUT_SIZE, build_model
 from smolsmort.detect.model import _torch
 from smolsmort.optim import build_optimizer
+from smolsmort.torch_device import default_device
 
 
 def image_input(image: Path | np.ndarray, size: int = INPUT_SIZE) -> np.ndarray:
@@ -29,7 +30,7 @@ def image_input(image: Path | np.ndarray, size: int = INPUT_SIZE) -> np.ndarray:
 
 def _device(device):
     torch = _torch()
-    return device or ("mps" if torch.backends.mps.is_available() else "cpu")
+    return device or default_device(torch)
 
 
 def train(
