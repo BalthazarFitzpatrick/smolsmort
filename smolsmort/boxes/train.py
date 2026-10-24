@@ -36,6 +36,7 @@ from smolsmort.detect.prefetch import decode_ahead
 from smolsmort.detect.train import Progress
 from smolsmort.detect.windows import carve_ignore, window_origin
 from smolsmort.optim import build_optimizer
+from smolsmort.torch_device import default_device
 
 CROP = 256  # training window side, input px; a multiple of the net's 32
 # how far a window may sit off the object it is centred on, as a fraction of the window
@@ -138,7 +139,7 @@ def train(
     if not any(e.object_count for e in usable):
         raise BoxTrainError("no example has a confirmed object - nothing to learn from")
     if device is None:
-        device = "mps" if torch.backends.mps.is_available() else "cpu"
+        device = default_device(torch)
     rng = random.Random(seed)
     torch.manual_seed(seed)
 
@@ -312,7 +313,7 @@ def load(path: Path, device: str | None = None):
     """class count, stage widths and head width are all read off the checkpoint, never assumed"""
     torch = _torch()
     if device is None:
-        device = "mps" if torch.backends.mps.is_available() else "cpu"
+        device = default_device(torch)
     state = torch.load(path, map_location=device)
     model = build_model(classes=classes_in(state), widths=widths_in(state), head=head_in(state)).to(
         device
