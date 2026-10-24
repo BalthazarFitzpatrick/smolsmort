@@ -77,6 +77,23 @@ def test_an_ignore_region_never_blanks_a_confirmed_plate():
     assert mask[target > 0.3].min() == 1.0
 
 
+def test_frames_of_mixed_sizes_train_in_one_batch(tmp_path):
+    """a set mixing frames shorter than the window with full ones trains: the window shrinks to
+    the smallest frame, in whole cells, instead of each short frame cutting its own"""
+    from PIL import Image
+
+    from smolsmort.detect.train import train
+
+    rng = np.random.default_rng(0)
+    examples = []
+    for index, (height, width) in enumerate([(810, 1440), (410, 1440), (810, 1440)]):
+        path = tmp_path / f"frame_{index}.png"
+        Image.fromarray(rng.integers(0, 255, (height, width, 3), dtype=np.uint8)).save(path)
+        examples.append(Example(path=path, centres=[(700.0, 200.0)], exhaustive=True))
+    model, history = train(examples, epochs=1, batch=4, capture_width=1440)
+    assert history
+
+
 # --------------------------------------- the crop window must be a whole number of cells
 
 

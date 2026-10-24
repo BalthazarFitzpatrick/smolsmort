@@ -426,6 +426,11 @@ def train(
         weight_decay=weight_decay,
     )
     cache = {e.path: _load_input(e.path, downscale, capture) for e in usable}
+    # one batch stacks its windows, so every window takes the smallest frame's side, whole cells
+    # [a frame under the window used to cut a smaller one and np.stack failed on mixed shapes]
+    smallest = min(min(image.shape[1:]) for image in cache.values())
+    if smallest < window:
+        window = smallest - smallest % STRIDE
 
     history = []
     seen = 0
