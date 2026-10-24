@@ -348,3 +348,30 @@ def test_negatives_do_not_break_multi_class_training(tmp_path):
     examples, classes = build_training_set(path, sessions)
     model, history = train(examples, epochs=1, batch=2, classes=classes)
     assert model[-1].out_channels == 2 and history
+
+
+def test_ignore_rows_become_ignore_regions_not_classes(tmp_path):
+    """a row marked ignore masks its rect out of the loss: no centre, no class, no label needed"""
+    import json
+
+    from PIL import Image
+
+    from smolsmort.detect.dataset import build_training_set
+
+    sessions = tmp_path / "recordings"
+    (sessions / "one" / "frames").mkdir(parents=True)
+    Image.new("RGB", (256, 256), (40, 60, 40)).save(sessions / "one" / "frames" / "f.jpg")
+    base = {"recording": "one", "frame": "f.jpg", "source": "one"}
+    rows = [
+        {**base, "left": 40, "top": 40, "width": 60, "height": 16, "label": "plate"},
+        {**base, "left": 0, "top": 200, "width": 120, "height": 40, "ignore": True},
+        {**base, "left": 5, "top": 5, "width": 10, "height": 10, "ignore": True, "label": "ui"},
+    ]
+    path = tmp_path / "objects.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+    examples, classes = build_training_set(path, sessions)
+    assert classes == {"plate": 0}
+    (example,) = examples
+    assert example.labels == ["plate"]
+    assert example.ignore == [(0, 200, 120, 240), (5, 5, 15, 15)]

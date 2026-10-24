@@ -167,7 +167,7 @@ def _row_skip_reason(row: dict) -> str | None:
             float(row[key])
         except (TypeError, ValueError):
             return f"{key}: non-numeric"
-    if not row.get("negative") and "label" not in row:
+    if not row.get("negative") and not row.get("ignore") and "label" not in row:
         return "label"
     return None
 
@@ -205,7 +205,7 @@ def build_training_set(
         else:
             rows.append(row)
 
-    labels = sorted({r["label"] for r in rows if r.get("label")})
+    labels = sorted({r["label"] for r in rows if r.get("label") and not r.get("ignore")})
     classes = ClassMap((label, index) for index, label in enumerate(labels))
     classes.skipped = skipped
     by_frame: dict[tuple[str, str], Example] = {}
@@ -219,7 +219,11 @@ def build_training_set(
         # and _row_skip_reason has already refused anything that is not a number
         left, top, width, height = row["left"], row["top"], row["width"], row["height"]
         centre = (left + width / 2.0, top + height / 2.0)
-        if row.get("negative"):
+        if row.get("ignore"):
+            # an ignore region: pixels the loss never sees, neither object nor background (a
+            # caller's interface, say), as (x0, y0, x1, y1) like build_from's
+            example.ignore.append((left, top, left + width, top + height))
+        elif row.get("negative"):
             # A HARD NEGATIVE: somewhere the model fired and was told no. sampled deliberately
             # during training because a random window almost never contains one, so without them
             # the model never revisits its own mistakes
