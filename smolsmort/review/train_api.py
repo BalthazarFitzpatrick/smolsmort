@@ -32,6 +32,7 @@ from smolsmort.review.find_state import write_jsonl_atomic
 from smolsmort.review.naming import set_filename
 from smolsmort.review.recordings import flat_recording, frame_files, frames_dir_of
 from smolsmort.review.train import TrainState, TrainStateError, saved_checkpoints
+from smolsmort.torch_device import default_device
 
 CHECKPOINT_SUFFIX = ".pt"
 
@@ -309,7 +310,7 @@ class TrainApi:
             import torch
         except ImportError:
             return "torch not installed"
-        return "mps" if torch.backends.mps.is_available() else "cpu"
+        return default_device(torch)
 
     def frames(self) -> list[dict]:
         """every frame carrying at least one confirmed object - the list down the side of the page"""

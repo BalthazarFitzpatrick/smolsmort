@@ -46,6 +46,7 @@ from smolsmort.detect.model import (
 from smolsmort.detect.prefetch import decode_ahead
 from smolsmort.detect.windows import carve_ignore, window_origin
 from smolsmort.optim import build_optimizer
+from smolsmort.torch_device import default_device
 
 CROP = 256  # input pixels, i.e. CROP * downscale capture pixels a side (512 at the default 2)
 
@@ -387,7 +388,7 @@ def train(
         raise TrainError("no example has a confirmed object - nothing to learn from")
 
     if device is None:
-        device = "mps" if torch.backends.mps.is_available() else "cpu"
+        device = default_device(torch)
     rng = random.Random(seed)
     torch.manual_seed(seed)
 
@@ -716,7 +717,7 @@ def load(
         raise RuntimeError_('compute_units picks core ml hardware - pass runtime="coreml" with it')
     torch = _torch()
     if device is None:
-        device = "mps" if torch.backends.mps.is_available() else "cpu"
+        device = default_device(torch)
     state = torch.load(path, map_location=device)
     # a checkpoint older than the stored factor was trained at the one that was hard-coded then
     state.setdefault("downscale", torch.tensor(LEGACY_DOWNSCALE))
