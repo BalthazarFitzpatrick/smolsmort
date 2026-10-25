@@ -128,6 +128,44 @@ def test_an_unsnapped_window_really_does_disagree():
     assert out.shape[-1] != 286 // STRIDE
 
 
+def test_on_progress_returning_true_stops_training_after_that_epoch(tmp_path):
+    from PIL import Image
+
+    from smolsmort.detect.train import train
+
+    path = tmp_path / "frame.png"
+    rng = np.random.default_rng(0)
+    Image.fromarray(rng.integers(0, 255, (810, 1440, 3), dtype=np.uint8)).save(path)
+    examples = [Example(path=path, centres=[(700.0, 200.0)], exhaustive=True)]
+    model, history = train(
+        examples, epochs=10, batch=2, capture_width=1440, on_progress=lambda p: p.epoch >= 3
+    )
+    assert len(history) == 3
+
+
+def test_plateau_stalls_after_patience_epochs_without_a_gain():
+    from smolsmort.detect.train import Plateau
+
+    plateau = Plateau(patience=10, min_delta=0.01)
+    assert plateau.update(5, 0.50)
+    assert plateau.update(10, 0.60)
+    assert not plateau.update(15, 0.605)  # under min_delta
+    assert not plateau.stalled(15)
+    assert not plateau.update(20, 0.59)
+    assert plateau.stalled(20) and plateau.best_epoch == 10
+
+
+def test_plateau_tracks_a_loss_where_lower_is_better():
+    from smolsmort.detect.train import Plateau
+
+    plateau = Plateau(patience=2, higher_is_better=False)
+    assert plateau.update(1, 1.0)
+    assert plateau.update(2, 0.5)
+    assert not plateau.update(3, 0.7)
+    assert not plateau.update(4, 0.6)
+    assert plateau.stalled(4) and plateau.best == 0.5
+
+
 def test_a_set_over_the_memory_budget_trains_from_frames_decoded_per_epoch(tmp_path):
     """frames that would not fit in memory are decoded each epoch on worker threads"""
     from PIL import Image
