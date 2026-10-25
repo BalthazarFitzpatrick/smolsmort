@@ -126,3 +126,20 @@ def test_an_unsnapped_window_really_does_disagree():
     with torch.no_grad():
         out = build_model(channels=4, classes=1).eval()(torch.zeros(1, 3, 286, 286))
     assert out.shape[-1] != 286 // STRIDE
+
+
+def test_a_set_over_the_memory_budget_trains_from_frames_decoded_per_epoch(tmp_path):
+    """frames that would not fit in memory are decoded each epoch on worker threads"""
+    from PIL import Image
+
+    from smolsmort.detect.train import _input_shape, _load_input, train
+
+    rng = np.random.default_rng(0)
+    examples = []
+    for index, (height, width) in enumerate([(810, 1440), (600, 1024), (810, 1440)]):
+        path = tmp_path / f"frame_{index}.png"
+        Image.fromarray(rng.integers(0, 255, (height, width, 3), dtype=np.uint8)).save(path)
+        assert _input_shape(path, 2, 1440) == _load_input(path, 2, 1440).shape[1:]
+        examples.append(Example(path=path, centres=[(700.0, 200.0)], exhaustive=True))
+    model, history = train(examples, epochs=2, batch=4, capture_width=1440, cache_bytes=0)
+    assert len(history) == 2 and all(np.isfinite(history))
