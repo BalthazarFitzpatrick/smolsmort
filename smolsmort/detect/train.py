@@ -225,6 +225,19 @@ def _load_input(
     return _load_frame(path, downscale, capture_width)[0]
 
 
+def _input_shape(
+    path: Path, downscale: int = DEFAULT_DOWNSCALE, capture_width: int | None = None
+) -> tuple[int, int]:
+    """(rows, columns) _load_input would give, read from the file's header without decoding"""
+    from PIL import Image
+
+    with Image.open(path) as handle:
+        width, height = handle.size
+    if capture_width and width != capture_width:
+        height, width = max(1, round(height * capture_width / width)), capture_width
+    return height // downscale, width // downscale
+
+
 def frame_ratio(model, original_width: int) -> float:
     """frame px per capture px: what a decoded position is multiplied by to land on the original
     frame. 1.0 when the capture is unknown or already the frame's width."""
@@ -352,6 +365,7 @@ def train(
     momentum: float = 0.9,
     weight_decay: float = 0.0,
     capture_width: int | None = None,
+    cache_bytes: int = 8_000_000_000,
     init_model=None,
 ):
     """returns (model, history). on_progress is called once per epoch with a Progress.
@@ -426,10 +440,14 @@ def train(
         momentum=momentum,
         weight_decay=weight_decay,
     )
-    cache = {e.path: _load_input(e.path, downscale, capture) for e in usable}
+    shapes = {e.path: _input_shape(e.path, downscale, capture) for e in usable}
+    # a set whose decoded frames fit the budget is held in memory, as always; a larger one is
+    # decoded per epoch on worker threads (float32 inputs: 22k frames at 720x405 are ~77 GB)
+    held = sum(3 * 4 * h * w for h, w in shapes.values()) <= cache_bytes
+    cache = {e.path: _load_input(e.path, downscale, capture) for e in usable} if held else None
     # one batch stacks its windows, so every window takes the smallest frame's side, whole cells
     # [a frame under the window used to cut a smaller one and np.stack failed on mixed shapes]
-    smallest = min(min(image.shape[1:]) for image in cache.values())
+    smallest = min(min(shape) for shape in shapes.values())
     if smallest < window:
         window = smallest - smallest % STRIDE
 
@@ -438,13 +456,24 @@ def train(
     for epoch in range(1, epochs + 1):
         model.train()
         total = 0.0
-        for _ in range(max(1, len(usable) // batch)):
+        batches = max(1, len(usable) // batch)
+        if not held:
+            order = [rng.choice(usable) for _ in range(batches * batch)]
+            decoded = decode_ahead(
+                order,
+                lambda e: _load_input(e.path, downscale, capture),
+                ahead=4 * batch,
+                workers=4,
+            )
+        for _ in range(batches):
             windows, targets, masks = [], [], []
             for _ in range(batch):
-                example = rng.choice(usable)
-                w, t, m = _crop_window(
-                    example, cache[example.path], rng, classes, window, downscale
-                )
+                if held:
+                    example = rng.choice(usable)
+                    image = cache[example.path]
+                else:
+                    example, image = next(decoded)
+                w, t, m = _crop_window(example, image, rng, classes, window, downscale)
                 windows.append(w)
                 targets.append(t)
                 masks.append(m)
