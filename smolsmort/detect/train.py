@@ -128,6 +128,31 @@ class Progress:
         return self.epoch / self.epochs if self.epochs else 0.0
 
 
+@dataclass
+class Plateau:
+    """tracks a score across epochs and says when it has stopped improving: stalled once
+    `patience` epochs passed since the best beat the one before it by more than `min_delta`"""
+
+    patience: int
+    min_delta: float = 0.0
+    higher_is_better: bool = True
+    best: float | None = None
+    best_epoch: int = 0
+
+    def update(self, epoch: int, score: float) -> bool:
+        """record one score; true when it is the new best"""
+        gain = score - self.best if self.best is not None else math.inf
+        if not self.higher_is_better and self.best is not None:
+            gain = -gain
+        if gain > self.min_delta:
+            self.best, self.best_epoch = score, epoch
+            return True
+        return False
+
+    def stalled(self, epoch: int) -> bool:
+        return self.best is not None and epoch - self.best_epoch >= self.patience
+
+
 def _load_frame(
     path: Path, downscale: int = DEFAULT_DOWNSCALE, capture_width: int | None = None
 ) -> tuple[np.ndarray, int]:
@@ -368,7 +393,8 @@ def train(
     cache_bytes: int = 8_000_000_000,
     init_model=None,
 ):
-    """returns (model, history). on_progress is called once per epoch with a Progress.
+    """returns (model, history). on_progress is called once per epoch with a Progress; returning
+    true from it stops training after that epoch (early stop, e.g. with a Plateau).
 
     classes maps a cluster label to its channel. Given one, the model grows a channel per class and
     each object trains only its own - which is what makes a rare class survive a common one, and
@@ -495,8 +521,9 @@ def train(
 
         mean = total / max(1, len(usable) // batch)
         history.append(mean)
-        if on_progress:
-            on_progress(Progress(epoch=epoch, epochs=epochs, loss=mean, seen=seen))
+        # a truthy return from on_progress ends training after this epoch
+        if on_progress and on_progress(Progress(epoch=epoch, epochs=epochs, loss=mean, seen=seen)):
+            break
     return model, history
 
 
