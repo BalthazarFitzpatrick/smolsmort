@@ -74,3 +74,17 @@ def test_training_from_the_store_matches_training_from_ram(tmp_path):
         examples, epochs=2, batch=4, capture_width=1440, seed=3, frame_store=tmp_path / "store"
     )
     np.testing.assert_allclose(stored, in_ram, rtol=1e-5)
+
+
+def test_the_batch_feed_trains_the_same_whatever_its_thread_count(tmp_path):
+    examples = [
+        Example(
+            path=_frame(tmp_path / f"frame_{i}.png", 810, 1440, seed=i), centres=[(700.0, 200.0)]
+        )
+        for i in range(4)
+    ]
+    runs = [
+        train(examples, epochs=2, batch=2, capture_width=1440, seed=5, feed_workers=workers)[1]
+        for workers in (1, 3)
+    ]
+    np.testing.assert_allclose(runs[0], runs[1], rtol=1e-6)
