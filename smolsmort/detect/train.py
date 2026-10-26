@@ -23,12 +23,14 @@ import math
 import os
 import random
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
 
 from smolsmort.detect.dataset import Example, frame_width
+from smolsmort.detect.frame_store import decode_workers, fill_store
 from smolsmort.detect.model import (
     DEFAULT_CHANNELS,
     DEFAULT_DOWNSCALE,
@@ -170,14 +172,32 @@ def _load_frame(
 def _fit(image, downscale: int, capture_width: int | None) -> tuple[np.ndarray, int]:
     """(the net's input, the image's own width) for an rgb pillow image: resampled to the
     capture width when it differs, then downscaled. one body for a file and for an array"""
+    original = image.width
+    image = _resample(image, downscale, capture_width)
+    return np.asarray(image, dtype=np.float32).transpose(2, 0, 1) / 255.0, original
+
+
+def _resample(image, downscale: int, capture_width: int | None):
+    """the pillow image at the capture width, aspect kept, then downscaled: one body for every
+    input the net is given, float or uint8"""
     from PIL import Image
 
-    original = image.width
-    if capture_width and original != capture_width:
-        height = max(1, round(image.height * capture_width / original))
+    if capture_width and image.width != capture_width:
+        height = max(1, round(image.height * capture_width / image.width))
         image = image.resize((capture_width, height), Image.BILINEAR)
-    image = image.resize((image.width // downscale, image.height // downscale), Image.BILINEAR)
-    return np.asarray(image, dtype=np.float32).transpose(2, 0, 1) / 255.0, original
+    return image.resize((image.width // downscale, image.height // downscale), Image.BILINEAR)
+
+
+def _load_pixels(
+    path: Path, downscale: int = DEFAULT_DOWNSCALE, capture_width: int | None = None
+) -> np.ndarray:
+    """_load_input as uint8, a quarter of its memory: the same resample, channels-first, 0..255.
+    a training window is made float only once cut (_crop_window), to the same values"""
+    from PIL import Image
+
+    with Image.open(path) as handle:
+        image = _resample(handle.convert("RGB"), downscale, capture_width)
+    return np.ascontiguousarray(np.asarray(image, dtype=np.uint8).transpose(2, 0, 1))
 
 
 def frame_input(model, frame: np.ndarray) -> tuple[np.ndarray, int]:
@@ -337,6 +357,9 @@ def _crop_window(
     )
 
     window = image[:, top : top + size, left : left + size]
+    if window.dtype == np.uint8:
+        # a held frame is uint8 (_load_pixels); its window takes _fit's float values
+        window = window.astype(np.float32) / 255.0
     cells = size // STRIDE
     # labels ride along with their centre so a window keeps them aligned after clipping. an
     # example built before labels existed has none, so pad rather than zip-strict
@@ -392,6 +415,7 @@ def train(
     capture_width: int | None = None,
     cache_bytes: int = 8_000_000_000,
     init_model=None,
+    frame_store: Path | None = None,
 ):
     """returns (model, history). on_progress is called once per epoch with a Progress; returning
     true from it stops training after that epoch (early stop, e.g. with a Plateau).
@@ -467,10 +491,19 @@ def train(
         weight_decay=weight_decay,
     )
     shapes = {e.path: _input_shape(e.path, downscale, capture) for e in usable}
-    # a set whose decoded frames fit the budget is held in memory, as always; a larger one is
-    # decoded per epoch on worker threads (float32 inputs: 22k frames at 720x405 are ~77 GB)
-    held = sum(3 * 4 * h * w for h, w in shapes.values()) <= cache_bytes
-    cache = {e.path: _load_input(e.path, downscale, capture) for e in usable} if held else None
+    # frames are held as uint8: memory-mapped from `frame_store` when given (decoded once, ever),
+    # else in ram when they fit cache_bytes, else decoded per epoch on every core but two. float32
+    # and 4 threads left the gpu idle on native 2560x1440 jpegs (2026-10-26)
+    paths = [e.path for e in usable]
+    if frame_store is not None:
+        cache = fill_store(frame_store, paths, downscale, capture, _load_pixels)
+    elif sum(3 * h * w for h, w in shapes.values()) <= cache_bytes:
+        with ThreadPoolExecutor(max_workers=decode_workers()) as pool:
+            frames = pool.map(lambda path: _load_pixels(path, downscale, capture), paths)
+            cache = dict(zip(paths, frames, strict=True))
+    else:
+        cache = None
+    held = cache is not None
     # one batch stacks its windows, so every window takes the smallest frame's side, whole cells
     # [a frame under the window used to cut a smaller one and np.stack failed on mixed shapes]
     smallest = min(min(shape) for shape in shapes.values())
@@ -485,11 +518,12 @@ def train(
         batches = max(1, len(usable) // batch)
         if not held:
             order = [rng.choice(usable) for _ in range(batches * batch)]
+            workers = decode_workers()
             decoded = decode_ahead(
                 order,
-                lambda e: _load_input(e.path, downscale, capture),
-                ahead=4 * batch,
-                workers=4,
+                lambda e: _load_pixels(e.path, downscale, capture),
+                ahead=4 * workers,
+                workers=workers,
             )
         for _ in range(batches):
             windows, targets, masks = [], [], []
