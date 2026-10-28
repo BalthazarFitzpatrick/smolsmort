@@ -7,8 +7,9 @@ import os
 
 import numpy as np
 
+from smolsmort.detect import frame_store
 from smolsmort.detect.dataset import Example
-from smolsmort.detect.frame_store import fill_store, store_key, stored_frame
+from smolsmort.detect.frame_store import fill_paths, fill_store, store_key, stored_frame
 from smolsmort.detect.train import _load_input, _load_pixels, train
 
 
@@ -88,3 +89,38 @@ def test_the_batch_feed_trains_the_same_whatever_its_thread_count(tmp_path):
         for workers in (1, 3)
     ]
     np.testing.assert_allclose(runs[0], runs[1], rtol=1e-6)
+
+
+def test_fill_paths_stores_every_frame_and_maps_none(tmp_path):
+    paths = [_frame(tmp_path / f"frame_{i}.png", seed=i) for i in range(3)]
+    files = fill_paths(tmp_path / "store", paths + paths[:1], 2, None, _load_pixels, workers=2)
+    assert list(files) == paths
+    assert all(f.suffix == ".npy" and f.exists() for f in files.values())
+    read = frame_store.read_stored(files[paths[0]])
+    assert type(read) is np.ndarray
+    np.testing.assert_array_equal(
+        read, stored_frame(tmp_path / "store", paths[0], 2, None, _load_pixels)
+    )
+
+
+def test_a_stored_run_reads_each_batch_from_disk_and_maps_nothing(tmp_path, monkeypatch):
+    examples = [
+        Example(
+            path=_frame(tmp_path / f"frame_{i}.png", 810, 1440, seed=i), centres=[(700.0, 200.0)]
+        )
+        for i in range(3)
+    ]
+    reads = []
+    real = frame_store.read_stored
+
+    def counted(target):
+        reads.append(target)
+        return real(target)
+
+    import smolsmort.detect.train as trainer
+
+    monkeypatch.setattr(trainer, "read_stored", counted)
+    monkeypatch.setattr(trainer, "fill_store", None, raising=False)
+    train(examples, epochs=2, batch=4, capture_width=1440, seed=3, frame_store=tmp_path / "store")
+    # every window of every batch read its frame from disk: 2 epochs, 3 // 4 -> 1 batch of 4
+    assert len(reads) == 2 * 4

@@ -31,7 +31,7 @@ from pathlib import Path
 import numpy as np
 
 from smolsmort.detect.dataset import Example, frame_width
-from smolsmort.detect.frame_store import decode_workers, fill_store
+from smolsmort.detect.frame_store import decode_workers, fill_paths, read_stored
 from smolsmort.detect.model import (
     DEFAULT_CHANNELS,
     DEFAULT_DOWNSCALE,
@@ -537,19 +537,20 @@ def train(
         weight_decay=weight_decay,
     )
     shapes = {e.path: _input_shape(e.path, downscale, capture) for e in usable}
-    # frames are held as uint8: memory-mapped from `frame_store` when given (decoded once, ever),
-    # else in ram when they fit cache_bytes, else decoded per epoch on every core but two. float32
-    # and 4 threads left the gpu idle on native 2560x1440 jpegs (2026-10-26)
+    # frames are uint8: read per batch from `frame_store` when given (decoded once, ever, and only
+    # the batches in flight resident; mapping the whole store grew a run to ~18 gb on a 32 gb box),
+    # else held in ram when they fit cache_bytes, else decoded per epoch on every core but two
     paths = [e.path for e in usable]
+    files = None
+    cache = None
     if frame_store is not None:
-        cache = fill_store(frame_store, paths, downscale, capture, _load_pixels)
+        files = fill_paths(frame_store, paths, downscale, capture, _load_pixels)
     elif sum(3 * h * w for h, w in shapes.values()) <= cache_bytes:
         with ThreadPoolExecutor(max_workers=decode_workers()) as pool:
             frames = pool.map(lambda path: _load_pixels(path, downscale, capture), paths)
             cache = dict(zip(paths, frames, strict=True))
-    else:
-        cache = None
-    held = cache is not None
+    # a stored run draws its batches as a held one does, so the two train the same
+    held = cache is not None or files is not None
     # one batch stacks its windows, so every window takes the smallest frame's side, whole cells
     # [a frame under the window used to cut a smaller one and np.stack failed on mixed shapes]
     smallest = min(min(shape) for shape in shapes.values())
@@ -568,7 +569,12 @@ def train(
             picks = []
             for _ in range(batches):
                 chosen = [rng.choice(usable) for _ in range(batch)]
-                picks.append([(e, cache[e.path], rng.getrandbits(64)) for e in chosen])
+                picks.append(
+                    [
+                        (e, None if cache is None else cache[e.path], rng.getrandbits(64))
+                        for e in chosen
+                    ]
+                )
         else:
             order = [rng.choice(usable) for _ in range(batches * batch)]
             workers = decode_workers()
@@ -582,9 +588,16 @@ def train(
                 [(e, image, rng.getrandbits(64)) for e, image in itertools.islice(decoded, batch)]
                 for _ in range(batches)
             )
+
+        def feed(pick):
+            # a stored frame is read here, on the feed thread, and dropped with its batch
+            if files is not None:
+                pick = [(e, read_stored(files[e.path]), seed) for e, _, seed in pick]
+            return _build_batch(pick, classes, window, downscale, cuda)
+
         fed = decode_ahead(
             list(picks),
-            lambda p: _build_batch(p, classes, window, downscale, cuda),
+            feed,
             ahead=2 * max(1, feed_workers),
             workers=max(1, feed_workers),
         )
