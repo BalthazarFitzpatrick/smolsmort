@@ -432,6 +432,8 @@ def train(
     epochs: int = 30,
     batch: int = 8,
     learning_rate: float = 3e-4,
+    lr_schedule: str = "constant",
+    lr_floor: float = 1e-5,
     seed: int = 0,
     device: str | None = None,
     on_progress=None,
@@ -461,6 +463,10 @@ def train(
     momentum 0.9 and weight_decay 0 behaves exactly as the old hardcoded Adam(lr) did, so every
     default and existing checkpoint is unaffected.
 
+    `lr_schedule="constant"` leaves optimiser steps unchanged. "cosine" sets the rate before
+    each step, from `learning_rate` on the first to `lr_floor` on the last planned step across
+    all epochs. a one-step run uses `lr_floor`; early stopping keeps the planned schedule.
+
     `downscale` is the capture:input factor the model is trained at. it is stored in the model, so
     save() keeps it and load() restores it - callers decoding or sweeping read it off the model.
     `channels` is the network's base width; load() reads it back from the weights, so a wider net
@@ -477,6 +483,10 @@ def train(
     `mixed_precision` runs the net under bf16 autocast on cuda (the loss stays float32): measured
     0.64 against 0.93 ms a window at batch 32 on a 4070 (2026-10-26)
     """
+    if lr_schedule not in ("constant", "cosine"):
+        raise ValueError(f"unknown lr_schedule {lr_schedule!r}; allowed values: constant, cosine")
+    if lr_schedule == "cosine" and not 0 <= lr_floor <= learning_rate:
+        raise ValueError("lr_floor must be between 0 and learning_rate for cosine")
     # the window every training sample is cut at. below minimum_window() for this set's boxes
     # an object is clipped at the jitter extremes, so a caller taking this from a human checks first
     window = snapped_window(CROP if crop is None else int(crop))
@@ -579,7 +589,9 @@ def train(
             workers=max(1, feed_workers),
         )
         total = torch.zeros((), device=device)
-        for _, (window_batch, target_batch, mask_batch) in fed:
+        for step, (_, (window_batch, target_batch, mask_batch)) in enumerate(
+            fed, start=(epoch - 1) * batches
+        ):
             x = _to_input(window_batch, device)
             y = target_batch.to(device, non_blocking=True)
             if y.dim() == 3:  # single channel targets arrive as (batch, h, w)
@@ -590,6 +602,14 @@ def train(
             loss = masked_focal_loss(out.float(), y, mask)
             optimiser.zero_grad()
             loss.backward()
+            if lr_schedule == "cosine":
+                steps = epochs * batches
+                progress = step / (steps - 1) if steps > 1 else 1.0
+                rate = (
+                    lr_floor + (learning_rate - lr_floor) * (1 + math.cos(math.pi * progress)) / 2
+                )
+                for group in optimiser.param_groups:
+                    group["lr"] = rate
             optimiser.step()
             # summed on the device: one sync per epoch, not one per step
             total += loss.detach()

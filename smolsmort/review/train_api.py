@@ -439,7 +439,14 @@ class TrainApi:
         found: dict = {}
         if payload.get("optimizer"):
             found["optimizer"] = str(payload["optimizer"])
-        for key in ("momentum", "weight_decay"):
+        if payload.get("lr_schedule") not in (None, ""):
+            schedule = str(payload["lr_schedule"])
+            if schedule not in ("constant", "cosine"):
+                raise ValueError(
+                    f"unknown lr_schedule {schedule!r}; allowed values: constant, cosine"
+                )
+            found["lr_schedule"] = schedule
+        for key in ("momentum", "weight_decay", "lr_floor"):
             if payload.get(key) not in (None, ""):
                 found[key] = float(payload[key])
         size = payload.get("size")

@@ -51,6 +51,8 @@ class HeatmapBackend:
         device: str | None = None,
         min_score: float = 0.5,
         learning_rate: float = 3e-4,
+        lr_schedule: str = "constant",
+        lr_floor: float = 1e-5,
         seed: int = 0,
         channels: int = 24,
         optimizer: str = "adamw",
@@ -63,6 +65,8 @@ class HeatmapBackend:
         self.device = device
         self.min_score = min_score
         self.learning_rate = learning_rate
+        self.lr_schedule = lr_schedule
+        self.lr_floor = lr_floor
         self.seed = seed
         self.channels = channels
         self.optimizer = optimizer
@@ -80,6 +84,8 @@ class HeatmapBackend:
             converted,
             epochs=self.epochs,
             learning_rate=self.learning_rate,
+            lr_schedule=self.lr_schedule,
+            lr_floor=self.lr_floor,
             seed=self.seed,
             crop=window,
             device=self.device,
