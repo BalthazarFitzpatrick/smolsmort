@@ -131,6 +131,8 @@ def test_seasonal_score_is_the_mean_over_validation_origins(seasonal):
 
 
 def test_seasonal_finish_refits_per_test_origin_and_records_bands(seasonal, tmp_path):
+    # finish writes parquet tables through duckdb, which ci does not install
+    pytest.importorskip("duckdb")
     ws = seasonal
     fits = []
     original = pipeline._timeseries_fit
