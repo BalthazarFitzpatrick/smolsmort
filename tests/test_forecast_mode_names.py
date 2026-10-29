@@ -43,9 +43,10 @@ def legacy_digest(spec, legacy):
     data["mode"] = legacy
     if data["holidays_country"] is None:
         del data["holidays_country"]
-    # pre-flag specs never carried skip_missing
+    # pre-flag specs never carried skip_missing or pin
     for column in data["columns"]:
         column.pop("skip_missing")
+        column.pop("pin")
     return hashlib.sha256(json.dumps(data, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 

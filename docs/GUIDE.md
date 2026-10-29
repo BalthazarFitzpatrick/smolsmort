@@ -654,6 +654,22 @@ bouquet search uses each family's `p_on` for fresh births and weights mutations 
 to at least three with the highest remaining priors when available. an extra initial genome
 uses this set, as do default, grid and seeded genomes that previously used the birth families.
 without `screen.json`, entity mode and older runs keep their legacy births, seeds and mutations.
+a column with `pin=True` keeps `p_on` 1 for all its families (entry gains `pinned: true`), so
+births include them and mutations never turn them off.
+
+**input search.** `search_inputs(runs_root, cache_root, spec, InputSearch(deadline=...))` picks
+which measure and input columns a run gets before the model search. first a column screen
+(`screen_inputs`): on training rows only, each candidate's value (a measure) or top-six level
+shares (an input) is rank-correlated with the year-on-year change of `log1p(target)` 1,
+horizon/2 and horizon steps later, averaged over series; the score is the mean absolute
+correlation. inclusion odds are `0.15 + 0.7 * score / top`, pinned columns 1. then rounds until the
+deadline: a control run without candidates and the pinned set alone (first round only), explore
+runs of `explore_s` on unseen sets (fresh weighted draws, or one or two weighted flips of the
+best four), halving (best four at 20 min, best two at 30 min, while time allows), and a final run
+of the best set with `final_families` that stops at plateau or ten minutes before the deadline.
+explore and halving use lightgbm, ridge and xgboost only, since the statistical families ignore
+inputs. sets rank by validation error; test error stays untouched for the verdict.
+`<runs_root>/input-<id>/search.json` holds the screen, odds, every trial and `best`.
 
 **validation.** timeseries validation splits the existing pre-test validation block into three disjoint windows.
 each window fits on all known steps before its start; cached lag features retain their existing
