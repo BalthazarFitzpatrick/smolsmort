@@ -30,6 +30,8 @@ coreml = ["torch>=2.0", "coremltools>=8; python_version < '3.14'"]
 tabular = ["xgboost>=3.2.0"]
 # the forecast topics: prep runs in duckdb sql, the search fits xgboost in its own process
 forecast = ["xgboost>=3.2.0", "duckdb>=1.1"]
+# paced_map reads available memory and worker sizes through psutil
+parallel = ["psutil>=5.9"]
 lightgbm = ["lightgbm>=4.5"]
 stats = ["statsforecast>=2.1"]
 holidays = ["holidays>=0.50"]
