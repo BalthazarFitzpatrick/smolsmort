@@ -83,6 +83,28 @@ def test_an_option_the_backend_does_not_declare_is_left_out(api):
     wait_done(api)
 
 
+def test_lr_options_are_left_out_for_a_backend_that_does_not_declare_them(api):
+    assert api.start({"lr_schedule": "cosine", "lr_floor": 1e-5}) == {"ok": True}
+    wait_done(api)
+
+
+@pytest.mark.parametrize("payload", [{}, {"lr_schedule": "cosine", "lr_floor": "2e-5"}])
+def test_lr_options_reach_the_heatmap_backend(payload, monkeypatch):
+    trainer = TrainState("heatmap")
+    trainer.bind([EXAMPLE], {"x": 0})
+    api = TrainApi(SimpleNamespace(), trainer)
+    monkeypatch.setattr(trainer, "start", lambda **kwargs: {"ok": True})
+    assert api.start(payload) == {"ok": True}
+    assert trainer._backend.lr_schedule == payload.get("lr_schedule", "constant")
+    assert trainer._backend.lr_floor == float(payload.get("lr_floor", 1e-5))
+
+
+def test_an_unknown_lr_schedule_is_refused_before_starting_a_run(api):
+    result = api.start({"lr_schedule": "linear"})
+    assert "allowed values: constant, cosine" in result["error"]
+    assert not api.status()["running"]
+
+
 def test_a_size_name_becomes_the_backends_own_setting(api):
     api.trainer.backend_name = "heatmap"
     assert api._model_options({"size": "large"})["channels"] == 32
