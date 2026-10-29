@@ -21,6 +21,7 @@ from smolsmort.forecast.features import (
     family_aliases,
     family_sort_key,
     split_family_name,
+    step_index,
     timeseries_features,
 )
 from smolsmort.forecast.hazard import FEATURE_NAMES, HazardFitted, expand_periods, predict_hazard
@@ -28,7 +29,7 @@ from smolsmort.forecast.importance import combine_importance, measure_importance
 from smolsmort.forecast.model import CLASSIFIERS, NONNEGATIVE, fit_model, predict
 from smolsmort.forecast.profile import build_profile
 from smolsmort.forecast.spec import ANCHOR, LOWER, ROW, SERIES, STEP, UNIT_DAYS, UPPER, PrepSpec
-from smolsmort.forecast.splits import entity_cuts, labels_as_of, timeseries_cuts
+from smolsmort.forecast.splits import entity_cuts, labels_as_of, seasonal_cuts, timeseries_cuts
 from smolsmort.forecast.tables import is_text, read_table
 from smolsmort.forecast.transform import get_transform
 
@@ -130,6 +131,10 @@ class Workspace:
     transform: str = "none"
     excluded_series: list[dict] = field(default_factory=list)
     series_folds: tuple[tuple[np.datetime64, np.datetime64], ...] = ()
+    # seasonal holdout: one (start, end) per test origin, and what the result records about them
+    holdout: str = "block"
+    test_folds: tuple[tuple[np.datetime64, np.datetime64], ...] = ()
+    holdout_info: dict | None = None
 
     @property
     def mode(self) -> str:
@@ -137,7 +142,7 @@ class Workspace:
 
 
 def load_workspace(
-    spec: PrepSpec, folder: Path, summary: dict, *, transform: str = "none"
+    spec: PrepSpec, folder: Path, summary: dict, *, transform: str = "none", holdout: str = "block"
 ) -> Workspace:
     """everything a search needs, read and built once: tables, cuts, profile, candidate features"""
     folder = Path(folder)
@@ -145,10 +150,12 @@ def load_workspace(
     if spec.mode == "entity":
         if transform != "none":
             raise PipelineError("target transforms require time series regression")
+        if holdout != "block":
+            raise PipelineError("seasonal holdout is not available for entity mode yet")
         return _entity_workspace(spec, folder, summary)
     if spec.task == "classification":
         raise PipelineError("classification requires entity mode; time series runs use regression")
-    ws = _timeseries_workspace(spec, folder, summary)
+    ws = _timeseries_workspace(spec, folder, summary, holdout)
     ws.transform = transform
     if transform != "none":
         target_transform.validate_target(ws.panel[spec.named("target")[0]])
@@ -184,18 +191,23 @@ def _entity_workspace(spec, folder, summary) -> Workspace:
     return ws
 
 
-def _timeseries_workspace(spec, folder, summary) -> Workspace:
+def _timeseries_workspace(spec, folder, summary, holdout="block") -> Workspace:
     panel = read_table(folder / "panel.parquet", order_by=f"{SERIES}, {STEP}")
     scaffold = read_table(folder / "scaffold.parquet")
     inputs = read_table(folder / "inputs.parquet") if spec.named("input") else None
     scaffold, excluded = _filter_scaffold(spec, panel, scaffold)
     steps = np.unique(panel[STEP])
-    cuts = timeseries_cuts(len(steps), spec.horizon)
-    val_start, test_start = steps[cuts.val_start], steps[cuts.test_start]
+    unit = summary["step"]
+    seasonal = holdout == "seasonal"
+    if seasonal:
+        cuts = seasonal_cuts(len(steps), spec.horizon, unit=unit)
+        val_start = steps[cuts.val[0]]
+    else:
+        cuts = timeseries_cuts(len(steps), spec.horizon)
+        val_start, test_start = steps[cuts.val_start], steps[cuts.test_start]
     train = panel[STEP] < val_start
     profile = build_profile(spec, panel, train)
     genes = profile["genes"]
-    unit = summary["step"]
     frames, masks = {}, {}
     for bucket in buckets_for(spec.horizon):
         frame = timeseries_features(
@@ -212,6 +224,9 @@ def _timeseries_workspace(spec, folder, summary) -> Workspace:
         step = frame.step
         known = ~frame.future & np.isfinite(frame.y)
         frames[bucket] = frame
+        if seasonal:
+            masks[bucket] = _seasonal_masks(frame, known, bucket, cuts, steps, unit)
+            continue
         masks[bucket] = {
             "train": known & (step < val_start.astype("datetime64[D]")),
             "val": known
@@ -222,16 +237,64 @@ def _timeseries_workspace(spec, folder, summary) -> Workspace:
         }
     ws = Workspace(spec, folder, summary, profile, [], unit)
     ws.frames, ws.series_masks = frames, masks
-    ws.series_folds = tuple(
-        (steps[start].astype("datetime64[D]"), steps[end].astype("datetime64[D]"))
-        for start, end in cuts.folds
-    )
     ws.panel = panel
     ws.excluded_series = excluded
-    ws.test_steps = int(cuts.steps - cuts.test_start)
+    if seasonal:
+        ws.holdout = holdout
+        ws.series_folds = _origin_windows(steps, cuts.val, cuts.stride)
+        ws.test_folds = _origin_windows(steps, cuts.test, cuts.stride)
+        ws.test_steps = len(cuts.test) * cuts.horizon
+        ws.holdout_info = _holdout_info(ws, cuts)
+    else:
+        ws.series_folds = tuple(
+            (steps[start].astype("datetime64[D]"), steps[end].astype("datetime64[D]"))
+            for start, end in cuts.folds
+        )
+        ws.test_steps = int(cuts.steps - cuts.test_start)
     families = set().union(*(set(f.features.families) for f in frames.values()))
     ws.families = sorted(families - _excluded_families(profile, families), key=family_sort_key)
     return ws
+
+
+def _origin_windows(steps, starts, stride) -> tuple:
+    """(start, end) dates per origin; the end of the newest window can be the history end, so
+    it is one day past the last step"""
+    days = steps.astype("datetime64[D]")
+    edge = np.append(days, days[-1] + np.timedelta64(1, "D"))
+    return tuple((days[start], edge[min(start + stride, len(days))]) for start in starts)
+
+
+def _seasonal_masks(frame, known, bucket, cuts, steps, unit) -> dict:
+    """rows of each window that a forecast made before its origin could reach: a row is a
+    forecast `bucket[1]` steps ahead, so only targets under that far past the origin qualify"""
+    index, upper = step_index(frame.step, unit), bucket[1]
+
+    def windows(starts):
+        rows = np.zeros(len(index), dtype=bool)
+        for start in starts:
+            first = step_index(steps[start], unit)
+            rows |= (index >= first) & (index - upper < first)
+        return known & rows
+
+    return {
+        "train": known & (frame.step < steps[cuts.val[0]].astype("datetime64[D]")),
+        "val": windows(cuts.val),
+        "test": windows(cuts.test),
+        "known": known,
+        "future": frame.future,
+    }
+
+
+def _holdout_info(ws, cuts) -> dict:
+    return {
+        "holdout": "seasonal",
+        "horizon": cuts.horizon,
+        "stride": cuts.stride,
+        "requested_origins": cuts.requested,
+        "fell_back": cuts.fell_back,
+        "validation_origins": [str(start) for start, _ in ws.series_folds],
+        "test_origins": [str(start) for start, _ in ws.test_folds],
+    }
 
 
 def _filter_scaffold(spec, panel, scaffold) -> tuple[dict, list[dict]]:
@@ -517,12 +580,41 @@ def _validation_masks(ws, bucket):
     if not folds:
         yield masks["train"], masks["val"]
         return
-    known = masks["train"] | masks["val"]
+    # seasonal holdout leaves gaps between windows; their rows still train later folds
+    known = masks["known"] if "known" in masks else masks["train"] | masks["val"]
     for start, end in folds:
         yield (
             known & (frame.step < start),
             masks["val"] & (frame.step >= start) & (frame.step < end),
         )
+
+
+def _known_rows(masks) -> np.ndarray:
+    """every observed target, whichever holdout cut the history"""
+    return masks["known"] if "known" in masks else masks["train"] | masks["val"] | masks["test"]
+
+
+def _test_windows(ws, bucket):
+    """(fit rows, evaluation rows) per test window: each refits on steps before its origin"""
+    masks, frame = ws.series_masks[bucket], ws.frames[bucket]
+    folds = getattr(ws, "test_folds", ())
+    if not folds:
+        yield masks["train"] | masks["val"], masks["test"]
+        return
+    for start, end in folds:
+        yield (
+            masks["known"] & (frame.step < start),
+            masks["test"] & (frame.step >= start) & (frame.step < end),
+        )
+
+
+def _timeseries_test(ws, bucket, predict_window):
+    masks = ws.series_masks[bucket]
+    prediction = np.empty(int(masks["test"].sum()))
+    for fit_rows, eval_rows in _test_windows(ws, bucket):
+        if eval_rows.any():
+            prediction[eval_rows[masks["test"]]] = predict_window(fit_rows, eval_rows)
+    return prediction
 
 
 def _timeseries_validation(ws, bucket, predict_fold):
@@ -653,7 +745,7 @@ def fit_importance(ws, genome, *, nthread=1):
     scores = []
     for bucket, frame in ws.frames.items():
         masks = ws.series_masks[bucket]
-        rows = masks["train"] | masks["val"] | masks["test"]
+        rows = _known_rows(masks)
         fitted, x = _timeseries_fit(ws, genome, frame, rows, nthread)
         _, names, _ = frame.features.pick(set(genome.families))
         scores.append(
@@ -674,10 +766,11 @@ def finish(
     validation=None,
     prediction_cache=None,
     importance_cache=None,
+    aggregate_weight: str | None = None,
 ) -> dict:
     """band from validation, the verdict from the untouched test split, and the forecast itself"""
     if ws.mode == "entity":
-        result = _finish_entities(ws, genome, nthread)
+        result = _finish_entities(ws, genome, nthread, aggregate_weight)
     else:
         result = _finish_timeseries(
             ws, genome, nthread, members, validation, prediction_cache, importance_cache
@@ -685,7 +778,7 @@ def finish(
     return {**result, "transform": genome.transform}
 
 
-def _finish_entities(ws, genome, nthread) -> dict:
+def _finish_entities(ws, genome, nthread, aggregate_weight=None) -> dict:
     spec = ws.spec
     classification = spec.task == "classification"
     survival = spec.censor is not None and genome.objective in {"hazard", "aft"}
@@ -757,6 +850,8 @@ def _finish_entities(ws, genome, nthread) -> dict:
                 curves[key] * units_per_week for key in ("prediction", "lower", "upper")
             )
             curves = {**out, "cap": fitted.cap, **curves}
+            if aggregate_weight:
+                curves["weight"] = _entity_weights(ws, aggregate_weight, rows)
         else:
             pred = predict(fitted, x[rows])
             lo, hi = ev.apply_band(band, pred, nonnegative=True)
@@ -779,6 +874,21 @@ def _finish_entities(ws, genome, nthread) -> dict:
         "baseline_error": baseline_error,
         "importance": importance,
     }
+
+
+def _entity_weights(ws, column, rows) -> np.ndarray:
+    """the per-entity weight (units per order) of the rows being predicted"""
+    if column not in ws.table:
+        raise PipelineError(f"aggregate_weight column {column!r} is not in the prepared rows")
+    values = np.asarray(ws.table[column])
+    if not np.issubdtype(values.dtype, np.number):
+        raise PipelineError(f"aggregate_weight column {column!r} is not numeric")
+    weight = values[rows].astype(float)
+    if not np.all(np.isfinite(weight) & (weight >= 0)):
+        raise PipelineError(
+            f"aggregate_weight column {column!r} needs finite values of zero or more"
+        )
+    return weight
 
 
 def _class_prior(ws, target) -> np.ndarray:
@@ -978,26 +1088,35 @@ def _finish_timeseries(
         band = ev.fit_band(frame.y[masks["val"]], val_pred)
         bands[f"{bucket[0]}-{bucket[1]}"] = None if band is None else band.__dict__
         val_rows.append(_timeseries_rows(frame, masks["val"], val_pred, bucket))
-        test_pred = predict_members(frame, masks["train"] | masks["val"], masks["test"], bucket)
+        test_pred = _timeseries_test(
+            ws,
+            bucket,
+            lambda fit_rows, eval_rows, frame=frame, bucket=bucket: predict_members(
+                frame, fit_rows, eval_rows, bucket
+            ),
+        )
         lo, hi = ev.apply_band(band, test_pred, nonnegative=True)
         test_pred_all.append(test_pred)
         test_truth_all.append(frame.y[masks["test"]])
         test_lo.append(lo)
         test_hi.append(hi)
         base_all.append(_timeseries_baseline(frame, masks["test"], bucket, period))
-        test_rows.append(_timeseries_rows(frame, masks["test"], test_pred, bucket))
+        rows = _timeseries_rows(frame, masks["test"], test_pred, bucket)
+        rows.update(lower=lo, upper=hi)
+        test_rows.append(rows)
         future_pred = predict_members(
             frame,
-            masks["train"] | masks["val"] | masks["test"],
+            _known_rows(masks),
             masks["future"],
             bucket,
             collect=True,
         )
         lo, hi = ev.apply_band(band, future_pred, nonnegative=True)
         rows = _timeseries_rows(frame, masks["future"], future_pred, bucket)
-        rows.update(lower=lo, upper=hi)
+        rows.update(lower=lo, upper=hi, band_width_pct=_row_width_pct(future_pred, lo, hi))
         forecast.append(rows)
     truth, pred = np.concatenate(test_truth_all), np.concatenate(test_pred_all)
+    test_lo_all, test_hi_all = np.concatenate(test_lo), np.concatenate(test_hi)
     first = next(iter(ws.frames))
     seen = ws.series_masks[first]["train"] | ws.series_masks[first]["val"]
     model_error, baseline_error = ev.wape(truth, pred), ev.wape(truth, np.concatenate(base_all))
@@ -1017,7 +1136,13 @@ def _finish_timeseries(
         band_width=_median_width(np.concatenate(test_lo), np.concatenate(test_hi)),
         spread=_spread(ws.frames[first].y[seen]),
         val_error=validation_score.fitness,
+        width_pcts=(
+            ev.width_pct(truth, test_lo_all, test_hi_all),
+            ev.median_width_pct(truth, test_lo_all, test_hi_all),
+        ),
     )
+    test_table, forecast_table = _stack(test_rows), _stack(forecast)
+    band_table = ev.band_summary(test_table["series"], truth, test_lo_all, test_hi_all)
     metadata = {}
     if get_family(genome.family).needs == "raw_series":
         from smolsmort.forecast.families.stats import season_length
@@ -1033,14 +1158,55 @@ def _finish_timeseries(
         "fold_count": validation_score.metrics.get("fold_count", 1),
         "val_error": validation_score.fitness,
         "val_test_gap": model_error - validation_score.fitness,
-        "test": _stack(test_rows),
-        "forecast": _stack(forecast),
+        "test": test_table,
+        "forecast": forecast_table,
+        "band_table": band_table,
+        "band_summary": _band_summary(band_table, forecast_table),
+        "holdout": getattr(ws, "holdout_info", None) or {"holdout": "block"},
         "model_error": model_error,
         "baseline_error": baseline_error,
         "importance": combine_importance(genome.family, importance_cache.get(genome.key(), []))
         if single and importance_cache is not None
         else None,
     }
+
+
+def _row_width_pct(pred, lo, hi) -> np.ndarray:
+    """band width relative to the prediction; nan where the prediction is not positive"""
+    pred = np.asarray(pred, dtype=float)
+    return np.where(pred > 0, (hi - lo) / np.where(pred > 0, pred, 1.0), np.nan)
+
+
+def _band_summary(table, forecast) -> dict:
+    """band.parquet as json-ready rows, plus the forecast's own width against its prediction"""
+    rows = {
+        str(name): {
+            "rows": int(n),
+            "coverage": float(cov),
+            "band_width_pct": float(width),
+            "median_width_pct": float(median),
+        }
+        for name, n, cov, width, median in zip(
+            table["series"],
+            table["rows"],
+            table["coverage"],
+            table["band_width_pct"],
+            table["median_width_pct"],
+            strict=True,
+        )
+    }
+    future = {
+        "all": ev.width_pct(forecast["prediction"], forecast["lower"], forecast["upper"]),
+        **{
+            str(key): ev.width_pct(
+                forecast["prediction"][forecast["series"] == key],
+                forecast["lower"][forecast["series"] == key],
+                forecast["upper"][forecast["series"] == key],
+            )
+            for key in np.unique(forecast["series"])
+        },
+    }
+    return {"test": rows, "forecast_band_width_pct": future}
 
 
 def _timeseries_rows(frame, mask, pred, bucket) -> dict:

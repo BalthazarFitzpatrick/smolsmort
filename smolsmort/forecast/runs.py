@@ -35,6 +35,7 @@ RUN_FILES = (
     "forecast.parquet",
     "validation.parquet",
     "test.parquet",
+    "band.parquet",
     "curve.parquet",
     "aggregate.parquet",
     "winner_curve.parquet",
@@ -61,7 +62,9 @@ def start_run(
     families: list[dict] | None = None,
     time_budget_s: float | None = None,
     transform: str = "none",
+    holdout: str = "block",
     aggregate: str = "none",
+    aggregate_weight: str | None = None,
     ensemble: dict | None = None,
     max_concurrent_families: int | None = None,
     candidate_limit_fraction: float = 0.25,
@@ -84,6 +87,8 @@ def start_run(
         "nthread": nthread,
         "aggregate": aggregate,
     }
+    if aggregate_weight is not None:
+        request["aggregate_weight"] = aggregate_weight
     if version is not None or families is not None:
         request.pop("budget")
         request.update(
@@ -91,6 +96,7 @@ def start_run(
             families=families,
             time_budget_s=time_budget_s,
             transform=transform,
+            holdout=holdout,
             ensemble=ensemble if ensemble is not None else {"enabled": True, "top": 3},
             candidate_limit_fraction=candidate_limit_fraction,
             plateau=plateau,

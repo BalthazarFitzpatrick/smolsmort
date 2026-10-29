@@ -389,3 +389,69 @@ def test_api_forwards_aggregation_to_run_request(tmp_path, monkeypatch, spec, ve
         payload.update(version=2, families=[{"name": "xgboost"}], time_budget_s=10)
     tab.forecast_tab().post["/api/forecast-runs"](app, payload)
     assert calls[0]["aggregate"] == "expected_events"
+
+
+def test_weighted_sum_and_band_match_the_hand_computation(curves):
+    table = build_curve_table({**curves, "weight": np.array([10.0, 2.0, 1.0])})
+    np.testing.assert_array_equal(table["weight"], np.repeat([10.0, 2.0, 1.0], 3))
+    summary = expected_events(table, "week")
+    # drops per entity-week: 11 -> .2 .2 .3 on jan 2/9/16; 22 -> 0 .5 .25; 33 -> .4 .3 .3
+    # monday weeks: jan 1 {11: .2, 22: 0}; jan 8 {11: .2, 22: .5, 33: .4}; jan 15 {11: .3, 22: .25,
+    # 33: .3}; jan 22 {33: .3}
+    mean = [10 * 0.2, 10 * 0.2 + 2 * 0.5 + 0.4, 10 * 0.3 + 2 * 0.25 + 0.3, 0.3]
+    np.testing.assert_allclose(summary["prediction"], mean)
+    variance = [
+        100 * 0.2 * 0.8,
+        100 * 0.2 * 0.8 + 4 * 0.5 * 0.5 + 0.4 * 0.6,
+        100 * 0.3 * 0.7 + 4 * 0.25 * 0.75 + 0.3 * 0.7,
+        0.3 * 0.7,
+    ]
+    spread = 1.2815515655446004 * np.sqrt(variance)
+    np.testing.assert_allclose(summary["upper"], np.array(mean) + spread)
+    np.testing.assert_allclose(summary["lower"], np.maximum(np.array(mean) - spread, 0))
+
+
+def test_weighted_band_is_clipped_at_zero():
+    table = {
+        "row": np.array([1]),
+        "week": np.array([0]),
+        "date": np.array(["2024-01-01"], dtype="datetime64[D]"),
+        "survival": np.array([0.5]),
+        "weight": np.array([4.0]),
+    }
+    summary = expected_events(table, "week")
+    # mean 2, sd 4 * .5 = 2, so mean - 1.28 sd is below zero
+    assert summary["prediction"][0] == pytest.approx(2.0)
+    assert summary["lower"][0] == 0.0
+    assert summary["upper"][0] == pytest.approx(2.0 + 1.2815515655446004 * 2.0)
+
+
+def test_unweighted_rule_keeps_its_columns(curves):
+    assert set(expected_events(build_curve_table(curves), "week")) == {"step", "prediction"}
+
+
+def test_request_validates_the_weight_column(spec):
+    columns = [*asdict(spec)["columns"], {"name": "units", "role": "measure"}]
+    request = {"aggregate": "expected_events", "spec": {"columns": columns}}
+    assert parse_request({**request, "aggregate_weight": "units"})["aggregate"]
+    for weight, message in (
+        ("branch", "must name a measure column"),
+        ("missing", "must name a measure column"),
+        ("", "must be a column name"),
+        (3, "must be a column name"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            parse_request({**request, "aggregate_weight": weight})
+    with pytest.raises(ValueError, match="needs an aggregate rule"):
+        parse_request({"aggregate": "none", "aggregate_weight": "units"})
+
+
+def test_weights_must_be_numeric_and_non_negative():
+    rows = np.array([True, True])
+    ws = SimpleNamespace(
+        table={"w": np.array([1.5, 3.0]), "s": np.array(["a", "b"]), "n": np.array([-1.0, 2.0])}
+    )
+    np.testing.assert_array_equal(pipeline._entity_weights(ws, "w", rows), [1.5, 3.0])
+    for column in ("s", "n", "absent"):
+        with pytest.raises(pipeline.PipelineError, match="aggregate_weight"):
+            pipeline._entity_weights(ws, column, rows)

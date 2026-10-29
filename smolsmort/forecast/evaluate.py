@@ -233,6 +233,38 @@ def apply_band(band: Band | None, p, nonnegative: bool = False):
     return lo, hi
 
 
+def width_pct(scale, lo, hi) -> float:
+    """total band width over the total of `scale` (actuals or predictions): 0.5 is a band as wide
+    as half the volume"""
+    scale, lo, hi = (np.asarray(a, dtype=float) for a in (scale, lo, hi))
+    known = np.isfinite(scale) & np.isfinite(lo) & np.isfinite(hi)
+    total = scale[known].sum()
+    return float((hi[known] - lo[known]).sum() / total) if total > 0 else float("nan")
+
+
+def median_width_pct(actual, lo, hi) -> float:
+    """median of band width over actual, on rows with a positive actual"""
+    actual, lo, hi = (np.asarray(a, dtype=float) for a in (actual, lo, hi))
+    keep = (actual > 0) & np.isfinite(lo) & np.isfinite(hi)
+    return float(np.median((hi[keep] - lo[keep]) / actual[keep])) if keep.any() else float("nan")
+
+
+def band_summary(series, actual, lo, hi) -> dict:
+    """coverage and relative width per series and overall, as columns for band.parquet"""
+    series = np.asarray(series).astype(str)
+    groups = [("all", np.ones(len(series), dtype=bool))]
+    groups += [(key, series == key) for key in sorted(set(series))]
+    return {
+        "series": np.array([name for name, _ in groups], dtype=object),
+        "rows": np.array([int(rows.sum()) for _, rows in groups]),
+        "coverage": np.array([coverage(actual[r], lo[r], hi[r]) for _, r in groups]),
+        "band_width_pct": np.array([width_pct(actual[r], lo[r], hi[r]) for _, r in groups]),
+        "median_width_pct": np.array(
+            [median_width_pct(actual[r], lo[r], hi[r]) for _, r in groups]
+        ),
+    }
+
+
 def coverage(y, lo, hi) -> float:
     y, lo, hi = (np.asarray(a, dtype=float) for a in (y, lo, hi))
     known = np.isfinite(y) & np.isfinite(lo) & np.isfinite(hi)
@@ -286,6 +318,7 @@ def judge(
     spread: float | None = None,
     metric: str = "wape",
     val_error: float | None = None,
+    width_pcts: tuple[float, float] | None = None,
 ) -> dict:
     """compare untouched test error with naive and report band and history facts"""
     checks = []
@@ -332,6 +365,15 @@ def judge(
                 "group": "band",
                 "detail": f"median 80% band {band_width:.3g} wide vs the target's own "
                 f"10-90% range {spread:.3g}",
+            }
+        )
+    if needs_band and width_pcts is not None and np.isfinite(width_pcts[0]):
+        median = f", median row {width_pcts[1]:.0%}" if np.isfinite(width_pcts[1]) else ""
+        checks.append(
+            {
+                "check": "band width vs actuals",
+                "group": "band",
+                "detail": f"80% band is {width_pcts[0]:.0%} of the actual volume wide{median}",
             }
         )
     steps = "" if test_steps is None else f", {test_steps} steps"

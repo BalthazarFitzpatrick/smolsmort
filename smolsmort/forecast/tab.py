@@ -338,6 +338,7 @@ def _start(app, payload: dict) -> dict:
             "families",
             "time_budget_s",
             "transform",
+            "holdout",
             "max_concurrent_families",
             "candidate_limit_fraction",
             "prune_sigma",
@@ -368,6 +369,7 @@ def _start(app, payload: dict) -> dict:
                 "families": [{"name": winner["family"]}],
                 "time_budget_s": budget.get("time_cap", previous["time_budget_s"]),
                 "transform": previous.get("transform", "none"),
+                "holdout": previous.get("holdout", "block"),
                 "nthread": budget.get("nthread", previous.get("nthread")),
             }
             multi = True
@@ -393,7 +395,9 @@ def _start(app, payload: dict) -> dict:
                 "families",
                 "time_budget_s",
                 "transform",
+                "holdout",
                 "aggregate",
+                "aggregate_weight",
                 "max_concurrent_families",
                 "candidate_limit_fraction",
                 "prune_sigma",
@@ -418,6 +422,7 @@ def _start(app, payload: dict) -> dict:
             budget=payload.get("budget"),
             warm_from=payload.get("warm_from"),
             aggregate=payload.get("aggregate", "none"),
+            aggregate_weight=payload.get("aggregate_weight"),
         )
     return {
         "run_id": run_id,
@@ -468,7 +473,9 @@ def _refit(app, payload: dict) -> dict:
             families=[{"name": genome["family"]}],
             time_budget_s=previous["time_budget_s"],
             transform=previous.get("transform", "none"),
+            holdout=previous.get("holdout", "block"),
             aggregate=previous.get("aggregate", "none"),
+            aggregate_weight=previous.get("aggregate_weight"),
             nthread=previous.get("nthread"),
             ensemble={"enabled": False},
         )
