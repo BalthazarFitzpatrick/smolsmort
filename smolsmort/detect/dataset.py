@@ -38,6 +38,8 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from smolsmort.detect.frame_store import source_present
+
 # the review tool pads each candidate crop by this much before the user aligns a rect inside it;
 # rect coordinates are relative to that padded crop, so undoing it recovers frame coordinates.
 # A DELIBERATE COPY of review.paths.MARGIN_X/Y: this package is the library layer and must not
@@ -53,11 +55,10 @@ class DatasetError(Exception):
 
 
 def frame_width(path: Path) -> int:
-    """a frame's width in px, read from its header without decoding it"""
-    from PIL import Image
+    """a frame's width in px, read from its header without decoding it (or its stored record)"""
+    from smolsmort.detect.frame_store import source_size
 
-    with Image.open(path) as handle:
-        return handle.width
+    return source_size(path)[0]
 
 
 @dataclass
@@ -232,7 +233,7 @@ def build_training_set(
             example.centres.append(centre)
             example.labels.append(row["label"])
             example.sizes.append((width, height))
-    examples = [e for e in by_frame.values() if e.path.is_file()]
+    examples = [e for e in by_frame.values() if source_present(e.path)]
     if refuse_mixed_resolutions:
         _refuse_mixed_resolutions(examples, path)
     return examples, classes
@@ -250,7 +251,7 @@ def _refuse_mixed_resolutions(examples: list[Example], path: Path) -> None:
 
     checked by reading each recording's FIRST frame only - one open per recording, not per row.
     """
-    from PIL import Image
+    from smolsmort.detect.frame_store import source_size
 
     sizes: dict[str, tuple[int, int]] = {}
     for example in examples:
@@ -258,8 +259,7 @@ def _refuse_mixed_resolutions(examples: list[Example], path: Path) -> None:
         if recording in sizes:
             continue
         try:
-            with Image.open(example.path) as handle:
-                sizes[recording] = handle.size
+            sizes[recording] = source_size(example.path)
         except (OSError, ValueError):
             continue
     distinct = set(sizes.values())
@@ -343,7 +343,7 @@ def build_from(
             example.ignore.append(
                 (centre[0] - half[0], centre[1] - half[1], centre[0] + half[0], centre[1] + half[1])
             )
-    return [e for e in by_frame.values() if e.path.is_file()]
+    return [e for e in by_frame.values() if source_present(e.path)]
 
 
 def summarise(examples: list[Example]) -> dict:

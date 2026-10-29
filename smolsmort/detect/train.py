@@ -19,6 +19,7 @@ object nobody ruled on.
 
 from __future__ import annotations
 
+import itertools
 import math
 import os
 import random
@@ -30,7 +31,7 @@ from pathlib import Path
 import numpy as np
 
 from smolsmort.detect.dataset import Example, frame_width
-from smolsmort.detect.frame_store import decode_workers, fill_store
+from smolsmort.detect.frame_store import decode_workers, fill_paths, read_stored
 from smolsmort.detect.model import (
     DEFAULT_CHANNELS,
     DEFAULT_DOWNSCALE,
@@ -274,10 +275,9 @@ def _input_shape(
     path: Path, downscale: int = DEFAULT_DOWNSCALE, capture_width: int | None = None
 ) -> tuple[int, int]:
     """(rows, columns) _load_input would give, read from the file's header without decoding"""
-    from PIL import Image
+    from smolsmort.detect.frame_store import source_size
 
-    with Image.open(path) as handle:
-        width, height = handle.size
+    width, height = source_size(path)
     if capture_width and width != capture_width:
         height, width = max(1, round(height * capture_width / width)), capture_width
     return height // downscale, width // downscale
@@ -327,11 +327,13 @@ def _crop_window(
     classes=None,
     window: int = CROP,
     downscale: int = DEFAULT_DOWNSCALE,
+    keep_uint8: bool = False,
 ):
     """one training window, half the time centred on a real object.
 
     returns the window, its heatmap target and the ignore mask, all already at their own scales:
-    the target and mask are at STRIDE cells, the window at input pixels.
+    the target and mask are at STRIDE cells, the window at input pixels. `keep_uint8` leaves a
+    uint8 frame's window as uint8, for the gpu to make float (_to_input)
     """
     _, height, width = image.shape
     size = min(window, height, width)
@@ -357,7 +359,7 @@ def _crop_window(
     )
 
     window = image[:, top : top + size, left : left + size]
-    if window.dtype == np.uint8:
+    if window.dtype == np.uint8 and not keep_uint8:
         # a held frame is uint8 (_load_pixels); its window takes _fit's float values
         window = window.astype(np.float32) / 255.0
     cells = size // STRIDE
@@ -396,12 +398,41 @@ def _crop_window(
     return window, target, mask
 
 
+def _build_batch(picks, classes, window, downscale, pin):
+    """one batch from (example, frame, seed) picks: windows stacked as uint8 (a quarter of float's
+    bytes to move), targets and masks as float, pinned for an async copy when `pin`"""
+    torch = _torch()
+    windows, targets, masks = [], [], []
+    for example, image, seed in picks:
+        w, t, m = _crop_window(
+            example, image, random.Random(seed), classes, window, downscale, keep_uint8=True
+        )
+        windows.append(w)
+        targets.append(t)
+        masks.append(m)
+    tensors = [
+        torch.from_numpy(np.ascontiguousarray(np.stack(windows))),
+        torch.from_numpy(np.ascontiguousarray(np.stack(targets))),
+        torch.from_numpy(np.ascontiguousarray(np.stack(masks))).unsqueeze(1),
+    ]
+    return [t.pin_memory() for t in tensors] if pin else tensors
+
+
+def _to_input(window, device):
+    """a batch's windows on the device as _fit's float values; uint8 / 255 there is the same
+    float32 the cpu path gives"""
+    x = window.to(device, non_blocking=True)
+    return x.float().div_(255.0) if x.dtype == _torch().uint8 else x.float()
+
+
 def train(
     examples: list[Example],
     *,
     epochs: int = 30,
     batch: int = 8,
     learning_rate: float = 3e-4,
+    lr_schedule: str = "constant",
+    lr_floor: float = 1e-5,
     seed: int = 0,
     device: str | None = None,
     on_progress=None,
@@ -416,6 +447,8 @@ def train(
     cache_bytes: int = 8_000_000_000,
     init_model=None,
     frame_store: Path | None = None,
+    mixed_precision: bool = False,
+    feed_workers: int = 2,
 ):
     """returns (model, history). on_progress is called once per epoch with a Progress; returning
     true from it stops training after that epoch (early stop, e.g. with a Plateau).
@@ -429,6 +462,10 @@ def train(
     momentum 0.9 and weight_decay 0 behaves exactly as the old hardcoded Adam(lr) did, so every
     default and existing checkpoint is unaffected.
 
+    `lr_schedule="constant"` leaves optimiser steps unchanged. "cosine" sets the rate before
+    each step, from `learning_rate` on the first to `lr_floor` on the last planned step across
+    all epochs. a one-step run uses `lr_floor`; early stopping keeps the planned schedule.
+
     `downscale` is the capture:input factor the model is trained at. it is stored in the model, so
     save() keeps it and load() restores it - callers decoding or sweeping read it off the model.
     `channels` is the network's base width; load() reads it back from the weights, so a wider net
@@ -440,7 +477,15 @@ def train(
 
     `init_model` continues training that model. its downscale is architecture, so a different
     `downscale` is refused; its recorded capture width wins over `capture_width`, with a warning.
+
+    batches are built ahead on `feed_workers` threads while the gpu trains on the one before.
+    `mixed_precision` runs the net under bf16 autocast on cuda (the loss stays float32): measured
+    0.64 against 0.93 ms a window at batch 32 on a 4070 (2026-10-26)
     """
+    if lr_schedule not in ("constant", "cosine"):
+        raise ValueError(f"unknown lr_schedule {lr_schedule!r}; allowed values: constant, cosine")
+    if lr_schedule == "cosine" and not 0 <= lr_floor <= learning_rate:
+        raise ValueError("lr_floor must be between 0 and learning_rate for cosine")
     # the window every training sample is cut at. below minimum_window() for this set's boxes
     # an object is clipped at the jitter extremes, so a caller taking this from a human checks first
     window = snapped_window(CROP if crop is None else int(crop))
@@ -491,19 +536,20 @@ def train(
         weight_decay=weight_decay,
     )
     shapes = {e.path: _input_shape(e.path, downscale, capture) for e in usable}
-    # frames are held as uint8: memory-mapped from `frame_store` when given (decoded once, ever),
-    # else in ram when they fit cache_bytes, else decoded per epoch on every core but two. float32
-    # and 4 threads left the gpu idle on native 2560x1440 jpegs (2026-10-26)
+    # frames are uint8: read per batch from `frame_store` when given (decoded once, ever, and only
+    # the batches in flight resident; mapping the whole store grew a run to ~18 gb on a 32 gb box),
+    # else held in ram when they fit cache_bytes, else decoded per epoch on every core but two
     paths = [e.path for e in usable]
+    files = None
+    cache = None
     if frame_store is not None:
-        cache = fill_store(frame_store, paths, downscale, capture, _load_pixels)
+        files = fill_paths(frame_store, paths, downscale, capture, _load_pixels)
     elif sum(3 * h * w for h, w in shapes.values()) <= cache_bytes:
         with ThreadPoolExecutor(max_workers=decode_workers()) as pool:
             frames = pool.map(lambda path: _load_pixels(path, downscale, capture), paths)
             cache = dict(zip(paths, frames, strict=True))
-    else:
-        cache = None
-    held = cache is not None
+    # a stored run draws its batches as a held one does, so the two train the same
+    held = cache is not None or files is not None
     # one batch stacks its windows, so every window takes the smallest frame's side, whole cells
     # [a frame under the window used to cut a smaller one and np.stack failed on mixed shapes]
     smallest = min(min(shape) for shape in shapes.values())
@@ -512,11 +558,23 @@ def train(
 
     history = []
     seen = 0
+    cuda = str(device).startswith("cuda")
+    amp = bool(mixed_precision) and cuda
     for epoch in range(1, epochs + 1):
         model.train()
-        total = 0.0
         batches = max(1, len(usable) // batch)
-        if not held:
+        # each window takes its own seed off rng, so a batch is the same whichever thread cuts it
+        if held:
+            picks = []
+            for _ in range(batches):
+                chosen = [rng.choice(usable) for _ in range(batch)]
+                picks.append(
+                    [
+                        (e, None if cache is None else cache[e.path], rng.getrandbits(64))
+                        for e in chosen
+                    ]
+                )
+        else:
             order = [rng.choice(usable) for _ in range(batches * batch)]
             workers = decode_workers()
             decoded = decode_ahead(
@@ -525,33 +583,50 @@ def train(
                 ahead=4 * workers,
                 workers=workers,
             )
-        for _ in range(batches):
-            windows, targets, masks = [], [], []
-            for _ in range(batch):
-                if held:
-                    example = rng.choice(usable)
-                    image = cache[example.path]
-                else:
-                    example, image = next(decoded)
-                w, t, m = _crop_window(example, image, rng, classes, window, downscale)
-                windows.append(w)
-                targets.append(t)
-                masks.append(m)
-            # ascontiguousarray because each window is a SLICE of a cached frame, and a
-            # non-contiguous tensor blows up in backward with a .view() error
-            x = torch.from_numpy(np.ascontiguousarray(np.stack(windows))).to(device)
-            stacked = np.ascontiguousarray(np.stack(targets))
-            y = torch.from_numpy(stacked).to(device)
+            picks = (
+                [(e, image, rng.getrandbits(64)) for e, image in itertools.islice(decoded, batch)]
+                for _ in range(batches)
+            )
+
+        def feed(pick):
+            # a stored frame is read here, on the feed thread, and dropped with its batch
+            if files is not None:
+                pick = [(e, read_stored(files[e.path]), seed) for e, _, seed in pick]
+            return _build_batch(pick, classes, window, downscale, cuda)
+
+        fed = decode_ahead(
+            list(picks),
+            feed,
+            ahead=2 * max(1, feed_workers),
+            workers=max(1, feed_workers),
+        )
+        total = torch.zeros((), device=device)
+        for step, (_, (window_batch, target_batch, mask_batch)) in enumerate(
+            fed, start=(epoch - 1) * batches
+        ):
+            x = _to_input(window_batch, device)
+            y = target_batch.to(device, non_blocking=True)
             if y.dim() == 3:  # single channel targets arrive as (batch, h, w)
                 y = y.unsqueeze(1)
-            mask = torch.from_numpy(np.ascontiguousarray(np.stack(masks))).unsqueeze(1).to(device)
-
-            loss = masked_focal_loss(model(x), y, mask)
+            mask = mask_batch.to(device, non_blocking=True)
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=amp):
+                out = model(x)
+            loss = masked_focal_loss(out.float(), y, mask)
             optimiser.zero_grad()
             loss.backward()
+            if lr_schedule == "cosine":
+                steps = epochs * batches
+                progress = step / (steps - 1) if steps > 1 else 1.0
+                rate = (
+                    lr_floor + (learning_rate - lr_floor) * (1 + math.cos(math.pi * progress)) / 2
+                )
+                for group in optimiser.param_groups:
+                    group["lr"] = rate
             optimiser.step()
-            total += float(loss.detach().cpu())
+            # summed on the device: one sync per epoch, not one per step
+            total += loss.detach()
             seen += batch
+        total = float(total.cpu())
 
         mean = total / max(1, len(usable) // batch)
         history.append(mean)
