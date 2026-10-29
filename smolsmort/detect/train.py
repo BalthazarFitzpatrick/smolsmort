@@ -275,10 +275,9 @@ def _input_shape(
     path: Path, downscale: int = DEFAULT_DOWNSCALE, capture_width: int | None = None
 ) -> tuple[int, int]:
     """(rows, columns) _load_input would give, read from the file's header without decoding"""
-    from PIL import Image
+    from smolsmort.detect.frame_store import source_size
 
-    with Image.open(path) as handle:
-        width, height = handle.size
+    width, height = source_size(path)
     if capture_width and width != capture_width:
         height, width = max(1, round(height * capture_width / width)), capture_width
     return height // downscale, width // downscale

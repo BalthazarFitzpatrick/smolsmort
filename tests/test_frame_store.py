@@ -124,3 +124,47 @@ def test_a_stored_run_reads_each_batch_from_disk_and_maps_nothing(tmp_path, monk
     train(examples, epochs=2, batch=4, capture_width=1440, seed=3, frame_store=tmp_path / "store")
     # every window of every batch read its frame from disk: 2 epochs, 3 // 4 -> 1 batch of 4
     assert len(reads) == 2 * 4
+
+
+def test_a_stored_frame_outlives_its_deleted_source(tmp_path):
+    path = _frame(tmp_path / "frame.png", 810, 1440)
+    first = stored_frame(tmp_path / "store", path, 2, 1440, _load_pixels)
+    key = store_key(path, 2, 1440)
+    assert frame_store.sidecar_of(path).is_file()
+    path.unlink()
+
+    def decode(*args):
+        raise AssertionError("a stored frame is never decoded again")
+
+    assert frame_store.source_present(path)
+    assert frame_store.source_size(path) == (1440, 810)
+    assert store_key(path, 2, 1440) == key
+    np.testing.assert_array_equal(stored_frame(tmp_path / "store", path, 2, 1440, decode), first)
+
+
+def test_a_deleted_source_never_stored_at_a_setting_is_refused(tmp_path):
+    import pytest
+
+    path = _frame(tmp_path / "frame.png")
+    stored_frame(tmp_path / "store", path, 2, None, _load_pixels)
+    path.unlink()
+    with pytest.raises(FileNotFoundError):
+        store_key(path, 4, None)
+    with pytest.raises(FileNotFoundError):
+        store_key(tmp_path / "never.png", 2, None)
+    assert not frame_store.source_present(tmp_path / "never.png")
+
+
+def test_training_after_deleting_the_stored_sources_matches_training_with_them(tmp_path):
+    examples = [
+        Example(
+            path=_frame(tmp_path / f"frame_{i}.png", 810, 1440, seed=i), centres=[(700.0, 200.0)]
+        )
+        for i in range(3)
+    ]
+    store = tmp_path / "store"
+    _, kept = train(examples, epochs=2, batch=4, capture_width=1440, seed=3, frame_store=store)
+    for example in examples:
+        example.path.unlink()
+    _, gone = train(examples, epochs=2, batch=4, capture_width=1440, seed=3, frame_store=store)
+    np.testing.assert_allclose(gone, kept, rtol=1e-6)
