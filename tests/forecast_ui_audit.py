@@ -167,6 +167,7 @@ def visit_control_states(page, *, source, targets, run_id, capture, set_results_
             capture(f"models-{name}-{flavour}")
         tab(f"{name}-search")
         page.locator(f'#{name}-runs-list [data-run-id="{run_id}"]').click()
+        page.click(f"#{name}-run-view-tables")
         page.locator(f"#{name}-leaderboard-table tbody tr").first.wait_for()
         assert_family_layout(page)
         capture(f"search-{name}-finished")

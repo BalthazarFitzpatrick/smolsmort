@@ -550,6 +550,7 @@ def test_search_charts_accumulate_validation_generations_and_reset(tmp_path, top
         assert not progress.is_visible()
         assert not loss.is_visible()
         start_models(page, topic)
+        page.click(f"#{topic}-run-view-tables")
         page.wait_for_function(
             f'document.getElementById("{topic}-search-status").innerText === "running"'
         )
@@ -667,6 +668,7 @@ def test_search_charts_accumulate_validation_generations_and_reset(tmp_path, top
         snapshot.update(count=0, state="running")
         page.click(f"#{topic}-new-search")
         start_models(page, topic)
+        page.click(f"#{topic}-run-view-tables")
         page.wait_for_function(
             f'document.getElementById("{topic}-search-status").innerText === "running"'
         )
@@ -729,6 +731,7 @@ def test_generation_loss_ignores_response_from_previous_run(tmp_path):
         assert delayed
         page.click(f"#{TOPIC}-new-search")
         start_models(page)
+        page.click(f"#{TOPIC}-run-view-tables")
         page.wait_for_function(
             f'document.getElementById("{TOPIC}-search-status").innerText === "running"'
         )
@@ -794,6 +797,7 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
         )
         show_tab(page, f"{topic}-search")
         start_models(page, topic)
+        page.click(f"#{topic}-run-view-tables")
         table = page.locator(f"#{topic}-leaderboard-table")
         table.locator("tbody tr").first.wait_for()
         headers = [
@@ -881,6 +885,7 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
         )
         page.click(f"#{topic}-new-search")
         start_models(page, topic)
+        page.click(f"#{topic}-run-view-tables")
         table.locator("tbody tr").nth(9).wait_for()
         assert table.locator("th").all_text_contents() == headers
         assert table.locator("tbody tr").count() == 10
@@ -894,6 +899,7 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
         snapshot["rows"] = [{"fitness": 0, "metrics": {metric: 0}}, {"fitness": 1}, {}]
         page.click(f"#{topic}-new-search")
         start_models(page, topic)
+        page.click(f"#{topic}-run-view-tables")
         page.wait_for_function(
             "id => document.getElementById(id).querySelectorAll('tbody tr').length === 3",
             arg=f"{topic}-leaderboard-table",
@@ -904,10 +910,12 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
         snapshot["rows"] = [{"fitness": 1}, {"fitness": 1.0002}]
         page.click(f"#{topic}-new-search")
         start_models(page, topic)
+        page.click(f"#{topic}-run-view-tables")
         table.locator('td:text-is("+0.02%")').wait_for()
         snapshot["rows"] = []
         page.click(f"#{topic}-new-search")
         start_models(page, topic)
+        page.click(f"#{topic}-run-view-tables")
         page.wait_for_function(
             "id => document.getElementById(id).classList.contains('hidden')",
             arg=f"{topic}-leaderboard",
@@ -1036,6 +1044,7 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
         page.route("**/api/forecast-run?**", read_run)
         switch_to_regression(page)
         show_tab(page, "regression-search")
+        page.click(f"#{TOPIC}-run-view-tables")
         rail = page.locator(f"#{TOPIC}-runs-list")
         running = page.locator(f"#{TOPIC}-running-list")
         table = page.locator(f"#{TOPIC}-leaderboard-table")
@@ -1068,6 +1077,7 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
         ) == [best, recent, missing]
 
         rail.locator(f'[data-run-id="{recent}"]').click()
+        page.click(f"#{TOPIC}-run-view-tables")
         page.wait_for_function(
             "id => document.getElementById(id).innerText.includes('warm start')",
             arg=f"{TOPIC}-run-title",
@@ -1085,6 +1095,7 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
         )
         assert "warm start" in page.locator(f"#{TOPIC}-run-title").inner_text()
         running.locator(f'[data-run-id="{live}"]').click()
+        page.click(f"#{TOPIC}-run-view-tables")
         table.locator('td:text-is("0.09")').wait_for()
         assert page.locator(f"#{TOPIC}-loss-chart .chart-line").count() == 2
         assert table.locator("tbody tr.on td").nth(2).inner_text() == str(recipes[-1]["generation"])
@@ -1140,6 +1151,7 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
         )
         assert "refit" in page.locator(f"#{TOPIC}-run-title").inner_text()
         rail.locator(f'[data-run-id="{best}"]').click()
+        page.click(f"#{TOPIC}-run-view-tables")
         page.wait_for_function(
             "id => document.getElementById(id).innerText.includes('best01')",
             arg=f"{TOPIC}-run-title",
