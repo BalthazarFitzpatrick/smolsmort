@@ -131,6 +131,8 @@ def test_tiles_label_seasonal_origins_and_refresh_on_poll(saved_run):
 
 
 def test_tile_chart_averages_horizon_buckets_before_summing_series(tmp_path):
+    # write_table needs duckdb, which ci does not install
+    pytest.importorskip("duckdb")
     path = tmp_path / "test.parquet"
     write_table(
         path,
