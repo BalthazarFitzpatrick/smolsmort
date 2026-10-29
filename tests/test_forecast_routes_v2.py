@@ -562,6 +562,16 @@ def test_v2_route_passes_all_coordinator_controls(app, tmp_path, monkeypatch):
     ]
 
 
+def test_v2_route_passes_the_holdout_through(app, tmp_path, monkeypatch):
+    pytest.importorskip("duckdb")
+    write_panel(tmp_path, weeks=60)
+    calls = []
+    monkeypatch.setattr(runs, "start_run", lambda *args, **kwargs: calls.append(kwargs) or "new")
+    payload = make_payload(families=[{"name": "snaive"}], time_budget_s=60, holdout="seasonal")
+    assert post(app, payload=payload)["run_id"] == "new"
+    assert calls[0]["holdout"] == "seasonal"
+
+
 def test_multi_poll_merges_family_status_and_never_loses_slower_family_updates(app):
     run = make_saved_run(app, families=[{"name": "ridge"}, {"name": "snaive"}])
     write_json(

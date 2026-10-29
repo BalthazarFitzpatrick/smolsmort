@@ -107,3 +107,46 @@ def timeseries_cuts(steps: int, horizon: int, *, min_train: int = 26) -> Timeser
     return TimeseriesCuts(
         val_start, test_start, steps, tuple(zip(edges[:-1], edges[1:], strict=True))
     )
+
+
+# steps in one quarter; origins this far apart sample every season once per four
+SEASON_STEPS = {"day": 91, "week": 13, "month": 3, "quarter": 1, "year": 1}
+ORIGINS = 8
+
+
+@dataclass(frozen=True)
+class SeasonalCuts:
+    """rolling origins as step indices: each window is the `horizon` steps after its origin"""
+
+    val: tuple[int, ...]
+    test: tuple[int, ...]
+    steps: int
+    horizon: int
+    stride: int
+    requested: int = ORIGINS
+
+    @property
+    def fell_back(self) -> bool:
+        return len(self.val) + len(self.test) < self.requested
+
+
+def seasonal_cuts(
+    steps: int, horizon: int, *, unit: str = "week", min_train: int = 26, origins: int = ORIGINS
+) -> SeasonalCuts:
+    """origins a quarter apart, the last one whose horizon still ends inside the history; the
+    older half validates, the newer half tests. fewer origins when `min_train` steps would not
+    precede the first, never under 2 + 2. windows never overlap, so a long horizon widens the
+    stride"""
+    stride = max(SEASON_STEPS[unit], horizon)
+    last = steps - horizon
+    for count in range(origins, 3, -2):
+        first = last - (count - 1) * stride
+        if first >= min_train:
+            starts = tuple(first + i * stride for i in range(count))
+            return SeasonalCuts(
+                starts[: count // 2], starts[count // 2 :], steps, horizon, stride, origins
+            )
+    raise SplitError(
+        f"{steps} steps cannot hold {min_train} to train plus 4 origins {stride} steps apart "
+        f"with a horizon of {horizon}"
+    )

@@ -516,6 +516,14 @@ and display the weekly series. its `step` is the monday of each calendar week; `
 `survival_start - survival` across open entities whose curve date falls in that week. counts may
 be fractional. this run setting is separate from a prep column's aggregation setting.
 
+set `"aggregate_weight": "<measure column>"` (needs an aggregate rule, and a numeric measure in
+the spec) to scale each entity's probability by its weight, for example units per order, so the
+weekly `prediction` is expected units. `curve.parquet` then carries the weight per row, and
+`aggregate.parquet` gets `lower` and `upper`: a 10-90% band from a normal approximation with
+variance `sum(weight^2 * p * (1 - p))` over the entity-weeks, `lower` clipped at 0. that treats
+every entity-week as an independent draw, which is an assumption: entities that move together
+(one customer, one promotion) make the real spread wider, so this band is narrow.
+
 the saved curve covers weeks zero through the fitted cap. aggregation covers only those dates;
 survival remaining after the cap is not forced into the final week or extrapolated. an entity
 already waiting beyond the cap contributes zero on this grid, even though its duration quantiles
@@ -799,7 +807,34 @@ show these plain facts where applicable, with no pass thresholds:
 |---|---|
 | band coverage | share of test rows inside the 80% band |
 | band width and target spread | median band width alongside the target's 10-90% range |
+| band width vs actuals | total band width over total actuals, and the median per row |
 | test history | number of test rows and, for a series, test steps |
+
+**what the 80% band is.** the band is the 10th and 90th percentile of the model's past errors
+(validation residuals), laid around each forecast. it is not forecast +-40%. when the errors run
+one way the band is lopsided, with more room on one side. in 8 of 10 weeks the actual should land
+inside it. read coverage together with width: coverage near 80% means the band is honest; a high
+coverage with a very wide band is cheap, since a band wide enough covers anything; a narrow band
+with low coverage claims more than the model knows. `band_width_pct` is the summed band width
+over the summed actuals, so 0.5 means the band is as wide as half the volume. the median per row
+is `(upper - lower) / actual` over rows with an actual above zero.
+
+time series runs save `lower` and `upper` next to `prediction` in `test.parquet` (the band fitted
+on validation residuals, applied to the held-out weeks), so a chart can show band against actual.
+`forecast.parquet` also carries `band_width_pct` per row, relative to its prediction.
+`band.parquet` has one row per series plus `all`: `rows`, `coverage`, `band_width_pct`,
+`median_width_pct`; `result.json` repeats it as `band_summary`, with the forecast's own width.
+
+**holdout.** the run request field `"holdout"` is `"block"` (default) or `"seasonal"`. block tests
+one recent stretch, so it speaks for one time of year. seasonal (time series only) uses eight
+rolling origins a quarter apart (13 weekly steps, 3 monthly), the newest one the last whose
+horizon still ends inside the history. the four older origins are validation folds, the four newer
+are test folds, so each set sees every season once. each origin trains on steps before it and
+forecasts the next `horizon` steps; the winner is refit per test origin, and test error pools the
+four windows against the usual naive baseline. the final forecast still trains on all history.
+a long horizon widens the spacing so windows never overlap. short history uses fewer origins
+(6, then 4, never under 2 + 2) and `result.json` records `holdout` with the origin dates,
+`fell_back` and the requested count. entity mode only supports block for now.
 
 the results banner shows the ratio and better/worse reading above the chart. the csv export
 carries the accuracy summary in its first line and the ratio on every row.

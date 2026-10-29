@@ -51,6 +51,7 @@ def run(folder, parent_pid):
         Path(request["prepared"]),
         request["summary"],
         transform=request.get("transform", "none"),
+        holdout=request.get("holdout", "block"),
     )
     ranked = read_json(folder / "finalists.json")
     ranked = [
@@ -68,6 +69,7 @@ def run(folder, parent_pid):
         validation=winner.get("prediction"),
         prediction_cache=prediction_cache,
         importance_cache=importance_cache,
+        aggregate_weight=request.get("aggregate_weight"),
     )
     summary = {
         "winner": {"family": winner["family"], "fitness": winner["fitness"], **summarize(final)}

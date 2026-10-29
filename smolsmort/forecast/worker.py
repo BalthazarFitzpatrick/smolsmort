@@ -144,7 +144,11 @@ def run(folder: Path) -> int:
                 "use a v2 request with the saved transform"
             )
         ws = load_workspace(
-            spec, Path(request["prepared"]), request["summary"], transform=transform
+            spec,
+            Path(request["prepared"]),
+            request["summary"],
+            transform=transform,
+            holdout=request.get("holdout", "block"),
         )
         if ws.excluded_series:
             job.event({"event": "excluded_series", "excluded_series": ws.excluded_series})
@@ -220,7 +224,12 @@ def run(folder: Path) -> int:
                 )
                 job.save("coordinator.json", coordinator)
             try:
-                final = finish(ws, genome, nthread=budget.nthread, importance_cache={})
+                weight = (
+                    {"aggregate_weight": request["aggregate_weight"]}
+                    if "aggregate_weight" in request
+                    else {}
+                )
+                final = finish(ws, genome, nthread=budget.nthread, importance_cache={}, **weight)
             finally:
                 if request.get("version") == 2:
                     coordinator["phase_history"].append(
@@ -296,6 +305,8 @@ def _write_result(folder, spec, result, final):
         summary["excluded_series"] = final.get("excluded_series", [])
         for key in ("fold_scores", "fold_count", "val_error", "val_test_gap"):
             summary[key] = final.get(key)
+        summary["holdout"] = final.get("holdout")
+        summary["band_summary"] = final.get("band_summary")
     if "season_length" in final:
         recipe["season_length"] = summary["season_length"] = final["season_length"]
     for name, data in (("recipe.json", recipe), ("result.json", summary)):
@@ -308,7 +319,8 @@ def _write_result(folder, spec, result, final):
 
 
 def _write_tables(folder, spec, final, *, prefix="", aggregate="none"):
-    tables = {name: final.get(name) for name in ("forecast", "validation", "test", "curve")}
+    names = ("forecast", "validation", "test", "curve", "band_table")
+    tables = {name: final.get(name) for name in names}
     rule = get_aggregator(aggregate)
     if tables["curve"] is not None:
         censor = getattr(spec, "censor", None)
@@ -320,6 +332,7 @@ def _write_tables(folder, spec, final, *, prefix="", aggregate="none"):
             and columns
             and all(isinstance(v, np.ndarray) for v in columns.values())
         ):
+            name = "band" if name == "band_table" else name
             filename = f"{prefix}_{name}" if prefix else name
             write_table(folder / f"{filename}.parquet", columns)
 

@@ -10,10 +10,27 @@ from smolsmort.forecast.machine_config import load_machine_config
 from smolsmort.forecast.spec import normalize_saved_modes
 
 
+def _check_aggregate_weight(request: dict, aggregate: str) -> None:
+    """the weight is a numeric column of the spec, and only a calendar rule can use it"""
+    weight = request.get("aggregate_weight")
+    if weight is None:
+        return
+    if not isinstance(weight, str) or not weight:
+        raise ValueError("aggregate_weight must be a column name")
+    if aggregate == "none":
+        raise ValueError("aggregate_weight needs an aggregate rule")
+    columns = request.get("spec", {}).get("columns")
+    if columns is not None and not any(
+        c.get("name") == weight and c.get("role") == "measure" for c in columns
+    ):
+        raise ValueError("aggregate_weight must name a measure column")
+
+
 def parse_request(request: dict) -> dict:
     request = normalize_saved_modes(request)
     aggregate = request.get("aggregate", "none")
     get_aggregator(aggregate)
+    _check_aggregate_weight(request, aggregate)
     if "version" not in request:
         return request
     if request["version"] != 2:
@@ -21,6 +38,9 @@ def parse_request(request: dict) -> dict:
     transform = request.get("transform", "none")
     if transform not in ("none", "log1p", "logdiff"):
         raise ValueError("transform must be none, log1p or logdiff")
+    holdout = request.get("holdout", "block")
+    if holdout not in ("block", "seasonal"):
+        raise ValueError("holdout must be block or seasonal")
     duration = request.get("time_budget_s")
     if (
         isinstance(duration, bool)
@@ -96,6 +116,7 @@ def parse_request(request: dict) -> dict:
         **request,
         "aggregate": aggregate,
         "transform": transform,
+        "holdout": holdout,
         "ensemble": ensemble,
         "max_concurrent_families": concurrency,
         "_max_concurrent_families_explicit": explicit_concurrency,
