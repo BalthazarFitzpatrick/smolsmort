@@ -497,6 +497,9 @@ for later phases; durations beyond it share that bucket. predictions include p10
 durations. an open entity's survival curve is conditioned on the weeks it has already waited.
 quantiles beyond that grid repeat the pooled tail hazard, so they never precede an entity's
 observed wait. returned curves distinguish survival at the start and end of each week.
+a family selection can narrow the suggested objectives with `"space": {"objective": ["hazard"]}`;
+every genome then uses one of the named objectives, so a hazard-only run always ends with curves.
+names outside the suggested objectives are refused.
 
 #### entity curves and weekly aggregation
 

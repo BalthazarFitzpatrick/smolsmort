@@ -772,3 +772,52 @@ def test_unchanged_poll_does_not_read_generation_curves(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "read_text", read_without_curves)
     state = run_state(tmp_path.parent, tmp_path.name, since_generation=2)
     assert state["generation_curves"] == []
+
+
+def _censored_ws():
+    return SimpleNamespace(
+        mode="entity",
+        unit="week",
+        spec=SimpleNamespace(task="regression"),
+        families=["created:dim"],
+        profile={"genes": {"objectives": ["squared", "absolute", "aft", "hazard"]}},
+    )
+
+
+def test_objective_override_narrows_every_genome_to_the_chosen_objective():
+    ws = _censored_ws()
+    var = _FamilyVariation(
+        ws, np.random.default_rng(3), get_family("xgboost"), {"objective": ["hazard"]}
+    )
+    assert var.objectives == ["hazard"]
+    assert var.overrides == {}
+    genomes = [var.random() for _ in range(20)]
+    genomes += [var.mutate(g) for g in genomes]
+    assert {g.objective for g in genomes} == {"hazard"}
+
+
+@pytest.mark.parametrize("wanted", [["poisson"], [], "hazard"])
+def test_objective_override_outside_the_suggestions_is_refused(wanted):
+    with pytest.raises(ValueError):
+        _FamilyVariation(
+            _censored_ws(), np.random.default_rng(0), get_family("xgboost"), {"objective": wanted}
+        )
+
+
+@pytest.mark.parametrize(
+    ("objective", "ok"),
+    [(["hazard"], True), (["aft", "hazard"], True), (["logistic"], False), ([], False)],
+)
+def test_request_check_accepts_only_known_objectives(objective, ok):
+    from smolsmort.forecast.tab import RequestError, _validate_selections
+
+    spec = SimpleNamespace(mode="entity", task="regression")
+    payload = {
+        "time_budget_s": 60,
+        "families": [{"name": "xgboost", "space": {"objective": objective}}],
+    }
+    if ok:
+        _validate_selections(payload, spec)
+    else:
+        with pytest.raises(RequestError):
+            _validate_selections(payload, spec)

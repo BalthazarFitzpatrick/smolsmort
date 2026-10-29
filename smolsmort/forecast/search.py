@@ -283,14 +283,19 @@ class _FamilyVariation(_Variation):
             self.defaults[param.name] = param.default
             if param.kind == "choice":
                 self.choices.add(param.name)
-        for name, values in (overrides or {}).items():
+        overrides = dict(overrides or {})
+        # "objective" narrows the suggested objectives instead of overriding a parameter
+        wanted = overrides.pop("objective", None)
+        if wanted is not None and (not isinstance(wanted, list) or not wanted):
+            raise ValueError("invalid space override 'objective'")
+        for name, values in overrides.items():
             if name not in self.space or not isinstance(values, list) or not values:
                 raise ValueError(f"invalid space override {name!r}")
             self.space[name] = tuple(values)
             self.choices.add(name)
             if self.defaults[name] not in values:
                 self.defaults[name] = values[0]
-        self.overrides = overrides or {}
+        self.overrides = overrides
         # every family names its own objectives; a silent default sent xgboost names to lightgbm
         self.objectives = list(family.objectives(ws.spec.task))
         suggested = set(ws.profile["genes"]["objectives"])
@@ -310,6 +315,10 @@ class _FamilyVariation(_Variation):
                 for name in self.objectives
                 if aliases.get(name, name) in ("squared", "absolute")
             ]
+        if wanted is not None:
+            self.objectives = [name for name in self.objectives if name in wanted]
+            if not self.objectives:
+                raise ValueError(f"objective override {wanted} matches no suggested objective")
 
     def params_for(self, objective, base=None):
         params = {**self.defaults, **(base or {})}

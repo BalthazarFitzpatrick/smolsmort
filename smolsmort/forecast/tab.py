@@ -291,7 +291,11 @@ def _validate_selections(payload, spec):
         if not isinstance(space, dict):
             raise RequestError("family space must be an object")
         params = {param.name: param for param in family.space()}
-        for key, values in space.items():
+        if "objective" in space:
+            wanted = space["objective"]
+            if not isinstance(wanted, list) or not wanted or not set(wanted) <= set(objectives):
+                raise RequestError(f"invalid objective override for {name}; use {list(objectives)}")
+        for key, values in ((k, v) for k, v in space.items() if k != "objective"):
             if key not in params or not isinstance(values, list) or not values:
                 raise RequestError(f"invalid space override {name}.{key}; use a nonempty array")
             param = params[key]
