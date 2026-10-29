@@ -213,3 +213,20 @@ def test_pinned_families_are_always_on_in_the_model_search(monkeypatch):
     assert pinned and all(r["p_on"] == 1.0 and r["pinned"] for r in pinned)
     others = [r for r in ranking if split_family_name(r["family"])[0] != "noise_07"]
     assert all("pinned" not in r and r["p_on"] <= 0.9 for r in others)
+
+
+def test_trial_runs_forward_the_holdout(tmp_path, monkeypatch):
+    from smolsmort.forecast import runs
+
+    seen = {}
+    monkeypatch.setattr(prep, "prepare", lambda spec, root: SimpleNamespace(folder=tmp_path))
+
+    def start(root, spec, prepared, **kwargs):
+        seen.update(kwargs)
+        return "run1"
+
+    monkeypatch.setattr(runs, "start_run", start)
+    monkeypatch.setattr(runs, "wait_run", lambda root, run_id, timeout: {"state": "done"})
+    trial = input_search._run_trial(tmp_path, tmp_path, {"holdout": "seasonal"})
+    assert trial(make_spec(), ["ridge"], 60, False) == {"run": "run1", "state": "done"}
+    assert seen["holdout"] == "seasonal"
