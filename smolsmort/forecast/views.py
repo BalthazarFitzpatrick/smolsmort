@@ -14,6 +14,7 @@ import math
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -368,6 +369,11 @@ def multi_run_state(run_dir, request, status, *, since_generation=None, since_ev
     delivered_cursor = unseen_events[-1]["sequence"] if unseen_events else event_cursor
     result = _read_json(run_dir / "result.json", {})
     recipe = _read_json(run_dir / "recipe.json", {})
+    # list_runs uses both maximum cursors for summaries; charts belong to the selected run
+    if (since_generation, since_events) != (2**63 - 1, 2**63 - 1):
+        tiles = family_tiles(run_dir, request, status, result=result, recipe=recipe)
+        for name, tile in tiles.items():
+            families[name]["tile"] = tile
     kind = (
         "refit" if request.get("recipe") else "warm start" if request.get("warm_from") else "multi"
     )
@@ -405,6 +411,171 @@ def multi_run_state(run_dir, request, status, *, since_generation=None, since_ev
     if since_generation is None:
         out["eval_history"] = _read_json(run_dir / "eval_history.json")
     return out
+
+
+def _finite_number(value):
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+        return value
+    return None
+
+
+def _tile_elapsed(progress):
+    wall_s = _finite_number(progress.get("wall_s"))
+    if wall_s is not None:
+        return max(0, wall_s)
+    history = progress.get("slice_history") or []
+    if history and isinstance(history, list) and all(isinstance(item, dict) for item in history):
+        elapsed = 0
+        for item in history:
+            duration = _finite_number(item.get("wall_s"))
+            if duration is None and item.get("started_at") is not None:
+                end = item.get("ended_at")
+                if end is None and progress.get("state") == "running":
+                    end = time.time()
+                if end is not None:
+                    duration = max(0, end - item["started_at"])
+            if duration is None:
+                return None
+            elapsed += duration
+        return elapsed
+    elapsed = _finite_number(progress.get("elapsed"))
+    if elapsed is not None:
+        return max(0, elapsed)
+    start = _finite_number(progress.get("started_at"))
+    end = _finite_number(progress.get("ended_at"))
+    if start is not None and (end is not None or progress.get("state") == "running"):
+        return max(0, (end if end is not None else time.time()) - start)
+    return None
+
+
+def _read_tile_chart(path: Path) -> list[dict]:
+    """sum saved test rows at each step without reading training data or refitting"""
+    import duckdb
+
+    try:
+        with connect() as con:
+            source = f"read_parquet({_lit(path)})"
+            columns = {row[0] for row in con.execute(f"DESCRIBE SELECT * FROM {source}").fetchall()}
+            if not {"step", "actual", "prediction"} <= columns:
+                return []
+            values = ["actual", "prediction", "lower", "upper"]
+            finite = {
+                name: f"CASE WHEN isfinite({_quote(name)}) THEN {_quote(name)} END"
+                if name in columns
+                else "NULL::DOUBLE"
+                for name in values
+            }
+            if "series" in columns:
+                # holdout rows repeat across horizon buckets; average before summing series
+                averages = [f"AVG({finite[name]}) AS {_quote(name)}" for name in values]
+                source = f"(SELECT step, {', '.join(averages)} FROM {source} GROUP BY series, step)"
+                finite = {name: _quote(name) for name in values}
+            sums = [f"SUM({finite[name]})" for name in values]
+            rows = con.execute(
+                f"SELECT step, {', '.join(sums)} FROM {source} GROUP BY step ORDER BY step"
+            ).fetchall()
+    except (duckdb.Error, OSError):
+        return []
+    return [
+        {
+            "step": _iso(row[0]) if isinstance(row[0], (dt.date, np.datetime64)) else str(row[0]),
+            **{name: _finite_number(value) for name, value in zip(values, row[1:], strict=True)},
+        }
+        for row in rows
+    ]
+
+
+def family_tiles(run_dir, request, status, *, result=None, recipe=None):
+    """expose saved family artifacts without inventing loser test scores or fold baselines"""
+    result = result if result is not None else _read_json(run_dir / "result.json", {})
+    recipe = recipe if recipe is not None else _read_json(run_dir / "recipe.json", {})
+    winner = result.get("winner") or {}
+    winner_family = winner.get("family") or (recipe.get("genome") or {}).get("family")
+    if not winner_family and recipe.get("family") != "ensemble":
+        winner_family = recipe.get("family")
+    legacy = request.get("version") != 2
+    names = [item["name"] for item in request.get("families", [])]
+    if legacy:
+        names = [winner_family or "xgboost"]
+        winner_family = names[0]
+    origins = (result.get("holdout") or {}).get("validation_origins", [])
+    tiles = {}
+    for name in names:
+        target = run_dir if legacy else run_dir / "families" / name
+        saved = result.get("families", {}).get(name, {})
+        progress = {
+            **_read_json(target / "status.json", {}),
+            **(status if legacy else status.get("families", {}).get(name, {})),
+            **saved,
+        }
+        board = _read_json(target / "leaderboard.json", [])
+        entries = [
+            entry
+            for entry in board
+            if _finite_number(entry.get("fitness")) is not None and entry.get("note") != "sample"
+        ]
+        best = min(entries, key=lambda entry: entry["fitness"], default={})
+        genome = _read_json(target / "winner.json") or best.get("genome") or {}
+        if progress.get("state") == "running" and best.get("genome"):
+            genome = best["genome"]
+        if name == winner_family and not genome:
+            genome = recipe.get("genome") or {}
+        summary = saved
+        if name == winner_family:
+            summary = {**result, **winner} if recipe.get("family") != "ensemble" else winner
+        path = target / "test.parquet"
+        if (legacy or not path.exists()) and name == winner_family:
+            path = run_dir / "winner_test.parquet"
+            if not path.exists() and recipe.get("family") != "ensemble":
+                path = run_dir / "test.parquet"
+        accuracy = (summary.get("verdict") or {}).get("accuracy") or {}
+        importance = saved.get("importance") or _read_json(target / "importance.json")
+        if importance is None and name == winner_family:
+            importance = summary.get("importance")
+            if importance is None and recipe.get("family") != "ensemble":
+                importance = _read_json(run_dir / "importance.json")
+        scores = summary.get("fold_scores") or (best.get("metrics") or {}).get("fold_scores") or []
+        folds = [
+            {
+                "label": str(origins[index]) if index < len(origins) else f"fold {index + 1}",
+                "error": _finite_number(error),
+                "ratio": None,
+            }
+            for index, error in enumerate(scores)
+        ]
+        chart = []
+        if request.get("spec", {}).get("mode") == "timeseries" and path.exists():
+            chart = _read_tile_chart(path)
+        tiles[name] = {
+            "state": progress.get("state", status.get("state", "pending")),
+            "genome": genome,
+            "importance": importance,
+            "validation_error": next(
+                (
+                    value
+                    for value in (
+                        saved.get("fitness"),
+                        progress.get("best_error"),
+                        best.get("fitness"),
+                    )
+                    if _finite_number(value) is not None
+                ),
+                None,
+            ),
+            "test_ratio": _finite_number(accuracy.get("ratio")),
+            "test_error": _finite_number(summary.get("model_error", accuracy.get("model_error"))),
+            "test_error_metric": accuracy.get("metric")
+            or ("wape" if request.get("spec", {}).get("mode") == "timeseries" else None),
+            "folds": folds,
+            "folds_note": "validation folds store wape; naive ratios unavailable"
+            if folds
+            else "validation folds not saved",
+            "chart": chart,
+            "chart_reason": None if chart else "test forecast not saved for this family",
+            "elapsed": _tile_elapsed(progress),
+            "generation": progress.get("generation", best.get("generation")),
+        }
+    return tiles
 
 
 def _spec_dims(spec: dict) -> list[str]:
@@ -515,6 +686,9 @@ def result_details(run_dir: Path, request: dict, query: dict) -> dict:
         "ensemble": result.get("ensemble"),
         "importance_family": importance_family,
         "importance": importance,
+        "tiles": family_tiles(
+            run_dir, request, _read_json(run_dir / "status.json", {}), result=result
+        ),
     }
 
 

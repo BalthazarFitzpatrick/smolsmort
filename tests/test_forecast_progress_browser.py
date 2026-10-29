@@ -345,6 +345,7 @@ def test_saved_loss_chart_filtered_metrics_and_collapsed_repeated_keys(tmp_path)
         ]
         run = make_run(state="done", curves=curves)
         mock_saved_run(page, run)
+        page.click("#regression-run-view-tables")
         loss = page.locator("#regression-search-loss")
         chart = page.locator("#regression-loss-chart")
         page.wait_for_function(
@@ -394,6 +395,7 @@ def test_multifamily_progress_updated_counts_and_terminal_reasons(tmp_path):
             for name in ("xgboost", "ridge", "snaive")
         }
         mock_saved_run(page, run)
+        page.click("#regression-run-view-tables")
         progress = page.locator("#regression-family-progress")
         page.wait_for_function(
             "document.querySelectorAll('#regression-family-progress tbody tr').length === 3"
@@ -447,6 +449,7 @@ def test_multifamily_saved_run_named_models_and_explained_importance(tmp_path):
         page.select_option("#topic-flavour", "timeseries")
         show_tab(page, "regression-search")
         page.locator(f'#regression-runs-list [data-run-id="{run_id}"]').click()
+        page.click("#regression-run-view-tables")
         board = page.locator("#regression-leaderboard-table")
         page.wait_for_function(
             "document.querySelectorAll('#regression-leaderboard-table tbody tr').length === 3"
@@ -546,6 +549,7 @@ def test_legacy_saved_run_defaulted_to_xgboost_without_comparison(tmp_path):
         page.select_option("#topic-flavour", "timeseries")
         show_tab(page, "regression-search")
         page.locator(f'#regression-runs-list [data-run-id="{run_id}"]').click()
+        page.click("#regression-run-view-tables")
         board = page.locator("#regression-leaderboard-table")
         board.locator("tbody tr").wait_for()
         family_index = board.locator("thead th").all_text_contents().index("family")

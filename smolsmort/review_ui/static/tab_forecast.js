@@ -168,6 +168,193 @@ function forecastRatioStyle(node, verdict) {
   node.classList.toggle('worse', Number.isFinite(ratio) && ratio >= 1);
 }
 
+function forecastTileEntries(run) {
+  const families = run?.version === 1 ? [] : Object.entries(run?.families || {});
+  const entries = families.length ? families.map(([name, status]) => ({
+    name, ...status, ...(status.tile || {}),
+  })) : Object.entries(run?.tiles || {}).map(([name, tile]) => ({name, state: run.state, ...tile}));
+  if (!entries.length && run?.version === 1) {
+    const best = run.leaderboard?.[0] || {};
+    entries.push({
+      name: run.family || 'xgboost', state: run.state, genome: best.genome,
+      validation_error: run.best_error ?? best.fitness, test_ratio: run.verdict?.accuracy?.ratio,
+      test_error: run.test_error, test_error_metric: run.verdict?.accuracy?.metric,
+      elapsed: run.progress?.elapsed ?? run.elapsed, generation: run.progress?.generation ?? run.generation,
+      folds: (best.metrics?.fold_scores || []).map((error, index) => ({label: `fold ${index + 1}`, error})),
+      chart_reason: 'test chart unavailable',
+    });
+  }
+  return entries.sort((a, b) => {
+    const completed = Number(b.state === 'done') - Number(a.state === 'done');
+    if (completed) return completed;
+    const ratioA = Number.isFinite(a.test_ratio) ? a.test_ratio : Infinity;
+    const ratioB = Number.isFinite(b.test_ratio) ? b.test_ratio : Infinity;
+    if (ratioA !== ratioB) return ratioA - ratioB;
+    const errorA = Number.isFinite(a.validation_error) ? a.validation_error : Infinity;
+    const errorB = Number.isFinite(b.validation_error) ? b.validation_error : Infinity;
+    return errorA - errorB || a.name.localeCompare(b.name);
+  });
+}
+
+function forecastTileState(tile) {
+  if (['starting', 'queued', 'pending', 'running', 'paused'].includes(tile.state)) return 'running';
+  if (['pruned', 'failed', 'cancelled'].includes(tile.state)) return 'worse';
+  if (Number.isFinite(tile.test_ratio)) return tile.test_ratio < 1 ? 'better' : 'worse';
+  return 'unknown';
+}
+
+function forecastTileSummary(tile) {
+  const minutes = Number.isFinite(tile.elapsed) ? `${Math.round(tile.elapsed / 60)} min` : null;
+  const generation = Number.isFinite(tile.generation) ? `gen ${tile.generation}` : null;
+  const ratio = Number.isFinite(tile.test_ratio) ? `ratio ${tile.test_ratio.toFixed(2)}` : null;
+  if (forecastTileState(tile) === 'running') {
+    return [`${tile.state}${minutes ? ` ${minutes}` : ''}`, generation].filter(Boolean).join(', ') + '.';
+  }
+  if (tile.state === 'pruned') {
+    return [`pruned${minutes ? ` after ${minutes}` : ''}`, ratio].filter(Boolean).join(', ') + '.';
+  }
+  const metric = tile.test_error_metric;
+  const error = Number.isFinite(tile.test_error) && metric
+    ? metric === 'wape' ? `wape ${(tile.test_error * 100).toFixed(1)}%`
+      : `${metric} ${forecastNumber(tile.test_error)}` : null;
+  return [minutes, generation, ratio, error].filter(Boolean).join(', ') +
+    (minutes || generation || ratio || error ? '.' : `${tile.state || 'pending'}; test ratio unavailable.`);
+}
+
+function forecastTileMenus(tile) {
+  const group = forecastNode('div', 'forecast-tile-menus');
+  const importance = tile.importance?.features || [];
+  const features = importance.length ? importance.map(item => [item.feature, Number.isFinite(item.importance)
+    ? `${Math.round(item.importance * 100)}%` : ''])
+    : (tile.genome?.families || []).map(name => [name, '']);
+  const params = Object.entries(tile.genome?.params || {});
+  for (const [key, rows, empty] of [
+    ['feat', features, tile.genome ? 'no saved features' : 'features not saved yet'],
+    ['param', params, tile.genome ? 'nothing to tune' : 'parameters not saved yet'],
+  ]) {
+    const details = forecastNode('details');
+    details.dataset.menu = key;
+    const summary = forecastNode('summary');
+    summary.append(forecastNode('span', '', key), forecastNode('span', 'forecast-tile-dim', `${rows.length} ▾`));
+    const menu = forecastNode('div', 'forecast-tile-menu');
+    rows.forEach(([name, value]) => {
+      const row = forecastNode('div', 'forecast-tile-menu-row');
+      const text = value !== null && typeof value === 'object' ? JSON.stringify(value) : String(value ?? '-');
+      row.append(forecastNode('span', '', name), forecastNode('span', 'forecast-tile-dim', text));
+      menu.append(row);
+    });
+    if (!rows.length) menu.append(forecastNode('div', 'forecast-tile-menu-row forecast-tile-dim', empty));
+    details.append(summary, menu);
+    details.addEventListener('keydown', event => {
+      if (event.key === 'Escape') { details.open = false; summary.focus(); }
+    });
+    group.append(details);
+  }
+  return group;
+}
+
+function forecastTileChart(tile) {
+  const points = forecastTileState(tile) === 'running' ? [] : (tile.chart || []);
+  if (!points.length) {
+    return forecastNode('div', 'forecast-tile-chart forecast-tile-placeholder',
+      forecastTileState(tile) === 'running' ? 'test chart pending' : tile.chart_reason || 'test chart not saved');
+  }
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 204 84');
+  svg.setAttribute('role', 'img');
+  svg.setAttribute('aria-label', 'test period: actual against forecast, summed over series');
+  svg.classList.add('forecast-tile-chart');
+  const add = (tag, attrs) => {
+    const node = document.createElementNS(svg.namespaceURI, tag);
+    Object.entries(attrs).forEach(([key, value]) => node.setAttribute(key, value));
+    svg.append(node);
+    return node;
+  };
+  const values = points.flatMap(point => [point.actual, point.prediction]).filter(Number.isFinite);
+  if (!values.length) return forecastNode('div', 'forecast-tile-chart forecast-tile-placeholder', 'test values unavailable');
+  const low = Math.min(...values), high = Math.max(...values);
+  const span = high - low || Math.abs(high) * 0.1 || 1;
+  const x = index => 4 + index / Math.max(1, points.length - 1) * 196;
+  const y = value => 78 - (value - low) / span * 72;
+  // saved test points start at the split; no training history is invented
+  add('line', {x1: 4, x2: 4, y1: 0, y2: 84, class: 'forecast-tile-split'});
+  const title = add('title', {});
+  title.textContent = `test only · ${points[0].step} – ${points.at(-1).step} · actual grey, forecast state colour`;
+  for (const field of ['actual', 'prediction']) {
+    let segment = [];
+    const draw = () => {
+      if (segment.length > 1) add('polyline', {points: segment.join(' '), class: `forecast-tile-${field}`});
+      else if (segment.length) {
+        const [cx, cy] = segment[0].split(',');
+        add('circle', {cx, cy, r: 2, class: `forecast-tile-${field}`});
+      }
+      segment = [];
+    };
+    points.forEach((point, index) => {
+      if (Number.isFinite(point[field])) segment.push(`${x(index).toFixed(1)},${y(point[field]).toFixed(1)}`);
+      else draw();
+    });
+    draw();
+  }
+  return svg;
+}
+
+function forecastTileBars(tile) {
+  const wrap = forecastNode('div', 'forecast-tile-bars');
+  const folds = tile.folds || [];
+  const bars = [...folds, {label: 'test', ratio: tile.test_ratio}];
+  bars.forEach(bar => {
+    const ratio = bar.ratio;
+    const known = Number.isFinite(ratio);
+    const row = forecastNode('div', 'forecast-tile-bar');
+    row.dataset.label = bar.label;
+    row.title = known ? `${bar.label}: ratio ${ratio.toFixed(2)}`
+      : `${bar.label}: ratio unavailable${Number.isFinite(bar.error) ? `; validation error ${forecastNumber(bar.error)}` : ''}`;
+    const track = forecastNode('div', 'forecast-tile-track');
+    const fill = forecastNode('div', 'forecast-tile-fill');
+    fill.style.width = `${known ? Math.max(0, Math.min(100, ratio / 1.5 * 100)) : 0}%`;
+    const state = known ? ratio < 1 ? 'better' : 'worse' : 'unknown';
+    row.dataset.state = state;
+    track.append(fill, forecastNode('div', 'forecast-tile-mark'));
+    row.append(forecastNode('span', 'forecast-tile-bar-label forecast-tile-dim', bar.label), track,
+      forecastNode('span', 'forecast-tile-bar-value', known ? ratio.toFixed(2) : '—'));
+    row.setAttribute('aria-label', row.title);
+    wrap.append(row);
+  });
+  return wrap;
+}
+
+function forecastCreateTile(tile, index) {
+  const wrap = forecastNode('article', 'forecast-tile');
+  wrap.dataset.family = tile.name;
+  wrap.dataset.state = forecastTileState(tile);
+  wrap.setAttribute('aria-label', `${tile.name}: ${tile.state}`);
+  const inner = forecastNode('div', 'forecast-tile-inner');
+  const ratio = tile.test_ratio;
+  const score = forecastTileState(tile) === 'running' ? '…' : Number.isFinite(ratio)
+    ? `${ratio < 1 ? '+' : '−'}${Math.round(Math.abs(1 - ratio) * 100)}%` : '—';
+  for (const side of ['front', 'back']) {
+    const face = forecastNode('div', `forecast-tile-face forecast-tile-${side}`);
+    const header = forecastNode('div', 'forecast-tile-header');
+    header.append(forecastNode('span', 'forecast-tile-name', `#${index + 1} ${tile.name}`));
+    const value = forecastNode('span', 'forecast-tile-score', score);
+    value.title = Number.isFinite(ratio) ? 'test improvement against naive' : 'test ratio unavailable';
+    header.append(value);
+    face.append(header, side === 'front' ? forecastTileChart(tile) : forecastTileBars(tile), forecastTileMenus(tile));
+    const summary = side === 'front' ? forecastTileSummary(tile) : 'ratio vs naive · mark at 1.0';
+    const caption = forecastNode('div', 'forecast-tile-caption forecast-tile-dim', summary);
+    if (side === 'front') caption.title = [summary, tile.pruned_reason || tile.reason].filter(Boolean).join(' ');
+    else {
+      const missing = !(tile.folds || []).length || tile.folds.some(fold => !Number.isFinite(fold.ratio));
+      if (missing) face.append(forecastNode('div', 'forecast-tile-note forecast-tile-dim', 'fold ratios not saved'));
+    }
+    face.append(caption);
+    inner.append(face);
+  }
+  wrap.append(inner);
+  return wrap;
+}
+
 const FORECAST_OBJECTIVES = {
   squared: 'squared error', absolute: 'absolute error', tweedie: 'tweedie loss',
   poisson: 'poisson loss', aft: 'survival loss', logistic: 'log loss',
@@ -292,6 +479,9 @@ class ForecastTopic {
     this.searchValues = {population: 16, plateau: 5, generations: 60, minutes: 20};
     this.currentRunId = null;
     this.selectedRunId = null;
+    this.runView = 'tiles';
+    this.tilesFlipped = false;
+    this.tilesRunId = null;
     this.runCache = new Map();
     this.runOrder = 'date, newest first';
     this.searchEntered = false;
@@ -948,6 +1138,23 @@ class ForecastTopic {
             <button class="toggle" id="${this.topic}-run-open">open</button>
           </div>
         </div>
+        <div class="run-controls hidden" id="${this.topic}-run-view" role="group" aria-label="candidate view">
+          <button type="button" class="toggle on" id="${this.topic}-run-view-tiles" aria-pressed="true">tiles</button>
+          <button type="button" class="toggle" id="${this.topic}-run-view-tables" aria-pressed="false">tables</button>
+        </div>
+        <section class="forecast-tiles hidden" id="${this.topic}-tiles" aria-label="model family candidates">
+          <div class="forecast-tiles-bar">
+            <div class="forecast-tiles-legend">
+              <span id="${this.topic}-tiles-count"></span>
+              <span><i data-state="better"></i>better</span>
+              <span><i data-state="running"></i>running</span>
+              <span><i data-state="worse"></i>worse</span>
+            </div>
+            <button type="button" class="toggle" id="${this.topic}-tiles-flip" aria-pressed="false">flip all: folds</button>
+          </div>
+          <div class="forecast-tiles-grid" id="${this.topic}-tiles-grid"></div>
+        </section>
+        <div class="forecast-pane" id="${this.topic}-run-tables">
         <div class="run-controls hidden" id="${this.topic}-generation-family-wrap">
           <span class="field-label">model family</span>
           <button class="toggle dropdown-head" id="${this.topic}-generation-family"><span>xgboost</span></button>
@@ -975,8 +1182,20 @@ class ForecastTopic {
           </div>
         </div>
         </div>
+        </div>
       </div>`;
     forecastWireSteppers(panel, `${this.topic}-budget`, budgetRows, this.searchValues, () => {});
+    for (const view of ['tiles', 'tables']) {
+      document.getElementById(`${this.topic}-run-view-${view}`).onclick = () => {
+        this.runView = view;
+        this.paintRunDetail(this.runCache.get(this.selectedRunId));
+        if (view === 'tables') window.dispatchEvent(new Event('resize'));
+      };
+    }
+    document.getElementById(`${this.topic}-tiles-flip`).onclick = () => {
+      this.tilesFlipped = !this.tilesFlipped;
+      this.paintTileFlip();
+    };
     document.getElementById(`${this.topic}-search-cancel`).onclick = () => this.cancelSearch();
     document.getElementById(`${this.topic}-new-search`).onclick = () => activateTab(`${this.topic}-models`);
     document.getElementById(`${this.topic}-run-sort`).append(forecastDropdown(
@@ -1089,6 +1308,22 @@ class ForecastTopic {
     if (this.currentRunId === run.id && !this.isRunning(run)) this.currentRunId = null;
     this.paintRuns();
     if (this.selectedRunId === run.id) this.paintRunDetail(run);
+    this.readLegacyTiles(run);
+  }
+
+  async readLegacyTiles(run) {
+    if (run.version !== 1 || run.state !== 'done' || this.selectedRunId !== run.id
+        || run.tiles || run.tilesRequested) return;
+    run.tilesRequested = true;
+    try {
+      const view = await api(`/api/forecast-view?id=${encodeURIComponent(run.id)}`);
+      if (this.runCache.get(run.id) !== run) return;
+      run.tiles = view.tiles;
+      if (this.selectedRunId === run.id) this.paintRunDetail(run);
+    } catch (error) {
+      // legacy runs can outlive their prepared data; keep the available poll metadata
+      run.tilesError = error.message;
+    }
   }
 
   async selectRun(id) {
@@ -1110,6 +1345,7 @@ class ForecastTopic {
   }
 
   paintRunDetail(run) {
+    this.paintRunTiles(run);
     this.paintFamilyProgress(run);
     const progressWrap = document.getElementById(`${this.topic}-run-progress`);
     progressWrap.classList.toggle('hidden', !run);
@@ -1175,9 +1411,74 @@ class ForecastTopic {
       ...(run?.generations || []).map(forecastModelFamily), ...(run?.curves || []).map(forecastModelFamily)])];
   }
 
+  paintRunTiles(run) {
+    const grid = document.getElementById(`${this.topic}-tiles-grid`);
+    if (this.tilesRunId !== (run?.id || null)) {
+      this.tilesRunId = run?.id || null;
+      this.runView = 'tiles';
+      this.tilesFlipped = false;
+      grid.replaceChildren();
+    }
+    document.getElementById(`${this.topic}-run-view`).classList.toggle('hidden', !run);
+    document.getElementById(`${this.topic}-tiles`).classList.toggle('hidden', !run || this.runView !== 'tiles');
+    document.getElementById(`${this.topic}-run-tables`).classList.toggle('hidden', !!run && this.runView !== 'tables');
+    for (const view of ['tiles', 'tables']) {
+      const button = document.getElementById(`${this.topic}-run-view-${view}`);
+      button.classList.toggle('on', this.runView === view);
+      button.setAttribute('aria-pressed', String(this.runView === view));
+    }
+    const entries = forecastTileEntries(run);
+    setText(`${this.topic}-tiles-count`, `candidates · ${entries.length}`);
+    const existing = new Map([...grid.children].map(node => [node.dataset.family, node]));
+    entries.forEach((tile, index) => {
+      let node = existing.get(tile.name);
+      const signature = JSON.stringify([tile, index]);
+      if (!node || node.dataset.signature !== signature) {
+        const openMenus = [...(node?.querySelectorAll('details[open]') || [])].map(details => ({
+          side: details.closest('.forecast-tile-back') ? 'back' : 'front',
+          key: details.dataset.menu, scroll: details.querySelector('.forecast-tile-menu').scrollTop,
+        }));
+        const active = node?.contains(document.activeElement) ? document.activeElement.closest('details') : null;
+        const focus = active ? {
+          side: active.closest('.forecast-tile-back') ? 'back' : 'front', key: active.dataset.menu,
+        } : null;
+        const fresh = forecastCreateTile(tile, index);
+        fresh.dataset.signature = signature;
+        if (node) node.replaceWith(fresh);
+        else grid.append(fresh);
+        node = fresh;
+        openMenus.forEach(({side, key, scroll}) => {
+          const details = node.querySelector(`.forecast-tile-${side} details[data-menu="${key}"]`);
+          details.open = true;
+          details.querySelector('.forecast-tile-menu').scrollTop = scroll;
+        });
+        if (focus) node.querySelector(`.forecast-tile-${focus.side} details[data-menu="${focus.key}"] summary`).focus({preventScroll: true});
+      }
+      if (grid.children[index] !== node) grid.insertBefore(node, grid.children[index] || null);
+      existing.delete(tile.name);
+    });
+    existing.forEach(node => node.remove());
+    if (run && !entries.length) grid.append(forecastNode('div', 'forecast-tile-dim', 'family details not saved yet'));
+    this.paintTileFlip();
+  }
+
+  paintTileFlip() {
+    const panel = document.getElementById(`${this.topic}-tiles`);
+    panel.classList.toggle('flipped', this.tilesFlipped);
+    const button = document.getElementById(`${this.topic}-tiles-flip`);
+    button.classList.toggle('on', this.tilesFlipped);
+    button.setAttribute('aria-pressed', String(this.tilesFlipped));
+    button.textContent = this.tilesFlipped ? 'show charts' : 'flip all: folds';
+    panel.querySelectorAll('.forecast-tile-face').forEach(face => {
+      const hidden = face.classList.contains('forecast-tile-back') !== this.tilesFlipped;
+      face.inert = hidden;
+      face.setAttribute('aria-hidden', String(hidden));
+    });
+  }
+
   paintFamilyProgress(run) {
     const families = run?.version === 1 ? [] : Object.entries(run?.families || {});
-    document.getElementById(`${this.topic}-family-progress-wrap`).classList.toggle('hidden', !families.length);
+    document.getElementById(`${this.topic}-family-progress-wrap`).classList.toggle('hidden', !families.length || this.runView !== 'tables');
     forecastFillTable(document.getElementById(`${this.topic}-family-progress`),
       ['family', 'state', 'phase', 'candidates done', 'expected remaining', 'best validation error', 'reason'],
       families.map(([name, status]) => [name, status.terminated ? `${status.state} (terminated)` : status.state,
