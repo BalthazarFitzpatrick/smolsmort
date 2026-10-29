@@ -78,3 +78,14 @@ def test_a_table_round_trips(tmp_path):
     assert back["x"][0] == 1.5 and np.isnan(back["x"][1])
     assert back["s"].tolist() == ["a", None]
     assert str(back["d"][0]) == "2026-01-05" and np.isnat(back["d"][1])
+
+
+def test_write_table_takes_numpy_strings_with_non_ascii_text(tmp_path):
+    duckdb = pytest.importorskip("duckdb")
+    # band summaries build their series column from numpy.str_ group names
+    names = np.array(
+        ["all", *np.array(["Terrassendächer & Pergolen", "Lamellenstoren"])], dtype=object
+    )
+    path = write_table(tmp_path / "band.parquet", {"series": names, "rows": np.array([3, 1, 2])})
+    rows = duckdb.sql(f"SELECT series FROM read_parquet('{path}') ORDER BY rows").fetchall()
+    assert [r[0] for r in rows] == ["Terrassendächer & Pergolen", "Lamellenstoren", "all"]

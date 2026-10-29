@@ -117,6 +117,11 @@ def write_table(path: Path, columns: dict[str, np.ndarray]) -> Path:
         array = np.asarray(values)
         if np.issubdtype(array.dtype, np.datetime64):
             array = array.astype("datetime64[ns]")
+        elif array.dtype == object:
+            # duckdb's numpy scan rejects numpy.str_ holding non-ascii text; plain python values pass
+            array = np.array(
+                [v.item() if isinstance(v, np.generic) else v for v in array], dtype=object
+            )
         data[name] = array
     con = duckdb.connect()
     con.register("frame", data)
