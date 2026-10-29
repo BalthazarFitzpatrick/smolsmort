@@ -226,6 +226,7 @@ def test_default_country_digest_matches_the_legacy_spec():
     legacy.pop("holidays_country")
     for column in legacy["columns"]:
         column.pop("skip_missing")
+        column.pop("pin")
     expected = hashlib.sha256(json.dumps(legacy, sort_keys=True, default=str).encode()).hexdigest()[
         :16
     ]
@@ -254,6 +255,7 @@ def test_default_country_keeps_the_prepared_cache_key(tmp_path):
     legacy.pop("holidays_country")
     for column in legacy["columns"]:
         column.pop("skip_missing")
+        column.pop("pin")
     digest = hashlib.sha256(json.dumps(legacy, sort_keys=True, default=str).encode()).hexdigest()[
         :16
     ]

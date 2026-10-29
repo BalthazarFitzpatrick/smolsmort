@@ -69,10 +69,11 @@ def test_worker_persists_threads_before_screen_and_recipe_refit(
         calls.append("load")
         return workspace
 
-    def screen_families(ws, *, seed, nthread):
+    def screen_families(ws, *, seed, nthread, pinned):
         read_threads()
         assert ws is workspace
         assert seed == 7
+        assert pinned == frozenset()
         assert nthread == expected_threads
         calls.append("screen")
         return {"ranked": []}
