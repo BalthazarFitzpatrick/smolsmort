@@ -75,12 +75,18 @@ class Column:
     known: bool = True
     # input shares and spread use only levels with a value
     skip_missing: bool = False
+    # always in: the input search keeps it in every set, the model search keeps its families on
+    pin: bool = False
 
     def __post_init__(self):
         if type(self.skip_missing) is not bool:
             raise SpecError("column.skip_missing must be a boolean")
         if self.skip_missing and self.role != "input":
             raise SpecError("column.skip_missing is only supported for input columns")
+        if type(self.pin) is not bool:
+            raise SpecError("column.pin must be a boolean")
+        if self.pin and self.role not in ("measure", "input"):
+            raise SpecError("column.pin is only supported for measure and input columns")
 
 
 @dataclass(frozen=True)
@@ -159,6 +165,8 @@ class PrepSpec:
         for column in data["columns"]:
             if not column["skip_missing"]:
                 column.pop("skip_missing")
+            if not column["pin"]:
+                column.pop("pin")
         if self.holidays_country is None:
             data.pop("holidays_country")
         if self.censor and self.censor.event is None:

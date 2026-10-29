@@ -9,7 +9,13 @@ from pathlib import Path
 import numpy as np
 
 from smolsmort.forecast.families.lightgbm import LightgbmFamily
-from smolsmort.forecast.features import STEP_FEATURES, family_aliases, family_sort_key, step_index
+from smolsmort.forecast.features import (
+    STEP_FEATURES,
+    family_aliases,
+    family_sort_key,
+    split_family_name,
+    step_index,
+)
 from smolsmort.forecast.importance import measure_importance
 from smolsmort.forecast.pipeline import Workspace, _validation_masks
 from smolsmort.forecast.spec import SERIES, STEP
@@ -162,11 +168,17 @@ def _fit_gain(x, residual, columns, seed, nthread):
 
 
 def screen_families(
-    ws: Workspace, *, seed: int = 0, max_rows: int = 20_000, nthread: int = 1
+    ws: Workspace,
+    *,
+    seed: int = 0,
+    max_rows: int = 20_000,
+    nthread: int = 1,
+    pinned: frozenset[str] = frozenset(),
 ) -> list[dict]:
     """rank families on pre-validation rows by blended max rank correlation and gain share.
     priors are 0.1 + 0.8 * score / top_score, clipped to [0.1, 0.9]; zero scores start at 0.1.
-    a seeded 10% of families from the bottom half get priors raised to at least 0.5"""
+    a seeded 10% of families from the bottom half get priors raised to at least 0.5;
+    families of pinned columns get 1"""
     if ws.mode != "timeseries":
         raise ValueError("feature screening requires time series mode")
     if max_rows < 1:
@@ -206,4 +218,8 @@ def screen_families(
     for index in np.random.default_rng(seed).choice(bottom, count, replace=False):
         ranked[index]["p_on"] = max(0.5, ranked[index]["p_on"])
         ranked[index]["wildcard"] = True
+    # a pinned column's families are born on and never mutated off [p_on 1]
+    for entry in ranked:
+        if split_family_name(entry["family"])[0] in pinned:
+            entry["p_on"], entry["pinned"] = 1.0, True
     return ranked

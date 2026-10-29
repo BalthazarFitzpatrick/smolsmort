@@ -156,7 +156,11 @@ def run(folder: Path) -> int:
             }
         )
         if ws.mode == "timeseries" and not (folder / "screen.json").exists():
-            job.save("screen.json", screen_families(ws, seed=budget.seed, nthread=nthread))
+            pins = frozenset(c.name for c in spec.columns if c.pin)
+            job.save(
+                "screen.json",
+                screen_families(ws, seed=budget.seed, nthread=nthread, pinned=pins),
+            )
         warm = _warm_start(request.get("warm_from"))
         if request.get("recipe"):
             # a refit: the saved recipe, no search
