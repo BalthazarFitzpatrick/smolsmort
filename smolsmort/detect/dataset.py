@@ -173,6 +173,13 @@ def _row_skip_reason(row: dict) -> str | None:
     return None
 
 
+def _iter_rows(path: Path):
+    with path.open(encoding="utf-8") as source:
+        for line in source:
+            if line.strip():
+                yield json.loads(line)
+
+
 def build_training_set(
     path: Path, sessions_dir: Path, *, refuse_mixed_resolutions: bool = True
 ) -> tuple[list[Example], ClassMap]:
@@ -193,24 +200,20 @@ def build_training_set(
     """
     if not path.is_file():
         raise DatasetError(f"no training set at {path}")
-    raw_rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-    if not raw_rows:
-        raise DatasetError(f"{path} is empty - promote some labelled kernels first")
-
     skipped: dict[str, int] = {}
-    rows = []
-    for row in raw_rows:
+    labels: set[str] = set()
+    seen = 0
+    by_frame: dict[tuple[str, str], Example] = {}
+    # streamed a row at a time into its frame's example: a multi-million-row set held as dicts
+    # outgrew a 32 gb box, the examples it builds are a small fraction of that
+    for row in _iter_rows(path):
+        seen += 1
         reason = _row_skip_reason(row)
         if reason:
             skipped[reason] = skipped.get(reason, 0) + 1
-        else:
-            rows.append(row)
-
-    labels = sorted({r["label"] for r in rows if r.get("label") and not r.get("ignore")})
-    classes = ClassMap((label, index) for index, label in enumerate(labels))
-    classes.skipped = skipped
-    by_frame: dict[tuple[str, str], Example] = {}
-    for row in rows:
+            continue
+        if row.get("label") and not row.get("ignore"):
+            labels.add(row["label"])
         key = (row["recording"], row["frame"])
         image = sessions_dir / row["recording"] / "frames" / row["frame"]
         example = by_frame.setdefault(key, Example(path=image))
@@ -233,6 +236,10 @@ def build_training_set(
             example.centres.append(centre)
             example.labels.append(row["label"])
             example.sizes.append((width, height))
+    if not seen:
+        raise DatasetError(f"{path} is empty - promote some labelled kernels first")
+    classes = ClassMap((label, index) for index, label in enumerate(sorted(labels)))
+    classes.skipped = skipped
     examples = [e for e in by_frame.values() if source_present(e.path)]
     if refuse_mixed_resolutions:
         _refuse_mixed_resolutions(examples, path)
