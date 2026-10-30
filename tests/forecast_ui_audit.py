@@ -1,5 +1,11 @@
 """shared page states and measurements for the forecast chromium size audit"""
 
+
+def settle_menu(page):
+    """wait for the shared menu's deferred listener setup before sending keys"""
+    page.evaluate("() => new Promise(resolve => setTimeout(resolve, 0))")
+
+
 FAMILY_LAYOUT = r"""() => {
   const visible = node => node.getBoundingClientRect().height && node.getBoundingClientRect().width;
   const target = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--row-height'));
@@ -53,7 +59,7 @@ CONTROL_SIZES = r"""() => {
   const borderWidth = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--row-border-width'));
   const fieldWidth = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--forecast-field-width'));
   const controlKind = node => {
-    if (node.matches('.forecast-setup-slot .dropdown-head, .forecast-agg-row .forecast-field, [id$="-data-source"], [id$="-breakdown-head"], [id$="-group-head"]')) return 'data-field';
+    if (node.matches('.forecast-setup-slot .dropdown-head, .forecast-agg-row .forecast-field, [id$="-data-source"], [id$="-group-head"]')) return 'data-field';
     if (node.matches('.forecast-setup-menu .menu-list .menu-item, .forecast-field-menu .menu-list .menu-item')) return 'data-field';
     if (node.matches('.forecast-leaderboard .dropdown-head')) return 'recipe-head';
     if (node.matches('.forecast-column-grid .dropdown-head')) return 'role-head';
@@ -109,9 +115,8 @@ CONTROL_SIZES = r"""() => {
       const tops = new Set(rects.map(rect => Math.round(rect.top * 100) / 100));
       const style = getComputedStyle(node);
       const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.2;
-      // the help toggle reserves a click area beyond its one text line
       const plainLabel = node.matches('.field-label, .field-value, .stat, .popup-title, summary')
-        && !node.matches(`${selector}, .forecast-metric-help > summary`) && !node.children.length;
+        && !node.matches(selector) && !node.children.length;
       texts.push({selector: path(node), text: text.textContent.trim(), lines: tops.size,
         clientHeight: node.clientHeight, lineHeight,
         lineBoxHeight: plainLabel ? node.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom) : null,

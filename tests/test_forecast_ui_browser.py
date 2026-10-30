@@ -141,7 +141,7 @@ def show_tab(page: Page, name: str) -> None:
 
 
 @contextmanager
-def session(tmp_path: Path, *, width: int = 1280, numeric: bool = False, port: int = 0):
+def session(tmp_path: Path, *, width: int = 1280, numeric: bool = False, port: int = 8096):
     """the real review server, its forecast root holding the synthetic rows fixture, and a
     headless page on it"""
     errors: list[str] = []
@@ -1986,7 +1986,7 @@ def test_forecast_unprepared_saved_setup_started_after_reload(tmp_path, flavour)
         assert_dataset_state(page, "prepared", source=source)
 
 
-def test_search_rail_puts_new_search_and_sort_side_by_side(tmp_path):
+def test_search_rail_puts_new_search_sort_and_metrics_side_by_side(tmp_path):
     with session(tmp_path) as (page, _base):
         switch_to_regression(page)
         show_tab(page, "regression-search")
@@ -1996,14 +1996,23 @@ def test_search_rail_puts_new_search_and_sort_side_by_side(tmp_path):
                 page.locator('.menu-panel .menu-item[data-id="best performance"]').click()
             button = page.locator(f"#{TOPIC}-new-search").bounding_box()
             head = page.locator(f"#{TOPIC}-run-sort .dropdown-head").bounding_box()
-            assert abs(button["y"] - head["y"]) < 0.5, (sort, button, head)
-            assert abs(button["height"] - head["height"]) < 0.5, (sort, button, head)
+            metric = page.locator(f"#{TOPIC}-error-metrics").bounding_box()
+            row = page.locator(f"#{TOPIC}-new-search").locator("..")
+            assert row.locator(f"#{TOPIC}-error-metrics").count() == 1
+            for control in (head, metric):
+                assert abs(button["y"] - control["y"]) < 0.5, (sort, button, control)
+                assert abs(button["height"] - control["height"]) < 0.5, (sort, button, control)
             assert button["x"] + button["width"] <= head["x"] + 0.5, (sort, button, head)
+            assert head["x"] + head["width"] <= metric["x"] + 0.5, (sort, head, metric)
             rail = (
                 page.locator(f"#{TOPIC}-new-search").locator("xpath=ancestor::aside").bounding_box()
             )
-            assert head["x"] + head["width"] <= rail["x"] + rail["width"] + 0.5, (sort, head, rail)
+            assert metric["x"] + metric["width"] <= rail["x"] + rail["width"] + 0.5, (
+                sort,
+                metric,
+                rail,
+            )
             text = page.locator(f"#{TOPIC}-run-sort .dropdown-head > span:first-child")
-            assert text.inner_text() == sort
+            assert text.inner_text() == "sort by"
             widths = text.evaluate("node => [node.scrollWidth, node.clientWidth]")
             assert widths[0] <= widths[1], (sort, widths, button, head)

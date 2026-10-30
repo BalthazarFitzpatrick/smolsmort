@@ -13,6 +13,7 @@ import pytest
 pytest.importorskip("playwright")
 pytest.importorskip("xgboost")
 
+from forecast_ui_audit import settle_menu
 from test_forecast_progress_browser import write_multifamily_run
 from test_forecast_ui_browser import session, show_tab, switch_to_regression, with_error_metrics
 
@@ -266,28 +267,39 @@ def save_tiles(page, name: str) -> None:
 
 def select_chart_metrics(page, selected: list[str]) -> None:
     page.locator("#regression-error-metrics").click()
-    menu = page.locator("#regression-error-metrics-menu")
+    menu = page.locator(".menu-panel")
     for metric in selected:
-        menu.locator(f'input[data-metric-id="{metric}"]').check()
-    for checkbox in menu.locator("input[data-metric-id]").all():
-        if checkbox.get_attribute("data-metric-id") not in selected:
-            checkbox.uncheck()
+        item = menu.locator(f'.menu-item[data-id="{metric}"]')
+        if "on" not in item.get_attribute("class").split():
+            item.click()
+    for metric in menu.locator(".menu-item.on").evaluate_all(
+        "items => items.map(item => item.dataset.id)"
+    ):
+        if metric not in selected:
+            menu.locator(f'.menu-item[data-id="{metric}"]').click()
     page.keyboard.press("Escape")
+
+
+def select_tile_metric(page, metric: str) -> None:
+    page.locator("#regression-tiles-metric").click()
+    page.locator(f'.menu-panel .menu-item[data-id="{metric}"]').click()
+
+
+def read_chart_scale(chart) -> tuple[float, float]:
+    return tuple(float(chart.get_attribute(f"data-scale-{edge}")) for edge in ("min", "max"))
 
 
 def test_chart_faces_compare_running_done_pruned_and_one_shot_generations(tmp_path):
     snapshot = make_live_tiles()
-    with session(tmp_path, port=8095) as (page, _base):
+    with session(tmp_path, port=8096) as (page, _base):
         mock_live_tiles(page, snapshot)
         open_tiles(page)
         charts = page.locator("#regression-tiles .forecast-tile-front .forecast-tile-chart")
         scales = charts.evaluate_all(
-            "nodes => nodes.map(node => [node.dataset.scaleMin, node.dataset.scaleMax, "
-            "node.dataset.generationMax])"
+            "nodes => nodes.map(node => [node.dataset.scaleMin, node.dataset.scaleMax])"
         )
         assert len(scales) == 4 and all(scale == scales[0] for scale in scales)
         assert float(scales[0][0]) <= 0.2 and float(scales[0][1]) >= 0.8
-        assert scales[0][2] == "5"
         for name, generation, value in (
             ("xgboost", 5, 0.4),
             ("ridge", 3, 0.2),
@@ -300,6 +312,16 @@ def test_chart_faces_compare_running_done_pruned_and_one_shot_generations(tmp_pa
             assert marker.count() == 1
             assert marker.get_attribute("data-generation") == str(generation)
             assert float(marker.get_attribute("data-value")) == value
+            assert chart.get_attribute("data-generation-max") == str(generation)
+            axis = chart.locator(".forecast-tile-axis")
+            edge = "x2" if generation > 1 else "x1"
+            assert float(marker.get_attribute("cx")) == pytest.approx(
+                float(axis.get_attribute(edge))
+            )
+            labels = chart.locator("svg text").all_text_contents()
+            assert labels == (
+                ["1", "generation", str(generation)] if generation > 1 else ["1", "generation"]
+            )
             assert "validation error" in chart.locator(".forecast-tile-chart-label").inner_text()
             assert f"{value * 100:.1f}%" in chart.inner_text()
         assert find_tile(page, "lightgbm").locator(".forecast-tile-pruned").count() == 1
@@ -312,41 +334,181 @@ def test_chart_faces_compare_running_done_pruned_and_one_shot_generations(tmp_pa
         save_tiles(page, "four-family-generations")
 
 
-def test_round_chart_follows_picked_metric_and_generation_chart_stays_validation(tmp_path):
+def test_y_metric_controls_both_charts_independently_of_error_metric_picker(tmp_path):
     snapshot = make_live_tiles()
-    with session(tmp_path, port=8095) as (page, _base):
+    with session(tmp_path, port=8096) as (page, _base):
         mock_live_tiles(page, snapshot)
         open_tiles(page)
         tile = find_tile(page, "xgboost")
         chart = tile.locator(".forecast-tile-front .forecast-tile-chart")
         rounds = tile.locator(".forecast-tile-front .forecast-tile-rounds")
-        plotted = "nodes => nodes.map(node => node.dataset.value)"
-        validation_values = chart.locator("circle").evaluate_all(plotted)
-        # default pick (validation error, test ratio) has no per-round metric, so wape shows
-        assert rounds.get_attribute("data-chart-metric") == "wape"
+        picker = page.locator("#regression-tiles-metric")
+        assert "validation error" in picker.inner_text()
+        assert picker.evaluate("node => node.closest('.forecast-tiles-bar') !== null")
+        picker_box = picker.bounding_box()
+        flip_box = page.locator("#regression-tiles-flip").bounding_box()
+        assert picker_box["x"] + picker_box["width"] <= flip_box["x"]
+        assert abs(picker_box["y"] - flip_box["y"]) < 1
+        picker.click()
+        settle_menu(page)
+        menu = page.locator(".menu-panel")
+        assert menu.locator(".menu-item").evaluate_all(
+            "items => items.map(item => item.dataset.id)"
+        ) == ["validation_error", "wape", "mae"]
+        assert menu.locator('input[type="checkbox"]').count() == 0
+        page.keyboard.press("Escape")
+        assert rounds.get_attribute("data-chart-metric") == "rmse"
         assert rounds.get_attribute("data-recorded") == "true"
+        assert "validation error" in rounds.locator(".forecast-tile-chart-label").inner_text()
         assert rounds.locator(".forecast-tile-round-current").count() == 1
         assert rounds.locator(".forecast-tile-round-line").count() == 2
         assert (
             rounds.locator(".forecast-tile-round-current").get_attribute("data-generation") == "3"
         )
-        assert "gen 3 · round 6: 20.0%" in rounds.inner_text()
-        for picked, shown in ((["mae", "wape"], "mae"), (["wape"], "wape"), (["mape"], "wape")):
-            select_chart_metrics(page, picked)
+        for shown, value, round_value in (("wape", 0.2, "20.0%"), ("mae", 24, "20")):
+            select_tile_metric(page, shown)
             assert rounds.get_attribute("data-chart-metric") == shown
-            assert chart.get_attribute("data-chart-metric") == "validation_error"
-            assert "validation error" in chart.locator(".forecast-tile-chart-label").inner_text()
-            assert chart.locator("circle").evaluate_all(plotted) == validation_values
-        select_chart_metrics(page, ["mae"])
-        assert "gen 3 · round 6: 20\n" in rounds.inner_text()
-        # lightgbm saved only its loss metric: the chart says so and keeps its own scale
+            assert chart.get_attribute("data-chart-metric") == shown
+            assert float(
+                chart.locator(".forecast-tile-current").get_attribute("data-value")
+            ) == pytest.approx(value)
+            assert f"gen 3 · round 6: {round_value}\n" in rounds.inner_text()
+        select_chart_metrics(page, ["mape"])
+        assert chart.get_attribute("data-chart-metric") == "mae"
+        assert rounds.get_attribute("data-chart-metric") == "mae"
+        select_tile_metric(page, "wape")
         fallback = find_tile(page, "lightgbm").locator(".forecast-tile-rounds")
         assert fallback.get_attribute("data-chart-metric") == "rmse"
         assert fallback.get_attribute("data-recorded") == "false"
-        assert "rmse · mae not saved" in fallback.inner_text()
+        assert "own loss, wape not recorded" in fallback.inner_text()
         ridge = find_tile(page, "ridge").locator(".forecast-tile-rounds")
         assert ridge.inner_text().endswith("no round curve saved for this family")
         save_tiles(page, "round-curves")
+
+
+def test_y_metric_shared_recorded_ranges_and_separate_fallback_ranges(tmp_path):
+    snapshot = make_live_tiles()
+    families = snapshot["families"]
+    families["ridge"]["tile"]["round_curves"] = make_round_curves([0.8, 0.6], rounds=4)
+    families["snaive"]["tile"]["round_curves"] = make_round_curves([2, 1], rounds=3, recorded=False)
+    for curve in families["snaive"]["tile"]["round_curves"]:
+        curve["metric"] = "mae"
+    for name, values in (("lightgbm", [30, 20]), ("snaive", [4])):
+        families[name]["tile"]["search_curve"] = [
+            {"generation": index + 1, "validation_error": value}
+            for index, value in enumerate(values)
+        ]
+    with session(tmp_path, port=8096) as (page, _base):
+        mock_live_tiles(page, snapshot)
+        open_tiles(page)
+        native_scales = [
+            read_chart_scale(find_tile(page, name).locator(".forecast-tile-rounds"))
+            for name in ("xgboost", "ridge", "lightgbm")
+        ]
+        assert native_scales[0] == native_scales[1] == native_scales[2]
+        other_native = find_tile(page, "snaive").locator(".forecast-tile-rounds")
+        assert other_native.get_attribute("data-chart-metric") == "mae"
+        assert read_chart_scale(other_native) != native_scales[0]
+        select_tile_metric(page, "wape")
+        for selector in (".forecast-tile-chart", ".forecast-tile-rounds"):
+            recorded = [find_tile(page, name).locator(selector) for name in ("xgboost", "ridge")]
+            scales = [read_chart_scale(chart) for chart in recorded]
+            assert scales[0] == scales[1]
+            assert all(chart.get_attribute("data-chart-metric") == "wape" for chart in recorded)
+            fallback = [find_tile(page, name).locator(selector) for name in ("lightgbm", "snaive")]
+            fallback_scales = [read_chart_scale(chart) for chart in fallback]
+            assert fallback_scales[0] != fallback_scales[1]
+            assert all(scale != scales[0] for scale in fallback_scales)
+            for name, chart in zip(("lightgbm", "snaive"), fallback, strict=True):
+                assert "own loss, wape not recorded" in chart.inner_text()
+                expected = "rmse" if name == "lightgbm" else "mae"
+                if selector == ".forecast-tile-chart":
+                    expected = "validation_error"
+                assert chart.get_attribute("data-chart-metric") == expected
+        for name, rounds in (("xgboost", 6), ("ridge", 4), ("snaive", 3)):
+            chart = find_tile(page, name).locator(".forecast-tile-rounds")
+            assert chart.locator("svg text").all_text_contents() == ["1", "round", str(rounds)]
+            points = chart.locator(".forecast-tile-round-current").get_attribute("points")
+            last_x = float(points.split()[-1].split(",")[0])
+            axis_end = float(chart.locator(".forecast-tile-axis").get_attribute("x2"))
+            assert last_x == pytest.approx(axis_end)
+
+
+def test_y_metric_persisted_across_reload_and_ignored_invalid_saved_value(tmp_path):
+    snapshot = make_live_tiles()
+    key = "smolsmort:forecast:regression:tile-metric"
+    with session(tmp_path, port=8096) as (page, _base):
+        mock_live_tiles(page, snapshot)
+        open_tiles(page)
+        select_tile_metric(page, "mae")
+        assert page.evaluate("key => localStorage.getItem(key)", key) == "mae"
+        page.reload()
+        open_tiles(page)
+        assert "mae" in page.locator("#regression-tiles-metric").inner_text()
+        chart = find_tile(page, "xgboost").locator(".forecast-tile-chart")
+        assert chart.get_attribute("data-chart-metric") == "mae"
+        page.evaluate("key => localStorage.setItem(key, 'mape')", key)
+        page.reload()
+        open_tiles(page)
+        assert "validation error" in page.locator("#regression-tiles-metric").inner_text()
+        assert chart.get_attribute("data-chart-metric") == "validation_error"
+
+
+def test_y_metric_open_menu_and_focus_survived_polling(tmp_path):
+    snapshot = make_live_tiles()
+    with session(tmp_path, port=8096) as (page, _base):
+        calls = mock_live_tiles(page, snapshot)
+        open_tiles(page)
+        select_tile_metric(page, "wape")
+        picker = page.locator("#regression-tiles-metric")
+        picker.focus()
+        page.keyboard.press("Enter")
+        settle_menu(page)
+        menu = page.locator(".menu-panel")
+        option = menu.locator('.menu-item[data-id="mae"]')
+        for _ in range(3):
+            page.keyboard.press("ArrowDown")
+        assert option.evaluate("node => node === document.activeElement")
+        before = len(calls)
+        snapshot["families"]["xgboost"]["tile"]["generation"] = 6
+        snapshot["families"]["xgboost"]["tile"]["search_curve"].append(
+            {"generation": 6, "validation_error": 0.3, "wape": 0.15, "mae": 21}
+        )
+        page.wait_for_function(
+            "() => document.querySelector('[data-family=\"xgboost\"] .forecast-tile-current')"
+            "?.dataset.generation === '6'"
+        )
+        assert len(calls) > before
+        assert menu.is_visible()
+        assert option.evaluate("node => node === document.activeElement")
+        assert "wape" in picker.inner_text()
+        page.keyboard.press("Enter")
+        assert not menu.count()
+        assert "mae" in picker.inner_text()
+        assert picker.evaluate("node => node === document.activeElement")
+
+
+def test_y_metric_still_worked_when_storage_was_blocked(tmp_path):
+    with session(tmp_path, port=8096) as (page, _base):
+        mock_live_tiles(page, make_live_tiles())
+        page.add_init_script(
+            """(() => {
+                for (const method of ['getItem', 'setItem']) {
+                    const original = Storage.prototype[method];
+                    Storage.prototype[method] = function(key, ...values) {
+                        if (key === 'smolsmort:forecast:regression:tile-metric') {
+                            throw new DOMException('storage blocked', 'SecurityError');
+                        }
+                        return original.call(this, key, ...values);
+                    };
+                }
+            })()"""
+        )
+        page.reload()
+        open_tiles(page)
+        select_tile_metric(page, "wape")
+        chart = find_tile(page, "xgboost").locator(".forecast-tile-chart")
+        assert chart.get_attribute("data-chart-metric") == "wape"
 
 
 def test_chart_broad_phase_single_value_and_missing_curve_message(tmp_path):
@@ -355,7 +517,7 @@ def test_chart_broad_phase_single_value_and_missing_curve_message(tmp_path):
         search_curve=make_search_curve([0.45]), search_single=True, generation=None
     )
     snapshot["families"]["ridge"]["tile"]["search_curve"] = []
-    with session(tmp_path, port=8095) as (page, _base):
+    with session(tmp_path, port=8096) as (page, _base):
         mock_live_tiles(page, snapshot)
         open_tiles(page)
         running = find_tile(page, "xgboost").locator(".forecast-tile-chart")
@@ -399,7 +561,7 @@ def make_live_legacy_tiles() -> dict:
 
 def test_live_legacy_chart_polled_generations_and_kept_menu_focus(tmp_path):
     snapshot = make_live_legacy_tiles()
-    with session(tmp_path, port=8095) as (page, _base):
+    with session(tmp_path, port=8096) as (page, _base):
         calls = mock_live_tiles(page, snapshot)
         open_tiles(page)
         tile = find_tile(page, "xgboost")
@@ -442,7 +604,7 @@ def test_live_legacy_chart_polled_generations_and_kept_menu_focus(tmp_path):
 def test_live_legacy_chart_without_generations_showed_single_saved_value(tmp_path):
     snapshot = make_live_legacy_tiles()
     snapshot.update(generations=[], generation_curves=[], progress={"elapsed": 10})
-    with session(tmp_path, port=8095) as (page, _base):
+    with session(tmp_path, port=8096) as (page, _base):
         mock_live_tiles(page, snapshot)
         open_tiles(page)
         chart = find_tile(page, "xgboost").locator(".forecast-tile-chart")
@@ -453,13 +615,15 @@ def test_live_legacy_chart_without_generations_showed_single_saved_value(tmp_pat
         assert rounds.inner_text().endswith("no round curve saved for this family")
 
 
-def test_chart_missing_latest_metric_did_not_highlight_older_generation(tmp_path):
+@pytest.mark.parametrize("metric", ["validation_error", "wape"])
+def test_chart_missing_latest_metric_did_not_highlight_older_generation(tmp_path, metric):
     snapshot = make_live_tiles()
     for name in ("ridge", "lightgbm"):
-        snapshot["families"][name]["tile"]["search_curve"][-1]["validation_error"] = None
-    with session(tmp_path, port=8095) as (page, _base):
+        snapshot["families"][name]["tile"]["search_curve"][-1][metric] = None
+    with session(tmp_path, port=8096) as (page, _base):
         mock_live_tiles(page, snapshot)
         open_tiles(page)
+        select_tile_metric(page, metric)
         for name, label in (
             ("ridge", "gen 3: not saved"),
             ("lightgbm", "pruned · gen 2: not saved"),
@@ -472,7 +636,7 @@ def test_chart_missing_latest_metric_did_not_highlight_older_generation(tmp_path
 
 
 def test_tiles_read_saved_winner_artifacts_and_kept_tables(tmp_path):
-    with session(tmp_path, port=8095) as (page, _base):
+    with session(tmp_path, port=8096) as (page, _base):
         make_saved_tiles(tmp_path / "forecast_root")
         with page.expect_response("**/api/forecast-run?**") as response:
             open_tiles(page)
@@ -522,7 +686,7 @@ def test_tiles_read_saved_winner_artifacts_and_kept_tables(tmp_path):
 
 def test_tiles_polled_states_without_losing_flip_menu_or_focus(tmp_path):
     snapshot = make_live_tiles()
-    with session(tmp_path, port=8095) as (page, _base):
+    with session(tmp_path, port=8096) as (page, _base):
         calls = mock_live_tiles(page, snapshot)
         open_tiles(page)
         families = page.locator("#regression-tiles-grid .forecast-tile").evaluate_all(
@@ -604,7 +768,7 @@ def test_tiles_polled_states_without_losing_flip_menu_or_focus(tmp_path):
 
 @pytest.mark.parametrize("seasonal", [False, True])
 def test_back_folds_fill_each_family_on_one_wape_scale(tmp_path, seasonal):
-    with session(tmp_path, port=8095) as (page, _base):
+    with session(tmp_path, port=8096) as (page, _base):
         root = tmp_path / "forecast_root"
         run_id = make_saved_tiles(root)
         run = root / ".forecast-runs" / run_id
@@ -636,9 +800,7 @@ def test_back_folds_fill_each_family_on_one_wape_scale(tmp_path, seasonal):
                 ],
             )
         open_tiles(page)
-        page.locator("#regression-error-metrics").click()
-        page.locator('#regression-error-metrics-menu input[data-metric-id="test_ratio"]').uncheck()
-        page.keyboard.press("Escape")
+        select_chart_metrics(page, ["validation_error"])
         page.locator("#regression-tiles-flip").click()
         for name, values in scores.items():
             back = find_tile(page, name).locator(".forecast-tile-back")
@@ -671,7 +833,7 @@ def test_back_folds_fill_each_family_on_one_wape_scale(tmp_path, seasonal):
 
 
 def test_tiles_mobile_layout_motion_and_palette_tokens(tmp_path):
-    with session(tmp_path, width=390, port=8095) as (page, _base):
+    with session(tmp_path, width=390, port=8096) as (page, _base):
         mock_live_tiles(page, make_live_tiles())
         open_tiles(page)
         tiles = page.locator("#regression-tiles-grid .forecast-tile")
@@ -681,6 +843,12 @@ def test_tiles_mobile_layout_motion_and_palette_tokens(tmp_path):
         assert all(box["x"] >= 0 and box["x"] + box["width"] <= 390 for box in boxes)
         assert all(a["y"] + a["height"] <= b["y"] for a, b in pairwise(boxes))
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        page.locator("#regression-tiles-metric").click()
+        menu_box = page.locator(".menu-panel").bounding_box()
+        assert menu_box["x"] >= 0 and menu_box["x"] + menu_box["width"] <= 390
+        page.locator('.menu-panel .menu-item[data-id="wape"]').click()
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        assert all(abs(tile.bounding_box()["width"] - 306) < 1 for tile in tiles.all())
         save_tiles(page, "mobile-charts")
         inner = tiles.first.locator(".forecast-tile-inner")
         assert inner.evaluate("node => getComputedStyle(node).transitionDuration") == "0.42s"
@@ -708,7 +876,7 @@ def test_tiles_mobile_layout_motion_and_palette_tokens(tmp_path):
 
 
 def test_legacy_tiles_loaded_saved_search_curves_and_kept_live_metadata(tmp_path):
-    with session(tmp_path, port=8095) as (page, _base):
+    with session(tmp_path, port=8096) as (page, _base):
         write_multifamily_run(tmp_path / "forecast_root", version=1)
         with page.expect_response("**/api/forecast-view?**") as response:
             open_tiles(page)
