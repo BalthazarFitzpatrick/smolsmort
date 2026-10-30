@@ -760,6 +760,7 @@ def search(
                     "metric": history["metric"],
                     "bucket": history.get("bucket"),
                     "validation": history["validation"],
+                    **({"curves": history["curves"]} if history.get("curves") else {}),
                 }
             )
         for entry in scored.values():

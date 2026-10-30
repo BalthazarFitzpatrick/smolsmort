@@ -221,8 +221,8 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-tiles-legend > :first-child { color: var(--cream); }
 .forecast-tiles-legend i { display: inline-block; width: 10px; height: 10px; margin-right: 6px; vertical-align: -1px; background: var(--tile-tone); }
 .forecast-tiles-bar .toggle { font: inherit; height: 31px; white-space: nowrap; }
-.forecast-tiles-grid { display: grid; grid-template-columns: repeat(auto-fill, 232px); gap: 12px; align-items: start; }
-.forecast-tile { width: 232px; height: 232px; perspective: 900px; position: relative; white-space: normal; }
+.forecast-tiles-grid { display: grid; grid-template-columns: repeat(auto-fill, var(--tile-size, 306px)); gap: 12px; align-items: start; }
+.forecast-tile { width: var(--tile-size, 306px); height: var(--tile-size, 306px); perspective: 900px; position: relative; white-space: normal; }
 .forecast-tile:has(.forecast-tile-face:not([inert]) details[open]) { z-index: 10; }
 .forecast-tile-inner { position: relative; width: 100%; height: 100%; transform-style: preserve-3d; transition: transform 420ms cubic-bezier(0.22, 0.61, 0.36, 1); }
 .forecast-tiles.flipped .forecast-tile-inner { transform: rotateY(180deg); }
@@ -232,14 +232,17 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-tile-name { color: var(--cream); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .forecast-tile-score { color: var(--tile-tone); flex-shrink: 0; }
 .forecast-tile-dim { color: var(--text-dim); }
-.forecast-tile-chart { display: block; flex: 0 0 118px; height: 118px; width: 204px; margin: 6px 0 8px; }
-.forecast-tile-chart-label { font-size: 11px; line-height: 14px; color: var(--text-dim); }
+.forecast-tile-chart, .forecast-tile-rounds { display: block; flex: 0 0 76px; height: 76px; margin: 4px 0 2px; }
+.forecast-tile-chart-label { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; line-height: 14px; color: var(--text-dim); white-space: nowrap; }
+.forecast-tile-chart-label > :first-child { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.forecast-tile-chart-label .forecast-tile-current-value { color: var(--text); flex-shrink: 0; }
 .forecast-tile-chart-note { font-size: 10px; line-height: 10px; color: var(--text-dim); }
-.forecast-tile-placeholder { display: flex; align-items: center; justify-content: center; height: 84px; color: var(--text-dim); font-size: 11px; }
-.forecast-tile-search { display: block; width: 204px; height: 84px; }
-.forecast-tile-search text { fill: var(--text-dim); font-size: 9px; }
-.forecast-tile-search .forecast-tile-current-value { fill: var(--text); font-size: 10px; }
-.forecast-tile-chart polyline { fill: none; stroke-width: 2; }
+.forecast-tile-placeholder { display: flex; align-items: center; justify-content: center; height: 58px; color: var(--text-dim); font-size: 11px; }
+.forecast-tile-search, .forecast-tile-round-plot { display: block; width: 100%; height: 58px; overflow: hidden; }
+.forecast-tile-search text, .forecast-tile-round-plot text { fill: var(--text-dim); font-size: 9px; }
+.forecast-tile-chart polyline, .forecast-tile-rounds polyline { fill: none; stroke-width: 2; }
+.forecast-tile-round-line { stroke: var(--cream); stroke-width: 1 !important; }
+.forecast-tile-round-current { stroke: var(--tile-tone); }
 .forecast-tile-search-line, .forecast-tile-search-point { stroke: var(--tile-tone); }
 .forecast-tile-search-point { fill: var(--panel-row); }
 .forecast-tile-current { fill: var(--tile-tone); stroke: var(--text); stroke-width: 1; }
@@ -252,7 +255,7 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-tile summary:hover, .forecast-tile summary:focus-visible { border-color: var(--cream); color: var(--cream); }
 .forecast-tile details[open] summary { background: var(--accent-on); color: var(--accent-on-text); border-color: var(--cream); }
 .forecast-tile details[open] summary .forecast-tile-dim { color: inherit; }
-.forecast-tile-menu { position: absolute; top: 33px; left: 0; width: 204px; z-index: 5; background: var(--panel-row); border: 2px solid var(--cream); padding: 6px 0; box-shadow: 0 4px 20px rgba(0, 0, 0, .6); max-height: 150px; overflow: auto; box-sizing: border-box; }
+.forecast-tile-menu { position: absolute; top: 33px; left: 0; width: calc(var(--tile-size, 306px) - 28px); z-index: 5; background: var(--panel-row); border: 2px solid var(--cream); padding: 6px 0; box-shadow: 0 4px 20px rgba(0, 0, 0, .6); max-height: 150px; overflow: auto; box-sizing: border-box; }
 .forecast-tile details[data-menu="param"] .forecast-tile-menu { left: auto; right: 0; }
 .forecast-tile-menu-row { display: flex; justify-content: space-between; gap: 8px; padding: 2px 10px; }
 .forecast-tile-menu-row > span { overflow-wrap: anywhere; min-width: 0; }

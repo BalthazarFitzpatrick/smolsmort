@@ -85,7 +85,7 @@ def test_daily_nan_features_fit_and_predict(family, tmp_path):
     assert values.shape == frame.y[ws.series_masks[bucket]["val"]].shape
     assert np.isfinite(values).all()
     history = fitted.eval_history
-    assert set(history) == {"metric", "training", "validation"}
+    assert set(history) == {"metric", "training", "validation", "curves"}
     assert len(history["training"]) == len(history["validation"])
     assert 1 <= fitted.rounds <= len(history["validation"])
 
@@ -211,3 +211,38 @@ def test_log_scale_float_counts_are_rounded_to_integers(family):
         params={"num_leaves": 10.94, "min_child_samples": 7.6, "max_depth": 4.2},
     )
     assert np.isfinite(fitted.predict(x)).all()
+
+
+@pytest.mark.parametrize("objective", ["regression_l1", "regression", "poisson", "tweedie"])
+def test_round_curves_match_each_rounds_tail_prediction_without_changing_the_fit(objective):
+    pytest.importorskip("lightgbm")
+    rng = np.random.default_rng(3)
+    x = rng.normal(size=(400, 3)).astype(np.float32)
+    y = np.exp(x[:, 0] * 0.3) + 1
+    family = get_family("lightgbm")
+    options = {"objective": objective, "y": y, "max_rounds": 15, "patience": 3}
+    fitted = family.fit(x, **options)
+    without = family.fit(x, **options, round_errors=False)
+    curves = fitted.eval_history["curves"]
+    assert "curves" not in without.eval_history
+    assert without.rounds == fitted.rounds
+    np.testing.assert_array_equal(without.predict(x), fitted.predict(x))
+    assert len(curves["wape"]) == len(fitted.eval_history["validation"])
+    # the probe is rebuilt to read each round's tail prediction directly
+    import lightgbm as lgb
+
+    config = {
+        **family.defaults(),
+        "objective": objective,
+        "deterministic": True,
+        "force_col_wise": True,
+        "seed": 0,
+        "num_threads": 1,
+        "verbosity": -1,
+        "bagging_freq": 0,
+    }
+    probe = lgb.train(config, lgb.Dataset(x[:340], label=y[:340]), len(curves["wape"]))
+    truth = y[340:]
+    for round_index, wape in enumerate(curves["wape"]):
+        errors = np.abs(probe.predict(x[340:], num_iteration=round_index + 1) - truth)
+        assert wape == pytest.approx(errors.sum() / truth.sum(), rel=1e-6)

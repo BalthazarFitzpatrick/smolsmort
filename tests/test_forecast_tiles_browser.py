@@ -133,6 +133,25 @@ def make_search_curve(values: list[float]) -> list[dict]:
     ]
 
 
+def make_round_curves(ends: list[float], rounds: int = 6, recorded: bool = True) -> list[dict]:
+    """per-round curves falling to each generation's end value; mae is wape times 100"""
+    curves = []
+    for index, end in enumerate(ends):
+        wape = [end * (1 + (rounds - step) / rounds) for step in range(1, rounds + 1)]
+        curves.append(
+            {
+                "generation": index + 1,
+                "key": f"g{index}",
+                "metric": "rmse",
+                "validation": [value * 300 for value in wape],
+                "curves": {"wape": wape, "mae": [value * 100 for value in wape]}
+                if recorded
+                else {},
+            }
+        )
+    return curves
+
+
 def make_live_tiles() -> dict:
     ridge = {
         "state": "done",
@@ -185,6 +204,7 @@ def make_live_tiles() -> dict:
                 "state": "running",
                 "tile": {
                     "search_curve": make_search_curve([0.8, 0.7, 0.6, 0.5, 0.4]),
+                    "round_curves": make_round_curves([0.4, 0.3, 0.2]),
                     "folds": [],
                     "elapsed": 420,
                     "generation": 5,
@@ -196,6 +216,7 @@ def make_live_tiles() -> dict:
                 "pruned_reason": "paired validation error behind ridge",
                 "tile": {
                     "search_curve": make_search_curve([0.7, 0.55]),
+                    "round_curves": make_round_curves([0.3, 0.25], recorded=False),
                     "folds": [],
                     "elapsed": 120,
                     "generation": 2,
@@ -291,55 +312,41 @@ def test_chart_faces_compare_running_done_pruned_and_one_shot_generations(tmp_pa
         save_tiles(page, "four-family-generations")
 
 
-def test_chart_metric_switch_first_choice_and_untracked_fallback(tmp_path):
+def test_round_chart_follows_picked_metric_and_generation_chart_stays_validation(tmp_path):
     snapshot = make_live_tiles()
-    registry = with_error_metrics(snapshot)["metric_registry"]
-    snapshot["metric_registry"] = [
-        *registry,
-        {
-            "id": "rmse",
-            "label": "rmse",
-            "unit": "number",
-            "scope": "validation",
-            "direction": "lower",
-            "explanation": "saved validation loss",
-        },
-    ]
     with session(tmp_path, port=8095) as (page, _base):
         mock_live_tiles(page, snapshot)
         open_tiles(page)
-        chart = find_tile(page, "ridge").locator(".forecast-tile-front .forecast-tile-chart")
-        validation_line = chart.locator(".forecast-tile-search-line").get_attribute("points")
-        select_chart_metrics(page, ["mae", "wape"])
-        assert chart.get_attribute("data-chart-metric") == "mae"
-        assert "mae" in chart.locator(".forecast-tile-chart-label").inner_text()
-        assert float(chart.locator(".forecast-tile-current").get_attribute("data-value")) == 8
+        tile = find_tile(page, "xgboost")
+        chart = tile.locator(".forecast-tile-front .forecast-tile-chart")
+        rounds = tile.locator(".forecast-tile-front .forecast-tile-rounds")
+        plotted = "nodes => nodes.map(node => node.dataset.value)"
+        validation_values = chart.locator("circle").evaluate_all(plotted)
+        # default pick (validation error, test ratio) has no per-round metric, so wape shows
+        assert rounds.get_attribute("data-chart-metric") == "wape"
+        assert rounds.get_attribute("data-recorded") == "true"
+        assert rounds.locator(".forecast-tile-round-current").count() == 1
+        assert rounds.locator(".forecast-tile-round-line").count() == 2
         assert (
-            chart.locator(".forecast-tile-search-line").get_attribute("points") != validation_line
+            rounds.locator(".forecast-tile-round-current").get_attribute("data-generation") == "3"
         )
-        select_chart_metrics(page, ["wape"])
-        assert chart.get_attribute("data-chart-metric") == "wape"
-        assert chart.locator(".forecast-tile-current").get_attribute("data-value") == "0.1"
-        for metric, label in (("mape", "mape"), ("test_ratio", "test ratio")):
-            select_chart_metrics(page, [metric])
+        assert "gen 3 · round 6: 20.0%" in rounds.inner_text()
+        for picked, shown in ((["mae", "wape"], "mae"), (["wape"], "wape"), (["mape"], "wape")):
+            select_chart_metrics(page, picked)
+            assert rounds.get_attribute("data-chart-metric") == shown
             assert chart.get_attribute("data-chart-metric") == "validation_error"
-            assert chart.locator(".forecast-tile-chart-note").inner_text() == (
-                f"{label}: not tracked per generation"
-            )
             assert "validation error" in chart.locator(".forecast-tile-chart-label").inner_text()
-            assert (
-                chart.locator(".forecast-tile-search-line").get_attribute("points")
-                == validation_line
-            )
-        select_chart_metrics(page, ["rmse"])
-        assert chart.get_attribute("data-chart-metric") == "rmse"
-        assert float(chart.locator(".forecast-tile-current").get_attribute("data-value")) == 10
-        assert "rmse" in chart.locator(".forecast-tile-chart-label").inner_text()
-        scales = page.locator("#regression-tiles .forecast-tile-chart").evaluate_all(
-            "nodes => nodes.map(node => [node.dataset.scaleMin, node.dataset.scaleMax])"
-        )
-        assert all(scale == scales[0] for scale in scales)
-        save_tiles(page, "selected-loss-generations")
+            assert chart.locator("circle").evaluate_all(plotted) == validation_values
+        select_chart_metrics(page, ["mae"])
+        assert "gen 3 · round 6: 20\n" in rounds.inner_text()
+        # lightgbm saved only its loss metric: the chart says so and keeps its own scale
+        fallback = find_tile(page, "lightgbm").locator(".forecast-tile-rounds")
+        assert fallback.get_attribute("data-chart-metric") == "rmse"
+        assert fallback.get_attribute("data-recorded") == "false"
+        assert "rmse · mae not saved" in fallback.inner_text()
+        ridge = find_tile(page, "ridge").locator(".forecast-tile-rounds")
+        assert ridge.inner_text().endswith("no round curve saved for this family")
+        save_tiles(page, "round-curves")
 
 
 def test_chart_broad_phase_single_value_and_missing_curve_message(tmp_path):
@@ -401,9 +408,11 @@ def test_live_legacy_chart_polled_generations_and_kept_menu_focus(tmp_path):
         assert marker.get_attribute("data-generation") == "2"
         assert marker.get_attribute("data-value") == "0.25"
         assert chart.locator(".forecast-tile-search-line").count() == 1
-        select_chart_metrics(page, ["mae"])
-        assert chart.get_attribute("data-chart-metric") == "mae"
-        assert marker.get_attribute("data-value") == "8"
+        rounds = tile.locator(".forecast-tile-rounds")
+        assert rounds.get_attribute("data-chart-metric") == "rmse"
+        assert (
+            rounds.locator(".forecast-tile-round-current").get_attribute("data-generation") == "2"
+        )
         menu = tile.locator('.forecast-tile-front details[data-menu="param"]')
         summary = menu.locator("summary")
         summary.focus()
@@ -422,7 +431,10 @@ def test_live_legacy_chart_polled_generations_and_kept_menu_focus(tmp_path):
             "?.dataset.generation === '3'"
         )
         assert len(calls) > before
-        assert marker.get_attribute("data-value") == "6"
+        assert marker.get_attribute("data-value") == "0.2"
+        assert (
+            rounds.locator(".forecast-tile-round-current").get_attribute("data-generation") == "3"
+        )
         assert menu.get_attribute("open") is not None
         assert summary.evaluate("node => node === document.activeElement")
 
@@ -437,18 +449,17 @@ def test_live_legacy_chart_without_generations_showed_single_saved_value(tmp_pat
         assert chart.locator(".forecast-tile-current").get_attribute("data-value") == "0.25"
         assert chart.locator(".forecast-tile-current-value").text_content() == "single value: 25.0%"
         assert chart.locator(".forecast-tile-search-line").count() == 0
-        select_chart_metrics(page, ["mae"])
-        assert chart.locator(".forecast-tile-current").get_attribute("data-value") == "8"
+        rounds = find_tile(page, "xgboost").locator(".forecast-tile-rounds")
+        assert rounds.inner_text().endswith("no round curve saved for this family")
 
 
 def test_chart_missing_latest_metric_did_not_highlight_older_generation(tmp_path):
     snapshot = make_live_tiles()
     for name in ("ridge", "lightgbm"):
-        snapshot["families"][name]["tile"]["search_curve"][-1]["mae"] = None
+        snapshot["families"][name]["tile"]["search_curve"][-1]["validation_error"] = None
     with session(tmp_path, port=8095) as (page, _base):
         mock_live_tiles(page, snapshot)
         open_tiles(page)
-        select_chart_metrics(page, ["mae"])
         for name, label in (
             ("ridge", "gen 3: not saved"),
             ("lightgbm", "pruned · gen 2: not saved"),
@@ -665,7 +676,7 @@ def test_tiles_mobile_layout_motion_and_palette_tokens(tmp_path):
         open_tiles(page)
         tiles = page.locator("#regression-tiles-grid .forecast-tile")
         boxes = [tile.bounding_box() for tile in tiles.all()]
-        assert all(box and abs(box["width"] - 232) < 1 for box in boxes)
+        assert all(box and abs(box["width"] - 306) < 1 for box in boxes)
         assert all(abs(box["height"] - 306) < 1 for box in boxes)
         assert all(box["x"] >= 0 and box["x"] + box["width"] <= 390 for box in boxes)
         assert all(a["y"] + a["height"] <= b["y"] for a, b in pairwise(boxes))
@@ -703,7 +714,7 @@ def test_legacy_tiles_loaded_saved_search_curves_and_kept_live_metadata(tmp_path
             open_tiles(page)
         assert list(response.value.json()["tiles"]) == ["xgboost"]
         tile = find_tile(page, "xgboost")
-        tile.locator(".forecast-tile-front svg").wait_for()
+        tile.locator(".forecast-tile-front .forecast-tile-search").wait_for()
         assert (
             tile.locator('.forecast-tile-front [data-metric-id="test_ratio"]').inner_text()
             == "test ratio: 0.95"

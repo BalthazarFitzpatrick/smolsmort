@@ -714,6 +714,7 @@ def _timeseries_fit(ws, genome, frame, rows, nthread):
         feature_types=types,
         params=dict(genome.params),
         nthread=nthread,
+        round_errors=genome.transform == "none",
     )
     return fitted, x
 
