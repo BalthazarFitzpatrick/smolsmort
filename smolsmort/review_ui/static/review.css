@@ -174,7 +174,10 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-metric-picker { position: relative; flex: 0 0 auto; max-width: 100%; }
 .forecast-metric-picker > .dropdown-head { width: auto; min-width: 0; }
 .forecast-horizon-controls { display: contents; }
-.menu-panel.forecast-blend-menu:has(.label-columns) { min-width: min(260px, calc(100vw - 8px)); max-width: calc(100vw - 8px); }
+.forecast-horizon-controls .dropdown-head { max-width: 100%; }
+.menu-panel.forecast-blend-menu:has(.label-columns) { width: min(420px, calc(100vw - 8px)); min-width: 0; max-width: calc(100vw - 8px); }
+.forecast-blend-menu .col:first-child { flex: 3 1 0; }
+.forecast-blend-menu .menu-item .stats { flex-shrink: 0; }
 .forecast-results [id$="-chart-caption"] { white-space: normal; overflow-wrap: anywhere; }
 .forecast-metric-lines { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-variant-numeric: tabular-nums; }
 .forecast-metric-lines .forecast-metric { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
