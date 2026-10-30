@@ -32,7 +32,8 @@ def run(folder: Path, name: str) -> int:
     if "torch" in sys.modules:
         raise SystemExit("the forecast worker must not share a process with torch")
     folder = Path(folder)
-    request = parse_request(read_json(folder / "request.json"))
+    request = read_json(folder / "request.json")
+    request = parse_request({"horizon_mode": "mixed", **request})
     selection = next(item for item in request["families"] if item["name"] == name)
     target = folder / "families" / name
     target.mkdir(parents=True, exist_ok=True)
@@ -103,6 +104,7 @@ def run(folder: Path, name: str) -> int:
             request["summary"],
             transform=request.get("transform", "none"),
             holdout=request.get("holdout", "block"),
+            horizon_mode=request["horizon_mode"],
         )
         nthread = (allocation or {}).get("nthread")
         if nthread is None:

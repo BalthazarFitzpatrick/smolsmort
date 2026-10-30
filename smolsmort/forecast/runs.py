@@ -63,6 +63,7 @@ def start_run(
     time_budget_s: float | None = None,
     transform: str = "none",
     holdout: str = "block",
+    horizon_mode: str = "single",
     aggregate: str = "none",
     aggregate_weight: str | None = None,
     ensemble: dict | None = None,
@@ -86,6 +87,7 @@ def start_run(
         "recipe": recipe,
         "nthread": nthread,
         "aggregate": aggregate,
+        "horizon_mode": horizon_mode,
     }
     if aggregate_weight is not None:
         request["aggregate_weight"] = aggregate_weight

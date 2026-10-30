@@ -295,6 +295,7 @@ def _run_trial(runs_root: Path, cache_root: Path, options: dict) -> Callable:
             prune_sigma=options.get("prune_sigma", 2.0),
             max_concurrent_families=options.get("max_concurrent_families"),
             holdout=options.get("holdout", "block"),
+            horizon_mode=options.get("horizon_mode", "single"),
         )
         row = {"run": run_id}
         try:
