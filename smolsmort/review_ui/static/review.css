@@ -226,13 +226,19 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-tile-name { color: var(--cream); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .forecast-tile-score { color: var(--tile-tone); flex-shrink: 0; }
 .forecast-tile-dim { color: var(--text-dim); }
-.forecast-tile-chart { display: block; flex: 0 0 84px; height: 84px; width: 204px; margin: 6px 0 8px; border-bottom: 2px solid var(--grey-border); }
-.forecast-tile-placeholder { display: flex; align-items: center; justify-content: center; color: var(--text-dim); font-size: 11px; }
+.forecast-tile-chart { display: block; flex: 0 0 118px; height: 118px; width: 204px; margin: 6px 0 8px; }
+.forecast-tile-chart-label { font-size: 11px; line-height: 14px; color: var(--text-dim); }
+.forecast-tile-chart-note { font-size: 10px; line-height: 10px; color: var(--text-dim); }
+.forecast-tile-placeholder { display: flex; align-items: center; justify-content: center; height: 84px; color: var(--text-dim); font-size: 11px; }
+.forecast-tile-search { display: block; width: 204px; height: 84px; }
+.forecast-tile-search text { fill: var(--text-dim); font-size: 9px; }
+.forecast-tile-search .forecast-tile-current-value { fill: var(--text); font-size: 10px; }
 .forecast-tile-chart polyline { fill: none; stroke-width: 2; }
-.forecast-tile-chart .forecast-tile-actual { stroke: var(--text-dim); }
-.forecast-tile-chart .forecast-tile-prediction { stroke: var(--tile-tone); }
-.forecast-tile-chart circle { fill: var(--panel-row); }
-.forecast-tile-split { stroke: var(--grey-border); stroke-width: 2; stroke-dasharray: 3 3; }
+.forecast-tile-search-line, .forecast-tile-search-point { stroke: var(--tile-tone); }
+.forecast-tile-search-point { fill: var(--panel-row); }
+.forecast-tile-current { fill: var(--tile-tone); stroke: var(--text); stroke-width: 1; }
+.forecast-tile-pruned { fill: none; stroke: var(--text); stroke-width: 2; }
+.forecast-tile-axis { stroke: var(--grey-border); }
 .forecast-tile-menus { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .forecast-tile details { position: relative; min-width: 0; }
 .forecast-tile summary { list-style: none; cursor: pointer; height: 31px; box-sizing: border-box; border: 2px solid var(--grey-border); background: var(--panel-row); display: flex; align-items: center; justify-content: space-between; padding: 0 8px; }

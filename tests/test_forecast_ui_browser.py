@@ -141,7 +141,7 @@ def show_tab(page: Page, name: str) -> None:
 
 
 @contextmanager
-def session(tmp_path: Path, *, width: int = 1280, numeric: bool = False):
+def session(tmp_path: Path, *, width: int = 1280, numeric: bool = False, port: int = 0):
     """the real review server, its forecast root holding the synthetic rows fixture, and a
     headless page on it"""
     errors: list[str] = []
@@ -171,7 +171,7 @@ def session(tmp_path: Path, *, width: int = 1280, numeric: bool = False):
             crop_file=world.root / "crop.json",
         )
         app.state.set_bases({"forecast": str(root)})
-        server = serve(app)
+        server = serve(app, port=port)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         base = f"http://127.0.0.1:{server.server_port}"
         try:
