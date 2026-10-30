@@ -206,6 +206,39 @@ function forecastRatioStyle(node, verdict) {
   node.classList.toggle('worse', Number.isFinite(ratio) && ratio >= 1);
 }
 
+function forecastLegacyTileSearch(run, best) {
+  const points = new Map();
+  const finite = value => Number.isFinite(value) ? value : null;
+  const getPoint = record => {
+    const index = record.family_generation ?? record.generation;
+    if (!Number.isInteger(index) || index < 0) return null;
+    if (!points.has(index + 1)) points.set(index + 1,
+      {generation: index + 1, validation_error: null, wape: null, mae: null});
+    return points.get(index + 1);
+  };
+  // live legacy polls carry search records before result details can load
+  for (const event of run.generations || []) {
+    const point = getPoint(event);
+    if (!point) continue;
+    point.validation_error = finite(event.best);
+    for (const metric of ['wape', 'mae']) point[metric] = finite(event.metrics?.[metric]);
+  }
+  for (const curve of run.curves || []) {
+    if (!curve.metric || ['generation', 'validation_error', 'mape', 'test_ratio'].includes(curve.metric)
+        || !Array.isArray(curve.validation) || !curve.validation.length) continue;
+    const point = getPoint(curve);
+    if (point && point[curve.metric] == null) point[curve.metric] = finite(curve.validation.at(-1));
+  }
+  if (points.size) return {
+    search_curve: Array.from({length: Math.max(...points.keys())}, (_, index) =>
+      points.get(index + 1) || {generation: index + 1}), search_single: false,
+  };
+  const values = {validation_error: finite(run.best_error ?? best.fitness),
+    wape: finite(best.metrics?.wape), mae: finite(best.metrics?.mae)};
+  const known = Object.values(values).some(Number.isFinite);
+  return {search_curve: known ? [{generation: 1, ...values}] : [], search_single: known};
+}
+
 function forecastTileEntries(run) {
   const families = run?.version === 1 ? [] : Object.entries(run?.families || {});
   const entries = families.length ? families.map(([name, status]) => ({
@@ -221,7 +254,7 @@ function forecastTileEntries(run) {
       test_naive_wape: run.verdict?.accuracy?.metric === 'wape' ? run.verdict.accuracy.baseline_error : null,
       elapsed: run.progress?.elapsed ?? run.elapsed, generation: run.progress?.generation ?? run.generation,
       folds: (best.metrics?.fold_scores || []).map((error, index) => ({label: `fold ${index + 1}`, error})),
-      search_curve: [],
+      ...forecastLegacyTileSearch(run, best),
     });
   }
   return entries.sort((a, b) => {
@@ -313,7 +346,8 @@ function forecastTileChart(tile, scale) {
   wrap.dataset.scaleMin = String(low);
   wrap.dataset.scaleMax = String(high);
   wrap.dataset.generationMax = String(generation);
-  wrap.append(forecastNode('div', 'forecast-tile-chart-label', `${metric.label} · validation`));
+  const metricLabel = metric.id === 'validation_error' ? metric.label : `${metric.label} · validation`;
+  wrap.append(forecastNode('div', 'forecast-tile-chart-label', metricLabel));
   const points = (tile.search_curve || []).filter(point => Number.isFinite(point.generation));
   const known = points.filter(point => Number.isFinite(point[metric.id]));
   if (!known.length) {
@@ -324,9 +358,10 @@ function forecastTileChart(tile, scale) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('viewBox', '0 0 204 84');
   svg.setAttribute('role', 'img');
-  const last = known.at(-1);
-  const value = forecastMetricNumber(metric, last[metric.id]);
-  const end = tile.state === 'pruned' ? 'pruned' : tile.search_single ? 'single value' : `gen ${last.generation}`;
+  const last = points.at(-1);
+  const value = Number.isFinite(last[metric.id]) ? forecastMetricNumber(metric, last[metric.id]) : 'not saved';
+  const end = (tile.state === 'pruned' ? 'pruned · ' : '')
+    + (tile.search_single ? 'single value' : `gen ${last.generation}`);
   svg.setAttribute('aria-label', `${tile.name}: ${metric.label} by generation; ${end}: ${value}; shared scale ${forecastMetricNumber(metric, low)} to ${forecastMetricNumber(metric, high)}`);
   svg.classList.add('forecast-tile-search');
   const add = (tag, attrs) => {
@@ -360,7 +395,7 @@ function forecastTileChart(tile, scale) {
     marker.append(title);
   });
   draw();
-  if (tile.state === 'pruned') {
+  if (tile.state === 'pruned' && Number.isFinite(last[metric.id])) {
     const cx = x(last.generation), cy = y(last[metric.id]);
     add('path', {d: `M${cx - 4},${cy - 4}l8,8m0,-8l-8,8`, class: 'forecast-tile-pruned'});
   }
