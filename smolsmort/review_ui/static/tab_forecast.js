@@ -62,12 +62,13 @@ function forecastModelLabel(view) {
 function forecastFillTable(table, columns, rows) {
   table.replaceChildren();
   const head = table.createTHead().insertRow();
-  columns.forEach(label => head.append(forecastNode('th', '', label)));
+  columns.forEach(label => head.append(label instanceof Node ? label : forecastNode('th', '', label)));
   const body = table.createTBody();
   rows.forEach(values => {
     const row = body.insertRow();
     values.forEach(value => {
-      const cell = forecastNode('td', '', String(value ?? '-'));
+      const cell = value instanceof Node ? value : forecastNode('td', '', String(value ?? '-'));
+      if (value instanceof Node) { row.append(cell); return; }
       cell.title = cell.textContent;
       row.append(cell);
     });
@@ -155,10 +156,47 @@ function forecastNumber(value) {
   return Number.isFinite(value) ? String(Number(value.toPrecision(4))) : '-';
 }
 
+function forecastMetricNumber(metric, value) {
+  if (!Number.isFinite(value)) return '-';
+  if (metric.unit === 'percent') return `${(value * 100).toFixed(1)}%`;
+  if (metric.unit === 'ratio') return value.toFixed(2);
+  return forecastNumber(value);
+}
+
+function forecastMetricHelp(metric, scope = metric.scope) {
+  return `${metric.explanation} ${scope}; ${metric.direction} is better. ${metric.computation}`;
+}
+
+function forecastMetricHeader(metric) {
+  const node = forecastNode('th', '', metric.label);
+  node.dataset.metricId = metric.id;
+  node.title = forecastMetricHelp(metric);
+  return node;
+}
+
+function forecastMetricValue(metric, row, tag = 'td', labelled = false) {
+  const saved = row?.error_metrics?.[metric.id];
+  const value = forecastMetricNumber(metric, saved?.value);
+  const node = forecastNode(tag, 'forecast-metric', labelled ? `${metric.label}: ${value}` : value);
+  node.dataset.metricId = metric.id;
+  const source = saved?.scope && saved.scope !== metric.scope
+    ? `this recipe uses its saved ${saved.scope} metric; no candidate test metric was saved` : null;
+  const excluded = Number.isInteger(saved?.excluded_rows) ? `${saved.excluded_rows} rows excluded` : null;
+  const reason = Number.isFinite(saved?.value) ? null : saved?.reason || 'metric not saved for this row';
+  node.title = [saved?.note || source, reason, excluded, forecastMetricHelp(metric, saved?.scope)].filter(Boolean).join('. ');
+  return node;
+}
+
+function forecastMetricLines(metrics, row, className = '') {
+  const node = forecastNode('span', `forecast-metric-lines ${className}`);
+  metrics.forEach(metric => node.append(forecastMetricValue(metric, row, 'span', true)));
+  return node;
+}
+
 function forecastRatioText(verdict) {
   const ratio = verdict?.accuracy?.ratio;
   return Number.isFinite(ratio)
-    ? `ratio ${forecastNumber(ratio)}, ${ratio < 1 ? 'better' : 'worse'} than naive`
+    ? `test ratio ${ratio.toFixed(2)}, ${ratio < 1 ? 'better' : 'worse'} than naive`
     : verdict?.summary || 'ratio unavailable';
 }
 
@@ -178,6 +216,7 @@ function forecastTileEntries(run) {
     entries.push({
       name: run.family || 'xgboost', state: run.state, genome: best.genome,
       validation_error: run.best_error ?? best.fitness, test_ratio: run.verdict?.accuracy?.ratio,
+      error_metrics: run.error_metrics,
       test_error: run.test_error, test_error_metric: run.verdict?.accuracy?.metric,
       elapsed: run.progress?.elapsed ?? run.elapsed, generation: run.progress?.generation ?? run.generation,
       folds: (best.metrics?.fold_scores || []).map((error, index) => ({label: `fold ${index + 1}`, error})),
@@ -206,19 +245,14 @@ function forecastTileState(tile) {
 function forecastTileSummary(tile) {
   const minutes = Number.isFinite(tile.elapsed) ? `${Math.round(tile.elapsed / 60)} min` : null;
   const generation = Number.isFinite(tile.generation) ? `gen ${tile.generation}` : null;
-  const ratio = Number.isFinite(tile.test_ratio) ? `ratio ${tile.test_ratio.toFixed(2)}` : null;
   if (forecastTileState(tile) === 'running') {
     return [`${tile.state}${minutes ? ` ${minutes}` : ''}`, generation].filter(Boolean).join(', ') + '.';
   }
   if (tile.state === 'pruned') {
-    return [`pruned${minutes ? ` after ${minutes}` : ''}`, ratio].filter(Boolean).join(', ') + '.';
+    return `pruned${minutes ? ` after ${minutes}` : ''}.`;
   }
-  const metric = tile.test_error_metric;
-  const error = Number.isFinite(tile.test_error) && metric
-    ? metric === 'wape' ? `wape ${(tile.test_error * 100).toFixed(1)}%`
-      : `${metric} ${forecastNumber(tile.test_error)}` : null;
-  return [minutes, generation, ratio, error].filter(Boolean).join(', ') +
-    (minutes || generation || ratio || error ? '.' : `${tile.state || 'pending'}; test ratio unavailable.`);
+  return [minutes, generation].filter(Boolean).join(', ') +
+    (minutes || generation ? '.' : `${tile.state || 'pending'}.`);
 }
 
 function forecastTileMenus(tile) {
@@ -308,8 +342,8 @@ function forecastTileBars(tile) {
     const known = Number.isFinite(ratio);
     const row = forecastNode('div', 'forecast-tile-bar');
     row.dataset.label = bar.label;
-    row.title = known ? `${bar.label}: ratio ${ratio.toFixed(2)}`
-      : `${bar.label}: ratio unavailable${Number.isFinite(bar.error) ? `; validation error ${forecastNumber(bar.error)}` : ''}`;
+    row.title = known ? `${bar.label}: ratio vs naive ${ratio.toFixed(2)}`
+      : `${bar.label}: ratio vs naive not saved`;
     const track = forecastNode('div', 'forecast-tile-track');
     const fill = forecastNode('div', 'forecast-tile-fill');
     fill.style.width = `${known ? Math.max(0, Math.min(100, ratio / 1.5 * 100)) : 0}%`;
@@ -317,34 +351,32 @@ function forecastTileBars(tile) {
     row.dataset.state = state;
     track.append(fill, forecastNode('div', 'forecast-tile-mark'));
     row.append(forecastNode('span', 'forecast-tile-bar-label forecast-tile-dim', bar.label), track,
-      forecastNode('span', 'forecast-tile-bar-value', known ? ratio.toFixed(2) : '—'));
+      forecastNode('span', 'forecast-tile-bar-value', known ? ratio.toFixed(2) : '-'));
     row.setAttribute('aria-label', row.title);
     wrap.append(row);
   });
   return wrap;
 }
 
-function forecastCreateTile(tile, index) {
+function forecastCreateTile(tile, index, metrics) {
   const wrap = forecastNode('article', 'forecast-tile');
   wrap.dataset.family = tile.name;
   wrap.dataset.state = forecastTileState(tile);
   wrap.setAttribute('aria-label', `${tile.name}: ${tile.state}`);
+  wrap.style.height = `${232 + metrics.length * 20}px`;
   const inner = forecastNode('div', 'forecast-tile-inner');
-  const ratio = tile.test_ratio;
-  const score = forecastTileState(tile) === 'running' ? '…' : Number.isFinite(ratio)
-    ? `${ratio < 1 ? '+' : '−'}${Math.round(Math.abs(1 - ratio) * 100)}%` : '—';
+  const showRatio = metrics.some(metric => metric.id === 'test_ratio');
   for (const side of ['front', 'back']) {
     const face = forecastNode('div', `forecast-tile-face forecast-tile-${side}`);
     const header = forecastNode('div', 'forecast-tile-header');
     header.append(forecastNode('span', 'forecast-tile-name', `#${index + 1} ${tile.name}`));
-    const value = forecastNode('span', 'forecast-tile-score', score);
-    value.title = Number.isFinite(ratio) ? 'test improvement against naive' : 'test ratio unavailable';
-    header.append(value);
-    face.append(header, side === 'front' ? forecastTileChart(tile) : forecastTileBars(tile), forecastTileMenus(tile));
-    const summary = side === 'front' ? forecastTileSummary(tile) : 'ratio vs naive · mark at 1.0';
+    const chart = side === 'front' ? forecastTileChart(tile) : showRatio ? forecastTileBars(tile)
+      : forecastNode('div', 'forecast-tile-chart forecast-tile-placeholder', 'selected metrics below');
+    face.append(header, chart, forecastTileMenus(tile), forecastMetricLines(metrics, tile));
+    const summary = side === 'front' ? forecastTileSummary(tile) : showRatio ? 'ratio vs naive · mark at 1.0' : '';
     const caption = forecastNode('div', 'forecast-tile-caption forecast-tile-dim', summary);
     if (side === 'front') caption.title = [summary, tile.pruned_reason || tile.reason].filter(Boolean).join(' ');
-    else {
+    else if (showRatio) {
       const missing = !(tile.folds || []).length || tile.folds.some(fold => !Number.isFinite(fold.ratio));
       if (missing) face.append(forecastNode('div', 'forecast-tile-note forecast-tile-dim', 'fold ratios not saved'));
     }
@@ -360,6 +392,8 @@ const FORECAST_OBJECTIVES = {
   poisson: 'poisson loss', aft: 'survival loss', logistic: 'log loss',
   softprob: 'multiclass log loss',
 };
+
+const FORECAST_LOSS_HELP = 'l1 (absolute) is absolute-error loss: the model minimises mean absolute error; mae is the measured number. squared is squared-error loss. tweedie and poisson use their named distribution losses; logistic and softprob use log loss; hazard uses hazard log loss; aft uses survival loss';
 
 function forecastDropdown(options, value, onPick, label) {
   const head = forecastNode('button', 'toggle dropdown-head');
@@ -482,6 +516,13 @@ class ForecastTopic {
     this.runView = 'tiles';
     this.tilesFlipped = false;
     this.tilesRunId = null;
+    this.metricRegistry = [];
+    this.selectedMetricIds = ['validation_error', 'test_ratio'];
+    this.metricStorageKey = `${this.storageKey}:error-metrics`;
+    try {
+      const saved = JSON.parse(localStorage.getItem(this.metricStorageKey));
+      if (Array.isArray(saved) && saved.every(id => typeof id === 'string')) this.selectedMetricIds = saved;
+    } catch (error) { /* storage can be unavailable in private windows */ }
     this.runCache = new Map();
     this.runOrder = 'date, newest first';
     this.searchEntered = false;
@@ -508,6 +549,103 @@ class ForecastTopic {
 
   mode() {
     return smolsmortTabs.flavour(this.topic) || 'entity';
+  }
+
+  acceptMetricRegistry(view, context = this.metricContext) {
+    if (this.metricContext && context !== this.metricContext) return;
+    if (Array.isArray(view?.metric_registry)) this.metricRegistry = view.metric_registry;
+    this.paintMetricPicker();
+  }
+
+  selectedMetrics(view) {
+    const registry = Array.isArray(view?.metric_registry) ? view.metric_registry : this.metricRegistry;
+    return registry.filter(metric => this.selectedMetricIds.includes(metric.id));
+  }
+
+  mountMetricPicker(slot) {
+    this.metricContext = slot;
+    if (!this.metricControls) {
+      const controls = forecastNode('div', 'forecast-metric-controls');
+      const picker = forecastNode('div', 'forecast-metric-picker');
+      const button = forecastNode('button', 'toggle dropdown-head', 'error metrics');
+      button.type = 'button';
+      button.id = `${this.topic}-error-metrics`;
+      button.setAttribute('aria-expanded', 'false');
+      button.setAttribute('aria-controls', `${this.topic}-error-metrics-menu`);
+      const menu = forecastNode('div', 'forecast-metric-menu hidden');
+      menu.id = `${this.topic}-error-metrics-menu`;
+      menu.setAttribute('role', 'group');
+      menu.setAttribute('aria-label', 'error metrics');
+      const close = (focus = false) => {
+        menu.classList.add('hidden');
+        button.setAttribute('aria-expanded', 'false');
+        if (focus) button.focus();
+      };
+      button.onclick = () => {
+        const open = menu.classList.toggle('hidden') === false;
+        button.setAttribute('aria-expanded', String(open));
+      };
+      picker.addEventListener('keydown', event => {
+        if (event.key === 'Escape') { event.preventDefault(); close(true); }
+        if (event.key === 'ArrowDown' && event.target === button) {
+          event.preventDefault();
+          menu.classList.remove('hidden');
+          button.setAttribute('aria-expanded', 'true');
+          menu.querySelector('input')?.focus();
+        }
+      });
+      document.addEventListener('pointerdown', event => {
+        if (!picker.contains(event.target)) close();
+      });
+      picker.addEventListener('focusout', event => {
+        if (event.relatedTarget && !picker.contains(event.relatedTarget)) close();
+      });
+      const help = forecastNode('details', 'forecast-metric-help');
+      help.append(forecastNode('summary', '', 'what do these numbers mean'));
+      help.append(forecastNode('div', 'forecast-metric-help-lines'));
+      picker.append(button, menu);
+      controls.append(picker, help);
+      this.metricControls = controls;
+    }
+    document.getElementById(`${this.topic}-${slot}-metrics`).append(this.metricControls);
+    this.paintMetricPicker();
+  }
+
+  paintMetricPicker() {
+    if (!this.metricControls) return;
+    const menu = this.metricControls.querySelector('.forecast-metric-menu');
+    const signature = JSON.stringify(this.metricRegistry);
+    if (menu.dataset.signature === signature) return;
+    menu.dataset.signature = signature;
+    menu.replaceChildren();
+    const help = this.metricControls.querySelector('.forecast-metric-help-lines');
+    help.replaceChildren();
+    this.metricRegistry.forEach(metric => {
+      const label = forecastNode('label', 'forecast-metric-choice');
+      label.title = forecastMetricHelp(metric);
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.dataset.metricId = metric.id;
+      input.checked = this.selectedMetricIds.includes(metric.id);
+      input.onchange = () => {
+        this.selectedMetricIds = input.checked ? [...this.selectedMetricIds, metric.id]
+          : this.selectedMetricIds.filter(id => id !== metric.id);
+        try { localStorage.setItem(this.metricStorageKey, JSON.stringify(this.selectedMetricIds)); }
+        catch (error) { /* selection still works when storage is unavailable */ }
+        this.paintRuns();
+        this.paintRunDetail(this.runCache.get(this.selectedRunId));
+        if (this.resultsView) {
+          this.paintModelResults(this.resultsView);
+          this.paintVerdict(this.resultsView.verdict, forecastModelLabel(this.resultsView));
+        }
+      };
+      label.append(input, forecastNode('span', '', metric.label));
+      menu.append(label);
+      help.append(forecastNode('p', '', `${metric.label}: ${metric.explanation}`));
+    });
+    if (!this.metricRegistry.length) menu.append(forecastNode('span', 'field-label', 'metric definitions not saved'));
+    help.append(forecastNode('p', '', FORECAST_LOSS_HELP));
+    help.append(forecastNode('p', '', 'recipe wape and mae use saved validation metrics; test predictions are not saved per recipe. a dash means the metric is unavailable; hover for the reason'));
   }
 
   // ---- persistence: the last spec per topic, wrapped so a private window never breaks the tab ----
@@ -574,7 +712,7 @@ class ForecastTopic {
     box.classList.remove('hidden');
     box.replaceChildren(forecastNode('span', 'field-label', 'dataset'));
     if (!this.source) {
-      box.append(forecastNode('span', 'field-value', 'no dataset selected - pick one on the data tab'));
+      box.append(forecastNode('span', 'forecast-dataset-file field-value', 'no dataset selected - pick one on the data tab'));
       return;
     }
     const saved = this.preparedByMode[this.mode()];
@@ -1099,6 +1237,7 @@ class ForecastTopic {
       {key: 'minutes', label: 'time cap (minutes)', step: 1, min: 1, max: 240, value: this.searchValues.minutes},
     ];
     panel.innerHTML = `
+      <div id="${this.topic}-search-metrics"></div>
       <div class="forecast-search-layout">
         <aside class="panel-inline forecast-run-rail">
           <div class="forecast-run-controls">
@@ -1219,6 +1358,7 @@ class ForecastTopic {
   }
 
   async enterSearch() {
+    this.mountMetricPicker('search');
     await this.loadRuns();
     if (!this.searchEntered) {
       this.selectedRunId = this.selectedRunId || this.currentRunId || [...this.runCache.keys()].sort().at(-1) || null;
@@ -1345,6 +1485,7 @@ class ForecastTopic {
   }
 
   paintRunDetail(run) {
+    this.acceptMetricRegistry(run, 'search');
     this.paintRunTiles(run);
     this.paintFamilyProgress(run);
     const progressWrap = document.getElementById(`${this.topic}-run-progress`);
@@ -1363,7 +1504,8 @@ class ForecastTopic {
     cancel.disabled = !this.currentRunId;
     cancel.classList.toggle('disabled', cancel.disabled);
     const verdict = document.getElementById(`${this.topic}-run-verdict`);
-    verdict.classList.toggle('hidden', !run?.verdict);
+    const ratioMetric = this.selectedMetrics(run).find(metric => metric.id === 'test_ratio');
+    verdict.classList.toggle('hidden', !run?.verdict || !ratioMetric);
     if (!run) {
       setText(`${this.topic}-run-title`, 'pick a run or start one on models');
       setText(`${this.topic}-run-stop`, '');
@@ -1375,8 +1517,8 @@ class ForecastTopic {
     this.displayTask = run.spec?.task || run.task || this.task;
     setText(`${this.topic}-run-title`, `${run.id.split('-').at(-1)} · ${run.kind || 'search'} · ${run.state}`);
     setText(`${this.topic}-run-stop`, this.stopReason(run));
-    if (run.verdict) {
-      verdict.textContent = forecastRatioText(run.verdict);
+    if (run.verdict && ratioMetric) {
+      verdict.replaceChildren(forecastMetricValue(ratioMetric, run, 'span', true));
       forecastRatioStyle(verdict, run.verdict);
     }
     const names = this.generationFamilies(run);
@@ -1385,10 +1527,10 @@ class ForecastTopic {
     document.getElementById(`${this.topic}-generation-family-wrap`).classList.toggle('hidden', !run.families || run.version === 1);
     const generations = (run.generations || []).filter(entry => forecastModelFamily(entry) === this.generationFamily);
     const latest = generations.at(-1);
-    const stats = `elapsed ${forecastNumber(run.elapsed ?? latest?.elapsed)}s · generations ${generations.length} · best error ${forecastNumber(run.best_error ?? latest?.best)}`;
+    const stats = `elapsed ${forecastNumber(run.elapsed ?? latest?.elapsed)}s · generations ${generations.length}`;
     setText(`${this.topic}-run-stats`, stats);
     this.searchSay(this.isRunning(run)
-      ? latest ? `generation ${latest.generation} - best ${forecastNumber(latest.best)} - evaluated ${latest.evaluated} - elapsed ${latest.elapsed}s` : run.state
+      ? latest ? `generation ${latest.generation} - evaluated ${latest.evaluated} - elapsed ${latest.elapsed}s` : run.state
       : run.state === 'failed' ? this.stopReason(run) : '');
     const chartVersion = `${run.id}:${this.generationFamily}:${generations.length}:${run.cursor}`;
     if (this.paintedChartVersion !== chartVersion) {
@@ -1399,7 +1541,7 @@ class ForecastTopic {
         .map(entry => ({...entry, generation: entry.family_generation ?? entry.generation})));
       this.paintedChartVersion = chartVersion;
     }
-    const boardVersion = `${run.id}:${run.boardCursor}:${run.leaderboard?.length || 0}`;
+    const boardVersion = JSON.stringify([run.id, run.boardCursor, run.leaderboard?.length || 0, this.selectedMetrics(run)]);
     if (this.paintedBoardVersion !== boardVersion) {
       this.paintLeaderboard(run.leaderboard || []);
       this.paintedBoardVersion = boardVersion;
@@ -1428,11 +1570,12 @@ class ForecastTopic {
       button.setAttribute('aria-pressed', String(this.runView === view));
     }
     const entries = forecastTileEntries(run);
+    const metrics = this.selectedMetrics(run);
     setText(`${this.topic}-tiles-count`, `candidates · ${entries.length}`);
     const existing = new Map([...grid.children].map(node => [node.dataset.family, node]));
     entries.forEach((tile, index) => {
       let node = existing.get(tile.name);
-      const signature = JSON.stringify([tile, index]);
+      const signature = JSON.stringify([tile, index, metrics]);
       if (!node || node.dataset.signature !== signature) {
         const openMenus = [...(node?.querySelectorAll('details[open]') || [])].map(details => ({
           side: details.closest('.forecast-tile-back') ? 'back' : 'front',
@@ -1442,7 +1585,7 @@ class ForecastTopic {
         const focus = active ? {
           side: active.closest('.forecast-tile-back') ? 'back' : 'front', key: active.dataset.menu,
         } : null;
-        const fresh = forecastCreateTile(tile, index);
+        const fresh = forecastCreateTile(tile, index, metrics);
         fresh.dataset.signature = signature;
         if (node) node.replaceWith(fresh);
         else grid.append(fresh);
@@ -1478,12 +1621,13 @@ class ForecastTopic {
 
   paintFamilyProgress(run) {
     const families = run?.version === 1 ? [] : Object.entries(run?.families || {});
+    const metrics = this.selectedMetrics(run);
     document.getElementById(`${this.topic}-family-progress-wrap`).classList.toggle('hidden', !families.length || this.runView !== 'tables');
     forecastFillTable(document.getElementById(`${this.topic}-family-progress`),
-      ['family', 'state', 'phase', 'candidates done', 'expected remaining', 'best validation error', 'reason'],
+      ['family', 'state', 'phase', 'candidates done', 'expected remaining', ...metrics.map(forecastMetricHeader), 'reason'],
       families.map(([name, status]) => [name, status.terminated ? `${status.state} (terminated)` : status.state,
         status.phase, status.candidates_done ?? 0, status.candidates_expected ?? 0,
-        forecastNumber(status.best_error), status.pruned_reason || status.reason || '-']));
+        ...metrics.map(metric => forecastMetricValue(metric, status)), status.pruned_reason || status.reason || '-']));
     if (!run) document.getElementById(`${this.topic}-generation-family-wrap`).classList.add('hidden');
   }
 
@@ -1502,16 +1646,19 @@ class ForecastTopic {
 
   paintSearchChart(generations) {
     if (!generations.length) return;
-    const metric = (this.displayTask || this.task) === 'classification' ? 'log_loss' : 'wape';
-    setText(`${this.topic}-search-metric`, `${metric} (lower is better)`);
+    const metric = (this.runCache.get(this.selectedRunId)?.metric_registry || this.metricRegistry)
+      .find(entry => entry.id === 'validation_error');
+    setText(`${this.topic}-search-metric`, 'validation error (lower is better)');
+    document.getElementById(`${this.topic}-search-metric`).title = metric ? forecastMetricHelp(metric) : 'search score on held-out validation windows';
     document.getElementById(`${this.topic}-search-progress`).classList.remove('hidden');
     const el = document.getElementById(`${this.topic}-search-chart`);
     if (!this.searchChart) this.searchChart = timeChart(el, {
-      height: 220, yFormat: value => String(Number(value.toPrecision(4))),
+      height: 220, yFormat: value => metric?.unit === 'percent'
+        ? `${Number((value * 100).toPrecision(3))}%` : forecastNumber(value),
     });
     this.searchChart.update({
       x: generations.map(entry => entry.generation),
-      series: [{id: metric, label: `best ${metric} so far`,
+      series: [{id: 'validation_error', label: 'validation error',
         values: generations.map(entry => Number.isFinite(entry.best) ? entry.best : null)}],
     });
   }
@@ -1571,19 +1718,19 @@ class ForecastTopic {
     wrap.classList.toggle('hidden', !rows.length);
     if (!rows.length) return;
     const entries = rows.slice(0, 10);
-    const metric = (this.displayTask || this.task) === 'classification' ? 'log_loss' : 'wape';
-    const errorOf = entry => Number.isFinite(entry.fitness) ? entry.fitness : entry.metrics?.[metric];
-    const best = errorOf(entries[0]);
-    const number = value => Number.isFinite(value) ? String(Number(value.toPrecision(4))) : '-';
+    const metrics = this.selectedMetrics(this.runCache.get(this.selectedRunId));
     const integer = value => Number.isInteger(value) ? String(value) : '-';
-    const columns = ['rank', 'family', 'generation found', `validation error (${metric})`, 'gap to best',
-      'mae', 'objective', 'tree depth', 'learning rate (eta)', 'features'];
+    const lossHeader = forecastNode('th', '', 'loss (objective)');
+    lossHeader.title = FORECAST_LOSS_HELP;
+    const columns = ['rank', 'family', 'generation found', ...metrics.map(forecastMetricHeader),
+      lossHeader, 'tree depth', 'learning rate (eta)', 'features'];
     const caption = forecastNode('caption', 'field-label',
-      `best ten recipes the search tried, ranked by validation error (${metric}); lower is better; the winner is the first row`);
+      'best ten recipes, ranked by validation error; lower is better. recipe wape and mae use saved validation values; test metrics are unavailable');
     table.appendChild(caption);
     const thead = document.createElement('thead');
     const head = document.createElement('tr');
     columns.forEach(c => {
+      if (c instanceof Node) { head.appendChild(c); return; }
       const th = document.createElement('th');
       th.textContent = c;
       head.appendChild(th);
@@ -1596,15 +1743,14 @@ class ForecastTopic {
       row.classList.toggle('on', index === 0);
       const genome = entry.genome || {};
       const params = genome.params || {};
-      const error = errorOf(entry);
-      const gap = Number.isFinite(error) && Number.isFinite(best)
-        ? best === 0 ? (error === 0 ? 0 : null) : (error - best) / Math.abs(best) * 100 : null;
-      const gapText = Number.isFinite(gap) ? `${gap < 0 ? '-' : '+'}${Math.abs(gap).toFixed(2)}%` : '-';
       const count = Array.isArray(genome.families) ? new Set(genome.families).size : entry.families;
-      const values = [String(index + 1), forecastModelFamily(entry), integer(entry.generation), number(error), gapText,
-        number(entry.metrics?.mae), FORECAST_OBJECTIVES[genome.objective] || '-',
-        integer(params.max_depth), number(params.eta)];
+      const loss = forecastNode('td', '', FORECAST_OBJECTIVES[genome.objective] || genome.objective || '-');
+      loss.title = FORECAST_LOSS_HELP;
+      const values = [String(index + 1), forecastModelFamily(entry), integer(entry.generation),
+        ...metrics.map(metric => forecastMetricValue(metric, entry)), loss,
+        integer(params.max_depth), forecastNumber(params.eta)];
       values.forEach(value => {
+        if (value instanceof Node) { row.appendChild(value); return; }
         const td = document.createElement('td');
         td.textContent = value;
         td.title = String(value);
@@ -1622,6 +1768,7 @@ class ForecastTopic {
 
   async loadRuns() {
     const data = await api('/api/forecast-runs');
+    this.acceptMetricRegistry(data, 'search');
     for (const summary of data.runs || []) {
       const cached = this.runCache.get(summary.id);
       if (cached) Object.assign(cached, summary);
@@ -1648,17 +1795,11 @@ class ForecastTopic {
     for (const run of runs) {
       const row = forecastNode('button', 'toggle forecast-run-row' + (run.id === this.selectedRunId ? ' on' : ''));
       row.dataset.runId = run.id;
-      const latest = run.generations?.at(-1);
-      const task = run.spec?.task || run.task || this.task;
-      const wape = run.kind === 'refit' ? null : run.best_wape
-        ?? latest?.metrics?.wape ?? (task === 'regression' ? latest?.best : null);
       const status = this.isRunning(run) ? 'running' : run.state === 'failed' ? 'failed'
         : run.stopped === 'cancelled' ? 'cancelled' : 'done';
       row.append(forecastNode('span', 'name', run.id.split('-').at(-1)));
       row.append(forecastNode('span', 'field-label forecast-run-status', status));
-      const value = forecastNode('span', 'field-label forecast-run-wape', forecastNumber(wape));
-      value.setAttribute('aria-label', 'validation wape');
-      row.append(value);
+      row.append(forecastMetricLines(this.selectedMetrics(run), run, 'forecast-run-metrics'));
       if (this.isRunning(run) || run.progress) {
         const progress = forecastSearchProgress(run);
         const bar = forecastNode('span', 'bar forecast-run-bar');
@@ -1684,6 +1825,7 @@ class ForecastTopic {
       const row = forecastNode('div', 'forecast-recipe-field');
       row.append(forecastNode('span', 'field-label', label), forecastNode('span', 'field-value', value));
       node.append(row);
+      return row;
     };
     node.append(forecastNode('div', 'field-label', 'feature families'));
     const groups = forecastFamilyGroups(genome.families);
@@ -1700,12 +1842,11 @@ class ForecastTopic {
       if (!Object.keys(params).length) add('params', 'none');
       Object.entries(params).forEach(([name, value]) => add(name, String(value)));
     }
-    add('loss function', FORECAST_OBJECTIVES[genome.objective] || '-');
+    add('loss (objective)', FORECAST_OBJECTIVES[genome.objective] || '-').title = FORECAST_LOSS_HELP;
     add('note', typeof entry.note === 'string' && entry.note.trim() ? entry.note : '-');
     node.append(forecastNode('div', 'h-divider'), forecastNode('div', 'field-label', 'metrics'));
-    const metrics = Object.entries(entry.metrics || {});
-    if (!metrics.length) add('metrics', '-');
-    metrics.forEach(([key, value]) => add(key, forecastNumber(value)));
+    const metrics = this.selectedMetrics(this.runCache.get(this.selectedRunId));
+    node.append(forecastMetricLines(metrics, entry));
     new Menu({title: `recipe ${rank}`, persistent: true, sections: [{kind: 'node', node}]}).openAt(head);
   }
 
@@ -1750,6 +1891,7 @@ class ForecastTopic {
   mountResults(panel) {
     panel.innerHTML = `
       <div class="forecast-pane forecast-results">
+        <div id="${this.topic}-results-metrics"></div>
         <div class="run-controls">
           <div class="toggle dropdown-head" id="${this.topic}-results-run"><span>pick a run</span></div>
           <button class="toggle dropdown-head hidden" id="${this.topic}-results-model"><span>winner</span></button>
@@ -1819,6 +1961,7 @@ class ForecastTopic {
   }
 
   async enterResults() {
+    this.mountMetricPicker('results');
     if (this.resultsRunId) await this.loadResults();
   }
 
@@ -1843,6 +1986,7 @@ class ForecastTopic {
       const state = await api(`/api/forecast-run?id=${encodeURIComponent(runId)}`);
       if (load !== this.resultsLoad || runId !== this.resultsRunId) return;
       this.resultsSpec = state.spec;
+      this.acceptMetricRegistry(state, 'results');
       this.resultsModel = null;
       this.importanceFamily = null;
       this.paintExcludedSeries(state.excluded_series || []);
@@ -1965,7 +2109,9 @@ class ForecastTopic {
     box.innerHTML = '';
     const summary = document.createElement('div');
     summary.className = 'forecast-verdict-summary';
-    summary.textContent = (label ? `${label}: ` : '') + forecastRatioText(verdict);
+    const showRatio = this.selectedMetricIds.includes('test_ratio');
+    summary.textContent = (label ? `${label}: ` : '') + (showRatio ? forecastRatioText(verdict)
+      : Number.isFinite(verdict?.accuracy?.ratio) ? 'test checks' : verdict?.summary || 'test checks');
     box.appendChild(summary);
     (verdict.checks || []).forEach(check => {
       const line = document.createElement('div');
@@ -1977,6 +2123,7 @@ class ForecastTopic {
 
   paintModelResults(view) {
     this.resultsView = view;
+    this.acceptMetricRegistry(view, 'results');
     this.resultsModel = view.model || this.resultsModel || 'winner';
     const family = view.family || 'xgboost';
     this.importanceFamily = view.importance_family || this.importanceFamily || (family === 'ensemble' ? view.winner_family : family) || 'xgboost';
@@ -1988,16 +2135,16 @@ class ForecastTopic {
     const families = Object.entries(view.families || {});
     document.getElementById(`${this.topic}-results-models`).classList.remove('hidden');
     document.getElementById(`${this.topic}-family-comparison-wrap`).classList.toggle('hidden', !families.length);
-    const verdictText = verdict => verdict ? forecastRatioText(verdict) : '-';
+    const metrics = this.selectedMetrics(view);
     const rows = families.map(([name, entry]) => [name, entry.state,
-      forecastNumber(entry.fitness), entry.candidates ?? 0, entry.pruned_reason || entry.reason || '-',
-      verdictText(name === view.winner_family ? view.winner?.verdict || entry.verdict : null)]);
+      ...metrics.map(metric => forecastMetricValue(metric, entry)),
+      entry.candidates ?? 0, entry.pruned_reason || entry.reason || '-']);
     if (families.length && view.ensemble) rows.push([
-      `ensemble of ${(view.ensemble.members || []).join(', ')}`, 'done', forecastNumber(view.ensemble.fitness),
-      '-', '-', verdictText(view.ensemble.verdict),
+      `ensemble of ${(view.ensemble.members || []).join(', ')}`, 'done',
+      ...metrics.map(metric => forecastMetricValue(metric, view.ensemble)), '-', '-',
     ]);
     forecastFillTable(document.getElementById(`${this.topic}-family-comparison`),
-      ['family', 'state', 'validation error', 'candidates', 'reason', 'test ratio'], rows);
+      ['family', 'state', ...metrics.map(forecastMetricHeader), 'candidates', 'reason'], rows);
     setHead(document.getElementById(`${this.topic}-importance-family`), this.importanceFamily);
     const importance = view.importance;
     const method = importance?.method === 'absolute_standardized_coefficient' ? 'absolute standardised coefficient' : importance?.method;

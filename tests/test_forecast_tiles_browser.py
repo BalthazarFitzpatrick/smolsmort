@@ -12,12 +12,13 @@ import pytest
 
 pytest.importorskip("playwright")
 pytest.importorskip("xgboost")
-pytest.importorskip("duckdb")
 
 from test_forecast_progress_browser import write_multifamily_run
-from test_forecast_ui_browser import session, show_tab, switch_to_regression
+from test_forecast_ui_browser import session, show_tab, switch_to_regression, with_error_metrics
 
 from smolsmort.forecast.tables import write_table
+
+pytest.importorskip("duckdb")
 
 
 def write_json(path: Path, value) -> None:
@@ -194,7 +195,7 @@ def mock_live_tiles(page, snapshot: dict) -> list:
 
     def read_run(route):
         calls.append(route.request.url)
-        route.fulfill(json=snapshot)
+        route.fulfill(json=with_error_metrics(snapshot))
 
     page.route("**/api/forecast-run?**", read_run)
     return calls
@@ -229,7 +230,7 @@ def test_tiles_read_saved_winner_artifacts_and_kept_tables(tmp_path):
         save_tiles(page, "saved-charts")
         ridge = find_tile(page, "ridge")
         front = ridge.locator(".forecast-tile-front")
-        assert "+29%" in front.inner_text()
+        assert "test ratio: 0.71" in front.inner_text()
         assert front.locator("svg polyline").count() == 2
         assert (
             front.locator(".forecast-tile-split").evaluate(
@@ -251,9 +252,7 @@ def test_tiles_read_saved_winner_artifacts_and_kept_tables(tmp_path):
         assert "test" in back.inner_text()
         assert "fold ratios not saved" in back.inner_text()
         fold = back.locator('.forecast-tile-bar[data-label="fold 1"]')
-        assert fold.get_attribute("aria-label") == (
-            "fold 1: ratio unavailable; validation error 0.19"
-        )
+        assert fold.get_attribute("aria-label") == ("fold 1: ratio vs naive not saved")
         assert fold.locator(".forecast-tile-fill").evaluate("node => node.style.width") == "0%"
         save_tiles(page, "saved-folds")
         page.locator("#regression-run-view-tables").click()
@@ -275,10 +274,10 @@ def test_tiles_polled_states_without_losing_flip_menu_or_focus(tmp_path):
         assert families[:2] == ["ridge", "snaive"]
         save_tiles(page, "live-charts")
         for name, score, color in (
-            ("ridge", "+29%", "rgb(199, 237, 95)"),
-            ("snaive", "−12%", "rgb(173, 121, 111)"),
-            ("xgboost", "…", "rgb(119, 183, 199)"),
-            ("ets", "—", "rgb(173, 121, 111)"),
+            ("ridge", "test ratio: 0.71", "rgb(199, 237, 95)"),
+            ("snaive", "test ratio: 1.12", "rgb(173, 121, 111)"),
+            ("xgboost", "test ratio: -", "rgb(119, 183, 199)"),
+            ("ets", "test ratio: -", "rgb(173, 121, 111)"),
         ):
             front = find_tile(page, name).locator(".forecast-tile-front")
             assert score in front.inner_text()
@@ -297,7 +296,7 @@ def test_tiles_polled_states_without_losing_flip_menu_or_focus(tmp_path):
         back = ridge.locator(".forecast-tile-back")
         assert "2025-01-20" in back.inner_text()
         fold = back.locator('.forecast-tile-bar[data-label="fold 1"]')
-        assert fold.get_attribute("aria-label") == "fold 1: ratio 0.66"
+        assert fold.get_attribute("aria-label") == "fold 1: ratio vs naive 0.66"
         assert fold.locator(".forecast-tile-fill").evaluate("node => node.style.width") == "44%"
         origin = back.locator(
             '.forecast-tile-bar[data-label="2025-01-20"] .forecast-tile-bar-label'
@@ -318,7 +317,10 @@ def test_tiles_polled_states_without_losing_flip_menu_or_focus(tmp_path):
             ".textContent.includes('gen 6')"
         )
         assert len(calls) > before
-        assert ridge.locator(".forecast-tile-front .forecast-tile-score").inner_text() == "+31%"
+        assert (
+            ridge.locator('.forecast-tile-front [data-metric-id="test_ratio"]').inner_text()
+            == "test ratio: 0.69"
+        )
         assert flip.get_attribute("aria-pressed") == "true"
         assert menu.get_attribute("open") is not None
         assert summary.evaluate("node => node === document.activeElement")
@@ -336,7 +338,7 @@ def test_tiles_mobile_layout_motion_and_palette_tokens(tmp_path):
         tiles = page.locator("#regression-tiles-grid .forecast-tile")
         boxes = [tile.bounding_box() for tile in tiles.all()]
         assert all(box and abs(box["width"] - 232) < 1 for box in boxes)
-        assert all(abs(box["height"] - 232) < 1 for box in boxes)
+        assert all(abs(box["height"] - 272) < 1 for box in boxes)
         assert all(box["x"] >= 0 and box["x"] + box["width"] <= 390 for box in boxes)
         assert all(a["y"] + a["height"] <= b["y"] for a, b in pairwise(boxes))
         save_tiles(page, "mobile-charts")
@@ -372,7 +374,10 @@ def test_legacy_tiles_loaded_saved_charts_and_kept_live_metadata(tmp_path):
         assert list(response.value.json()["tiles"]) == ["xgboost"]
         tile = find_tile(page, "xgboost")
         tile.locator(".forecast-tile-front svg").wait_for()
-        assert tile.locator(".forecast-tile-score").first.inner_text() == "+5%"
+        assert (
+            tile.locator('.forecast-tile-front [data-metric-id="test_ratio"]').inner_text()
+            == "test ratio: 0.95"
+        )
         assert tile.locator(".forecast-tile-front svg circle").count() == 2
         assert response.value.json()["tiles"]["xgboost"]["chart"][0]["actual"] == 16
         value = page.evaluate(

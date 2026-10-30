@@ -21,6 +21,7 @@ from pathlib import Path
 import numpy as np
 
 from smolsmort.forecast import evaluate as ev
+from smolsmort.forecast import metrics as fm
 from smolsmort.forecast.families import registered_families
 from smolsmort.forecast.spec import normalize_mode, normalize_saved_modes, spec_from_dict
 from smolsmort.forecast.tables import connect
@@ -77,9 +78,10 @@ def read_result(run_dir: Path) -> dict | None:
 
 
 def read_leaderboard(run_dir: Path, top: int = 10) -> list[dict]:
-    if read_request(run_dir).get("version") == 2:
+    request = read_request(run_dir)
+    if request.get("version") == 2:
         board = []
-        for selection in read_request(run_dir)["families"]:
+        for selection in request["families"]:
             name = selection["name"]
             for entry in _read_json(run_dir / "families" / name / "leaderboard.json", []):
                 board.append({**entry, "family": name})
@@ -91,16 +93,31 @@ def read_leaderboard(run_dir: Path, top: int = 10) -> list[dict]:
                     str(entry.get("key", "")),
                 )
             )
-            return board[:top]
+            return _candidate_metrics(board[:top], request)
     path = run_dir / "leaderboard.json"
     if not path.exists():
         return []
-    return [
+    board = [
         {
             **entry,
             "family": entry.get("family") or (entry.get("genome") or {}).get("family") or "xgboost",
         }
-        for entry in json.loads(path.read_text())[:top]
+        for entry in _read_json(path, [])[:top]
+    ]
+    return _candidate_metrics(board, request)
+
+
+def _candidate_metrics(board, request):
+    return [
+        {
+            **entry,
+            "error_metrics": fm.error_metrics(
+                request.get("spec", {}),
+                fitness=entry.get("fitness"),
+                candidate=entry.get("metrics") or {},
+            ),
+        }
+        for entry in board
     ]
 
 
@@ -370,9 +387,13 @@ def multi_run_state(run_dir, request, status, *, since_generation=None, since_ev
     result = _read_json(run_dir / "result.json", {})
     recipe = _read_json(run_dir / "recipe.json", {})
     # list_runs uses both maximum cursors for summaries; charts belong to the selected run
-    if (since_generation, since_events) != (2**63 - 1, 2**63 - 1):
-        tiles = family_tiles(run_dir, request, status, result=result, recipe=recipe)
-        for name, tile in tiles.items():
+    include_charts = (since_generation, since_events) != (2**63 - 1, 2**63 - 1)
+    tiles = family_tiles(
+        run_dir, request, status, result=result, recipe=recipe, include_charts=include_charts
+    )
+    for name, tile in tiles.items():
+        families[name]["error_metrics"] = tile["error_metrics"]
+        if include_charts:
             families[name]["tile"] = tile
     kind = (
         "refit" if request.get("recipe") else "warm start" if request.get("warm_from") else "multi"
@@ -407,6 +428,7 @@ def multi_run_state(run_dir, request, status, *, since_generation=None, since_ev
         else None,
         "test_error": result.get("model_error"),
         "excluded_series": result.get("excluded_series", []),
+        **run_metric_payload(run_dir, request, {"best_error": best}, result=result, recipe=recipe),
     }
     if since_generation is None:
         out["eval_history"] = _read_json(run_dir / "eval_history.json")
@@ -485,7 +507,7 @@ def _read_tile_chart(path: Path) -> list[dict]:
     ]
 
 
-def family_tiles(run_dir, request, status, *, result=None, recipe=None):
+def family_tiles(run_dir, request, status, *, result=None, recipe=None, include_charts=True):
     """expose saved family artifacts without inventing loser test scores or fold baselines"""
     result = result if result is not None else _read_json(run_dir / "result.json", {})
     recipe = recipe if recipe is not None else _read_json(run_dir / "recipe.json", {})
@@ -544,7 +566,7 @@ def family_tiles(run_dir, request, status, *, result=None, recipe=None):
             for index, error in enumerate(scores)
         ]
         chart = []
-        if request.get("spec", {}).get("mode") == "timeseries" and path.exists():
+        if include_charts and request.get("spec", {}).get("mode") == "timeseries" and path.exists():
             chart = _read_tile_chart(path)
         tiles[name] = {
             "state": progress.get("state", status.get("state", "pending")),
@@ -557,6 +579,8 @@ def family_tiles(run_dir, request, status, *, result=None, recipe=None):
                         saved.get("fitness"),
                         progress.get("best_error"),
                         best.get("fitness"),
+                        summary.get("fitness"),
+                        summary.get("val_error"),
                     )
                     if _finite_number(value) is not None
                 ),
@@ -575,7 +599,55 @@ def family_tiles(run_dir, request, status, *, result=None, recipe=None):
             "elapsed": _tile_elapsed(progress),
             "generation": progress.get("generation", best.get("generation")),
         }
+        tiles[name]["error_metrics"] = fm.error_metrics(
+            request.get("spec", {}),
+            fitness=tiles[name]["validation_error"],
+            verdict=summary.get("verdict"),
+            path=path,
+        )
     return tiles
+
+
+def run_metric_payload(run_dir, request, status=None, *, result=None, recipe=None, model=None):
+    """expose the selected saved model without borrowing another model's predictions"""
+    result = result if result is not None else _read_json(run_dir / "result.json", {})
+    recipe = recipe if recipe is not None else _read_json(run_dir / "recipe.json", {})
+    default_model = "ensemble" if recipe.get("family") == "ensemble" else "winner"
+    model = model or default_model
+    summary = result.get(model) or {}
+    if model == default_model:
+        summary = {**result, **summary}
+    path = run_dir / f"{model}_test.parquet"
+    if not path.exists() and model == default_model:
+        path = run_dir / "test.parquet"
+    fitness = next(
+        (
+            value
+            for value in (
+                summary.get("fitness"),
+                summary.get("val_error"),
+                (status or {}).get("best_error") if model == "winner" else None,
+            )
+            if _finite_number(value) is not None
+        ),
+        None,
+    )
+    if fitness is None and model == "winner" and (run_dir / "request.json").exists():
+        fitness = next(
+            (
+                entry["fitness"]
+                for entry in read_leaderboard(run_dir)
+                if _finite_number(entry.get("fitness")) is not None
+            ),
+            None,
+        )
+    spec = request.get("spec", {})
+    return {
+        "metric_registry": fm.metric_registry(spec),
+        "error_metrics": fm.error_metrics(
+            spec, fitness=fitness, verdict=summary.get("verdict"), path=path
+        ),
+    }
 
 
 def _spec_dims(spec: dict) -> list[str]:
@@ -644,6 +716,7 @@ def result_details(run_dir: Path, request: dict, query: dict) -> dict:
     result = _require_done(run_dir)
     selected = _select_model(run_dir, result, query)
     selected.pop("default_model")
+    tiles = family_tiles(run_dir, request, _read_json(run_dir / "status.json", {}), result=result)
     families = {}
     if request.get("version") == 2:
         status = _read_json(run_dir / "status.json", {}).get("families", {})
@@ -666,6 +739,9 @@ def result_details(run_dir: Path, request: dict, query: dict) -> dict:
             }
             if name == selected["winner_family"]:
                 row["verdict"] = result.get("winner", {}).get("verdict") or result.get("verdict")
+            row["error_metrics"] = tiles.get(name, {}).get("error_metrics") or fm.error_metrics(
+                request.get("spec", {}), fitness=row["fitness"], verdict=row.get("verdict")
+            )
             families[name] = row
     importance_family = query.get("importance_family") or selected["family"]
     known_families = set(families) | {selected["winner_family"]}
@@ -678,17 +754,33 @@ def result_details(run_dir: Path, request: dict, query: dict) -> dict:
             importance = _read_json(run_dir / "families" / importance_family / "importance.json")
         if importance is None and importance_family == selected["winner_family"]:
             importance = _read_json(run_dir / "importance.json")
+    winner = result.get("winner") or {
+        "family": selected["winner_family"],
+        "verdict": result.get("verdict"),
+    }
+    winner = {
+        **winner,
+        "error_metrics": run_metric_payload(run_dir, request, result=result, model="winner")[
+            "error_metrics"
+        ],
+    }
+    ensemble = result.get("ensemble")
+    if ensemble is not None:
+        ensemble = {
+            **ensemble,
+            "error_metrics": run_metric_payload(run_dir, request, result=result, model="ensemble")[
+                "error_metrics"
+            ],
+        }
     return {
         **selected,
         "families": families,
-        "winner": result.get("winner")
-        or {"family": selected["winner_family"], "verdict": result.get("verdict")},
-        "ensemble": result.get("ensemble"),
+        "winner": winner,
+        "ensemble": ensemble,
         "importance_family": importance_family,
         "importance": importance,
-        "tiles": family_tiles(
-            run_dir, request, _read_json(run_dir / "status.json", {}), result=result
-        ),
+        "tiles": tiles,
+        **run_metric_payload(run_dir, request, result=result, model=selected["model"]),
     }
 
 

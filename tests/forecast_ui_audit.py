@@ -66,6 +66,8 @@ CONTROL_SIZES = r"""() => {
   const visible = node => {
     const rect = node.getBoundingClientRect();
     const style = getComputedStyle(node);
+    const closed = node.closest('details:not([open])');
+    if (closed && node !== closed && !closed.querySelector(':scope > summary')?.contains(node)) return false;
     return rect.width && rect.height && style.visibility !== 'hidden';
   };
   const bounds = node => {
@@ -76,7 +78,14 @@ CONTROL_SIZES = r"""() => {
       top: rect.top, bottom: rect.bottom};
   };
   const containers = [...document.querySelectorAll('#nav-bar, .nav-bar, .strip, #forecast-dataset, #top-bar-actions, .forecast-run-rail .toggle, .forecast-run-rail .dropdown-head')]
-    .filter(visible).map(bounds);
+    .filter(node => visible(node) && !node.matches('.forecast-run-row')).map(bounds);
+  const runMetrics = [...document.querySelectorAll('.forecast-run-row')].filter(visible).map(row => ({
+    ...bounds(row), right: row.getBoundingClientRect().right,
+    lines: [...row.querySelectorAll('.forecast-metric')].map(line => ({
+      ...bounds(line), right: line.getBoundingClientRect().right,
+      clientWidth: line.clientWidth, scrollWidth: line.scrollWidth
+    }))
+  }));
   const headerRows = [...document.querySelectorAll('#topic-switch, #forecast-dataset, #nav-bar')]
     .filter(visible).map(bounds);
   const headerControls = [...document.querySelectorAll('#topic-switch, #topic-flavour, #nav-bar, #open-settings')]
@@ -100,17 +109,19 @@ CONTROL_SIZES = r"""() => {
       const tops = new Set(rects.map(rect => Math.round(rect.top * 100) / 100));
       const style = getComputedStyle(node);
       const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.2;
-      const plainLabel = node.matches('.field-label, .field-value, .stat, .popup-title, summary') && !node.matches(selector) && !node.children.length;
+      // the help toggle reserves a click area beyond its one text line
+      const plainLabel = node.matches('.field-label, .field-value, .stat, .popup-title, summary')
+        && !node.matches(`${selector}, .forecast-metric-help > summary`) && !node.children.length;
       texts.push({selector: path(node), text: text.textContent.trim(), lines: tops.size,
         clientHeight: node.clientHeight, lineHeight,
         lineBoxHeight: plainLabel ? node.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom) : null,
         textHeight: rects.length ? Math.max(...rects.map(rect => rect.bottom)) - Math.min(...rects.map(rect => rect.top)) : 0});
     }
   }
-  return {target, fieldWidth, gap, containers, headerRows, headerControls, texts, controls: [...document.querySelectorAll(selector)].flatMap(node => {
+  return {target, fieldWidth, gap, containers, headerRows, headerControls, texts, runMetrics, controls: [...document.querySelectorAll(selector)].flatMap(node => {
     const rect = node.getBoundingClientRect();
     const style = getComputedStyle(node);
-    if (!rect.width || !rect.height || style.visibility === 'hidden') return [];
+    if (!rect.width || !rect.height || style.visibility === 'hidden' || node.matches('.forecast-run-row')) return [];
     return [{selector: path(node), text: (node.innerText || node.getAttribute('aria-label') || node.value || node.type || '').replace(/\s+/g, ' ').trim(),
       height: rect.height, targetHeight: node.matches('.nav-tab') ? target - 2 * borderWidth : target,
       width: rect.width, font: style.fontFamily, size: style.fontSize,
