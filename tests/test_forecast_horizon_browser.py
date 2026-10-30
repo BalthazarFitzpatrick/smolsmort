@@ -14,7 +14,7 @@ import pytest
 import review_world
 from forecast_ui_audit import settle_menu
 from test_forecast_progress_browser import write_multifamily_run
-from test_forecast_ui_browser import show_tab, switch_to_regression
+from test_forecast_ui_browser import open_info, show_tab, switch_to_regression
 
 from smolsmort.forecast import runs
 from smolsmort.forecast.tab import forecast_tab
@@ -121,7 +121,7 @@ def horizon_session(tmp_path: Path, *, width: int = 1280, legacy=False, running=
             crop_file=world.root / "crop.json",
         )
         app.state.set_bases({"forecast": str(root)})
-        server = serve(app, port=8099)
+        server = serve(app, port=8109)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
@@ -129,7 +129,7 @@ def horizon_session(tmp_path: Path, *, width: int = 1280, legacy=False, running=
                 browser = playwright.chromium.launch(headless=True)
                 page = browser.new_page(viewport={"width": width, "height": 900})
                 page.on("pageerror", lambda error: errors.append(str(error)))
-                page.goto("http://127.0.0.1:8099/")
+                page.goto("http://127.0.0.1:8109/")
                 yield page, run_id
                 browser.close()
         finally:
@@ -329,8 +329,11 @@ def test_horizon_controls_select_rows_metrics_and_bands(tmp_path):
             )
             assert page.locator(f"{CONTROLS} {selector}").count() == 1
         assert read_wape(page) == "30.0%"
-        verdict = page.locator("#regression-verdict").inner_text()
+        open_info(page)
+        verdict = page.locator("#regression-info-verdict").inner_text()
         assert "pooled verdict" in verdict and "0.95" in verdict
+        assert "pooled" in page.locator(".forecast-info-context").inner_text()
+        page.keyboard.press("Escape")
         assert "lead 3" in page.locator(
             '#regression-family-comparison th[data-metric-id="wape"]'
         ).get_attribute("title")
@@ -388,14 +391,18 @@ def test_horizon_controls_select_rows_metrics_and_bands(tmp_path):
         assert read_wape(page) == "14.5%"
         assert "off" in page.locator(LEAD).inner_text()
         assert "blend: equal weights" in page.locator(BLEND).inner_text()
-        assert "no band for a blend" in page.locator("#regression-chart-status").inner_text()
+        open_info(page)
+        assert "no band for a blend" in page.locator("#regression-info-notes").inner_text()
+        assert "no band for a blend" not in page.locator("#regression-chart-status").inner_text()
+        assert page.locator("#regression-info").inner_text() == "info · 1 note"
         assert page.locator("#regression-chart .chart-band").count() == 0
         assert "equal weights" in page.locator("#regression-chart-caption").inner_text()
         assert "blend week 2 x1" in page.locator(
             '#regression-family-comparison th[data-metric-id="wape"]'
         ).get_attribute("title")
-        assert page.locator("#regression-verdict").inner_text() == verdict
+        assert page.locator("#regression-info-verdict").inner_text() == verdict
         save_horizon(page, "desktop-blend")
+        page.keyboard.press("Escape")
         weighted = choose_horizon(page, "blend", "4x")
         assert weighted["view"] == {"mode": "blend", "n": 2, "strength": 4}
         assert weighted["bands"] == []
@@ -434,6 +441,51 @@ def test_horizon_controls_select_rows_metrics_and_bands(tmp_path):
         page.keyboard.press("Escape")
         remembered = choose_horizon(page, "blend", 2)
         assert remembered["view"] == {"mode": "blend", "n": 2, "strength": 8}
+
+
+def test_results_info_kept_open_and_focused_across_polling(tmp_path):
+    with horizon_session(tmp_path, running=True) as (page, run_id):
+        open_horizon_run(page, run_id)
+        head = page.locator("#regression-info")
+        head.focus()
+        page.keyboard.press("Enter")
+        settle_menu(page)
+        panel = page.locator("#regression-info-menu")
+        assert panel.is_visible()
+        assert panel.evaluate("node => node === document.activeElement")
+        page.evaluate("window.savedInfoPanel = document.getElementById('regression-info-menu')")
+        result_file = tmp_path / "forecast_root" / ".forecast-runs" / run_id / "result.json"
+        result = json.loads(result_file.read_text(encoding="utf-8"))
+        result["winner"]["verdict"] = {
+            "accuracy": {"ratio": 0.75},
+            "checks": [{"check": "history", "detail": "updated saved history"}],
+        }
+        result["excluded_series"] = [
+            {"series": "ended", "dims": {"series": "ended"}, "last_seen": "2026-01-05"}
+        ]
+        write_json(result_file, result)
+        page.wait_for_function(
+            "document.querySelector('#regression-info-verdict .forecast-verdict-summary')"
+            "?.innerText.includes('0.75') && "
+            "document.getElementById('regression-info').innerText === 'info · 1 note'",
+            timeout=10000,
+        )
+        assert panel.is_visible()
+        assert page.evaluate(
+            "window.savedInfoPanel === document.getElementById('regression-info-menu')"
+        )
+        assert head.get_attribute("aria-expanded") == "true"
+        assert panel.evaluate("node => node === document.activeElement")
+        assert panel.locator(".forecast-verdict-check").inner_text() == (
+            "history: updated saved history"
+        )
+        assert panel.locator("#regression-info-notes").inner_text() == (
+            "excluded from the forecast, no data before the forecast start: "
+            "[series=ended] (last seen 2026-01-05)"
+        )
+        page.keyboard.press("Escape")
+        assert not panel.is_visible()
+        assert head.evaluate("node => node === document.activeElement")
 
 
 def test_horizon_controls_keyboard_reload_and_polling(tmp_path):
@@ -630,6 +682,8 @@ def test_horizon_controls_wait_for_new_run_before_opening_blend(tmp_path):
         settle_menu(page)
         with page.expect_request("**/api/forecast-run?**"):
             page.locator(f'.menu-panel .menu-item[data-id="{next_run}"]').click()
+        page.locator("#regression-results-model").click()
+        assert not page.locator(".menu-panel").is_visible()
         page.locator(BLEND).click()
         assert len(held) == 1
         assert not errors, errors
@@ -732,4 +786,42 @@ def test_horizon_controls_hidden_for_legacy_runs(tmp_path):
         assert not page.locator(CONTROLS).is_visible()
         assert not page.locator("#regression-lead-errors").is_visible()
         assert not page.locator("#regression-chart-caption").is_visible()
-        assert "pooled verdict" not in page.locator("#regression-verdict").inner_text()
+        open_info(page)
+        assert "pooled verdict" not in page.locator("#regression-info-verdict").inner_text()
+
+
+def test_results_info_recovered_initial_view_failure_on_poll(tmp_path):
+    with horizon_session(tmp_path, running=True) as (page, run_id):
+        unavailable = [True]
+
+        def read_view(route):
+            if unavailable[0]:
+                route.fulfill(status=503, json={"error": "saved chart temporarily unavailable"})
+            else:
+                route.continue_()
+
+        page.route("**/api/forecast-view?**", read_view)
+        switch_to_regression(page)
+        page.select_option("#topic-flavour", "timeseries")
+        show_tab(page, "regression-search")
+        page.locator(f'.forecast-run-rail [data-run-id="{run_id}"]').click()
+        page.locator("#regression-run-open").click()
+        page.wait_for_function(
+            "document.getElementById('regression-info').innerText === 'info · 1 note'"
+        )
+        panel = open_info(page)
+        assert panel.locator("#regression-info-verdict").inner_text() == "no verdict yet"
+        assert panel.locator(".forecast-info-note").inner_text() == (
+            "saved chart temporarily unavailable"
+        )
+        unavailable[0] = False
+        page.wait_for_function(
+            "document.querySelector('#regression-info-verdict .forecast-verdict-summary')"
+            "?.innerText.includes('0.95') && "
+            "document.getElementById('regression-info').innerText === 'info'",
+            timeout=10000,
+        )
+        assert panel.is_visible()
+        assert panel.evaluate("node => node === document.activeElement")
+        assert panel.locator("#regression-info-notes").inner_text() == "no notes"
+        assert page.locator("#regression-chart .chart-line").count() > 0

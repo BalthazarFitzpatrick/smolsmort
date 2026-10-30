@@ -13,7 +13,13 @@ pytest.importorskip("playwright")
 pytest.importorskip("xgboost")
 
 from forecast_ui_audit import assert_family_layout
-from test_forecast_ui_browser import session, show_tab, switch_to_regression, with_error_metrics
+from test_forecast_ui_browser import (
+    open_info,
+    session,
+    show_tab,
+    switch_to_regression,
+    with_error_metrics,
+)
 
 from smolsmort.forecast.tables import write_table
 
@@ -498,9 +504,11 @@ def test_multifamily_saved_run_named_models_and_explained_importance(tmp_path):
                 "-",
             ],
         ]
-        assert page.locator("#regression-verdict").inner_text() == (
+        open_info(page)
+        assert page.locator("#regression-info-verdict").inner_text() == (
             "xgboost: test ratio 0.95, better than naive"
         )
+        page.keyboard.press("Escape")
         assert page.locator("#regression-importance-status").inner_text().startswith("gain")
         assert page.locator("#regression-importance tbody tr").all_text_contents() == [
             "lag_175.00%",
@@ -540,8 +548,9 @@ def test_multifamily_saved_run_named_models_and_explained_importance(tmp_path):
                 assert page.locator("#regression-importance tbody tr").count() == 2
         page.click("#regression-results-model")
         page.locator('.menu-panel .menu-item[data-id="ensemble"]').click()
+        open_info(page)
         page.wait_for_function(
-            "document.getElementById('regression-verdict').innerText === 'ensemble of xgboost, ridge: test ratio 1.05, worse than naive'"
+            "document.getElementById('regression-info-verdict').innerText === 'ensemble of xgboost, ridge: test ratio 1.05, worse than naive'"
         )
         page.wait_for_function(
             "document.querySelector('#regression-results-table tr:nth-child(2) td:last-child').innerText === 'ensemble'"
@@ -567,8 +576,8 @@ def test_legacy_saved_run_defaulted_to_xgboost_without_comparison(tmp_path):
         family_index = board.locator("thead th").all_text_contents().index("family")
         assert board.locator("tbody tr td").nth(family_index).inner_text() == "xgboost"
         page.click("#regression-run-open")
-        page.locator("#regression-verdict").wait_for()
-        assert page.locator("#regression-verdict").inner_text() == (
+        open_info(page)
+        assert page.locator("#regression-info-verdict").inner_text() == (
             "xgboost: test ratio 0.95, better than naive"
         )
         assert not page.locator("#regression-family-comparison").is_visible()
@@ -587,7 +596,7 @@ def test_result_and_run_banners_compared_ratios_and_kept_plain_facts(tmp_path):
         page.locator(f'#regression-runs-list [data-run-id="{run_id}"]').click()
         page.locator("#regression-run-verdict").wait_for()
         page.click("#regression-run-open")
-        page.locator("#regression-verdict").wait_for()
+        open_info(page)
         facts = [
             {"check": "band", "group": "reliability", "detail": "test coverage 80%"},
             {"check": "history", "group": "reliability", "detail": "60 periods"},
@@ -612,27 +621,29 @@ def test_result_and_run_banners_compared_ratios_and_kept_plain_facts(tmp_path):
             assert page.locator("#regression-run-verdict").inner_text() == (
                 f"test ratio: {ratio:.2f}" if ratio is not None else "test ratio: -"
             )
-            assert page.locator("#regression-verdict .forecast-verdict-summary").inner_text() == (
-                f"xgboost: {expected}"
-            )
             assert page.locator(
-                "#regression-verdict .forecast-verdict-check"
+                "#regression-info-verdict .forecast-verdict-summary"
+            ).inner_text() == (f"xgboost: {expected}")
+            assert page.locator(
+                "#regression-info-verdict .forecast-verdict-check"
             ).all_text_contents() == ["band: test coverage 80%", "history: 60 periods"]
-            for selector in ("#regression-run-verdict", "#regression-verdict"):
+            for selector in ("#regression-run-verdict", "#regression-info-verdict"):
                 banner = page.locator(selector)
                 classes = banner.get_attribute("class").split()
                 assert ("better" in classes) == (comparison == "better")
                 assert ("worse" in classes) == (comparison == "worse")
                 if colour:
                     assert banner.evaluate("node => getComputedStyle(node).color") == colour
-                    assert (
-                        banner.evaluate("node => getComputedStyle(node).borderTopColor") == colour
-                    )
+                    if selector == "#regression-run-verdict":
+                        assert (
+                            banner.evaluate("node => getComputedStyle(node).borderTopColor")
+                            == colour
+                        )
         page.evaluate(
             "() => forecastTopics.get('regression').paintVerdict("
             "{summary: 'failed to load', checks: []})"
         )
-        banner = page.locator("#regression-verdict")
+        banner = page.locator("#regression-info-verdict")
         assert banner.inner_text() == "failed to load"
         assert not {"better", "worse"}.intersection(banner.get_attribute("class").split())
 
@@ -688,10 +699,12 @@ def test_results_kept_latest_model_importance_and_table_after_delayed_responses(
             "document.querySelector('#regression-results-table tr:nth-child(2) td:last-child').innerText === 'ensemble'"
         )
         release_response(0)
-        assert page.locator("#regression-verdict").inner_text() == (
+        open_info(page)
+        assert page.locator("#regression-info-verdict").inner_text() == (
             "ensemble of xgboost, ridge: test ratio 1.05, worse than naive"
         )
         assert_ensemble_table()
+        page.keyboard.press("Escape")
         page.unroute("**/api/forecast-view?**", hold_response)
 
         pending.clear()
@@ -717,7 +730,8 @@ def test_results_kept_latest_model_importance_and_table_after_delayed_responses(
             .inner_text()
             .startswith("absolute standardised coefficient")
         )
-        assert page.locator("#regression-verdict").inner_text() == (
+        open_info(page)
+        assert page.locator("#regression-info-verdict").inner_text() == (
             "ensemble of xgboost, ridge: test ratio 1.05, worse than naive"
         )
         assert_ensemble_table()

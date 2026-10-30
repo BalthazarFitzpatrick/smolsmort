@@ -140,8 +140,18 @@ def show_tab(page: Page, name: str) -> None:
     page.wait_for_timeout(250)
 
 
+def open_info(page: Page, topic: str = TOPIC):
+    """open the read-only results menu before checking its facts"""
+    panel = page.locator(f"#{topic}-info-menu")
+    if not panel.is_visible():
+        page.locator(f"#{topic}-info").click()
+    panel.wait_for()
+    settle_menu(page)
+    return panel
+
+
 @contextmanager
-def session(tmp_path: Path, *, width: int = 1280, numeric: bool = False, port: int = 8098):
+def session(tmp_path: Path, *, width: int = 1280, numeric: bool = False, port: int = 8108):
     """the real review server, its forecast root holding the synthetic rows fixture, and a
     headless page on it"""
     errors: list[str] = []
@@ -249,7 +259,8 @@ def run_search(page: Page) -> None:
     assert status.endswith("· done"), status
 
 
-def test_forecast_results_warned_about_excluded_series(tmp_path):
+@pytest.mark.parametrize("width", [1440, 390])
+def test_forecast_results_warned_about_excluded_series(tmp_path, width):
     spec = {
         "mode": "timeseries",
         "columns": [
@@ -276,7 +287,7 @@ def test_forecast_results_warned_about_excluded_series(tmp_path):
         "missing": {},
         "empty": {"excluded_series": []},
     }
-    with session(tmp_path, width=800) as (page, _base):
+    with session(tmp_path, width=width) as (page, _base):
         page.route(
             "**/api/forecast-runs",
             lambda route: route.fulfill(
@@ -295,10 +306,13 @@ def test_forecast_results_warned_about_excluded_series(tmp_path):
                 json={
                     "mode": "timeseries",
                     "x": ["2026-06-29"],
-                    "series": [],
+                    "series": [{"id": "actual", "label": "actual", "values": [12]}],
                     "bands": [],
                     "markers": [],
-                    "verdict": {"accuracy": {"ratio": 0.95}},
+                    "verdict": {
+                        "accuracy": {"ratio": 0.95},
+                        "checks": [{"check": "history", "detail": "60 periods"}],
+                    },
                 }
             ),
         )
@@ -311,30 +325,163 @@ def test_forecast_results_warned_about_excluded_series(tmp_path):
         switch_to_regression(page)
         page.select_option("#topic-flavour", "timeseries")
         show_tab(page, "regression-results")
-        warning = page.locator(f"#{TOPIC}-excluded-series")
-        assert not warning.is_visible()
-        expected = (
+        assert page.locator(f"#{TOPIC}-verdict, #{TOPIC}-excluded-series").count() == 0
+        head = page.locator(f"#{TOPIC}-info")
+        expected = [
             "excluded from the forecast, no data before the forecast start: "
-            "[project=C, product=p1] (last seen 2025-10-13), "
-            '[project=<img src="x">, product=p2 & more] (last seen unknown)'
-        )
+            "[project=C, product=p1] (last seen 2025-10-13)",
+            "excluded from the forecast, no data before the forecast start: "
+            '[project=<img src="x">, product=p2 & more] (last seen unknown)',
+        ]
         for run_id in ("ended", "missing", "ended", "empty"):
             page.click(f"#{TOPIC}-results-run")
             page.locator(f'.menu-panel .menu-item[data-id="{run_id}"]').click()
-            text = expected if run_id == "ended" else ""
+            caption = "info · 2 notes" if run_id == "ended" else "info"
             page.wait_for_function(
-                "([id, text]) => document.getElementById(id).textContent === text",
-                arg=[f"{TOPIC}-excluded-series", text],
+                "([id, text]) => document.getElementById(id).innerText.trim() === text",
+                arg=[f"{TOPIC}-info", caption],
             )
-            assert warning.is_visible() == (run_id == "ended")
-            if run_id != "ended":
-                continue
-            assert warning.inner_text() == expected
-            assert "warn" in warning.get_attribute("class").split()
-            assert warning.locator("*").count() == 0
-            assert warning.evaluate("node => getComputedStyle(node).whiteSpace") == "nowrap"
-            assert warning.evaluate("node => getComputedStyle(node).overflowX") == "auto"
-            assert warning.evaluate("node => node.scrollWidth > node.clientWidth")
+            assert ("warn" in head.get_attribute("class").split()) == (run_id == "ended")
+            panel = open_info(page)
+            verdict = panel.locator(f"#{TOPIC}-info-verdict")
+            notes = panel.locator(f"#{TOPIC}-info-notes")
+            assert "test ratio 0.95, better than naive" in verdict.inner_text()
+            assert verdict.locator(".forecast-verdict-check").all_text_contents() == [
+                "history: 60 periods"
+            ]
+            assert "excluded from" not in verdict.inner_text()
+            assert "test ratio" not in notes.inner_text()
+            assert panel.locator("button, input, select, [role=checkbox], .menu-item").count() == 0
+            assert page.locator(".forecast-results > .warn").count() == 0
+            assert head.evaluate(
+                "node => node.closest('.forecast-results-header').nextElementSibling"
+                ".querySelector('[id$=\"-chart\"]') !== null"
+            )
+            assert head.evaluate("node => node.nextElementSibling.id") == f"{TOPIC}-export"
+            sections = panel.locator(":scope > .menu-column-row > .menu-section")
+            assert sections.count() == 2
+            assert sections.nth(0).locator(":scope > .field-label").inner_text() == "verdict"
+            assert sections.nth(1).locator(":scope > .field-label").inner_text() == "notes"
+            left = sections.nth(0).bounding_box()
+            right = sections.nth(1).bounding_box()
+            bounds = panel.bounding_box()
+            assert bounds["x"] >= 0
+            assert bounds["x"] + bounds["width"] <= width
+            assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+            if width == 390:
+                assert right["y"] >= left["y"] + left["height"]
+            else:
+                assert right["x"] >= left["x"] + left["width"]
+                assert right["y"] == pytest.approx(left["y"], abs=1)
+            if run_id == "ended":
+                assert notes.locator(".forecast-info-note").all_text_contents() == expected
+                assert notes.locator("img").count() == 0
+                assert head.evaluate("node => getComputedStyle(node).color") == (
+                    "rgb(173, 121, 111)"
+                )
+            else:
+                assert notes.inner_text() == "no notes"
+                assert notes.locator(".forecast-info-note").count() == 0
+            page.keyboard.press("Escape")
+
+
+def test_results_info_collected_errors_and_cleared_recovered_notes(tmp_path):
+    run_id = "synthetic-info"
+    spec = {
+        "mode": "timeseries",
+        "task": "regression",
+        "columns": [{"name": "day", "role": "time"}, {"name": "units", "role": "target"}],
+    }
+    payloads = {
+        "load": {"id": run_id, "state": "done", "spec": spec},
+        "view": {
+            "mode": "timeseries",
+            "x": ["2026-01-05", "2026-01-12"],
+            "series": [{"id": "actual", "label": "actual", "values": [10, 12]}],
+            "bands": [],
+            "markers": [],
+            "verdict": {
+                "accuracy": {"ratio": 0.8},
+                "checks": [{"check": "history", "detail": "60 periods"}],
+            },
+        },
+        "table": {"columns": ["day", "units"], "rows": [["2026-01-05", 10]], "page": 0, "total": 1},
+    }
+    failures = {}
+    methods = {"load": "loadResults", "view": "refreshView", "table": "refreshTable"}
+    with session(tmp_path) as (page, _):
+        page.route(
+            "**/api/forecast-runs",
+            lambda route: route.fulfill(json={"runs": [{"id": run_id, "state": "done"}]}),
+        )
+
+        def respond(route, source):
+            if source in failures:
+                route.fulfill(status=503, json={"error": failures[source]})
+            else:
+                route.fulfill(json=payloads[source])
+
+        for endpoint, source in (("run", "load"), ("view", "view"), ("table", "table")):
+            page.route(
+                f"**/api/forecast-{endpoint}?**",
+                lambda route, *, source=source: respond(route, source),
+            )
+        switch_to_regression(page)
+        page.select_option("#topic-flavour", "timeseries")
+        show_tab(page, "regression-results")
+        page.click("#regression-results-run")
+        page.locator(f'.menu-panel .menu-item[data-id="{run_id}"]').click()
+        page.locator("#regression-results-table tr").nth(1).wait_for()
+        panel = open_info(page)
+        verdict = panel.locator("#regression-info-verdict").inner_text()
+        head = page.locator("#regression-info")
+        assert head.inner_text() == "info"
+
+        def refresh(source):
+            page.evaluate("method => forecastTopics.get('regression')[method]()", methods[source])
+
+        def assert_notes(expected):
+            assert panel.is_visible()
+            assert panel.locator("#regression-info-verdict").inner_text() == verdict
+            assert panel.locator(".forecast-info-note").all_text_contents() == expected
+            count = len(expected)
+            caption = f"info · {count} {'note' if count == 1 else 'notes'}" if count else "info"
+            assert head.inner_text() == caption
+            assert ("warn" in head.get_attribute("class").split()) == bool(expected)
+            assert page.locator(".forecast-results .warn").count() == bool(expected)
+            if not expected:
+                assert panel.locator("#regression-info-notes").inner_text() == "no notes"
+
+        for source in methods:
+            failures[source] = f"saved {source} unavailable"
+            refresh(source)
+            assert_notes([failures[source]])
+            del failures[source]
+            refresh(source)
+            assert_notes([])
+
+        failures.update(view="saved chart unavailable", table="saved table unavailable")
+        refresh("view")
+        refresh("table")
+        assert_notes(["saved chart unavailable", "saved table unavailable"])
+        del failures["view"]
+        refresh("view")
+        assert_notes(["saved table unavailable"])
+        del failures["table"]
+        refresh("table")
+        assert_notes([])
+
+        for note in ("capped at 24 of 30 lines", "weekly series unavailable for this selection"):
+            payloads["view"]["note"] = note
+            if note.startswith("weekly"):
+                payloads["view"]["objective"] = "hazard"
+            refresh("view")
+            assert_notes([note])
+            assert note not in page.locator("#regression-chart-status").inner_text()
+        del payloads["view"]["note"]
+        del payloads["view"]["objective"]
+        refresh("view")
+        assert_notes([])
 
 
 def test_forecast_regression_entity_flow(tmp_path):
@@ -398,11 +545,12 @@ def test_forecast_regression_entity_flow(tmp_path):
         page.click(f"#{TOPIC}-run-open")
         page.wait_for_timeout(300)
 
-        page.wait_for_selector(f"#{TOPIC}-verdict:not(.hidden)")
-        verdict_text = page.inner_text(f"#{TOPIC}-verdict")
+        open_info(page)
+        verdict_text = page.inner_text(f"#{TOPIC}-info-verdict")
         assert verdict_text.strip()
         assert "ratio " in verdict_text and "than naive" in verdict_text
-        assert page.locator(f"#{TOPIC}-verdict .forecast-verdict-check").count() > 0
+        assert page.locator(f"#{TOPIC}-info-verdict .forecast-verdict-check").count() > 0
+        page.keyboard.press("Escape")
 
         page.wait_for_function(
             f'document.querySelectorAll("#{TOPIC}-chart svg path.chart-band").length > 0',
@@ -1434,6 +1582,8 @@ def test_forecast_controls_follow_the_shared_row_height(tmp_path, width):
                 }
                 assert len(widths) == 1, (state, kind, widths)
             for text in measured["texts"]:
+                if text["infoContent"]:
+                    continue
                 assert text["lines"] <= 1, (state, text)
                 assert text["textHeight"] <= text["lineHeight"] + 1, (state, text)
                 if text["lineBoxHeight"] is not None:
@@ -1727,7 +1877,7 @@ def test_timeseries_setup_saves_discards_and_prepares(tmp_path):
             run_search(page)
         assert request.value.post_data_json["spec"] == spec
         page.click(f"#{TOPIC}-run-open")
-        page.wait_for_selector(f"#{TOPIC}-verdict:not(.hidden)")
+        open_info(page)
         page.locator(f"#{TOPIC}-results-table tr").nth(1).wait_for()
         assert page.locator(f"#{TOPIC}-results-table tr").count() > 1
 

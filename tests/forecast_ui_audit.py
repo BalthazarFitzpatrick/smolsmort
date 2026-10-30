@@ -118,6 +118,7 @@ CONTROL_SIZES = r"""() => {
       const plainLabel = node.matches('.field-label, .field-value, .stat, .popup-title, summary')
         && !node.matches(selector) && !node.children.length;
       texts.push({selector: path(node), text: text.textContent.trim(), lines: tops.size,
+        infoContent: !!node.closest('.forecast-info-context, [id$="-info-verdict"], [id$="-info-notes"]'),
         clientHeight: node.clientHeight, lineHeight,
         lineBoxHeight: plainLabel ? node.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom) : null,
         textHeight: rects.length ? Math.max(...rects.map(rect => rect.bottom)) - Math.min(...rects.map(rect => rect.top)) : 0});
@@ -204,6 +205,10 @@ def visit_control_states(page, *, source, targets, run_id, capture, set_results_
         page.locator(f"#{name}-results-table tr").nth(1).wait_for()
         assert_family_layout(page)
         capture(f"results-{name}")
+        page.click(f"#{name}-info")
+        page.locator(f"#{name}-info-menu").wait_for()
+        capture(f"results-{name}-info-menu")
+        page.keyboard.press("Escape")
         for picker in ("results-model", "importance-family"):
             if page.locator(f"#{name}-{picker}").is_visible():
                 page.click(f"#{name}-{picker}")
