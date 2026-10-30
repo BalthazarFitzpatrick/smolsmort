@@ -239,7 +239,11 @@ def _timeseries_calendar(
     return {name: (family_name(op, clock=clock), values) for name, (op, values) in cols.items()}
 
 
-def buckets_for(horizon: int) -> list[tuple[int, int]]:
+def buckets_for(horizon: int, horizon_mode: str = "grouped") -> list[tuple[int, int]]:
+    if horizon_mode == "single":
+        return [(1, horizon)]
+    if horizon_mode != "grouped":
+        raise ValueError("horizon_mode must be grouped or single")
     out = [(lo, min(hi, horizon)) for lo, hi in BUCKETS if lo <= horizon]
     if horizon > BUCKETS[-1][1]:
         out.append((BUCKETS[-1][1] + 1, horizon))

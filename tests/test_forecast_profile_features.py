@@ -128,7 +128,7 @@ def test_buckets_cut_at_the_horizon():
     assert buckets_for(60)[-1] == (53, 60)
 
 
-@pytest.mark.parametrize("bucket", [(1, 1), (2, 4), (5, 8)])
+@pytest.mark.parametrize("bucket", [(1, 1), (2, 4), (5, 8), (1, 8)])
 def test_timeseries_features_never_see_past_their_origin(panel, bucket):
     spec, table, scaffold, train, _ = panel
     before = timeseries_features(spec, table, scaffold, bucket, "week", train, period=52)

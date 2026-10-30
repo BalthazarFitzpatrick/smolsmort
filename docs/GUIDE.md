@@ -602,6 +602,14 @@ and, when available, `<column>:log`. entity calendar families use the anchor, in
 mapped using the spec. cost calibrations use model-family names and stay unchanged. feature
 columns, values and search behaviour stay the same.
 
+**horizon mode.** the run option `horizon_mode` is `"grouped"` (default) or `"single"`.
+grouped keeps one model per horizon bucket: an 8-step forecast uses `1-1`, `2-4` and `5-8`.
+single uses one model and one bucket, `1-horizon`, for the whole forecast. every target week
+reads target and measure data at least `horizon` steps old; its newest data is at
+`target step - horizon`, including the first forecast week. its test score counts one row per
+series and target week in each test window, with no duplicate rows from other buckets.
+this run option leaves the prepared-cache digest unchanged.
+
 **timeseries feature candidates.** each horizon bucket reads target and measure values only through
 its origin, `target step - bucket end`. the examples below use target `unit` and time column
 `need_by_date`; `k`, `w` and `a` stand for the lag, window and alpha. the search can choose each

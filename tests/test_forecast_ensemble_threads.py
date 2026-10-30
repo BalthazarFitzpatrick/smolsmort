@@ -22,7 +22,7 @@ from smolsmort.forecast import ensemble
 def test_finish_and_importance_use_resolved_threads(
     tmp_path, monkeypatch, coordinator_threads, request_threads, cpu_threads, expected_threads
 ):
-    request = {"spec": {}, "prepared": str(tmp_path), "summary": {}}
+    request = {"spec": {}, "prepared": str(tmp_path), "summary": {}, "horizon_mode": "single"}
     if request_threads is not None:
         request["nthread"] = request_threads
     coordinator = {"families": {name: {"state": "done"} for name in ("xgboost", "lightgbm")}}
@@ -55,6 +55,10 @@ def test_finish_and_importance_use_resolved_threads(
         fit_calls.append(("ensemble" if kwargs.get("members") else "winner", kwargs["nthread"]))
         return {"model_error": 0.2}
 
+    def load_workspace(*args, **kwargs):
+        assert kwargs["horizon_mode"] == "single"
+        return workspace
+
     def fit_family_importance(ws, genome, *, nthread):
         assert ws is workspace
         importance_calls.append((genome.key(), nthread))
@@ -67,7 +71,7 @@ def test_finish_and_importance_use_resolved_threads(
     monkeypatch.setattr(ensemble, "watch_parent", lambda pid: None)
     monkeypatch.setattr(ensemble.os, "cpu_count", lambda: cpu_threads)
     monkeypatch.setattr(ensemble, "spec_from_dict", lambda data: data)
-    monkeypatch.setattr(ensemble, "load_workspace", lambda *args, **kwargs: workspace)
+    monkeypatch.setattr(ensemble, "load_workspace", load_workspace)
     monkeypatch.setattr(
         ensemble,
         "genome_from_dict",

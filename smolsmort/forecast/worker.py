@@ -149,6 +149,7 @@ def run(folder: Path) -> int:
             request["summary"],
             transform=transform,
             holdout=request.get("holdout", "block"),
+            horizon_mode=request.get("horizon_mode", "grouped"),
         )
         if ws.excluded_series:
             job.event({"event": "excluded_series", "excluded_series": ws.excluded_series})
@@ -285,6 +286,7 @@ def _write_result(folder, spec, result, final):
     }
     summary = {
         "transform": transform,
+        "horizon_mode": final.get("horizon_mode", "grouped"),
         "verdict": final["verdict"],
         "model_error": final["model_error"],
         "baseline_error": final["baseline_error"],

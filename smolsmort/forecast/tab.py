@@ -229,6 +229,9 @@ def _prep(app, payload: dict) -> dict:
 
 
 def _families(app, query: dict) -> dict:
+    horizon_mode = query.get("horizon_mode", "grouped")
+    if horizon_mode not in ("grouped", "single"):
+        raise RequestError("horizon_mode must be grouped or single")
     spec, prepared = None, None
     if "spec" in query:
         try:
@@ -253,7 +256,15 @@ def _families(app, query: dict) -> dict:
     if task not in ("regression", "classification"):
         raise RequestError("task must be regression or classification")
     try:
-        return {"families": views.family_catalog(_runs_root(app), spec, prepared, task)}
+        return {
+            "families": views.family_catalog(
+                _runs_root(app),
+                spec,
+                prepared,
+                task,
+                horizon_mode=horizon_mode,
+            )
+        }
     except views.ViewError as exc:
         raise RequestError(str(exc), 409) from exc
 
@@ -339,6 +350,7 @@ def _start(app, payload: dict) -> dict:
             "time_budget_s",
             "transform",
             "holdout",
+            "horizon_mode",
             "max_concurrent_families",
             "candidate_limit_fraction",
             "prune_sigma",
@@ -370,9 +382,12 @@ def _start(app, payload: dict) -> dict:
                 "time_budget_s": budget.get("time_cap", previous["time_budget_s"]),
                 "transform": previous.get("transform", "none"),
                 "holdout": previous.get("holdout", "block"),
+                "horizon_mode": previous.get("horizon_mode", "grouped"),
                 "nthread": budget.get("nthread", previous.get("nthread")),
             }
             multi = True
+        elif not multi:
+            payload = {**payload, "horizon_mode": previous.get("horizon_mode", "grouped")}
     if multi:
         spec = _parse_spec(app, payload)
         payload = _validate_selections(payload, spec)
@@ -396,6 +411,7 @@ def _start(app, payload: dict) -> dict:
                 "time_budget_s",
                 "transform",
                 "holdout",
+                "horizon_mode",
                 "aggregate",
                 "aggregate_weight",
                 "max_concurrent_families",
@@ -423,6 +439,7 @@ def _start(app, payload: dict) -> dict:
             warm_from=payload.get("warm_from"),
             aggregate=payload.get("aggregate", "none"),
             aggregate_weight=payload.get("aggregate_weight"),
+            horizon_mode=payload.get("horizon_mode", "grouped"),
         )
     return {
         "run_id": run_id,
@@ -474,6 +491,7 @@ def _refit(app, payload: dict) -> dict:
             time_budget_s=previous["time_budget_s"],
             transform=previous.get("transform", "none"),
             holdout=previous.get("holdout", "block"),
+            horizon_mode=previous.get("horizon_mode", "grouped"),
             aggregate=previous.get("aggregate", "none"),
             aggregate_weight=previous.get("aggregate_weight"),
             nthread=previous.get("nthread"),
@@ -486,6 +504,7 @@ def _refit(app, payload: dict) -> dict:
             prepared,
             recipe=genome,
             aggregate=previous.get("aggregate", "none"),
+            horizon_mode=previous.get("horizon_mode", "grouped"),
         )
     return {
         "run_id": run_id,

@@ -145,7 +145,9 @@ def probe_families() -> dict:
         raise ViewError("could not check family libraries in the isolated worker") from exc
 
 
-def family_catalog(runs_root: Path, spec=None, prepared=None, task="regression") -> list[dict]:
+def family_catalog(
+    runs_root: Path, spec=None, prepared=None, task="regression", *, horizon_mode="grouped"
+) -> list[dict]:
     """suitability uses the worker's split and features, without fitting any models"""
     from smolsmort.forecast.pipeline import PipelineError, load_workspace
     from smolsmort.forecast.splits import SplitError
@@ -154,7 +156,9 @@ def family_catalog(runs_root: Path, spec=None, prepared=None, task="regression")
     if spec is not None:
         task = spec.task
         try:
-            workspace = load_workspace(spec, prepared.folder, prepared.summary)
+            workspace = load_workspace(
+                spec, prepared.folder, prepared.summary, horizon_mode=horizon_mode
+            )
         except (PipelineError, SplitError) as exc:
             history_error = str(exc)
     estimates = {}

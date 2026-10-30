@@ -63,6 +63,7 @@ def start_run(
     time_budget_s: float | None = None,
     transform: str = "none",
     holdout: str = "block",
+    horizon_mode: str = "grouped",
     aggregate: str = "none",
     aggregate_weight: str | None = None,
     ensemble: dict | None = None,
@@ -89,6 +90,8 @@ def start_run(
     }
     if aggregate_weight is not None:
         request["aggregate_weight"] = aggregate_weight
+    if horizon_mode != "grouped":
+        request["horizon_mode"] = horizon_mode
     if version is not None or families is not None:
         request.pop("budget")
         request.update(
@@ -97,6 +100,7 @@ def start_run(
             time_budget_s=time_budget_s,
             transform=transform,
             holdout=holdout,
+            horizon_mode=horizon_mode,
             ensemble=ensemble if ensemble is not None else {"enabled": True, "top": 3},
             candidate_limit_fraction=candidate_limit_fraction,
             plateau=plateau,

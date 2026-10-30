@@ -52,6 +52,7 @@ def run(folder, parent_pid):
         request["summary"],
         transform=request.get("transform", "none"),
         holdout=request.get("holdout", "block"),
+        horizon_mode=request.get("horizon_mode", "grouped"),
     )
     ranked = read_json(folder / "finalists.json")
     ranked = [

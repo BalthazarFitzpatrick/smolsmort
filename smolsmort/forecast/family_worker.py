@@ -103,6 +103,7 @@ def run(folder: Path, name: str) -> int:
             request["summary"],
             transform=request.get("transform", "none"),
             holdout=request.get("holdout", "block"),
+            horizon_mode=request.get("horizon_mode", "grouped"),
         )
         nthread = (allocation or {}).get("nthread")
         if nthread is None:

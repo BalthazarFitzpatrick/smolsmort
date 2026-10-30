@@ -17,7 +17,7 @@ from smolsmort.forecast.splits import SplitError, seasonal_cuts
 from smolsmort.forecast.worker import _write_result
 
 
-def build_workspace(monkeypatch, holdout, weeks=156, horizon=4):
+def build_workspace(monkeypatch, holdout, weeks=156, horizon=4, **options):
     positions = np.arange(weeks)
     steps = np.datetime64("2023-01-02") + positions * np.timedelta64(7, "D")
     values = 20 + positions / 5 + 3 * np.sin(2 * np.pi * positions / 13)
@@ -38,7 +38,7 @@ def build_workspace(monkeypatch, holdout, weeks=156, horizon=4):
         step="week",
         horizon=horizon,
     )
-    ws = load_workspace(spec, Path("synthetic"), {"step": "week"}, holdout=holdout)
+    ws = load_workspace(spec, Path("synthetic"), {"step": "week"}, holdout=holdout, **options)
     ws.families = ["y@day:lag+0", "y@day:lag+1"]
     return ws
 
@@ -122,6 +122,24 @@ def test_block_holdout_is_the_default_and_unchanged(monkeypatch, seasonal):
         for name, mask in block.series_masks[bucket].items():
             np.testing.assert_array_equal(mask, default.series_masks[bucket][name])
     assert block.series_folds != seasonal.series_folds
+
+
+@pytest.mark.parametrize("horizon", [1, 8, 13, 60])
+def test_single_horizon_has_one_test_row_per_series_week_and_window(monkeypatch, horizon):
+    ws = build_workspace(monkeypatch, "seasonal", weeks=700, horizon=horizon, horizon_mode="single")
+    bucket = (1, horizon)
+    assert list(ws.frames) == [bucket]
+    frame = ws.frames[bucket]
+    mask = ws.series_masks[bucket]["test"]
+    pairs = list(zip(frame.series[mask], frame.step[mask], strict=True))
+    assert len(pairs) == len(set(pairs)) == 2 * horizon * len(ws.test_folds)
+    for (start, end), (fit, rows) in zip(
+        ws.test_folds, pipeline._test_windows(ws, bucket), strict=True
+    ):
+        assert rows.sum() == 2 * horizon
+        assert np.all(frame.step[fit] < start)
+        assert np.all(frame.origin[rows] < start)
+        assert np.all((frame.step[rows] >= start) & (frame.step[rows] < end))
 
 
 def test_seasonal_score_is_the_mean_over_validation_origins(seasonal):

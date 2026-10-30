@@ -135,6 +135,7 @@ class Workspace:
     holdout: str = "block"
     test_folds: tuple[tuple[np.datetime64, np.datetime64], ...] = ()
     holdout_info: dict | None = None
+    horizon_mode: str = "grouped"
 
     @property
     def mode(self) -> str:
@@ -142,7 +143,13 @@ class Workspace:
 
 
 def load_workspace(
-    spec: PrepSpec, folder: Path, summary: dict, *, transform: str = "none", holdout: str = "block"
+    spec: PrepSpec,
+    folder: Path,
+    summary: dict,
+    *,
+    transform: str = "none",
+    holdout: str = "block",
+    horizon_mode: str = "grouped",
 ) -> Workspace:
     """everything a search needs, read and built once: tables, cuts, profile, candidate features"""
     folder = Path(folder)
@@ -152,10 +159,12 @@ def load_workspace(
             raise PipelineError("target transforms require time series regression")
         if holdout != "block":
             raise PipelineError("seasonal holdout is not available for entity mode yet")
+        if horizon_mode != "grouped":
+            raise PipelineError("single horizon mode requires time series")
         return _entity_workspace(spec, folder, summary)
     if spec.task == "classification":
         raise PipelineError("classification requires entity mode; time series runs use regression")
-    ws = _timeseries_workspace(spec, folder, summary, holdout)
+    ws = _timeseries_workspace(spec, folder, summary, holdout, horizon_mode)
     ws.transform = transform
     if transform != "none":
         target_transform.validate_target(ws.panel[spec.named("target")[0]])
@@ -191,7 +200,9 @@ def _entity_workspace(spec, folder, summary) -> Workspace:
     return ws
 
 
-def _timeseries_workspace(spec, folder, summary, holdout="block") -> Workspace:
+def _timeseries_workspace(
+    spec, folder, summary, holdout="block", horizon_mode="grouped"
+) -> Workspace:
     panel = read_table(folder / "panel.parquet", order_by=f"{SERIES}, {STEP}")
     scaffold = read_table(folder / "scaffold.parquet")
     inputs = read_table(folder / "inputs.parquet") if spec.named("input") else None
@@ -209,7 +220,7 @@ def _timeseries_workspace(spec, folder, summary, holdout="block") -> Workspace:
     profile = build_profile(spec, panel, train)
     genes = profile["genes"]
     frames, masks = {}, {}
-    for bucket in buckets_for(spec.horizon):
+    for bucket in buckets_for(spec.horizon, horizon_mode):
         frame = timeseries_features(
             spec,
             panel,
@@ -237,6 +248,7 @@ def _timeseries_workspace(spec, folder, summary, holdout="block") -> Workspace:
         }
     ws = Workspace(spec, folder, summary, profile, [], unit)
     ws.frames, ws.series_masks = frames, masks
+    ws.horizon_mode = horizon_mode
     ws.panel = panel
     ws.excluded_series = excluded
     if seasonal:
@@ -775,7 +787,7 @@ def finish(
         result = _finish_timeseries(
             ws, genome, nthread, members, validation, prediction_cache, importance_cache
         )
-    return {**result, "transform": genome.transform}
+    return {**result, "transform": genome.transform, "horizon_mode": ws.horizon_mode}
 
 
 def _finish_entities(ws, genome, nthread, aggregate_weight=None) -> dict:

@@ -32,6 +32,7 @@ def test_worker_persists_threads_before_screen_and_recipe_refit(
         "time_budget_s": 60,
         "families": [{"name": "ridge"}],
         "recipe": {"family": "ridge", "transform": "none"},
+        "horizon_mode": "single",
         "budget": {"seed": 7, "nthread": 2},
     }
     if request_threads is not None:
@@ -66,6 +67,7 @@ def test_worker_persists_threads_before_screen_and_recipe_refit(
 
     def load_workspace(*args, **kwargs):
         read_threads()
+        assert kwargs["horizon_mode"] == "single"
         calls.append("load")
         return workspace
 
@@ -83,7 +85,12 @@ def test_worker_persists_threads_before_screen_and_recipe_refit(
         assert nthread == expected_threads
         assert importance_cache == {}
         calls.append("finish")
-        return {"verdict": {}, "model_error": 0.2, "baseline_error": 0.4}
+        return {
+            "verdict": {},
+            "model_error": 0.2,
+            "baseline_error": 0.4,
+            "horizon_mode": "single",
+        }
 
     monkeypatch.delitem(sys.modules, "torch", raising=False)
     monkeypatch.setattr(worker, "RunLock", lambda: lock)
@@ -106,6 +113,7 @@ def test_worker_persists_threads_before_screen_and_recipe_refit(
     assert json.loads((tmp_path / "recipe.json").read_text())["family"] == "ridge"
     state = json.loads((tmp_path / "coordinator.json").read_text())
     result = json.loads((tmp_path / "result.json").read_text())
+    assert result["horizon_mode"] == "single"
     assert result["machine"] == state["machine"]
     assert result["phase_history"] == state["phase_history"]
     assert [item["phase"] for item in result["phase_history"]] == [
