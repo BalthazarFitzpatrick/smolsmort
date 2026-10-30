@@ -269,15 +269,22 @@ def test_naive_fallback_uses_each_origin_without_future_leakage(horizon_run):
     assert metric_values(payload)["test_ratio"] == pytest.approx(12 / 22)
 
 
-def test_naive_seasonal_fallback_uses_run_profile_for_each_family(horizon_run):
-    run, _, _ = horizon_run
-    write_json(run / "profile.json", {"genes": {"period": 2}})
+def test_naive_seasonal_fallback_matches_single_model_for_each_family(horizon_run):
+    run, request, _ = horizon_run
+    panel_path = Path(request["prepared"]) / "panel.parquet"
+    panel = read_table(panel_path)
+    previous = {**panel, "__step": panel["__step"] - np.timedelta64(364, "D")}
+    previous["units"] = np.array([1, 2, 3, 4, 6, 8, 10], dtype=float)
+    write_table(
+        panel_path,
+        {name: np.concatenate([previous[name], values]) for name, values in panel.items()},
+    )
     for name in ("test.parquet", "winner_test.parquet", "families/snaive/test.parquet"):
         table = read_table(run / name)
         table.pop("naive_prediction")
         write_table(run / name, table)
     payload = fetch_view(horizon_run, lead="1")
-    # two-week lags hold 6, 8, 10: baseline errors 4 + 12 + 20 for both families
+    # annual lags hold 6, 8, 10: baseline errors 4 + 12 + 20 for both families
     assert metric_values(payload)["test_ratio"] == pytest.approx(12 / 36)
     assert payload["families"]["snaive"]["error_metrics"]["test_ratio"]["value"] == pytest.approx(
         12 / 36

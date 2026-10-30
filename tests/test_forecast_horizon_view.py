@@ -111,6 +111,11 @@ def test_invalid_weight_values_are_rejected(overlapping_rows, weights):
         blend_rows(overlapping_rows, 2, weights)
 
 
+def test_weight_integer_beyond_float_range_is_rejected(overlapping_rows):
+    with pytest.raises(ValueError, match="weights must be finite and nonnegative"):
+        blend_rows(overlapping_rows, 2, {1: 10**400, 2: 1, 3: 1})
+
+
 @pytest.mark.parametrize("weights", [{0: 1}, {-1: 1}, {1.5: 1}, {"1": 1}, {True: 1}])
 def test_invalid_weight_leads_are_rejected(overlapping_rows, weights):
     with pytest.raises(ValueError, match="lead"):

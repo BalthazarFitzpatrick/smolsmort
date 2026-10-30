@@ -565,6 +565,12 @@ class ForecastTopic {
     this.resultsModel = null;
     this.importanceFamily = null;
     this.resultsLoad = 0;
+    this.horizonStorageKey = `${this.storageKey}:horizon-view`;
+    this.horizonSelections = {};
+    try {
+      const saved = JSON.parse(localStorage.getItem(this.horizonStorageKey));
+      if (saved && typeof saved === 'object' && !Array.isArray(saved)) this.horizonSelections = saved;
+    } catch (error) { /* storage can be unavailable in private windows */ }
     this.viewRequest = 0;
     this.tableRequest = 0;
     this.chart = null;
@@ -1921,6 +1927,8 @@ class ForecastTopic {
     panel.innerHTML = `
       <div class="forecast-pane forecast-results">
         <div id="${this.topic}-results-metrics"></div>
+        <div id="${this.topic}-horizon-controls" class="forecast-metric-controls forecast-horizon-controls hidden"></div>
+        <div id="${this.topic}-horizon-help" class="stat hidden"></div>
         <div class="run-controls">
           <div class="toggle dropdown-head" id="${this.topic}-results-run"><span>pick a run</span></div>
           <button class="toggle dropdown-head hidden" id="${this.topic}-results-model"><span>winner</span></button>
@@ -1948,6 +1956,12 @@ class ForecastTopic {
         <div id="${this.topic}-filter-chips" class="label-columns"></div>
         <div id="${this.topic}-chart-status" class="stat hidden"></div>
         <div id="${this.topic}-chart" class="forecast-chart"></div>
+        <div id="${this.topic}-chart-caption" class="stat hidden"></div>
+        <div id="${this.topic}-view-metrics" class="forecast-metric-lines hidden"></div>
+        <div id="${this.topic}-lead-errors-wrap" class="hidden">
+          <div class="field-label">error by weeks ahead</div>
+          <div class="forecast-model-table-wrap"><table id="${this.topic}-lead-errors" class="forecast-column-grid"></table></div>
+        </div>
         <div class="run-controls hidden" id="${this.topic}-group-row">
           <span class="field-label">group by</span>
           <div class="toggle dropdown-head narrow" id="${this.topic}-group-head"><span>none</span></div>
@@ -2131,6 +2145,111 @@ class ForecastTopic {
     }]}).openAt(head);
   }
 
+  addHorizonParams(params) {
+    const selected = this.horizonSelections[this.resultsRunId];
+    if (selected && ['lead', 'blend'].includes(selected.mode) && Number.isInteger(selected.n)
+        && selected.n >= 1 && selected.n <= this.resultsSpec?.horizon) {
+      params.set(selected.mode, String(selected.n));
+    }
+  }
+
+  paintHorizonControls(view) {
+    const controls = document.getElementById(`${this.topic}-horizon-controls`);
+    const help = document.getElementById(`${this.topic}-horizon-help`);
+    controls.classList.toggle('hidden', !view.view);
+    help.classList.toggle('hidden', !view.view);
+    const errors = view.lead_errors || [];
+    document.getElementById(`${this.topic}-lead-errors-wrap`).classList.toggle('hidden', !errors.length);
+    const percent = value => Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : '-';
+    forecastFillTable(document.getElementById(`${this.topic}-lead-errors`),
+      ['weeks ahead', 'model wape', 'naive wape', 'ratio', 'rows'], errors.map(row => [
+        row.weeks_ahead, percent(row.model_wape), percent(row.naive_wape),
+        Number.isFinite(row.ratio) ? row.ratio.toFixed(2) : '-', row.rows,
+      ]));
+    if (!view.view) return;
+    this.horizonSelections[this.resultsRunId] = {...view.view};
+    const descriptions = {
+      lead: 'show only the forecast made n weeks before each week. nothing is averaged.',
+      blend: 'average every forecast of a week. equal weights for now. a blend is not a forecast the model made; use it to smooth, not to judge.',
+    };
+    help.textContent = descriptions[view.view.mode];
+    if (controls.dataset.horizon !== String(view.horizon)) {
+      controls.dataset.horizon = String(view.horizon);
+      controls.replaceChildren();
+      for (const mode of ['lead', 'blend']) {
+        const picker = forecastNode('div', 'forecast-metric-picker');
+        const button = forecastNode('button', 'toggle dropdown-head');
+        button.type = 'button';
+        button.id = `${this.topic}-${mode}`;
+        button.title = descriptions[mode];
+        button.setAttribute('aria-expanded', 'false');
+        button.setAttribute('aria-controls', `${this.topic}-${mode}-menu`);
+        const menu = forecastNode('div', 'forecast-metric-menu hidden');
+        menu.id = `${this.topic}-${mode}-menu`;
+        menu.setAttribute('role', 'group');
+        menu.setAttribute('aria-label', mode);
+        const close = (focus = false) => {
+          menu.classList.add('hidden');
+          button.setAttribute('aria-expanded', 'false');
+          if (focus) button.focus();
+        };
+        button.onclick = () => {
+          const open = menu.classList.toggle('hidden') === false;
+          button.setAttribute('aria-expanded', String(open));
+        };
+        picker.addEventListener('keydown', event => {
+          if (event.key === 'Escape') { event.preventDefault(); close(true); }
+          if (event.key === 'ArrowDown' && event.target === button) {
+            event.preventDefault();
+            menu.classList.remove('hidden');
+            button.setAttribute('aria-expanded', 'true');
+            menu.querySelector('input')?.focus();
+          }
+        });
+        document.addEventListener('pointerdown', event => {
+          if (!picker.contains(event.target)) close();
+        });
+        picker.addEventListener('focusout', event => {
+          if (event.relatedTarget && !picker.contains(event.relatedTarget)) close();
+        });
+        const options = Array.from({length: view.horizon}, (_, index) => index + 1);
+        if (mode === 'blend') options.unshift('off');
+        options.forEach(n => {
+          const label = forecastNode('label', 'forecast-metric-choice');
+          const input = document.createElement('input');
+          input.type = 'checkbox';
+          input.dataset[mode] = String(n);
+          input.onchange = async () => {
+            this.horizonSelections[this.resultsRunId] = n === 'off'
+              ? {mode: 'lead', n: view.horizon} : {mode, n};
+            try { localStorage.setItem(this.horizonStorageKey, JSON.stringify(this.horizonSelections)); }
+            catch (error) { /* selection still works when storage is unavailable */ }
+            close(true);
+            this.tableRequest++;
+            this.tableState.page = 0;
+            await this.refreshView();
+            await this.refreshTable();
+          };
+          const text = n === 'off' ? 'off' : mode === 'blend' ? `around ${n}`
+            : `${n} ${n === 1 ? 'week' : 'weeks'} ahead`;
+          label.append(input, forecastNode('span', '', text));
+          menu.append(label);
+        });
+        picker.append(button, menu);
+        controls.append(picker);
+      }
+    }
+    for (const mode of ['lead', 'blend']) {
+      const active = view.view.mode === mode;
+      const n = view.view.n;
+      document.getElementById(`${this.topic}-${mode}`).textContent = `${mode}: ${!active ? 'off'
+        : mode === 'blend' ? `around ${n}` : `${n} ${n === 1 ? 'week' : 'weeks'} ahead`}`;
+      controls.querySelectorAll(`input[data-${mode}]`).forEach(input => {
+        input.checked = active ? input.dataset[mode] === String(n) : input.dataset[mode] === 'off';
+      });
+    }
+  }
+
   paintVerdict(verdict, label = null) {
     const box = document.getElementById(`${this.topic}-verdict`);
     box.classList.remove('hidden');
@@ -2139,7 +2258,8 @@ class ForecastTopic {
     const summary = document.createElement('div');
     summary.className = 'forecast-verdict-summary';
     const showRatio = this.selectedMetricIds.includes('test_ratio');
-    summary.textContent = (label ? `${label}: ` : '') + (showRatio ? forecastRatioText(verdict)
+    const pooled = this.resultsView?.view && verdict === this.resultsView.verdict ? 'pooled verdict · ' : '';
+    summary.textContent = pooled + (label ? `${label}: ` : '') + (showRatio ? forecastRatioText(verdict)
       : Number.isFinite(verdict?.accuracy?.ratio) ? 'test checks' : verdict?.summary || 'test checks');
     box.appendChild(summary);
     (verdict.checks || []).forEach(check => {
@@ -2152,6 +2272,7 @@ class ForecastTopic {
 
   paintModelResults(view) {
     this.resultsView = view;
+    this.paintHorizonControls(view);
     this.acceptMetricRegistry(view, 'results');
     this.resultsModel = view.model || this.resultsModel || 'winner';
     const family = view.family || 'xgboost';
@@ -2165,6 +2286,9 @@ class ForecastTopic {
     document.getElementById(`${this.topic}-results-models`).classList.remove('hidden');
     document.getElementById(`${this.topic}-family-comparison-wrap`).classList.toggle('hidden', !families.length);
     const metrics = this.selectedMetrics(view);
+    const viewMetrics = document.getElementById(`${this.topic}-view-metrics`);
+    viewMetrics.classList.toggle('hidden', !view.view);
+    viewMetrics.replaceChildren(...(view.view ? [forecastMetricLines(metrics, view)] : []));
     const rows = families.map(([name, entry]) => [name, entry.state,
       ...metrics.map(metric => forecastMetricValue(metric, entry)),
       entry.candidates ?? 0, entry.pruned_reason || entry.reason || '-']);
@@ -2196,6 +2320,7 @@ class ForecastTopic {
     if (this.importanceFamily) params.set('importance_family', this.importanceFamily);
     if (Object.keys(this.filters).length) params.set('filters', JSON.stringify(this.filters));
     if (this.breakdown.length) params.set('breakdown', this.breakdown.join(','));
+    this.addHorizonParams(params);
     try {
       const view = await api(`/api/forecast-view?${params.toString()}`);
       if (request !== this.viewRequest) return;
@@ -2216,12 +2341,18 @@ class ForecastTopic {
     const aggregate = view.aggregate;
     status.textContent = hazard ? view.note || (aggregate
       ? `weekly ${aggregate.rule.replaceAll('_', ' ')}`
-      : 'weekly aggregation is off; entity dates and duration quantiles are below') : '';
+      : 'weekly aggregation is off; entity dates and duration quantiles are below')
+      : view.view?.mode === 'blend' ? 'no band for a blend' : '';
     status.classList.toggle('hidden', !status.textContent);
     el.classList.toggle('hidden', hazard && !aggregate);
     if (hazard && !aggregate) return;
     if (!this.chart) this.chart = timeChart(el, {height: 220});
     this.chart.update({x: view.x, series: view.series, bands: view.bands, markers: view.markers});
+    const caption = document.getElementById(`${this.topic}-chart-caption`);
+    caption.textContent = !view.view ? '' : view.view.mode === 'lead'
+      ? `each week shows the forecast made ${view.view.n} weeks before that week.`
+      : `each week shows the average of all its forecasts, equal weights, centred on ${view.view.n} for later weighting.`;
+    caption.classList.toggle('hidden', !caption.textContent);
   }
 
   async refreshTable() {
@@ -2238,6 +2369,7 @@ class ForecastTopic {
       if (this.tableState.desc) params.set('desc', '1');
     }
     if (this.tableState.group) params.set('group', this.tableState.group);
+    this.addHorizonParams(params);
     try {
       const data = await api(`/api/forecast-table?${params.toString()}`);
       if (request !== this.tableRequest) return;

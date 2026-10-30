@@ -19,14 +19,15 @@ def _validate_weights(weights: dict[int, float]) -> dict[int, float]:
     validated = {}
     for lead, weight in weights.items():
         _validate_lead(lead)
-        if (
-            isinstance(weight, bool)
-            or not isinstance(weight, Real)
-            or not math.isfinite(weight)
-            or weight < 0
-        ):
+        if isinstance(weight, bool) or not isinstance(weight, Real):
             raise ValueError("weights must be finite and nonnegative")
-        validated[int(lead)] = float(weight)
+        try:
+            weight = float(weight)
+        except (OverflowError, ValueError, TypeError) as exc:
+            raise ValueError("weights must be finite and nonnegative") from exc
+        if not math.isfinite(weight) or weight < 0:
+            raise ValueError("weights must be finite and nonnegative")
+        validated[int(lead)] = weight
     if not any(weight > 0 for weight in validated.values()):
         raise ValueError("weights must contain at least one positive value")
     return validated

@@ -895,7 +895,7 @@ def _horizon_sources(con, request, query, validation, test, forecast):
         return None, sources
     weights = _horizon_weights(query, int(request["spec"]["horizon"]))
     sources["history"] = (
-        f"(SELECT * FROM {sources['validation']} UNION ALL BY NAME SELECT * FROM {sources['test']})"
+        f"(SELECT * FROM {sources['validation']} UNION BY NAME SELECT * FROM {sources['test']})"
     )
     for name, source in sources.items():
         rows = table if name == "test" else _read_view_rows(con, source)
@@ -938,7 +938,9 @@ def _read_lead_errors(run_dir, result, model):
     ]
 
 
-def _horizon_baseline(con, run_dir, request, table):
+def _horizon_baseline(con, request, table):
+    from smolsmort.forecast.features import step_index
+
     if "naive_prediction" in table:
         return table
     if "origin" not in table:
@@ -948,21 +950,20 @@ def _horizon_baseline(con, run_dir, request, table):
     rows = con.execute(
         f"SELECT __series, __step, {target} FROM read_parquet({_lit(panel)}) ORDER BY __step"
     ).fetchall()
+    unit = request["spec"].get("step", "week")
+    period = {"week": 52, "day": 365, "month": 12, "quarter": 4, "year": 1}[unit]
+    dates = np.asarray([step for _, step, _ in rows], dtype="datetime64[D]")
     histories = {}
-    for series, step, value in rows:
-        histories.setdefault(series, {})[_iso(step)] = value
-    period = (_read_json(run_dir / "profile.json", {}).get("genes") or {}).get("period")
-    steps = sorted({_iso(step) for _, step, _ in rows})
-    positions = {step: index for index, step in enumerate(steps)}
+    for (series, _, value), position in zip(rows, step_index(dates, unit), strict=True):
+        histories.setdefault(series, {})[position] = value
+    targets = step_index(table["step"], unit)
+    origins = step_index(table["origin"], unit)
     predictions = []
-    for series, step, origin, k in zip(
-        table["series"], table["step"], table["origin"], table["weeks_ahead"], strict=True
-    ):
-        origin_key = _iso(origin)
-        index = positions.get(_iso(step), -1)
-        if period and period >= k and index >= period:
-            origin_key = steps[index - int(period)]
-        predictions.append(histories.get(series, {}).get(origin_key))
+    for series, target, origin in zip(table["series"], targets, origins, strict=True):
+        history = histories.get(series, {})
+        seasonal = history.get(target - period) if target - period <= origin else None
+        value = seasonal if seasonal is not None and np.isfinite(seasonal) else history.get(origin)
+        predictions.append(value)
     return {**table, "naive_prediction": np.asarray(predictions, dtype=float)}
 
 
@@ -994,7 +995,7 @@ def _horizon_metrics(con, run_dir, request, query, path, selection):
             name: metric(reason=f"{scope}: weeks ahead not saved")
             for name in ("wape", "mae", "mape", "test_ratio")
         }
-    table = _horizon_baseline(con, run_dir, request, table)
+    table = _horizon_baseline(con, request, table)
     weights = _horizon_weights(query, int(request["spec"]["horizon"]))
     table = _select_horizon_rows(table, selection, weights)
     filters = _parse_filters(query.get("filters"))
