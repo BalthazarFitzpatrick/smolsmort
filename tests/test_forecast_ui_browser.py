@@ -141,7 +141,7 @@ def show_tab(page: Page, name: str) -> None:
 
 
 @contextmanager
-def session(tmp_path: Path, *, width: int = 1280, numeric: bool = False, port: int = 8096):
+def session(tmp_path: Path, *, width: int = 1280, numeric: bool = False, port: int = 8098):
     """the real review server, its forecast root holding the synthetic rows fixture, and a
     headless page on it"""
     errors: list[str] = []
@@ -2013,6 +2013,6 @@ def test_search_rail_puts_new_search_sort_and_metrics_side_by_side(tmp_path):
                 rail,
             )
             text = page.locator(f"#{TOPIC}-run-sort .dropdown-head > span:first-child")
-            assert text.inner_text() == "sort by"
+            assert text.inner_text() == "sort"
             widths = text.evaluate("node => [node.scrollWidth, node.clientWidth]")
             assert widths[0] <= widths[1], (sort, widths, button, head)

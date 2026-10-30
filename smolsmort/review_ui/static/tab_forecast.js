@@ -346,12 +346,17 @@ function forecastTileSearchScale(tiles, selected, registry) {
     low: low >= 0 ? Math.max(0, low - padding) : low - padding, high: high + padding};
 }
 
-// tile charts share one drawing box: plot on top, axis and its labels below
-const FORECAST_TILE_PLOT = {height: 58, top: 4, bottom: 40, axis: 42, labels: 55};
+const FORECAST_TILE_SEARCH_HEIGHT = 120;
+const FORECAST_TILE_ROUND_HEIGHT = 120;
+// keep axis labels below the plot without scaling down its vertical space
+const FORECAST_TILE_PLOT = {top: 4, axis: 2, labels: 15, bottom: 18};
 
-function forecastTileSvg(width, ariaLabel, className) {
+function forecastTileSvg(width, plotHeight, ariaLabel, className) {
+  const top = FORECAST_TILE_PLOT.top, bottom = top + plotHeight;
+  const height = bottom + FORECAST_TILE_PLOT.bottom;
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', `0 0 ${width} ${FORECAST_TILE_PLOT.height}`);
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  svg.style.height = `${height}px`;
   svg.setAttribute('role', 'img');
   svg.setAttribute('aria-label', ariaLabel);
   svg.classList.add(className);
@@ -363,13 +368,13 @@ function forecastTileSvg(width, ariaLabel, className) {
   };
   const label = (text, attrs) => { add('text', attrs).textContent = text; };
   const axis = (last, name) => {
-    const {axis: line, labels} = FORECAST_TILE_PLOT;
+    const line = bottom + FORECAST_TILE_PLOT.axis, labels = bottom + FORECAST_TILE_PLOT.labels;
     add('line', {x1: 8, x2: width - 8, y1: line, y2: line, class: 'forecast-tile-axis'});
     label('1', {x: 8, y: labels});
     label(name, {x: width / 2, y: labels, 'text-anchor': 'middle'});
     if (last > 1) label(String(last), {x: width - 8, y: labels, 'text-anchor': 'end'});
   };
-  return {svg, add, axis};
+  return {svg, add, axis, top, bottom};
 }
 
 function forecastTileChartHead(className, title, value, explanation = title) {
@@ -389,6 +394,7 @@ function forecastTileChart(tile, scale, width) {
     ? forecastTileSearchScale([tile], scale.fallback, []) : scale;
   const generation = Math.max(1, ...points.map(point => point.generation));
   const wrap = forecastNode('div', 'forecast-tile-chart');
+  wrap.style.setProperty('--chart-height', `${FORECAST_TILE_SEARCH_HEIGHT + FORECAST_TILE_PLOT.top + FORECAST_TILE_PLOT.bottom}px`);
   wrap.dataset.chartMetric = metric.id;
   wrap.dataset.recorded = String(!fallback);
   wrap.dataset.scaleMin = String(low);
@@ -408,10 +414,9 @@ function forecastTileChart(tile, scale, width) {
   const end = (tile.state === 'pruned' ? 'pruned · ' : '')
     + (tile.search_single ? 'single value' : `gen ${last.generation}`);
   wrap.append(forecastTileChartHead('forecast-tile-chart-label', metricLabel, `${end}: ${value}`, explanation));
-  const {svg, add, axis} = forecastTileSvg(width,
+  const {svg, add, axis, top, bottom} = forecastTileSvg(width, FORECAST_TILE_SEARCH_HEIGHT,
     `${tile.name}: ${metricLabel} by generation; ${end}: ${value}; ${fallback ? 'own' : 'shared'} scale ${forecastMetricNumber(metric, low)} to ${forecastMetricNumber(metric, high)}`,
     'forecast-tile-search');
-  const {top, bottom} = FORECAST_TILE_PLOT;
   const x = step => 8 + (step - 1) / Math.max(1, generation - 1) * (width - 16);
   const y = score => bottom - (score - low) / (high - low) * (bottom - top);
   axis(generation, 'generation');
@@ -482,6 +487,7 @@ function forecastTileRoundScale(tiles, metric) {
 
 function forecastTileRoundChart(tile, metric, shared, width) {
   const wrap = forecastNode('div', 'forecast-tile-rounds');
+  wrap.style.setProperty('--chart-height', `${FORECAST_TILE_ROUND_HEIGHT + FORECAST_TILE_PLOT.top + FORECAST_TILE_PLOT.bottom}px`);
   const series = forecastTileRoundSeries(tile, metric);
   const curves = (series?.curves || []).filter(curve => curve.values.some(Number.isFinite));
   if (!curves.length) {
@@ -507,10 +513,9 @@ function forecastTileRoundChart(tile, metric, shared, width) {
     ? forecastMetricHelp(metric, 'validation') : FORECAST_LOSS_HELP;
   wrap.append(forecastTileChartHead('forecast-tile-chart-label', title,
     `gen ${newest.generation} · round ${newest.values.length}: ${format(end)}`, explanation));
-  const {svg, add, axis} = forecastTileSvg(width,
+  const {svg, add, axis, top, bottom} = forecastTileSvg(width, FORECAST_TILE_ROUND_HEIGHT,
     `${tile.name}: ${shown.label} per boosting round for the newest ${curves.length} generations; generation ${newest.generation} ends at ${format(end)}`,
     'forecast-tile-round-plot');
-  const {top, bottom} = FORECAST_TILE_PLOT;
   const x = round => 8 + (round - 1) / Math.max(1, rounds - 1) * (width - 16);
   // values above the scale pin to the top edge rather than leave the box
   const y = value => Math.max(top, bottom - (value - scale.low) / (scale.high - scale.low) * (bottom - top));
@@ -581,7 +586,7 @@ function forecastTileBars(tile, scale) {
   return wrap;
 }
 
-// a square tile: its side is the height the one-chart tile needed, so both charts fit above
+// preserve the existing tile width; both faces determine the height from their content
 function forecastTileSize(tiles, metrics) {
   const folds = Math.max(4, ...tiles.map(tile => forecastTileWapeBars(tile).length));
   return 266 + metrics.length * 20 + (folds - 4) * 22;
@@ -1604,12 +1609,12 @@ class ForecastTopic {
       ['date, newest first', 'best performance'], this.runOrder,
       value => {
         this.runOrder = value;
-        setHead(sortHead, 'sort by');
+        setHead(sortHead, 'sort');
         sortHead.title = `sort by: ${value}`;
         this.paintRuns();
       }, 'sort runs'
     );
-    setHead(sortHead, 'sort by');
+    setHead(sortHead, 'sort');
     sortHead.title = `sort by: ${this.runOrder}`;
     document.getElementById(`${this.topic}-run-sort`).append(sortHead);
     document.getElementById(`${this.topic}-run-warm`).onclick = () => this.warmStartRun(this.selectedRunId);
