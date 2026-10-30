@@ -175,7 +175,7 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-metric-picker > .dropdown-head { width: auto; min-width: 0; }
 .forecast-horizon-controls { display: contents; }
 .menu-panel.forecast-blend-menu:has(.label-columns) { min-width: min(260px, calc(100vw - 8px)); max-width: calc(100vw - 8px); }
-.forecast-results [id$="-horizon-help"], .forecast-results [id$="-chart-caption"] { white-space: normal; overflow-wrap: anywhere; }
+.forecast-results [id$="-chart-caption"] { white-space: normal; overflow-wrap: anywhere; }
 .forecast-metric-lines { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-variant-numeric: tabular-nums; }
 .forecast-metric-lines .forecast-metric { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .forecast-leaderboard tr.on td {

@@ -2241,7 +2241,6 @@ class ForecastTopic {
           <div id="${this.topic}-chart-status" class="stat hidden"></div>
           <div id="${this.topic}-chart" class="forecast-chart"></div>
           <div id="${this.topic}-chart-caption" class="stat hidden"></div>
-          <div id="${this.topic}-horizon-help" class="stat hidden"></div>
           <div id="${this.topic}-view-metrics" class="forecast-metric-lines hidden"></div>
         </section>
         <section class="forecast-pane forecast-result-panel hidden" id="${this.topic}-family-comparison-wrap">
@@ -2471,9 +2470,7 @@ class ForecastTopic {
 
   paintHorizonControls(view) {
     const controls = document.getElementById(`${this.topic}-horizon-controls`);
-    const help = document.getElementById(`${this.topic}-horizon-help`);
     controls.classList.toggle('hidden', !view.view);
-    help.classList.toggle('hidden', !view.view);
     const errors = view.lead_errors || [];
     document.getElementById(`${this.topic}-lead-errors-wrap`).classList.toggle('hidden', !errors.length);
     const percent = value => Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : '-';
@@ -2495,7 +2492,6 @@ class ForecastTopic {
       lead: 'show only the forecast made n weeks before each week. nothing is averaged.',
       blend: 'average of all forecasts of a week; the chosen week counts s times as much as each other week. not a forecast the model made.',
     };
-    help.textContent = descriptions[view.view.mode];
     if (controls.dataset.horizon !== String(view.horizon)) {
       controls.dataset.horizon = String(view.horizon);
       controls.replaceChildren();

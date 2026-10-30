@@ -1230,26 +1230,30 @@ def _horizon_metrics(con, run_dir, request, query, path, selection):
 
 
 def _horizon_result_metrics(run_dir, request, query, details, selection):
-    with connect() as con:
-        for model in ("winner", "ensemble"):
-            entry = details.get(model)
-            if entry is None:
-                continue
-            path = _optional_prediction_path(run_dir, {**query, "model": model}, "test")
-            entry["error_metrics"].update(
-                _horizon_metrics(con, run_dir, request, query, path, selection)
-            )
-        for family, entry in details["families"].items():
-            if family == details["winner_family"]:
-                entry["error_metrics"] = dict(details["winner"]["error_metrics"])
-            else:
-                path = run_dir / "families" / family / "test.parquet"
-                entry["error_metrics"] = {
-                    **entry["error_metrics"],
-                    **_horizon_metrics(con, run_dir, request, query, path, selection),
-                }
-    details["error_metrics"] = dict(details[details["model"]]["error_metrics"])
+    model = details["model"]
     scope = _horizon_label(selection)
+    with connect() as con:
+        path = _optional_prediction_path(run_dir, {**query, "model": model}, "test")
+        selected_metrics = _horizon_metrics(con, run_dir, request, query, path, selection)
+    unavailable = {
+        name: {
+            "value": None,
+            "scope": "test",
+            "note": scope,
+            "reason": "not computed for this view",
+        }
+        for name in selected_metrics
+    }
+    for name in ("winner", "ensemble"):
+        entry = details.get(name)
+        if entry is not None:
+            metrics = selected_metrics if name == model else unavailable
+            entry["error_metrics"] = {**entry["error_metrics"], **metrics}
+    for family, entry in details["families"].items():
+        selected = model == "winner" and family == details["winner_family"]
+        metrics = selected_metrics if selected else unavailable
+        entry["error_metrics"] = {**entry["error_metrics"], **metrics}
+    details["error_metrics"] = dict(details[model]["error_metrics"])
     for metric in details["metric_registry"]:
         if metric["scope"] == "test":
             metric["label"] += f" · {scope}"
@@ -1375,8 +1379,10 @@ def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
 
         actual_id = f"actual:{label}" if breakdown else "actual"
         forecast_id = f"forecast:{label}" if breakdown else "forecast"
-        series_lines.append((actual_id, label, actual, False))
-        series_lines.append((forecast_id, label, forecast_series, True))
+        actual_label = f"actual: {label}" if breakdown else "actual"
+        forecast_label = f"forecast: {label}" if breakdown else "forecast"
+        series_lines.append((actual_id, actual_label, actual, False))
+        series_lines.append((forecast_id, forecast_label, forecast_series, True))
 
         if selection is None:
             lo_by_step, hi_by_step = _timeseries_band(

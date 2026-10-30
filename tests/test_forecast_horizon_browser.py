@@ -242,6 +242,77 @@ def save_horizon(page, name: str) -> None:
     )
 
 
+@pytest.mark.parametrize("mode", ["lead", "blend"])
+def test_horizon_metrics_belong_only_to_selected_model(tmp_path, mode):
+    with horizon_session(tmp_path) as (page, run_id):
+        open_horizon_run(page, run_id)
+        page.locator("#regression-error-metrics").click()
+        settle_menu(page)
+        for metric in ("wape", "mae", "mape"):
+            page.locator(f'#regression-error-metrics-menu .menu-item[data-id="{metric}"]').click()
+        page.keyboard.press("Escape")
+        choose_horizon(page, mode, 2)
+        if mode == "blend":
+            choose_horizon(page, "blend", "4x")
+        rows = page.locator("#regression-family-comparison tbody tr")
+        validation = {
+            row.locator("td").first.inner_text(): row.locator(
+                '[data-metric-id="validation_error"]'
+            ).inner_text()
+            for row in rows.all()
+        }
+        assert validation["xgboost"] == "12.0%"
+        assert validation["ridge"] == "18.0%"
+        for model in ("winner", "ensemble", "winner"):
+            if page.evaluate("forecastTopics.get('regression').resultsView.model") != model:
+                page.locator("#regression-results-model").click()
+                settle_menu(page)
+                with page.expect_response("**/api/forecast-view?**"):
+                    page.locator(f'.menu-panel .menu-item[data-id="{model}"]').click()
+                page.wait_for_function(
+                    "model => forecastTopics.get('regression').resultsView.model === model",
+                    arg=model,
+                )
+            selected = "xgboost" if model == "winner" else "ensemble of xgboost, ridge"
+            assert rows.count() == 4
+            for row in rows.all():
+                family = row.locator("td").first.inner_text()
+                assert (
+                    row.locator('[data-metric-id="validation_error"]').inner_text()
+                    == (validation[family])
+                )
+                for metric in ("wape", "mae", "mape", "test_ratio"):
+                    cell = row.locator(f'[data-metric-id="{metric}"]')
+                    if family == selected:
+                        assert cell.inner_text() != "-"
+                        assert "not computed for this view" not in cell.get_attribute("title")
+                    else:
+                        assert cell.inner_text() == "-", (model, family, metric)
+                        assert "not computed for this view" in cell.get_attribute("title")
+
+
+@pytest.mark.parametrize("mode", ["lead", "blend"])
+def test_horizon_chart_keeps_one_caption_and_distinct_legend(tmp_path, mode):
+    with horizon_session(tmp_path) as (page, run_id):
+        open_horizon_run(page, run_id)
+        choose_wape(page)
+        choose_horizon(page, mode, 2)
+        if mode == "blend":
+            choose_horizon(page, "blend", "4x")
+        assert page.locator("#regression-chart-caption").is_visible()
+        assert page.locator("#regression-horizon-help").count() == 0
+        assert page.locator("#regression-chart .chart-legend-item").all_text_contents() == [
+            "actual",
+            "forecast",
+        ]
+        assert_horizon_titles(page)
+        if mode == "blend":
+            save_horizon(page, "desktop-reviewed-blend")
+            page.locator(BLEND).click()
+            settle_menu(page)
+            save_horizon(page, "desktop-reviewed-blend-menu")
+
+
 def test_horizon_controls_select_rows_metrics_and_bands(tmp_path):
     with horizon_session(tmp_path) as (page, run_id):
         open_horizon_run(page, run_id)
@@ -608,8 +679,8 @@ def test_horizon_controls_tolerate_unavailable_storage(tmp_path, storage):
         open_horizon_run(page, run_id)
         assert "3 weeks ahead" in page.locator(LEAD).inner_text()
         choose_horizon(page, "blend", 1)
-        for selector in ("#regression-horizon-help", "#regression-chart-caption"):
-            assert page.locator(selector).is_visible()
+        assert page.locator("#regression-chart-caption").is_visible()
+        assert page.locator("#regression-horizon-help").count() == 0
         assert "blend: equal weights" in page.locator(BLEND).inner_text()
 
 
