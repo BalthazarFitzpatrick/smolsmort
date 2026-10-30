@@ -743,12 +743,18 @@ different origins. those rows are distinct observations and are never averaged a
 charts show historical predictions at the largest lead and report `weeks_ahead_shown`; the
 future line keeps all future weeks. tables and exports preserve every origin and lead.
 
-`lead_errors` in `result.json` and `lead_errors.parquet` expose model and naive wape by lead
-for validation and test. the parquet includes `weeks_ahead`, `rows`, `model_wape`, `naive_wape`,
+`result.json` saves test wape by lead in `lead_errors` and validation wape in
+`validation_lead_errors`; each lead maps to `model`, `naive` and `rows`. `lead_errors.parquet`
+includes `phase` (`validation` or `test`), `weeks_ahead`, `rows`, `model_wape`, `naive_wape`,
 `ratio` and `mae`. the 80% band is fitted separately for each lead from its validation
-residuals and applied to test and future rows with that lead. `band.parquet` adds
-`weeks_ahead`, retaining its existing columns and pooled `all` rows; coverage and width are
-available both pooled and per lead. aggregate chart bands also keep the leads separate.
+residuals and applied to test and future rows with that lead. saved `bands` keys are the leads
+`"1"` through `"horizon"`; mixed-mode keys remain horizon groups.
+
+`band.parquet` adds `phase` and `weeks_ahead`, retaining its existing columns and both series
+and `all` rows. lead 0 means pooled rows; leads 1 through `horizon` carry their own coverage
+and width. `band_summary` in `result.json` contains pooled `validation` and `test`,
+`validation_by_lead`, `test_by_lead`, and `forecast_by_lead` width percentages. aggregate chart
+bands also keep the leads separate.
 
 **search.** a genetic search tries feature families, objectives and tree settings against the
 validation rows and stops when a generation brings no gain larger than its own noise, or at the time

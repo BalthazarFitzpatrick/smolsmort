@@ -722,8 +722,9 @@ def _timeseries_raw_fit(ws, genome, frame, rows, bucket, nthread):
     from smolsmort.forecast.families.stats import RawSeriesTask, season_length
 
     # bound raw target reads before transforms or statistical providers can inspect them
+    clock = frame.origin if ws.horizon_mode == "single" else frame.step
     keep = (
-        ws.panel[STEP] <= frame.step[rows].max()
+        ws.panel[STEP] <= clock[rows].max()
         if rows.any()
         else np.zeros(len(ws.panel[STEP]), dtype=bool)
     )
@@ -1109,7 +1110,7 @@ def _finish_timeseries(
     profile = ws.profile
     period = profile["genes"].get("period")
     bands, val_rows, test_rows, forecast = {}, [], [], []
-    test_pred_all, test_truth_all, base_all = [], [], []
+    test_pred_all, test_truth_all, base_all, val_base = [], [], [], []
     test_lo, test_hi = [], []
     offset = 0
     single = members is None
@@ -1147,9 +1148,38 @@ def _finish_timeseries(
             )
         )
         offset += count
-        band = ev.fit_band(frame.y[masks["val"]], val_pred)
-        bands[f"{bucket[0]}-{bucket[1]}"] = None if band is None else band.__dict__
-        val_rows.append(_timeseries_rows(frame, masks["val"], val_pred, bucket))
+        stacked = frame.weeks_ahead is not None
+        if stacked:
+            lead_bands = ev.fit_lead_bands(
+                frame.y[masks["val"]], val_pred, frame.weeks_ahead[masks["val"]]
+            )
+            bands.update(
+                {
+                    str(lead): None if band is None else band.__dict__
+                    for lead, band in lead_bands.items()
+                }
+            )
+        else:
+            band = ev.fit_band(frame.y[masks["val"]], val_pred)
+            bands[f"{bucket[0]}-{bucket[1]}"] = None if band is None else band.__dict__
+
+        def apply_bands(
+            prediction,
+            rows,
+            stacked=stacked,
+            frame=frame,
+            lead_bands=lead_bands if stacked else None,
+            band=None if stacked else band,
+        ):
+            if stacked:
+                return ev.apply_lead_bands(lead_bands, prediction, frame.weeks_ahead[rows])
+            return ev.apply_band(band, prediction, nonnegative=True)
+
+        rows = _timeseries_rows(frame, masks["val"], val_pred, bucket)
+        if stacked:
+            rows["lower"], rows["upper"] = apply_bands(val_pred, masks["val"])
+        val_rows.append(rows)
+        val_base.append(_timeseries_baseline(frame, masks["val"], bucket, period))
         test_pred = _timeseries_test(
             ws,
             bucket,
@@ -1157,7 +1187,7 @@ def _finish_timeseries(
                 frame, fit_rows, eval_rows, bucket
             ),
         )
-        lo, hi = ev.apply_band(band, test_pred, nonnegative=True)
+        lo, hi = apply_bands(test_pred, masks["test"])
         test_pred_all.append(test_pred)
         test_truth_all.append(frame.y[masks["test"]])
         test_lo.append(lo)
@@ -1173,7 +1203,7 @@ def _finish_timeseries(
             bucket,
             collect=True,
         )
-        lo, hi = ev.apply_band(band, future_pred, nonnegative=True)
+        lo, hi = apply_bands(future_pred, masks["future"])
         rows = _timeseries_rows(frame, masks["future"], future_pred, bucket)
         rows.update(lower=lo, upper=hi, band_width_pct=_row_width_pct(future_pred, lo, hi))
         forecast.append(rows)
@@ -1205,7 +1235,27 @@ def _finish_timeseries(
     )
     test_table, forecast_table = _stack(test_rows), _stack(forecast)
     band_table = ev.band_summary(test_table["series"], truth, test_lo_all, test_hi_all)
+    band_summary = _band_summary(band_table, forecast_table)
     metadata = {}
+    if ws.horizon_mode == "single":
+        metadata["lead_errors"], test_errors = ev.lead_errors(
+            truth, pred, np.concatenate(base_all), test_table["weeks_ahead"], "test"
+        )
+        metadata["validation_lead_errors"], validation_errors = ev.lead_errors(
+            validation_rows["actual"],
+            validation_rows["prediction"],
+            np.concatenate(val_base),
+            validation_rows["weeks_ahead"],
+            "validation",
+        )
+        metadata["lead_errors_table"] = _stack([validation_errors, test_errors])
+        band_table = _stack(
+            [
+                ev.lead_band_summary(validation_rows, "validation"),
+                ev.lead_band_summary(test_table, "test"),
+            ]
+        )
+        band_summary = _lead_band_summary(band_table, forecast_table)
     if get_family(genome.family).needs == "raw_series":
         from smolsmort.forecast.families.stats import season_length
 
@@ -1226,7 +1276,7 @@ def _finish_timeseries(
         "test": test_table,
         "forecast": forecast_table,
         "band_table": band_table,
-        "band_summary": _band_summary(band_table, forecast_table),
+        "band_summary": band_summary,
         "holdout": getattr(ws, "holdout_info", None) or {"holdout": "block"},
         "model_error": model_error,
         "baseline_error": baseline_error,
@@ -1234,6 +1284,30 @@ def _finish_timeseries(
         if single and importance_cache is not None
         else None,
     }
+
+
+def _lead_band_summary(table, forecast):
+    summaries = {}
+    for phase in ("validation", "test"):
+        phase_rows = table["phase"] == phase
+        by_lead = {}
+        for lead in np.unique(table["weeks_ahead"]):
+            rows = phase_rows & (table["weeks_ahead"] == lead)
+            subset = {name: values[rows] for name, values in table.items()}
+            by_lead[str(lead)] = _band_summary(subset, forecast)["test"]
+        summaries[phase] = by_lead["0"]
+        summaries[f"{phase}_by_lead"] = {
+            lead: values for lead, values in by_lead.items() if lead != "0"
+        }
+    summaries["forecast_band_width_pct"] = _band_summary(table, forecast)["forecast_band_width_pct"]
+    summaries["forecast_by_lead"] = {
+        str(lead): ev.width_pct(
+            forecast["prediction"][rows], forecast["lower"][rows], forecast["upper"][rows]
+        )
+        for lead in np.unique(forecast["weeks_ahead"])
+        for rows in [forecast["weeks_ahead"] == lead]
+    }
+    return summaries
 
 
 def _row_width_pct(pred, lo, hi) -> np.ndarray:

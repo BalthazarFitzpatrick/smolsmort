@@ -135,10 +135,13 @@ def test_ensemble_band_uses_stored_validation_average(monkeypatch, cached_winner
         "future": np.array([False, False, False, False, False, False, False, True]),
     }
     truth = np.array([8, 10, 14, 18, 22, 26, 30, np.nan], dtype=float)
-    frame = SimpleNamespace(y=truth, step=np.arange(8), series=np.zeros(8, dtype=int))
+    frame = SimpleNamespace(
+        y=truth, step=np.arange(8), series=np.zeros(8, dtype=int), weeks_ahead=None
+    )
     ws = SimpleNamespace(
         mode="timeseries",
-        spec=SimpleNamespace(task="regression"),
+        horizon_mode="mixed",
+        spec=SimpleNamespace(task="regression", horizon=1),
         profile={"genes": {}},
         frames={(1, 1): frame},
         series_masks={(1, 1): masks},

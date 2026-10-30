@@ -11,7 +11,7 @@ import pytest
 from smolsmort.forecast.families import get_family
 from smolsmort.forecast.families import stats as stats_module
 from smolsmort.forecast.families.stats import RawSeriesTask, build_model, forecast_single_rows
-from smolsmort.forecast.pipeline import PipelineError
+from smolsmort.forecast.pipeline import PipelineError, _timeseries_raw_fit, make_genome
 from smolsmort.forecast.spec import SERIES, STEP
 
 
@@ -97,6 +97,29 @@ def test_single_stats_never_reads_after_origin(name, replacement):
     changed.panel["y"][changed.panel[STEP] > task.frame.origin.max()] = replacement
     actual = get_family(name).fit(changed, objective="squared").predict(changed)
     np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize("transform", ["log1p", "logdiff"])
+def test_single_stats_transforms_never_validate_post_origin_targets(transform):
+    pytest.importorskip("statsforecast")
+    task = make_task(origins=(70,))
+    workspace = SimpleNamespace(
+        panel=task.panel,
+        spec=SimpleNamespace(named=lambda _role: ["y"]),
+        unit=task.unit,
+        profile={"genes": {"period": task.season_length}},
+        horizon_mode="single",
+    )
+    genome = make_genome([], "squared", {}, family="ets", transform=transform)
+    fitted, fitted_task = _timeseries_raw_fit(
+        workspace, genome, task.frame, task.rows, task.bucket, 1
+    )
+    expected = fitted.predict(fitted_task)
+    workspace.panel["y"][workspace.panel[STEP] > task.frame.origin.max()] = -100
+    fitted, fitted_task = _timeseries_raw_fit(
+        workspace, genome, task.frame, task.rows, task.bucket, 1
+    )
+    np.testing.assert_array_equal(fitted.predict(fitted_task), expected)
 
 
 @pytest.mark.parametrize("name", ["ets", "theta", "arima"])

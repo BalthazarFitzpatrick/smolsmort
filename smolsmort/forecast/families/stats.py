@@ -6,6 +6,7 @@ import warnings
 from dataclasses import dataclass
 
 import numpy as np
+from threadpoolctl import threadpool_limits
 
 from smolsmort.forecast.families.base import Param, probe_import
 from smolsmort.forecast.spec import SERIES, STEP
@@ -72,7 +73,8 @@ def build_model(name: str, period: int):
 
 def forecast_rows(task: RawSeriesTask, name: str, nthread: int) -> np.ndarray:
     if task.horizon_mode == "single":
-        return forecast_single_rows(task, name)
+        with threadpool_limits(max(1, nthread)):
+            return forecast_single_rows(task, name)
     import pandas as pd
     from statsforecast import StatsForecast
 

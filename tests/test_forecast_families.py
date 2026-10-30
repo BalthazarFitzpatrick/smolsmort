@@ -209,6 +209,7 @@ def test_timeseries_fit_dispatches_sorted_rows_to_the_selected_family(other_fami
         features=SimpleNamespace(pick=lambda families: (x, ["lag_1"], ["q"])),
         step=np.array([4, 1, 3, 2]),
         y=np.array([40, 10, 30, 20]),
+        weeks_ahead=None,
     )
     genome = make_genome(["units@day:lag+0"], "squared", {"eta": 0.1}, family=other_family.name)
     actual, design = _timeseries_fit(None, genome, frame, np.ones(4, dtype=bool), 2)
