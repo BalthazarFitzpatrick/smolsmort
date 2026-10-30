@@ -579,6 +579,32 @@ def _tile_search_curve(records, *, fitness=None, metrics=None):
     return [], False
 
 
+TILE_ROUND_GENERATIONS = 30
+
+
+def _tile_round_curves(curves):
+    """the newest generations' per-round curves, as the tables loss chart draws them"""
+    latest = {}
+    for curve in curves:
+        generation = curve.get("family_generation", curve.get("generation"))
+        validation = curve.get("validation")
+        if (
+            not isinstance(generation, int)
+            or isinstance(generation, bool)
+            or not isinstance(validation, list)
+            or not validation
+        ):
+            continue
+        latest[generation] = {
+            "generation": generation + 1,
+            "key": curve.get("key"),
+            "metric": curve.get("metric"),
+            "validation": validation,
+            "curves": curve.get("curves") or {},
+        }
+    return [latest[generation] for generation in sorted(latest)[-TILE_ROUND_GENERATIONS:]]
+
+
 def family_tiles(
     run_dir, request, status, *, result=None, recipe=None, include_charts=True, search_snapshot=None
 ):
@@ -690,6 +716,7 @@ def family_tiles(
             else "validation folds not saved",
             "search_curve": [],
             "search_single": False,
+            "round_curves": [],
             "elapsed": _tile_elapsed(progress),
             "generation": progress.get("generation", best.get("generation")),
         }
@@ -709,6 +736,7 @@ def family_tiles(
             tiles[name]["search_curve"], tiles[name]["search_single"] = _tile_search_curve(
                 records, fitness=tiles[name]["validation_error"], metrics=best.get("metrics")
             )
+            tiles[name]["round_curves"] = _tile_round_curves(records["curves"])
         if request.get("horizon_mode") == "single":
             tiles[name]["weeks_ahead_shown"] = request["spec"]["horizon"]
         tiles[name]["error_metrics"] = fm.error_metrics(

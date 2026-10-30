@@ -221,4 +221,5 @@ def test_timeseries_fit_dispatches_sorted_rows_to_the_selected_family(other_fami
         "feature_types": ["q"],
         "params": {"eta": 0.1},
         "nthread": 2,
+        "round_errors": True,
     }

@@ -19,7 +19,7 @@ from smolsmort.forecast.evaluate import (
     open_consistency,
     wape,
 )
-from smolsmort.forecast.model import ModelError, fit_model, predict
+from smolsmort.forecast.model import TARGET_VALUED, ModelError, fit_model, predict
 
 pytest.importorskip("xgboost")
 
@@ -61,7 +61,8 @@ def test_eval_history_records_the_actual_inner_fit(objective, metric, monkeypatc
         targets = {"labels": np.arange(len(y)) % (3 if objective == "softprob" else 2)}
     fitted = fit_model(x, objective=objective, max_rounds=8, patience=2, **targets)
     history = fitted.eval_history
-    assert set(history) == {"metric", "training", "validation"}
+    curves = {"curves"} if objective in TARGET_VALUED else set()
+    assert set(history) == {"metric", "training", "validation"} | curves
     assert history["metric"] == metric
     assert history["training"] == recorded[0]["evals_result"]["training"][metric]
     assert history["validation"] == recorded[0]["evals_result"]["validation"][metric]
@@ -69,6 +70,47 @@ def test_eval_history_records_the_actual_inner_fit(objective, metric, monkeypatc
     assert np.isfinite([history["training"], history["validation"]]).all()
     assert [dm.num_row() for dm, _ in recorded[0]["evals"]] == [170, 30]
     assert "evals" not in recorded[1]
+
+
+@pytest.mark.parametrize("objective", sorted(TARGET_VALUED))
+def test_round_curves_match_each_rounds_own_tail_prediction(objective, monkeypatch):
+    import xgboost as xgb
+
+    rng = np.random.default_rng(3)
+    x = rng.normal(size=(300, 3)).astype(np.float32)
+    y = np.exp(x[:, 0] * 0.3) + 1
+    probes = []
+    train = xgb.train
+
+    def record_train(*args, **kwargs):
+        booster = train(*args, **kwargs)
+        probes.append((booster, kwargs))
+        return booster
+
+    monkeypatch.setattr(xgb, "train", record_train)
+    fitted = fit_model(x, objective=objective, y=y, max_rounds=12, patience=3)
+    curves = fitted.eval_history["curves"]
+    booster, kwargs = probes[0]
+    tail, truth = kwargs["evals"][1][0], y[255:]
+    assert len(curves["wape"]) == len(curves["mae"]) == len(fitted.eval_history["validation"])
+    for round_index, (round_wape, round_mae) in enumerate(
+        zip(curves["wape"], curves["mae"], strict=True)
+    ):
+        errors = np.abs(booster.predict(tail, iteration_range=(0, round_index + 1)) - truth)
+        assert round_wape == pytest.approx(errors.sum() / np.abs(truth).sum(), rel=1e-6)
+        assert round_mae == pytest.approx(errors.mean(), rel=1e-6)
+
+
+def test_round_curves_off_leaves_the_fit_unchanged():
+    rng = np.random.default_rng(5)
+    x = rng.normal(size=(300, 3)).astype(np.float32)
+    y = np.exp(x[:, 0] * 0.3) + 1
+    with_curves = fit_model(x, objective="squared", y=y, max_rounds=20, patience=3)
+    without = fit_model(x, objective="squared", y=y, max_rounds=20, patience=3, round_errors=False)
+    assert "curves" not in without.eval_history
+    assert without.rounds == with_curves.rounds
+    np.testing.assert_array_equal(predict(without, x), predict(with_curves, x))
+    assert without.eval_history["validation"] == with_curves.eval_history["validation"]
 
 
 @pytest.mark.parametrize(("rows", "patience"), [(30, 2), (200, 0)])

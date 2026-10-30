@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from smolsmort.forecast.families.base import Param, probe_import
-from smolsmort.forecast.model import ModelError
+from smolsmort.forecast.model import ModelError, RoundErrors
 
 OBJECTIVES = ("regression_l1", "regression", "poisson", "tweedie")
 INTEGER_PARAMS = ("num_leaves", "min_child_samples", "max_depth")
@@ -82,6 +82,7 @@ class LightgbmFamily:
         inner: float = 0.15,
         max_rounds: int = 2000,
         patience: int = 50,
+        round_errors: bool = True,
     ) -> LightgbmFitted:
         if objective not in OBJECTIVES:
             raise ModelError(f"no lightgbm objective called {objective!r}")
@@ -124,12 +125,22 @@ class LightgbmFamily:
         if patience and len(head) >= 10 and len(tail) >= 10:
             results = {}
             train = pick(head)
+            check = pick(tail, train)
+            errors = RoundErrors(y[tail]) if round_errors else None
+
+            def round_feval(predictions, data):
+                # lightgbm hands the cached tail predictions; the training set is skipped
+                if data is check:
+                    errors.add(predictions)
+                return []
+
             probe = lgb.train(
                 config,
                 train,
                 num_boost_round=max_rounds,
-                valid_sets=[train, pick(tail, train)],
+                valid_sets=[train, check],
                 valid_names=["training", "validation"],
+                feval=round_feval if errors else None,
                 callbacks=[
                     lgb.early_stopping(patience, verbose=False),
                     lgb.record_evaluation(results),
@@ -145,5 +156,8 @@ class LightgbmFamily:
                 and np.isfinite([training, validation]).all()
             ):
                 history = {"metric": metric, "training": training, "validation": validation}
+                curves = errors.curves(len(validation)) if errors else None
+                if curves:
+                    history["curves"] = curves
         booster = lgb.train(config, pick(rows), num_boost_round=rounds)
         return LightgbmFitted(booster, rounds, nthread, history)

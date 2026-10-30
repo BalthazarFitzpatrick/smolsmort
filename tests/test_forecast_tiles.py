@@ -501,3 +501,23 @@ def test_unusable_generation_values_produce_an_explicit_empty_series(tmp_path):
     tile = views.family_tiles(tmp_path, {"spec": {}}, {"state": "running"})["xgboost"]
     assert tile["search_curve"] == [] and tile["search_single"] is False
     json.dumps(tile, allow_nan=False)
+
+
+def test_tile_round_curves_keep_the_newest_generations_once_each():
+    curves = [
+        {"generation": index, "key": f"g{index}", "metric": "rmse", "validation": [3.0, 2.0]}
+        for index in range(40)
+    ]
+    curves.append(
+        {
+            "generation": 39,
+            "metric": "rmse",
+            "validation": [1.0],
+            "curves": {"wape": [0.1], "mae": [5.0]},
+        }
+    )
+    curves.append({"generation": 41, "metric": "rmse", "validation": []})
+    kept = views._tile_round_curves(curves)
+    assert [curve["generation"] for curve in kept] == list(range(11, 41))
+    assert kept[-1]["curves"] == {"wape": [0.1], "mae": [5.0]}
+    assert kept[0]["curves"] == {}
