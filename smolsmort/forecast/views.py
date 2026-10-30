@@ -11,6 +11,7 @@ import datetime as dt
 import io
 import json
 import math
+import os
 import subprocess
 import sys
 import threading
@@ -24,6 +25,18 @@ from smolsmort.forecast import evaluate as ev
 from smolsmort.forecast.families import registered_families
 from smolsmort.forecast.spec import normalize_mode, normalize_saved_modes, spec_from_dict
 from smolsmort.forecast.tables import connect
+
+
+def write_json_atomic(path: Path, data) -> None:
+    """replace `path` in one step; each writer gets its own temp name, since every reader of a
+    run [the ui poll, a script waiting on the run] may write the cursors at the same moment"""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
 
 MAX_LINES = 12
 MC_DRAWS = 200
@@ -331,9 +344,7 @@ def multi_run_state(run_dir, request, status, *, since_generation=None, since_ev
             snapshot["board_revision"] += 1
             changed = True
         if changed:
-            tmp = run_dir / "route-cursors.json.tmp"
-            tmp.write_text(json.dumps(snapshot), encoding="utf-8")
-            tmp.replace(run_dir / "route-cursors.json")
+            write_json_atomic(run_dir / "route-cursors.json", snapshot)
     families = {}
     family_state = "pending"
     if status["state"] not in ("starting", "queued") and (
