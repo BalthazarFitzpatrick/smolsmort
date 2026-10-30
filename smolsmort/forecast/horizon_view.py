@@ -1,4 +1,4 @@
-"""select an observed lead or blend overlapping predictions without inventing a band"""
+"""select an observed lead or calibrate a blend's band on its validation residuals"""
 
 from __future__ import annotations
 
@@ -6,6 +6,10 @@ import math
 from numbers import Integral, Real
 
 import numpy as np
+
+from smolsmort.forecast.evaluate import Band
+
+MIN_BLEND_RESIDUALS = 4
 
 
 def _validate_lead(n: int) -> None:
@@ -75,7 +79,7 @@ def blend_rows(
     for index, target in enumerate(zip(columns["series"], columns["step"], strict=True)):
         groups.setdefault(target, []).append(index)
     first_rows = np.asarray([indices[0] for indices in groups.values()], dtype=int)
-    # a blend has no single forecast origin, lead, horizon bucket, or fitted band
+    # lead bands cannot be averaged; fit the blend's band on its own validation residuals
     omitted = {"origin", "weeks_ahead", "bucket", "lower", "upper"}
     result = {name: values[first_rows] for name, values in columns.items() if name not in omitted}
     averaged = [name for name in ("prediction", "naive_prediction") if name in result]
@@ -100,3 +104,20 @@ def blend_rows(
             values = columns[name][indices].astype(float)
             result[name][target_index] = np.dot(values[positive], target_weights[positive])
     return result
+
+
+def fit_blend_band(
+    validation: dict[str, np.ndarray], weights: dict[int, float] | None = None
+) -> Band | None:
+    """fit additive q10/q90 offsets from at least four finite blended validation residuals"""
+    blended = blend_rows(validation, weights)
+    actual, prediction = (
+        np.asarray(blended[name], dtype=float) for name in ("actual", "prediction")
+    )
+    known = np.isfinite(actual) & np.isfinite(prediction)
+    residuals = actual[known] - prediction[known]
+    residuals = residuals[np.isfinite(residuals)]
+    if len(residuals) < MIN_BLEND_RESIDUALS:
+        return None
+    lower, upper = np.quantile(residuals, [0.1, 0.9])
+    return Band(float(lower), float(upper), relative=False, floor=1.0, n=len(residuals))

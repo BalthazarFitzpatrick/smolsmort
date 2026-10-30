@@ -174,6 +174,11 @@ def test_blend_metrics_score_target_weeks_once_and_keep_pooled_verdict(horizon_r
     assert payload["verdict"]["accuracy"]["ratio"] == 0.75
     assert payload["winner"]["verdict"]["accuracy"]["ratio"] == 0.75
     assert payload["bands"] == []
+    assert payload["blend_band"] == {
+        "target": 0.8,
+        "test_coverage": None,
+        "reason": "fewer than 4 finite validation residuals",
+    }
     json.dumps(payload, allow_nan=False)
 
 
@@ -585,6 +590,165 @@ def test_lead_errors_follow_the_selected_model(horizon_run):
     )
     assert fetch_view(horizon_run, model="winner")["lead_errors"][0]["model_wape"] == 0.2
     assert fetch_view(horizon_run, model="ensemble")["lead_errors"][0]["model_wape"] == 0.9
+
+
+@pytest.fixture
+def calibrated_run(horizon_run):
+    run, _, _ = horizon_run
+    validation = make_predictions(
+        np.repeat(["2024-12-30", "2025-01-06", "2025-01-13", "2025-01-20", "2025-01-27"], 2),
+        np.tile([1, 2], 5),
+        np.tile([8, 12], 5),
+        actual=np.repeat([8, 10, 12, 14, 16], 2),
+        naive=np.full(10, 6),
+    )
+    for prefix in ("", "winner_", "ensemble_"):
+        offset = 2 if prefix == "ensemble_" else 0
+        write_table(
+            run / f"{prefix}validation.parquet",
+            {**validation, "prediction": validation["prediction"] + offset},
+        )
+        test = read_table(run / f"{prefix}test.parquet")
+        test["prediction"] = np.array([6, 10, 14, 24, 28, 36], dtype=float) + offset
+        write_table(run / f"{prefix}test.parquet", test)
+    return horizon_run
+
+
+def read_bounds(payload):
+    band = next(band for band in payload["bands"] if band["series"] == "forecast")
+    return dict(zip(payload["x"], zip(band["lo"], band["hi"], strict=True), strict=True))
+
+
+@pytest.mark.parametrize("model", ["winner", "ensemble"])
+def test_blend_band_chart_table_and_export_share_validation_offsets(calibrated_run, model):
+    run, request, _ = calibrated_run
+    query = {"blend_weights": "{}", "model": model, "size": "100"}
+    payload = fetch_view(calibrated_run, **query)
+    bounds = read_bounds(payload)
+    assert bounds["2025-02-03"] == pytest.approx((8.8, 15.2))
+    assert bounds["2025-02-24"] == pytest.approx((38.8, 45.2))
+    assert bounds["2025-01-27"] == (None, None)
+    assert payload["blend_band"] == {"target": 0.8, "test_coverage": 1 / 3, "reason": None}
+    table = views.timeseries_table(run, request, query)
+    for values in table["rows"]:
+        row = dict(zip(table["columns"], values, strict=True))
+        expected = bounds[row["step"]]
+        if expected == (None, None):
+            assert (row["lower"], row["upper"]) == expected
+        else:
+            assert (row["lower"], row["upper"]) == pytest.approx(expected)
+    export = views.export_csv(run, request, query).decode("utf-8")
+    exported = csv.DictReader(io.StringIO(export.partition("\n")[2]))
+    target = next(row for row in exported if row["step"] == "2025-02-24")
+    assert (float(target["lower"]), float(target["upper"])) == pytest.approx((38.8, 45.2))
+    json.dumps(payload, allow_nan=False)
+
+
+def test_blend_band_refits_for_weights_without_changing_lead_bands(calibrated_run):
+    lead = fetch_view(calibrated_run, lead="2")
+    equal = fetch_view(calibrated_run, blend_weights="{}")
+    weighted = fetch_view(calibrated_run, blend_weights="2:4")
+    assert read_bounds(equal)["2025-02-24"] == pytest.approx((38.8, 45.2))
+    assert read_bounds(weighted)["2025-02-24"] == pytest.approx((37.6, 44))
+    assert read_bounds(weighted)["2025-02-10"] == pytest.approx((24.8, 31.2))
+    assert fetch_view(calibrated_run, lead="2")["bands"] == lead["bands"]
+    assert "blend_band" not in lead
+
+
+def test_blend_band_never_fits_on_test_actuals(calibrated_run):
+    run, _, _ = calibrated_run
+    before = fetch_view(calibrated_run, blend_weights="{}")
+    test = read_table(run / "winner_test.parquet")
+    test["actual"] += 1000
+    write_table(run / "winner_test.parquet", test)
+    after = fetch_view(calibrated_run, blend_weights="{}")
+    assert after["bands"] == before["bands"]
+    assert after["blend_band"]["test_coverage"] == 0
+
+
+def test_blend_band_coverage_uses_chart_predictions_at_validation_test_overlap(calibrated_run):
+    run, _, _ = calibrated_run
+    validation = read_table(run / "winner_validation.parquet")
+    overlap = make_predictions(["2025-02-17"], [3], [0], actual=[30], naive=[0])
+    write_table(
+        run / "winner_validation.parquet",
+        {name: np.concatenate([values, overlap[name]]) for name, values in validation.items()},
+    )
+    payload = fetch_view(calibrated_run, blend_weights="{}")
+    assert forecast_values(payload)["2025-02-17"] == 18
+    assert read_bounds(payload)["2025-02-17"] == pytest.approx((17, 36))
+    assert payload["blend_band"]["test_coverage"] == 2 / 3
+
+
+@pytest.mark.parametrize("nonnegative,expected_lower", [(True, 0), (False, -0.7)])
+def test_blend_band_respects_target_sign_in_chart_and_table(
+    calibrated_run, nonnegative, expected_lower
+):
+    run, request, _ = calibrated_run
+    if not nonnegative:
+        path = Path(request["prepared"]) / "panel.parquet"
+        panel = read_table(path)
+        panel["units"][0] = -1
+        write_table(path, panel)
+    path = run / "winner_forecast.parquet"
+    forecast = read_table(path)
+    forecast["prediction"][0] = 0.5
+    write_table(path, forecast)
+    payload = fetch_view(calibrated_run, blend_weights="{}")
+    assert read_bounds(payload)["2025-02-24"] == pytest.approx((expected_lower, 5.7))
+    table = views.timeseries_table(run, request, {"blend_weights": "{}"})
+    row = next(row for row in table["rows"] if row[0] == "2025-02-24")
+    assert row[table["columns"].index("lower")] == pytest.approx(expected_lower)
+
+
+def test_blend_band_coverage_respects_filters_and_breakdown(calibrated_run):
+    run, request, _ = calibrated_run
+    path = Path(request["prepared"]) / "panel.parquet"
+    panel = read_table(path)
+    other = {
+        **panel,
+        "__series": np.full(len(panel["__step"]), "other"),
+        "group": np.full(len(panel["__step"]), "beta"),
+    }
+    write_table(
+        path, {name: np.concatenate([values, other[name]]) for name, values in panel.items()}
+    )
+    path = run / "winner_test.parquet"
+    test = read_table(path)
+    other = {
+        **test,
+        "series": np.full(len(test["step"]), "other"),
+        "actual": np.full(len(test["step"]), 1000),
+    }
+    write_table(
+        path, {name: np.concatenate([values, other[name]]) for name, values in test.items()}
+    )
+    for group, expected in (("alpha", 1 / 3), ("beta", 0)):
+        payload = fetch_view(
+            calibrated_run,
+            blend_weights="{}",
+            filters=json.dumps({"group": [group]}),
+            breakdown="group",
+        )
+        assert payload["blend_band"]["test_coverage"] == expected
+        assert payload["bands"][0]["series"] == f"forecast:{group}"
+    assert fetch_view(calibrated_run, blend_weights="{}")["blend_band"]["test_coverage"] == 1 / 6
+
+
+def test_blend_band_with_no_finite_test_actuals_keeps_future_band(calibrated_run):
+    run, _, _ = calibrated_run
+    path = run / "winner_test.parquet"
+    test = read_table(path)
+    test["actual"][:] = np.nan
+    write_table(path, test)
+    payload = fetch_view(calibrated_run, blend_weights="{}")
+    assert read_bounds(payload)["2025-02-24"] == pytest.approx((38.8, 45.2))
+    assert payload["blend_band"] == {
+        "target": 0.8,
+        "test_coverage": None,
+        "reason": "no test rows with finite actuals and bounds",
+    }
+    json.dumps(payload, allow_nan=False)
 
 
 def test_legacy_tables_leave_existing_view_and_metrics_unchanged(horizon_run):
