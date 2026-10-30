@@ -12,7 +12,7 @@ import pytest
 pytest.importorskip("playwright")
 pytest.importorskip("xgboost")
 
-from forecast_ui_audit import assert_family_layout
+from forecast_ui_audit import assert_family_layout, settle_menu
 from test_forecast_ui_browser import (
     open_info,
     session,
@@ -533,19 +533,19 @@ def test_multifamily_saved_run_named_models_and_explained_importance(tmp_path):
             == "18"
         )
         page.screenshot(path=artifacts / "results.png", full_page=True)
-        for family, expected in (
-            ("ridge", "absolute standardised coefficient"),
-            ("snaive", "no feature importance for this family"),
-        ):
-            page.click("#regression-importance-family")
-            page.locator(f'.menu-panel .menu-item[data-id="{family}"]').click()
-            page.wait_for_function(
-                "text => document.getElementById('regression-importance-status').innerText.startsWith(text)",
-                arg=expected,
-            )
-            assert page.locator("#regression-importance").is_visible() == (family == "ridge")
-            if family == "ridge":
-                assert page.locator("#regression-importance tbody tr").count() == 2
+        assert page.locator("#regression-importance-family").inner_text() == "xgboost"
+        page.click("#regression-importance-family")
+        items = page.locator(".menu-panel .menu-item")
+        assert items.evaluate_all("items => items.map(item => item.dataset.id)") == [
+            "xgboost",
+            "ridge",
+        ]
+        page.locator('.menu-panel .menu-item[data-id="ridge"]').click()
+        page.wait_for_function(
+            "document.getElementById('regression-importance-status').innerText"
+            ".startsWith('absolute standardised coefficient')"
+        )
+        assert page.locator("#regression-importance tbody tr").count() == 2
         page.click("#regression-results-model")
         page.locator('.menu-panel .menu-item[data-id="ensemble"]').click()
         open_info(page)
@@ -560,7 +560,43 @@ def test_multifamily_saved_run_named_models_and_explained_importance(tmp_path):
             == "19"
         )
         assert page.locator("#regression-export").get_attribute("href").endswith("/ensemble.csv")
+        assert page.locator("#regression-importance-family").inner_text() == "xgboost"
         page.screenshot(path=artifacts / "results-ensemble.png", full_page=True)
+
+
+@pytest.mark.parametrize("available", [("ridge",), ()])
+def test_importance_default_used_saved_family_or_disabled_empty_menu(tmp_path, available):
+    with session(tmp_path) as (page, _):
+        root = tmp_path / "forecast_root"
+        run_id = write_multifamily_run(root)
+        for name in ("xgboost", "ridge"):
+            if name not in available:
+                (root / ".forecast-runs" / run_id / "families" / name / "importance.json").unlink()
+        switch_to_regression(page)
+        page.select_option("#topic-flavour", "timeseries")
+        show_tab(page, "regression-search")
+        page.locator(f'#regression-runs-list [data-run-id="{run_id}"]').click()
+        page.click("#regression-run-open")
+        page.locator("#regression-family-comparison tbody tr").first.wait_for()
+        head = page.locator("#regression-importance-family")
+        if available:
+            assert head.is_enabled()
+            assert head.inner_text() == available[0]
+            assert page.locator("#regression-importance tbody tr").count() == 2
+            head.click()
+            settle_menu(page)
+            assert page.locator(".menu-panel .menu-item").evaluate_all(
+                "items => items.map(item => item.dataset.id)"
+            ) == list(available)
+            page.keyboard.press("Escape")
+            assert not page.locator(".menu-panel").is_visible()
+        else:
+            assert head.is_disabled()
+            assert head.inner_text() == "none"
+            assert page.locator("#regression-importance-status").inner_text() == (
+                "no saved feature importance for this run"
+            )
+            assert not page.locator("#regression-importance").is_visible()
 
 
 def test_legacy_saved_run_defaulted_to_xgboost_without_comparison(tmp_path):
@@ -585,6 +621,8 @@ def test_legacy_saved_run_defaulted_to_xgboost_without_comparison(tmp_path):
             page.locator("#regression-importance-status").inner_text()
             == "no saved feature importance for this run"
         )
+        assert page.locator("#regression-importance-family").is_disabled()
+        assert not page.locator("#regression-importance").is_visible()
 
 
 def test_result_and_run_banners_compared_ratios_and_kept_plain_facts(tmp_path):

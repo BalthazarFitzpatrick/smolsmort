@@ -331,6 +331,7 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-results-models:has(> .hidden) { grid-template-columns: minmax(0, 1fr); }
 .forecast-model-table-wrap { max-height: calc(var(--row-height) * 6); overflow: auto; }
 .forecast-family-table th, .forecast-family-table td,
+[id$="-lead-errors"] th, [id$="-lead-errors"] td,
 [id$="-family-progress"] th, [id$="-family-progress"] td { height: var(--row-height); box-sizing: border-box; }
 .forecast-results-models .run-controls { flex-wrap: nowrap; }
 .forecast-results-models .run-controls .field-label { flex-shrink: 1; }

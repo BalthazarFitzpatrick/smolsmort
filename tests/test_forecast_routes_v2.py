@@ -166,6 +166,8 @@ def test_results_compare_validation_scores_without_loser_test_verdicts(app, comp
         payload["families"]["snaive"]["pruned_reason"] == "paired validation error behind xgboost"
     )
     assert payload["ensemble"]["verdict"]["accuracy"]["ratio"] == 1.0
+    assert payload["importance_families"] == ["xgboost", "ridge"]
+    assert payload["importance_family"] == "xgboost"
     assert payload["importance"] == {
         "method": "gain",
         "features": [{"feature": "lag_1", "importance": 1.0}],
@@ -187,7 +189,9 @@ def test_selected_result_model_matches_chart_table_and_export(
     forecast = next(line for line in view["series"] if line["id"] == "forecast")
     assert forecast["values"][-1] == prediction
     if model == "ensemble":
-        assert view["members"] == ["xgboost", "ridge"] and view["importance"] is None
+        assert view["members"] == ["xgboost", "ridge"]
+        assert view["importance_family"] == "xgboost"
+        assert view["importance"]["method"] == "gain"
     table = get(app, "/api/forecast-table", id=completed_models.name, model=model, sort="family")
     assert table["family"] == family and table["columns"][-1] == "family"
     assert all(row[-1] == family for row in table["rows"])
@@ -231,18 +235,130 @@ def test_model_family_column_preserves_a_source_dimension_named_family(app, comp
 
 
 @pytest.mark.parametrize(
-    "family,method",
-    [("xgboost", "gain"), ("ridge", "absolute standardised coefficient"), ("snaive", None)],
+    "family,selected,method",
+    [
+        ("xgboost", "xgboost", "gain"),
+        ("ridge", "ridge", "absolute standardised coefficient"),
+        ("snaive", "xgboost", "gain"),
+        ("ensemble", "xgboost", "gain"),
+    ],
 )
 def test_importance_selection_never_changes_the_shown_forecast(
-    app, completed_models, family, method
+    app, completed_models, family, selected, method
 ):
     payload = get(app, "/api/forecast-view", id=completed_models.name, importance_family=family)
-    assert payload["family"] == "xgboost" and payload["importance_family"] == family
-    if method is None:
-        assert payload["importance"] is None
+    assert payload["family"] == "xgboost" and payload["importance_family"] == selected
+    assert payload["importance"]["method"] == method
+
+
+@pytest.mark.parametrize("source", ["inline", "family_file", "winner", "result", "root"])
+def test_importance_availability_uses_the_same_saved_sources_as_tiles(app, source):
+    folder = make_saved_run(app)
+    importance = {"method": "coefficient", "features": [{"feature": "lag_1", "importance": 1}]}
+    fallback = {"method": "lower priority", "features": []}
+    result = {"winner": {"family": "ridge"}, "families": {"ridge": {}}}
+    if source != "root":
+        write_json(folder / "importance.json", fallback)
+    if source in {"inline", "family_file", "winner"}:
+        result["importance"] = fallback
+    if source in {"inline", "family_file"}:
+        result["winner"]["importance"] = fallback
+    if source == "inline":
+        write_json(folder / "families/ridge/importance.json", fallback)
+    if source == "inline":
+        result["families"]["ridge"]["importance"] = importance
+    elif source == "winner":
+        result["winner"]["importance"] = importance
+    elif source == "result":
+        result["importance"] = importance
     else:
-        assert payload["importance"]["method"] == method
+        target = folder / "families" / "ridge" if source == "family_file" else folder
+        write_json(target / "importance.json", importance)
+    write_json(folder / "result.json", result)
+    write_json(folder / "recipe.json", {"family": "ridge"})
+
+    payload = views.result_details(folder, views.read_request(folder), {})
+
+    assert payload["importance_families"] == ["ridge"]
+    assert payload["importance_family"] == "ridge"
+    assert payload["importance"] == payload["tiles"]["ridge"]["importance"] == importance
+
+
+@pytest.mark.parametrize("winner_family", ["ridge", "snaive"])
+def test_importance_defaults_to_available_winner_or_first_saved_family(app, winner_family):
+    folder = make_saved_run(
+        app, families=[{"name": "theta"}, {"name": "ridge"}, {"name": "snaive"}]
+    )
+    importance = {"method": "constant model", "features": []}
+    write_json(
+        folder / "result.json",
+        {
+            "winner": {"family": winner_family},
+            "families": {
+                "theta": {"importance": importance},
+                "ridge": {"importance": importance},
+                "snaive": {},
+            },
+        },
+    )
+    write_json(folder / "recipe.json", {"family": winner_family})
+
+    payload = views.result_details(folder, views.read_request(folder), {})
+
+    assert payload["importance_families"] == ["theta", "ridge"]
+    assert payload["importance_family"] == ("ridge" if winner_family == "ridge" else "theta")
+    assert payload["importance"] == importance
+
+
+def test_importance_includes_saved_families_absent_from_request(app):
+    folder = make_saved_run(app)
+    importance = {"method": "gain", "features": []}
+    write_json(
+        folder / "result.json",
+        {"winner": {"family": "ridge"}, "families": {"xgboost": {"importance": importance}}},
+    )
+    write_json(folder / "recipe.json", {"family": "ridge"})
+
+    payload = views.result_details(folder, views.read_request(folder), {})
+
+    assert payload["importance_families"] == ["xgboost"]
+    assert payload["importance_family"] == "xgboost"
+    assert payload["importance"] == importance
+
+
+@pytest.mark.parametrize("query", [{}, {"importance_family": "ridge"}])
+def test_results_without_saved_importance_have_no_selection(app, query):
+    folder = make_saved_run(app)
+    write_json(folder / "result.json", {"winner": {"family": "ridge"}})
+    write_json(folder / "recipe.json", {"family": "ridge"})
+
+    payload = views.result_details(folder, views.read_request(folder), query)
+
+    assert payload["importance_families"] == []
+    assert payload["importance_family"] is None
+    assert payload["importance"] is None
+
+
+def test_ensemble_importance_is_not_borrowed_for_winner(app):
+    folder = make_saved_run(app)
+    importance = {"method": "combined", "features": []}
+    write_json(
+        folder / "result.json",
+        {
+            "importance": importance,
+            "winner": {"family": "ridge"},
+            "ensemble": {"members": ["ridge"]},
+        },
+    )
+    write_json(folder / "recipe.json", {"family": "ensemble", "genome": {"family": "ridge"}})
+    write_json(folder / "importance.json", importance)
+
+    payload = views.result_details(folder, views.read_request(folder), {})
+
+    assert payload["importance_families"] == []
+    assert payload["importance_family"] is None
+    assert payload["importance"] is None
+    assert payload["tiles"]["ridge"]["importance"] is None
 
 
 @pytest.mark.parametrize("query", [{"model": "ridge"}, {"importance_family": "../../other"}])
@@ -267,11 +383,17 @@ def test_legacy_result_defaults_to_xgboost_without_a_family_comparison(app, comp
     write_json(
         completed_models / "leaderboard.json", [{"fitness": 0.2, "genome": {"families": ["lag"]}}]
     )
+    importance = {"method": "gain", "features": [{"feature": "lag_3", "importance": 1.0}]}
+    write_json(completed_models / "importance.json", importance)
+    (completed_models / "families/xgboost/importance.json").unlink()
     state = get(app, id=completed_models.name)
     assert state["version"] == 1 and state["winner_family"] == "xgboost"
     assert state["leaderboard"][0]["family"] == "xgboost"
     payload = get(app, "/api/forecast-view", id=completed_models.name)
     assert payload["family"] == "xgboost" and payload["families"] == {}
+    assert payload["importance_families"] == ["xgboost"]
+    assert payload["importance_family"] == "xgboost"
+    assert payload["importance"] == payload["tiles"]["xgboost"]["importance"] == importance
 
 
 def test_family_poll_preserves_failed_and_terminated_reasons(app):

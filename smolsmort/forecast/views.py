@@ -611,6 +611,21 @@ def _tile_round_curves(curves):
     return [latest[generation] for generation in sorted(latest)[-TILE_ROUND_GENERATIONS:]]
 
 
+def _read_family_importance(run_dir, result, recipe, name, winner_family, *, legacy=False):
+    if name == "ensemble":
+        return None
+    target = run_dir if legacy else run_dir / "families" / name
+    saved = result.get("families", {}).get(name, {})
+    importance = saved.get("importance") or _read_json(target / "importance.json")
+    if importance is None and name == winner_family:
+        winner = result.get("winner") or {}
+        summary = {**result, **winner} if recipe.get("family") != "ensemble" else winner
+        importance = summary.get("importance")
+        if importance is None and recipe.get("family") != "ensemble":
+            importance = _read_json(run_dir / "importance.json")
+    return importance
+
+
 def family_tiles(
     run_dir, request, status, *, result=None, recipe=None, include_charts=True, search_snapshot=None
 ):
@@ -657,11 +672,9 @@ def family_tiles(
             if not path.exists() and recipe.get("family") != "ensemble":
                 path = run_dir / "test.parquet"
         accuracy = (summary.get("verdict") or {}).get("accuracy") or {}
-        importance = saved.get("importance") or _read_json(target / "importance.json")
-        if importance is None and name == winner_family:
-            importance = summary.get("importance")
-            if importance is None and recipe.get("family") != "ensemble":
-                importance = _read_json(run_dir / "importance.json")
+        importance = _read_family_importance(
+            run_dir, result, recipe, name, winner_family, legacy=legacy
+        )
         scores = (best.get("metrics") or {}).get("fold_scores") or summary.get("fold_scores") or []
         folds = [
             {
@@ -869,7 +882,10 @@ def result_details(run_dir: Path, request: dict, query: dict) -> dict:
     result = _require_done(run_dir)
     selected = _select_model(run_dir, result, query)
     selected.pop("default_model")
-    tiles = family_tiles(run_dir, request, _read_json(run_dir / "status.json", {}), result=result)
+    recipe = _read_json(run_dir / "recipe.json", {})
+    tiles = family_tiles(
+        run_dir, request, _read_json(run_dir / "status.json", {}), result=result, recipe=recipe
+    )
     families = {}
     if request.get("version") == 2:
         status = _read_json(run_dir / "status.json", {}).get("families", {})
@@ -896,17 +912,25 @@ def result_details(run_dir: Path, request: dict, query: dict) -> dict:
                 request.get("spec", {}), fitness=row["fitness"], verdict=row.get("verdict")
             )
             families[name] = row
-    importance_family = query.get("importance_family") or selected["family"]
-    known_families = set(families) | {selected["winner_family"]}
-    if importance_family not in known_families | {"ensemble"}:
+    importance_family = query.get("importance_family")
+    known_families = dict.fromkeys([*families, selected["winner_family"]])
+    if importance_family and importance_family not in {*known_families, "ensemble"}:
         raise ViewError("importance_family must name a family in this run")
-    importance = None
-    if importance_family != "ensemble":
-        importance = result.get("families", {}).get(importance_family, {}).get("importance")
-        if importance is None:
-            importance = _read_json(run_dir / "families" / importance_family / "importance.json")
-        if importance is None and importance_family == selected["winner_family"]:
-            importance = _read_json(run_dir / "importance.json")
+    saved_importance = {}
+    for name in known_families:
+        importance = (
+            tiles[name]["importance"]
+            if name in tiles
+            else _read_family_importance(run_dir, result, recipe, name, selected["winner_family"])
+        )
+        if importance is not None:
+            saved_importance[name] = importance
+    if importance_family not in saved_importance:
+        importance_family = (
+            selected["winner_family"]
+            if selected["winner_family"] in saved_importance
+            else next(iter(saved_importance), None)
+        )
     winner = result.get("winner") or {
         "family": selected["winner_family"],
         "verdict": result.get("verdict"),
@@ -930,8 +954,9 @@ def result_details(run_dir: Path, request: dict, query: dict) -> dict:
         "families": families,
         "winner": winner,
         "ensemble": ensemble,
+        "importance_families": list(saved_importance),
         "importance_family": importance_family,
-        "importance": importance,
+        "importance": saved_importance.get(importance_family),
         "tiles": tiles,
         **run_metric_payload(run_dir, request, result=result, model=selected["model"]),
     }
