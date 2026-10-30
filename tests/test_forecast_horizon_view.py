@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from smolsmort.forecast.horizon_view import blend_rows, lead_rows
+from smolsmort.forecast.horizon_view import blend_rows, build_blend_weights, lead_rows
 
 
 @pytest.fixture
@@ -56,6 +56,38 @@ def test_explicit_weights_normalize_over_present_leads(overlapping_rows):
     blended = blend_rows(overlapping_rows, 2, {1: 1, 2: 3, 3: 2})
     np.testing.assert_allclose(blended["prediction"], [130 / 6, 48, 90])
     np.testing.assert_allclose(blended["naive_prediction"], [118 / 6, 46, 88])
+
+
+def test_blend_strength_counts_chosen_week_and_normalizes_each_tail():
+    weights = build_blend_weights(4, 2, strength=4)
+    assert weights == {1: 1, 2: 4, 3: 1, 4: 1}
+    np.testing.assert_allclose(np.array(list(weights.values())) / 7, [1 / 7, 4 / 7, 1 / 7, 1 / 7])
+    table = {
+        "series": np.array(["synthetic"] * 8),
+        "step": np.array(
+            ["2026-01-15"] * 4 + ["2026-01-22"] * 2 + ["2026-01-29"] * 2,
+            dtype="datetime64[D]",
+        ),
+        "weeks_ahead": np.array([1, 2, 3, 4, 2, 4, 3, 4]),
+        "prediction": np.array([10, 20, 30, 40, 50, 90, 100, 140], dtype=float),
+        "naive_prediction": np.array([8, 18, 28, 38, 48, 88, 98, 138], dtype=float),
+    }
+    blended = blend_rows(table, 2, weights=weights)
+    np.testing.assert_allclose(blended["prediction"], [160 / 7, 58, 120])
+    np.testing.assert_allclose(blended["naive_prediction"], [146 / 7, 56, 118])
+
+
+@pytest.mark.parametrize("strength", [1, 2, 4, 8])
+def test_blend_strength_weights_include_every_lead(strength):
+    weights = build_blend_weights(4, 2, strength=strength)
+    assert weights == {1: 1, 2: strength, 3: 1, 4: 1}
+    assert build_blend_weights(4, 2) == {1: 1, 2: 1, 3: 1, 4: 1}
+
+
+@pytest.mark.parametrize("strength", [0, -1, 3, 16, 1.0, "4", True, None, np.inf, np.nan])
+def test_invalid_blend_strength_is_rejected(strength):
+    with pytest.raises(ValueError, match="strength must be 1, 2, 4, or 8"):
+        build_blend_weights(4, 2, strength=strength)
 
 
 def test_explicit_zero_weights_do_not_include_nonfinite_predictions(overlapping_rows):

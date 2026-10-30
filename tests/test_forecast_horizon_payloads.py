@@ -1,5 +1,7 @@
 """selected horizon views use synthetic saved rows, never a forecast worker"""
 
+import csv
+import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -158,7 +160,7 @@ def test_selected_lead_drives_chart_and_all_test_metrics(
 
 def test_blend_metrics_score_target_weeks_once_and_keep_pooled_verdict(horizon_run):
     payload = fetch_view(horizon_run, blend="2")
-    assert payload["view"] == {"mode": "blend", "n": 2}
+    assert payload["view"] == {"mode": "blend", "n": 2, "strength": 1}
     predictions = forecast_values(payload)
     assert [
         predictions[day] for day in ("2025-02-03", "2025-02-10", "2025-02-17")
@@ -182,15 +184,62 @@ def test_blend_centre_does_not_apply_an_unrequested_decay(horizon_run):
     assert metric_values(around_one) == metric_values(around_three)
 
 
+@pytest.mark.parametrize("strength", [1, 2, 4, 8])
+def test_blend_strength_selects_weights_and_labels(horizon_run, strength):
+    payload = fetch_view(horizon_run, blend="2", strength=str(strength))
+    assert payload["view"] == {"mode": "blend", "n": 2, "strength": strength}
+    values = forecast_values(payload)
+    assert values["2025-02-03"] == pytest.approx(16)
+    assert values["2025-02-10"] == pytest.approx((24 + strength * 28) / (1 + strength))
+    assert values["2025-02-17"] == 36
+    for metric in payload["metric_registry"]:
+        if metric["scope"] == "test":
+            assert metric["label"].endswith(f"blend week 2 x{strength}")
+    assert payload["bands"] == []
+
+
+def test_strength_metrics_match_chart_for_each_model_and_family(horizon_run):
+    payload = fetch_view(horizon_run, blend="2", strength="4")
+    assert metric_values(payload)["wape"] == pytest.approx(0.32)
+    assert metric_values(payload)["test_ratio"] == pytest.approx(48 / 43)
+    assert payload["winner"]["error_metrics"]["wape"]["value"] == pytest.approx(0.32)
+    assert payload["ensemble"]["error_metrics"]["wape"]["value"] == pytest.approx(0.42)
+    assert payload["families"]["ridge"]["error_metrics"]["wape"]["value"] == pytest.approx(0.32)
+    assert payload["families"]["snaive"]["error_metrics"]["wape"]["value"] == pytest.approx(
+        43 / 150
+    )
+    assert payload["error_metrics"]["wape"]["note"] == "blend week 2 x4"
+
+
+def test_blend_strength_table_and_export_match_chart(horizon_run):
+    run, request, _ = horizon_run
+    query = {"blend": "2", "strength": "4", "size": "100"}
+    payload = views.timeseries_table(run, request, query)
+    rows = [dict(zip(payload["columns"], row, strict=True)) for row in payload["rows"]]
+    historical = sorted((row for row in rows if not row["future"]), key=lambda row: row["step"])
+    assert [row["prediction"] for row in historical] == pytest.approx([9, 16, 27.2, 36])
+    assert all(row["lower"] is None and row["upper"] is None for row in rows)
+    export = views.export_csv(run, request, query).decode("utf-8")
+    exported = csv.DictReader(io.StringIO(export.partition("\n")[2]))
+    target = next(row for row in exported if row["step"] == "2025-02-10")
+    assert float(target["prediction"]) == pytest.approx(27.2)
+
+
 def test_explicit_weights_normalize_over_each_target_tail(horizon_run):
     payload = fetch_view(horizon_run, blend="2", weights=json.dumps({1: 1, 2: 2, 3: 3}))
+    assert payload["view"] == {"mode": "blend", "n": 2, "weights": {1: 1.0, 2: 2.0, 3: 3.0}}
     values = forecast_values(payload)
     assert values["2025-02-03"] == pytest.approx(52 / 3)
     assert values["2025-02-10"] == pytest.approx(80 / 3)
     assert values["2025-02-17"] == 36
     assert metric_values(payload)["wape"] == pytest.approx(1 / 3)
     assert metric_values(payload)["test_ratio"] == pytest.approx(15 / 13)
+    for metric in payload["metric_registry"]:
+        if metric["scope"] == "test":
+            assert metric["label"].endswith("blend custom weights")
+    assert payload["error_metrics"]["wape"]["note"] == "blend custom weights"
     assert payload["bands"] == []
+    json.dumps(payload, allow_nan=False)
 
 
 def test_saved_bounds_follow_only_the_selected_lead(horizon_run):
@@ -256,6 +305,35 @@ def test_invalid_selections_return_plain_400(horizon_run, route, query):
         forecast_tab().get[route](app, {"id": run.name, **query})
     assert error.value.status == 400
     assert str(error.value) and "Traceback" not in str(error.value)
+
+
+@pytest.mark.parametrize("route", ["/api/forecast-view", "/api/forecast-table"])
+@pytest.mark.parametrize("strength", ["0", "-1", "3", "16", "1.0", "1.5", "no", "", True, None])
+def test_invalid_strength_returns_plain_400(horizon_run, route, strength):
+    run, _, app = horizon_run
+    with pytest.raises(RequestError) as error:
+        forecast_tab().get[route](app, {"id": run.name, "blend": "2", "strength": strength})
+    assert error.value.status == 400
+    assert str(error.value) == "strength must be 1, 2, 4, or 8"
+
+
+@pytest.mark.parametrize("route", ["/api/forecast-view", "/api/forecast-table"])
+@pytest.mark.parametrize(
+    "query,message",
+    [
+        ({"lead": "2", "strength": "4"}, "strength requires blend"),
+        (
+            {"blend": "2", "strength": "4", "weights": '{"1": 1, "2": 4, "3": 1}'},
+            "strength and weights are mutually exclusive",
+        ),
+    ],
+)
+def test_strength_rejects_ambiguous_selections(horizon_run, route, query, message):
+    run, _, app = horizon_run
+    with pytest.raises(RequestError) as error:
+        forecast_tab().get[route](app, {"id": run.name, **query})
+    assert error.value.status == 400
+    assert str(error.value) == message
 
 
 def test_naive_fallback_uses_each_origin_without_future_leakage(horizon_run):

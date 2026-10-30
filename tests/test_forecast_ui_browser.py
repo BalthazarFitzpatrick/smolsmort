@@ -2016,3 +2016,6 @@ def test_search_rail_puts_new_search_sort_and_metrics_side_by_side(tmp_path):
             assert text.inner_text() == "sort"
             widths = text.evaluate("node => [node.scrollWidth, node.clientWidth]")
             assert widths[0] <= widths[1], (sort, widths, button, head)
+            page.locator(f"#{TOPIC}-run-sort .dropdown-head").click()
+            assert page.locator(".menu-panel .menu-item.on").get_attribute("data-id") == sort
+            page.keyboard.press("Escape")

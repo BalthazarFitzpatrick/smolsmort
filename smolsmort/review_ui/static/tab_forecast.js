@@ -5,6 +5,7 @@ const FORECAST_ENTITY_ROLES = ['anchor', 'dimension', 'measure', 'target', 'igno
 const FORECAST_AGGREGATIONS = ['sum', 'mean', 'median', 'min', 'max'];
 const FORECAST_UNITS = ['day', 'week', 'month', 'quarter', 'year'];
 const FORECAST_PAGE_SIZE = 50;
+const FORECAST_BLEND_STRENGTHS = [1, 2, 4, 8];
 
 function forecastSearchProgress(run) {
   const progress = run.progress || {};
@@ -671,6 +672,39 @@ function forecastDropdown(options, value, onPick, label, format = value => value
   return head;
 }
 
+function forecastBlendDropdown(horizon, getSelection, onPick) {
+  const head = forecastNode('button', 'toggle dropdown-head');
+  head.type = 'button';
+  head.setAttribute('aria-label', 'blend');
+  head.setAttribute('aria-expanded', 'false');
+  head.onclick = () => {
+    const selected = getSelection();
+    const week = selected.mode === 'blend' ? selected.n : 'off';
+    const strength = selected.strength ?? 1;
+    const pick = (n, counts, menu) => {
+      menu.close();
+      onPick(n, counts);
+    };
+    forecastOpenMenu(new ForecastBlendMenu({title: 'blend',
+      onConfirm: menu => {
+        const row = document.activeElement;
+        if (menu.el?.contains(row) && row.classList.contains('menu-item')) row.click();
+      },
+      sections: [{kind: 'columns', columns: [
+        {label: 'week', multi: false,
+          items: ['off', ...Array.from({length: horizon}, (_, index) => index + 1)]
+            .map(n => ({id: n, label: String(n), on: n === week})),
+          onPick: (item, _on, menu) => pick(item.id, strength, menu)},
+        {label: 'counts', multi: false,
+          items: FORECAST_BLEND_STRENGTHS.map(counts => ({id: `${counts}x`,
+            label: `${counts}x`, on: counts === strength})),
+          onPick: (item, _on, menu) => pick(week, Number.parseInt(item.id, 10), menu)},
+      ]}],
+    }), head);
+  };
+  return head;
+}
+
 // choices open inside the parent menu: a second floating menu would dismiss its draft
 function forecastInlineSelect(options, value, onPick, label) {
   const wrap = forecastNode('div', 'forecast-inline-select');
@@ -721,6 +755,14 @@ class ForecastFieldMenu extends Menu {
     const panel = super._build();
     panel.classList.add('forecast-field-menu');
     panel.querySelectorAll('.menu-item').forEach(row => { row.title = row.textContent; });
+    return panel;
+  }
+}
+
+class ForecastBlendMenu extends Menu {
+  _build() {
+    const panel = super._build();
+    panel.classList.add('forecast-blend-menu');
     return panel;
   }
 }
@@ -1610,12 +1652,12 @@ class ForecastTopic {
       value => {
         this.runOrder = value;
         setHead(sortHead, 'sort');
-        sortHead.title = `sort by: ${value}`;
+        sortHead.title = 'sort runs';
         this.paintRuns();
       }, 'sort runs'
     );
     setHead(sortHead, 'sort');
-    sortHead.title = `sort by: ${this.runOrder}`;
+    sortHead.title = 'sort runs';
     document.getElementById(`${this.topic}-run-sort`).append(sortHead);
     document.getElementById(`${this.topic}-run-warm`).onclick = () => this.warmStartRun(this.selectedRunId);
     document.getElementById(`${this.topic}-run-refit`).onclick = () => this.refitRun(this.selectedRunId);
@@ -2409,7 +2451,21 @@ class ForecastTopic {
     if (selected && ['lead', 'blend'].includes(selected.mode) && Number.isInteger(selected.n)
         && selected.n >= 1 && selected.n <= this.resultsSpec?.horizon) {
       params.set(selected.mode, String(selected.n));
+      if (selected.mode === 'blend') {
+        if (selected.weights) params.set('weights', JSON.stringify(selected.weights));
+        else params.set('strength', String(selected.strength ?? 1));
+      }
     }
+  }
+
+  async selectHorizonView(selection) {
+    this.horizonSelections[this.resultsRunId] = selection;
+    try { localStorage.setItem(this.horizonStorageKey, JSON.stringify(this.horizonSelections)); }
+    catch (error) { /* selection still works when storage is unavailable */ }
+    this.tableRequest++;
+    this.tableState.page = 0;
+    await this.refreshView();
+    await this.refreshTable();
   }
 
   paintHorizonControls(view) {
@@ -2432,10 +2488,11 @@ class ForecastTopic {
         Number.isFinite(row.ratio) ? row.ratio.toFixed(2) : '-', row.rows ?? '-',
       ]));
     if (!view.view) return;
-    this.horizonSelections[this.resultsRunId] = {...view.view};
+    const strength = view.view.strength ?? this.horizonSelections[this.resultsRunId]?.strength ?? 1;
+    this.horizonSelections[this.resultsRunId] = {...view.view, strength};
     const descriptions = {
       lead: 'show only the forecast made n weeks before each week. nothing is averaged.',
-      blend: 'average every forecast of a week. equal weights for now. a blend is not a forecast the model made; use it to smooth, not to judge.',
+      blend: 'average of all forecasts of a week; the chosen week counts s times as much as each other week. not a forecast the model made.',
     };
     help.textContent = descriptions[view.view.mode];
     if (controls.dataset.horizon !== String(view.horizon)) {
@@ -2444,19 +2501,15 @@ class ForecastTopic {
       for (const mode of ['lead', 'blend']) {
         const picker = forecastNode('div', 'forecast-metric-picker');
         const options = Array.from({length: view.horizon}, (_, index) => index + 1);
-        if (mode === 'blend') options.unshift('off');
-        const format = n => n === 'off' ? 'off' : mode === 'blend' ? `around ${n}`
-          : `${n} ${n === 1 ? 'week' : 'weeks'} ahead`;
-        const button = forecastDropdown(options, 'off', async n => {
-          this.horizonSelections[this.resultsRunId] = n === 'off'
-            ? {mode: 'lead', n: view.horizon} : {mode, n};
-          try { localStorage.setItem(this.horizonStorageKey, JSON.stringify(this.horizonSelections)); }
-          catch (error) { /* selection still works when storage is unavailable */ }
-          this.tableRequest++;
-          this.tableState.page = 0;
-          await this.refreshView();
-          await this.refreshTable();
-        }, mode, format);
+        const button = mode === 'blend' ? forecastBlendDropdown(view.horizon,
+          () => this.horizonSelections[this.resultsRunId], (n, strength) => {
+          const selected = this.horizonSelections[this.resultsRunId];
+          this.selectHorizonView(n === 'off'
+            ? {mode: 'lead', n: selected.mode === 'lead' ? selected.n : view.horizon, strength}
+            : {mode: 'blend', n, strength});
+        }) : forecastDropdown(options, 'off', n => this.selectHorizonView({mode: 'lead', n,
+          strength: this.horizonSelections[this.resultsRunId]?.strength ?? 1}),
+        mode, n => n === 'off' ? 'off' : `${n} ${n === 1 ? 'week' : 'weeks'} ahead`);
         button.id = `${this.topic}-${mode}`;
         button.title = descriptions[mode];
         picker.append(button);
@@ -2468,8 +2521,11 @@ class ForecastTopic {
       const n = view.view.n;
       const button = document.getElementById(`${this.topic}-${mode}`);
       button.dataset.value = active ? String(n) : 'off';
+      button.dataset.strength = String(strength);
       setHead(button, `${mode}: ${!active ? 'off'
-        : mode === 'blend' ? `around ${n}` : `${n} ${n === 1 ? 'week' : 'weeks'} ahead`}`);
+        : mode === 'blend' ? view.view.weights ? 'custom weights'
+          : strength === 1 ? 'equal weights' : `week ${n} counts ${strength}x`
+          : `${n} ${n === 1 ? 'week' : 'weeks'} ahead`}`);
       button.title = descriptions[mode];
     }
   }
@@ -2575,7 +2631,8 @@ class ForecastTopic {
     const caption = document.getElementById(`${this.topic}-chart-caption`);
     caption.textContent = !view.view ? '' : view.view.mode === 'lead'
       ? `each week shows the forecast made ${view.view.n} weeks before that week.`
-      : `each week shows the average of all its forecasts, equal weights, centred on ${view.view.n} for later weighting.`;
+      : `each week shows the average of all its forecasts; ${view.view.weights ? 'custom weights' : (view.view.strength ?? 1) === 1
+        ? 'equal weights' : `week ${view.view.n} counts ${view.view.strength}x as much as each other week`}. not a forecast the model made.`;
     caption.classList.toggle('hidden', !caption.textContent);
   }
 
