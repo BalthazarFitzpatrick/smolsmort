@@ -84,7 +84,7 @@ def benchmark(*, repeats=3, families=("ridge", "lightgbm")):
         "repeats": repeats,
         "platform": platform.platform(),
         "fit_scope": "one model per mode frame; mixed fits three bucket models",
-        "finish_scope": "test refits, final forecast, bands and importance; cached validation",
+        "finish_scope": "test refits, final forecast and bands; cached validation",
         "results": [],
     }
     with TemporaryDirectory(prefix="weeks-ahead-benchmark-") as folder:

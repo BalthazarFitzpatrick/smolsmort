@@ -256,3 +256,54 @@ def test_single_transforms_and_statistical_baseline_use_raw_outputs(monkeypatch,
     assert np.isfinite(final["model_error"])
     assert final["model_error"] == pytest.approx(final["baseline_error"])
     assert final["test"]["prediction"].min() > 10
+
+
+def test_input_shares_and_spread_ignore_values_after_each_origin(monkeypatch):
+    from dataclasses import replace
+
+    from smolsmort.forecast.features import stacked_timeseries_features
+
+    ws = build_workspace(monkeypatch)
+    spec = replace(ws.spec, columns=(*ws.spec.columns, Column("channel", "input")))
+    inputs = {
+        SERIES: np.repeat(ws.panel[SERIES], 2),
+        STEP: np.repeat(ws.panel[STEP], 2),
+        "__column": np.full(2 * len(ws.panel[STEP]), "channel"),
+        "__level": np.tile(["a", "b"], len(ws.panel[STEP])),
+        "target": np.tile([3.0, 7.0], len(ws.panel[STEP])),
+    }
+    scaffold = {SERIES: np.array([], dtype=object), STEP: np.array([], dtype="datetime64[D]")}
+    train = ws.panel[STEP] < ws.series_folds[0][0]
+    original = stacked_timeseries_features(spec, ws.panel, scaffold, "week", train, inputs=inputs)
+    origin = ws.series_folds[0][0] + np.timedelta64(42, "D")
+    inputs["target"][inputs[STEP] > origin] = 1e12
+    changed = stacked_timeseries_features(spec, ws.panel, scaffold, "week", train, inputs=inputs)
+    rows = original.origin == origin
+    np.testing.assert_allclose(changed.features.x[rows], original.features.x[rows], equal_nan=True)
+    for name, expected in (("mix:channel:level:a_lag_0", 0.3), ("spread:channel:hhi_lag_0", 0.58)):
+        column = original.features.names.index(name)
+        np.testing.assert_allclose(original.features.x[rows, column], expected)
+
+
+def test_candidate_search_and_ensemble_keep_stacked_rows(monkeypatch):
+    from smolsmort.forecast.search import Budget, search
+
+    ws = build_workspace(monkeypatch)
+    ws.families = ["y@day:lag+0", "y@day:lag+1", "y@day:season", "weeks_ahead"]
+    searched = search(
+        ws, Budget(population=2, max_generations=1), family="ridge", defaults_only=True
+    )
+    genome = pipeline.genome_from_dict(searched["best"])
+    scored = pipeline.score(ws, genome)
+    alternate = pipeline.make_genome(genome.families, "squared", {"alpha": 10.0}, "ridge")
+    other = pipeline.score(ws, alternate)
+    prediction = (scored.prediction + other.prediction) / 2
+    final = pipeline.finish(ws, genome, members=[genome, alternate], validation=prediction)
+    np.testing.assert_allclose(final["validation"]["prediction"], prediction)
+    assert len(final["test"]["prediction"]) == int(ws.series_masks[(1, 8)]["test"].sum())
+    assert set(final["lead_errors"]) == {str(lead) for lead in range(1, 9)}
+    expected = []
+    for start, end in ws.series_folds:
+        rows = (final["validation"]["origin"] >= start) & (final["validation"]["origin"] < end)
+        expected.append(ev.wape(final["validation"]["actual"][rows], prediction[rows]))
+    assert final["val_error"] == pytest.approx(np.mean(expected))
