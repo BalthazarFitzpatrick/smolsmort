@@ -215,6 +215,8 @@ def run_state(
 
 
 def _metadata(folder: Path, status: dict, generations: list[dict], events: list[dict]) -> dict:
+    from smolsmort.forecast.views import run_metric_payload
+
     request_path = folder / "request.json"
     request = json.loads(request_path.read_text()) if request_path.exists() else {}
     result_path = folder / "result.json"
@@ -262,6 +264,7 @@ def _metadata(folder: Path, status: dict, generations: list[dict], events: list[
         "elapsed": status.get("elapsed") or finishing.get("elapsed") or latest.get("elapsed"),
         "leaderboard_generation": revision,
         "progress": progress,
+        **run_metric_payload(folder, request, {"best_error": latest.get("best")}, result=result),
     }
 
 

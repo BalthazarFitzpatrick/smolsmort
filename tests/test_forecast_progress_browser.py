@@ -11,12 +11,13 @@ import pytest
 
 pytest.importorskip("playwright")
 pytest.importorskip("xgboost")
-pytest.importorskip("duckdb")
 
 from forecast_ui_audit import assert_family_layout
-from test_forecast_ui_browser import session, show_tab, switch_to_regression
+from test_forecast_ui_browser import session, show_tab, switch_to_regression, with_error_metrics
 
 from smolsmort.forecast.tables import write_table
+
+pytest.importorskip("duckdb")
 
 
 def write_multifamily_run(root, *, version=2):
@@ -223,9 +224,12 @@ def mock_saved_run(page, run, polls=None):
                 curve for curve in run["generation_curves"] if curve["generation"] > cursor
             ],
         }
-        route.fulfill(json=payload)
+        route.fulfill(json=with_error_metrics(payload))
 
-    page.route("**/api/forecast-runs", lambda route: route.fulfill(json={"runs": [run]}))
+    page.route(
+        "**/api/forecast-runs",
+        lambda route: route.fulfill(json={"runs": [with_error_metrics(run)]}),
+    )
     page.route("**/api/forecast-run?**", read_run)
     switch_to_regression(page)
     show_tab(page, "regression-search")
@@ -406,7 +410,8 @@ def test_multifamily_progress_updated_counts_and_terminal_reasons(tmp_path):
             "broad",
             "1",
             "6",
-            "0.4",
+            "40.0%",
+            "-",
             "-",
         ]
         run["families"]["xgboost"].update(
@@ -429,7 +434,8 @@ def test_multifamily_progress_updated_counts_and_terminal_reasons(tmp_path):
             "intensive",
             "5",
             "2",
-            "0.2",
+            "20.0%",
+            "-",
             "-",
         ]
         assert rows.nth(1).locator("td").nth(1).inner_text() == "pruned"
@@ -480,20 +486,20 @@ def test_multifamily_saved_run_named_models_and_explained_importance(tmp_path):
         )
         comparison = page.locator("#regression-family-comparison tbody tr")
         assert [row.locator("td").all_text_contents() for row in comparison.all()] == [
-            ["xgboost", "done", "0.12", "4", "-", "ratio 0.95, better than naive"],
-            ["ridge", "done", "0.18", "3", "-", "-"],
-            ["snaive", "done", "0.31", "2", "-", "-"],
+            ["xgboost", "done", "12.0%", "0.95", "4", "-"],
+            ["ridge", "done", "18.0%", "-", "3", "-"],
+            ["snaive", "done", "31.0%", "-", "2", "-"],
             [
                 "ensemble of xgboost, ridge",
                 "done",
-                "0.15",
+                "15.0%",
+                "1.05",
                 "-",
                 "-",
-                "ratio 1.05, worse than naive",
             ],
         ]
         assert page.locator("#regression-verdict").inner_text() == (
-            "xgboost: ratio 0.95, better than naive"
+            "xgboost: test ratio 0.95, better than naive"
         )
         assert page.locator("#regression-importance-status").inner_text().startswith("gain")
         assert page.locator("#regression-importance tbody tr").all_text_contents() == [
@@ -529,7 +535,7 @@ def test_multifamily_saved_run_named_models_and_explained_importance(tmp_path):
         page.click("#regression-results-model")
         page.locator('.menu-panel .menu-item[data-id="ensemble"]').click()
         page.wait_for_function(
-            "document.getElementById('regression-verdict').innerText === 'ensemble of xgboost, ridge: ratio 1.05, worse than naive'"
+            "document.getElementById('regression-verdict').innerText === 'ensemble of xgboost, ridge: test ratio 1.05, worse than naive'"
         )
         page.wait_for_function(
             "document.querySelector('#regression-results-table tr:nth-child(2) td:last-child').innerText === 'ensemble'"
@@ -557,7 +563,7 @@ def test_legacy_saved_run_defaulted_to_xgboost_without_comparison(tmp_path):
         page.click("#regression-run-open")
         page.locator("#regression-verdict").wait_for()
         assert page.locator("#regression-verdict").inner_text() == (
-            "xgboost: ratio 0.95, better than naive"
+            "xgboost: test ratio 0.95, better than naive"
         )
         assert not page.locator("#regression-family-comparison").is_visible()
         assert (
@@ -590,12 +596,16 @@ def test_result_and_run_banners_compared_ratios_and_kept_plain_facts(tmp_path):
             page.evaluate(
                 "run => { const ctl = forecastTopics.get('regression');"
                 " ctl.paintRunDetail(run); ctl.paintVerdict(run.verdict, 'xgboost'); }",
-                {**make_run(state="done"), "verdict": verdict},
+                with_error_metrics({**make_run(state="done"), "verdict": verdict}),
             )
             expected = (
-                f"ratio {ratio}, {comparison} than naive" if comparison else "ratio unavailable"
+                f"test ratio {ratio:.2f}, {comparison} than naive"
+                if comparison
+                else "ratio unavailable"
             )
-            assert page.locator("#regression-run-verdict").inner_text() == expected
+            assert page.locator("#regression-run-verdict").inner_text() == (
+                f"test ratio: {ratio:.2f}" if ratio is not None else "test ratio: -"
+            )
             assert page.locator("#regression-verdict .forecast-verdict-summary").inner_text() == (
                 f"xgboost: {expected}"
             )
@@ -673,7 +683,7 @@ def test_results_kept_latest_model_importance_and_table_after_delayed_responses(
         )
         release_response(0)
         assert page.locator("#regression-verdict").inner_text() == (
-            "ensemble of xgboost, ridge: ratio 1.05, worse than naive"
+            "ensemble of xgboost, ridge: test ratio 1.05, worse than naive"
         )
         assert_ensemble_table()
         page.unroute("**/api/forecast-view?**", hold_response)
@@ -702,6 +712,6 @@ def test_results_kept_latest_model_importance_and_table_after_delayed_responses(
             .startswith("absolute standardised coefficient")
         )
         assert page.locator("#regression-verdict").inner_text() == (
-            "ensemble of xgboost, ridge: ratio 1.05, worse than naive"
+            "ensemble of xgboost, ridge: test ratio 1.05, worse than naive"
         )
         assert_ensemble_table()

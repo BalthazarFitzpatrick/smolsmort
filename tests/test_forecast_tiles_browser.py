@@ -12,12 +12,13 @@ import pytest
 
 pytest.importorskip("playwright")
 pytest.importorskip("xgboost")
-pytest.importorskip("duckdb")
 
 from test_forecast_progress_browser import write_multifamily_run
-from test_forecast_ui_browser import session, show_tab, switch_to_regression
+from test_forecast_ui_browser import session, show_tab, switch_to_regression, with_error_metrics
 
 from smolsmort.forecast.tables import write_table
+
+pytest.importorskip("duckdb")
 
 
 def write_json(path: Path, value) -> None:
@@ -63,7 +64,7 @@ def make_saved_tiles(root: Path) -> str:
                 "family": "ridge",
                 "fitness": 0.2,
                 "model_error": 0.182,
-                "verdict": {"accuracy": {"ratio": 0.71}},
+                "verdict": {"accuracy": {"ratio": 0.71, "baseline_error": 0.256}},
             },
             "model_error": 0.182,
             "verdict": {"accuracy": {"ratio": 0.71}},
@@ -133,6 +134,7 @@ def make_live_tiles() -> dict:
             "test_ratio": 0.71,
             "test_error": 0.182,
             "test_error_metric": "wape",
+            "test_naive_wape": 0.256,
             "chart": chart,
             "folds": [
                 {"label": "fold 1", "error": 0.19, "ratio": 0.66},
@@ -194,7 +196,7 @@ def mock_live_tiles(page, snapshot: dict) -> list:
 
     def read_run(route):
         calls.append(route.request.url)
-        route.fulfill(json=snapshot)
+        route.fulfill(json=with_error_metrics(snapshot))
 
     page.route("**/api/forecast-run?**", read_run)
     return calls
@@ -229,7 +231,7 @@ def test_tiles_read_saved_winner_artifacts_and_kept_tables(tmp_path):
         save_tiles(page, "saved-charts")
         ridge = find_tile(page, "ridge")
         front = ridge.locator(".forecast-tile-front")
-        assert "+29%" in front.inner_text()
+        assert "test ratio: 0.71" in front.inner_text()
         assert front.locator("svg polyline").count() == 2
         assert (
             front.locator(".forecast-tile-split").evaluate(
@@ -249,12 +251,12 @@ def test_tiles_read_saved_winner_artifacts_and_kept_tables(tmp_path):
         back = ridge.locator(".forecast-tile-back")
         assert "fold 1" in back.inner_text() and "fold 3" in back.inner_text()
         assert "test" in back.inner_text()
-        assert "fold ratios not saved" in back.inner_text()
+        assert "wape per validation window; mark = naive on test" in back.inner_text()
         fold = back.locator('.forecast-tile-bar[data-label="fold 1"]')
-        assert fold.get_attribute("aria-label") == (
-            "fold 1: ratio unavailable; validation error 0.19"
-        )
-        assert fold.locator(".forecast-tile-fill").evaluate("node => node.style.width") == "0%"
+        assert fold.get_attribute("aria-label") == "fold 1: wape 19.0%; lower is better"
+        assert float(
+            fold.locator(".forecast-tile-fill").evaluate("node => parseFloat(node.style.width)")
+        ) == pytest.approx(0.19 / 0.26 * 100)
         save_tiles(page, "saved-folds")
         page.locator("#regression-run-view-tables").click()
         assert page.locator("#regression-family-progress").is_visible()
@@ -275,10 +277,10 @@ def test_tiles_polled_states_without_losing_flip_menu_or_focus(tmp_path):
         assert families[:2] == ["ridge", "snaive"]
         save_tiles(page, "live-charts")
         for name, score, color in (
-            ("ridge", "+29%", "rgb(199, 237, 95)"),
-            ("snaive", "−12%", "rgb(173, 121, 111)"),
-            ("xgboost", "…", "rgb(119, 183, 199)"),
-            ("ets", "—", "rgb(173, 121, 111)"),
+            ("ridge", "test ratio: 0.71", "rgb(199, 237, 95)"),
+            ("snaive", "test ratio: 1.12", "rgb(173, 121, 111)"),
+            ("xgboost", "test ratio: -", "rgb(119, 183, 199)"),
+            ("ets", "test ratio: -", "rgb(173, 121, 111)"),
         ):
             front = find_tile(page, name).locator(".forecast-tile-front")
             assert score in front.inner_text()
@@ -297,13 +299,15 @@ def test_tiles_polled_states_without_losing_flip_menu_or_focus(tmp_path):
         back = ridge.locator(".forecast-tile-back")
         assert "2025-01-20" in back.inner_text()
         fold = back.locator('.forecast-tile-bar[data-label="fold 1"]')
-        assert fold.get_attribute("aria-label") == "fold 1: ratio 0.66"
-        assert fold.locator(".forecast-tile-fill").evaluate("node => node.style.width") == "44%"
+        assert fold.get_attribute("aria-label") == "fold 1: wape 19.0%; lower is better"
+        assert float(
+            fold.locator(".forecast-tile-fill").evaluate("node => parseFloat(node.style.width)")
+        ) == pytest.approx(0.19 / 0.26 * 100)
         origin = back.locator(
             '.forecast-tile-bar[data-label="2025-01-20"] .forecast-tile-bar-label'
         )
         assert origin.evaluate("node => node.scrollWidth <= node.clientWidth")
-        assert "ratio vs naive · mark at 1.0" in back.inner_text()
+        assert "wape per validation window; mark = naive on test" in back.inner_text()
         save_tiles(page, "live-folds")
         menu = back.locator('details[data-menu="feat"]')
         summary = menu.locator("summary")
@@ -312,21 +316,99 @@ def test_tiles_polled_states_without_losing_flip_menu_or_focus(tmp_path):
         assert menu.get_attribute("open") is not None
         before = len(calls)
         snapshot["families"]["xgboost"]["tile"]["generation"] = 6
+        snapshot["families"]["xgboost"]["tile"]["folds"] = [{"label": "fold 1", "error": 0.633}]
         snapshot["families"]["ridge"]["tile"]["test_ratio"] = 0.69
         page.wait_for_function(
             "() => document.querySelector('[data-family=\"xgboost\"] .forecast-tile-front')"
             ".textContent.includes('gen 6')"
         )
         assert len(calls) > before
-        assert ridge.locator(".forecast-tile-front .forecast-tile-score").inner_text() == "+31%"
+        assert (
+            ridge.locator('.forecast-tile-front [data-metric-id="test_ratio"]').inner_text()
+            == "test ratio: 0.69"
+        )
         assert flip.get_attribute("aria-pressed") == "true"
         assert menu.get_attribute("open") is not None
         assert summary.evaluate("node => node === document.activeElement")
+        assert back.locator(".forecast-tile-bars").get_attribute("data-scale-max") == "0.64"
+        assert float(
+            back.locator('.forecast-tile-bar[data-label="fold 1"] .forecast-tile-fill').evaluate(
+                "node => parseFloat(node.style.width)"
+            )
+        ) == pytest.approx(0.19 / 0.64 * 100)
         page.keyboard.press("Enter")
         assert menu.get_attribute("open") is None
         flip.click()
         assert flip.get_attribute("aria-pressed") == "false"
         assert ridge.locator(".forecast-tile-back").evaluate("node => node.inert")
+
+
+@pytest.mark.parametrize("seasonal", [False, True])
+def test_back_folds_fill_each_family_on_one_wape_scale(tmp_path, seasonal):
+    with session(tmp_path) as (page, _base):
+        root = tmp_path / "forecast_root"
+        run_id = make_saved_tiles(root)
+        run = root / ".forecast-runs" / run_id
+        scores = {
+            "ridge": [0.193, 0.21, 0.24, *([0.266] if seasonal else [])],
+            "xgboost": [0.35, 0.29],
+            "snaive": [0.42],
+        }
+        origins = ["2023-12-04", "2024-01-01", "2024-02-05", "2024-03-04"]
+        result = json.loads((run / "result.json").read_text())
+        if seasonal:
+            result["holdout"] = {"validation_origins": origins}
+        result["winner"]["verdict"]["accuracy"]["baseline_error"] = 0.88
+        result["families"]["xgboost"]["state"] = "running"
+        write_json(run / "result.json", result)
+        status = json.loads((run / "status.json").read_text())
+        status["state"] = status["families"]["xgboost"]["state"] = "running"
+        write_json(run / "status.json", status)
+        for name, values in scores.items():
+            write_json(
+                run / "families" / name / "leaderboard.json",
+                [
+                    {"fitness": 0.9, "metrics": {"fold_scores": [0.9] * 4}},
+                    {
+                        "fitness": sum(values) / len(values),
+                        "genome": {"family": name, "params": {}},
+                        "metrics": {"fold_scores": values, "fold_count": len(values)},
+                    },
+                ],
+            )
+        open_tiles(page)
+        page.locator("#regression-error-metrics").click()
+        page.locator('#regression-error-metrics-menu input[data-metric-id="test_ratio"]').uncheck()
+        page.keyboard.press("Escape")
+        page.locator("#regression-tiles-flip").click()
+        for name, values in scores.items():
+            back = find_tile(page, name).locator(".forecast-tile-back")
+            bars = back.locator(".forecast-tile-bars")
+            assert bars.get_attribute("data-scale-max") == "0.88"
+            assert bars.locator(".forecast-tile-bar").count() == len(values) + 1
+            assert bars.evaluate(
+                "node => [...node.children].every(row => "
+                "row.getBoundingClientRect().bottom <= node.getBoundingClientRect().bottom + 1)"
+            )
+            for index, value in enumerate(values):
+                label = origins[index] if seasonal else f"fold {index + 1}"
+                bar = bars.locator(f'.forecast-tile-bar[data-label="{label}"]')
+                assert bar.locator(".forecast-tile-bar-value").inner_text() == f"{value * 100:.1f}%"
+                assert float(
+                    bar.locator(".forecast-tile-fill").evaluate(
+                        "node => parseFloat(node.style.width)"
+                    )
+                ) == pytest.approx(value / 0.88 * 100, abs=0.001)
+                assert bar.locator(".forecast-tile-mark").count() == 0
+            assert "wape per validation window; mark = naive on test" in back.inner_text()
+        ridge = find_tile(page, "ridge")
+        test = ridge.locator('.forecast-tile-back .forecast-tile-bar[data-label="test"]')
+        assert test.locator(".forecast-tile-bar-value").inner_text() == "18.2%"
+        assert test.locator(".forecast-tile-mark").evaluate("node => node.style.left") == "100%"
+        assert test.locator(".forecast-tile-mark").get_attribute("title") == "naive test wape 88.0%"
+        assert page.locator("#regression-tiles .forecast-tile-mark").count() == 1
+        assert ridge.locator(".forecast-tile-back .forecast-tile-score").inner_text() == "+29%"
+        save_tiles(page, "seasonal-wape-folds" if seasonal else "block-wape-folds")
 
 
 def test_tiles_mobile_layout_motion_and_palette_tokens(tmp_path):
@@ -336,7 +418,7 @@ def test_tiles_mobile_layout_motion_and_palette_tokens(tmp_path):
         tiles = page.locator("#regression-tiles-grid .forecast-tile")
         boxes = [tile.bounding_box() for tile in tiles.all()]
         assert all(box and abs(box["width"] - 232) < 1 for box in boxes)
-        assert all(abs(box["height"] - 232) < 1 for box in boxes)
+        assert all(abs(box["height"] - 272) < 1 for box in boxes)
         assert all(box["x"] >= 0 and box["x"] + box["width"] <= 390 for box in boxes)
         assert all(a["y"] + a["height"] <= b["y"] for a, b in pairwise(boxes))
         save_tiles(page, "mobile-charts")
@@ -372,7 +454,10 @@ def test_legacy_tiles_loaded_saved_charts_and_kept_live_metadata(tmp_path):
         assert list(response.value.json()["tiles"]) == ["xgboost"]
         tile = find_tile(page, "xgboost")
         tile.locator(".forecast-tile-front svg").wait_for()
-        assert tile.locator(".forecast-tile-score").first.inner_text() == "+5%"
+        assert (
+            tile.locator('.forecast-tile-front [data-metric-id="test_ratio"]').inner_text()
+            == "test ratio: 0.95"
+        )
         assert tile.locator(".forecast-tile-front svg circle").count() == 2
         assert response.value.json()["tiles"]["xgboost"]["chart"][0]["actual"] == 16
         value = page.evaluate(

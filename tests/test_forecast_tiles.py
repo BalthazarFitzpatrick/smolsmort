@@ -67,13 +67,13 @@ def saved_run(tmp_path):
         tmp_path / "result.json",
         {
             "model_error": 0.1,
-            "verdict": {"accuracy": {"ratio": 0.5}},
+            "verdict": {"accuracy": {"ratio": 0.5, "baseline_error": 0.2}},
             "winner": {
                 "family": "ridge",
                 "fitness": 0.2,
                 "model_error": 0.182,
                 "fold_scores": [0.21, 0.19, 0.2],
-                "verdict": {"accuracy": {"ratio": 0.71, "metric": "wape"}},
+                "verdict": {"accuracy": {"ratio": 0.71, "metric": "wape", "baseline_error": 0.256}},
             },
             "ensemble": {"members": ["ridge", "xgboost"]},
             "families": {
@@ -97,6 +97,7 @@ def test_tiles_keep_family_winner_and_ensemble_test_artifacts_separate(saved_run
     tile = state["families"]["ridge"]["tile"]
     assert tile["test_ratio"] == 0.71
     assert tile["test_error"] == 0.182 and tile["test_error_metric"] == "wape"
+    assert tile["test_naive_wape"] == 0.256
     assert tile["chart"] == [
         {"step": "2025-01-06", "actual": 10.0, "prediction": 21.0, "lower": 3.0, "upper": 19.0},
         {"step": "2025-01-13", "actual": 12.0, "prediction": 12.0, "lower": 3.0, "upper": 11.0},
@@ -107,13 +108,49 @@ def test_tiles_keep_family_winner_and_ensemble_test_artifacts_separate(saved_run
     for name in ("xgboost", "snaive"):
         loser = state["families"][name]["tile"]
         assert loser["test_ratio"] is None and loser["test_error"] is None
+        assert loser["test_naive_wape"] is None
         assert loser["chart"] == [] and loser["chart_reason"]
     assert tile["folds"] == [
-        {"label": "fold 1", "error": 0.21, "ratio": None},
-        {"label": "fold 2", "error": 0.19, "ratio": None},
-        {"label": "fold 3", "error": 0.2, "ratio": None},
+        {"label": "fold 1", "error": 0.2, "ratio": None},
+        {"label": "fold 2", "error": 0.3, "ratio": None},
+        {"label": "fold 3", "error": 0.1, "ratio": None},
     ]
-    assert "naive ratios unavailable" in tile["folds_note"]
+    assert tile["folds_note"] == "wape per validation window; mark = naive on test"
+
+
+@pytest.mark.parametrize("baseline", [None, 0, 1.4])
+def test_tiles_keep_each_familys_saved_test_wape_and_baseline(saved_run, baseline):
+    folder, request, status = saved_run
+    result = json.loads((folder / "result.json").read_text())
+    result["families"]["xgboost"].update(
+        {
+            "test_error": 0.24,
+            "verdict": {"accuracy": {"metric": "wape", "baseline_error": baseline}},
+        }
+    )
+    tiles = views.family_tiles(folder, request, status, result=result)
+    assert tiles["xgboost"]["test_error"] == 0.24
+    assert tiles["xgboost"]["test_naive_wape"] == baseline
+    assert tiles["ridge"]["test_naive_wape"] == 0.256
+    assert tiles["snaive"]["test_naive_wape"] is None
+
+
+def test_tiles_fall_back_to_own_saved_folds_and_baseline(saved_run):
+    folder, request, status = saved_run
+    result = json.loads((folder / "result.json").read_text())
+    result["families"]["xgboost"].update({"fold_scores": [0.6, 0.4], "baseline_error": 0.7})
+    write_json(folder / "families/xgboost/leaderboard.json", [])
+    tile = views.family_tiles(folder, request, status, result=result)["xgboost"]
+    assert [fold["error"] for fold in tile["folds"]] == [0.6, 0.4]
+    assert tile["test_naive_wape"] == 0.7
+
+
+def test_tiles_never_label_a_different_metric_as_naive_wape(saved_run):
+    folder, request, status = saved_run
+    result = json.loads((folder / "result.json").read_text())
+    result["winner"]["verdict"]["accuracy"].update({"metric": "ibs", "baseline_error": 0.2})
+    tile = views.family_tiles(folder, request, status, result=result)["ridge"]
+    assert tile["test_naive_wape"] is None
 
 
 def test_tiles_label_seasonal_origins_and_refresh_on_poll(saved_run):
@@ -196,19 +233,25 @@ def test_tiles_use_default_winner_verdict_for_older_partial_summaries(saved_run)
     assert tile["test_ratio"] == 0.5
 
 
-def test_running_tiles_preserve_candidate_metrics_and_active_slice_time(tmp_path, monkeypatch):
+@pytest.mark.parametrize("family_state", ["running", "paused"])
+def test_running_tiles_preserve_candidate_metrics_and_active_slice_time(
+    tmp_path, monkeypatch, family_state
+):
     request = {"version": 2, "families": [{"name": "ridge"}], "spec": {"mode": "timeseries"}}
     status = {
-        "state": "running",
+        "state": family_state,
         "families": {
             "ridge": {
-                "state": "running",
+                "state": family_state,
                 "generation": 5,
-                "slice_history": [{"wall_s": 60}, {"started_at": 100}],
+                "slice_history": [
+                    {"wall_s": 60},
+                    {"started_at": 100, **({"ended_at": 120} if family_state == "paused" else {})},
+                ],
             }
         },
     }
-    write_json(tmp_path / "families/ridge/status.json", {"state": "running", "elapsed": 10})
+    write_json(tmp_path / "families/ridge/status.json", {"state": family_state, "elapsed": 10})
     write_json(tmp_path / "families/ridge/winner.json", {"params": {"alpha": 1}})
     write_json(
         tmp_path / "families/ridge/leaderboard.json",
@@ -222,7 +265,7 @@ def test_running_tiles_preserve_candidate_metrics_and_active_slice_time(tmp_path
     )
     monkeypatch.setattr(views.time, "time", lambda: 120)
     tile = views.family_tiles(tmp_path, request, status)["ridge"]
-    assert tile["state"] == "running" and tile["generation"] == 5
+    assert tile["state"] == family_state and tile["generation"] == 5
     assert tile["elapsed"] == 80 and tile["validation_error"] == 0.3
     assert tile["genome"]["params"] == {"alpha": 2}
     assert tile["test_ratio"] is None and tile["chart"] == []

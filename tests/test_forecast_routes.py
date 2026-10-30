@@ -384,6 +384,22 @@ def test_run_polling_sends_only_unseen_generation_curves(series_run, cursor):
 
 @pytest.mark.parametrize("cursor", [-1, "0", "invalid", None, "inf"])
 def test_run_polling_sends_only_updated_leaderboards(app, tab, cursor):
+    def assert_board(payload):
+        entries = payload["leaderboard"]
+        assert [
+            {key: value for key, value in entry.items() if key != "error_metrics"}
+            for entry in entries
+        ] == [{**entry, "family": "xgboost"} for entry in board]
+        for entry in entries:
+            values = entry["error_metrics"]
+            assert values["validation_error"] == {
+                "value": entry["fitness"],
+                "scope": "validation",
+                "reason": None,
+            }
+            for name in ("wape", "mae", "mape", "test_ratio"):
+                assert values[name]["value"] is None and values[name]["reason"]
+
     root = _forecast_path(app) / ".forecast-runs" / "fixture"
     root.mkdir(parents=True)
     (root / "request.json").write_text(
@@ -394,19 +410,19 @@ def test_run_polling_sends_only_updated_leaderboards(app, tab, cursor):
     board = [{"fitness": 0.3, "genome": {"families": ["units@day:lag+1"]}}]
     (root / "leaderboard.json").write_text(json.dumps(board))
     complete = _get(app, tab, "/api/forecast-run", {"id": "fixture"})
-    assert complete["leaderboard"] == [{**entry, "family": "xgboost"} for entry in board]
+    assert_board(complete)
     assert complete["leaderboard_generation"] == 0
     assert complete["kind"] == "search" and complete["budget"] == {"plateau": 3}
     state = _get(app, tab, "/api/forecast-run", {"id": "fixture", "since_leaderboard": cursor})
     if cursor == "0":
         assert "leaderboard" not in state
     else:
-        assert state["leaderboard"] == [{**entry, "family": "xgboost"} for entry in board]
+        assert_board(state)
     (root / "leaderboard_generation.json").write_text("1")
     board[0]["fitness"] = 0.2
     (root / "leaderboard.json").write_text(json.dumps(board))
     state = _get(app, tab, "/api/forecast-run", {"id": "fixture", "since_leaderboard": 0})
-    assert state["leaderboard"] == [{**entry, "family": "xgboost"} for entry in board]
+    assert_board(state)
     assert state["leaderboard_generation"] == 1
 
 
@@ -461,7 +477,15 @@ def test_unchanged_run_poll_omits_generation_history_curves_and_leaderboard(app,
     assert state["generations"] == [] and state["generation_curves"] == []
     assert "leaderboard" not in state and "eval_history" not in state
     assert state["generation_count"] == 60 and state["generation"] == 59
-    assert len(json.dumps(state).encode()) < 1000
+    # fixed metric metadata must not weaken the budget for incremental search history
+    history = {
+        key: value
+        for key, value in state.items()
+        if key not in {"metric_registry", "error_metrics"}
+    }
+    assert len(json.dumps(history).encode()) < 1000
+    assert len(state["metric_registry"]) == len(state["error_metrics"]) == 5
+    assert len(json.dumps(state).encode()) < 3000
 
 
 def test_generation_event_arriving_after_its_curve_is_not_lost(app, tab):
