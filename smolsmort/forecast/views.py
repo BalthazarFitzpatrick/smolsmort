@@ -538,7 +538,7 @@ def family_tiles(run_dir, request, status, *, result=None, recipe=None, include_
         ]
         best = min(entries, key=lambda entry: entry["fitness"], default={})
         genome = _read_json(target / "winner.json") or best.get("genome") or {}
-        if progress.get("state") == "running" and best.get("genome"):
+        if progress.get("state") in {"running", "paused"} and best.get("genome"):
             genome = best["genome"]
         if name == winner_family and not genome:
             genome = recipe.get("genome") or {}
@@ -556,7 +556,7 @@ def family_tiles(run_dir, request, status, *, result=None, recipe=None, include_
             importance = summary.get("importance")
             if importance is None and recipe.get("family") != "ensemble":
                 importance = _read_json(run_dir / "importance.json")
-        scores = summary.get("fold_scores") or (best.get("metrics") or {}).get("fold_scores") or []
+        scores = (best.get("metrics") or {}).get("fold_scores") or summary.get("fold_scores") or []
         folds = [
             {
                 "label": str(origins[index]) if index < len(origins) else f"fold {index + 1}",
@@ -568,6 +568,29 @@ def family_tiles(run_dir, request, status, *, result=None, recipe=None, include_
         chart = []
         if include_charts and request.get("spec", {}).get("mode") == "timeseries" and path.exists():
             chart = _read_tile_chart(path)
+        test_metric = accuracy.get("metric") or (
+            "wape" if request.get("spec", {}).get("mode") == "timeseries" else None
+        )
+        test_error = next(
+            (
+                value
+                for value in (
+                    summary.get("test_error"),
+                    summary.get("model_error"),
+                    accuracy.get("model_error"),
+                )
+                if _finite_number(value) is not None
+            ),
+            None,
+        )
+        naive_error = next(
+            (
+                value
+                for value in (accuracy.get("baseline_error"), summary.get("baseline_error"))
+                if _finite_number(value) is not None
+            ),
+            None,
+        )
         tiles[name] = {
             "state": progress.get("state", status.get("state", "pending")),
             "genome": genome,
@@ -587,11 +610,11 @@ def family_tiles(run_dir, request, status, *, result=None, recipe=None, include_
                 None,
             ),
             "test_ratio": _finite_number(accuracy.get("ratio")),
-            "test_error": _finite_number(summary.get("model_error", accuracy.get("model_error"))),
-            "test_error_metric": accuracy.get("metric")
-            or ("wape" if request.get("spec", {}).get("mode") == "timeseries" else None),
+            "test_error": test_error,
+            "test_error_metric": test_metric,
+            "test_naive_wape": naive_error if test_metric == "wape" else None,
             "folds": folds,
-            "folds_note": "validation folds store wape; naive ratios unavailable"
+            "folds_note": "wape per validation window; mark = naive on test"
             if folds
             else "validation folds not saved",
             "chart": chart,

@@ -224,6 +224,7 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-tile-back { transform: rotateY(180deg); }
 .forecast-tile-header { display: flex; justify-content: space-between; gap: 8px; }
 .forecast-tile-name { color: var(--cream); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.forecast-tile-score { color: var(--tile-tone); flex-shrink: 0; }
 .forecast-tile-dim { color: var(--text-dim); }
 .forecast-tile-chart { display: block; flex: 0 0 84px; height: 84px; width: 204px; margin: 6px 0 8px; border-bottom: 2px solid var(--grey-border); }
 .forecast-tile-placeholder { display: flex; align-items: center; justify-content: center; color: var(--text-dim); font-size: 11px; }
@@ -245,13 +246,14 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-tile-menu-row > span { overflow-wrap: anywhere; min-width: 0; }
 .forecast-tile-menu-row > :last-child { flex-shrink: 0; max-width: 55%; }
 .forecast-tile-caption { margin-top: auto; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.forecast-tile-back .forecast-tile-caption { white-space: normal; font-size: 10px; }
 .forecast-tile-bars { display: flex; flex-direction: column; gap: 4px; height: 88px; flex: 0 0 88px; overflow: auto; border-top: 2px solid var(--grey-border); padding-top: 8px; margin: 8px 0 10px; }
 .forecast-tile-bar { display: flex; align-items: center; gap: 8px; height: 18px; flex: 0 0 18px; font-size: 11px; }
 .forecast-tile-bar-label { width: 72px; flex: 0 0 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .forecast-tile-track { flex: 1 1 auto; position: relative; height: 8px; background: var(--bg); }
 .forecast-tile-fill { height: 8px; background: var(--tile-tone); }
-.forecast-tile-mark { position: absolute; top: -3px; height: 14px; border-left: 2px solid var(--cream); left: 66.6667%; }
-.forecast-tile-bar-value { width: 34px; flex: 0 0 auto; text-align: right; color: var(--tile-tone); }
+.forecast-tile-mark { position: absolute; top: -3px; height: 14px; border-left: 2px solid var(--cream); transform: translateX(-1px); }
+.forecast-tile-bar-value { min-width: 48px; flex: 0 0 auto; text-align: right; color: var(--tile-tone); }
 .forecast-tile-bar[data-state="unknown"] .forecast-tile-bar-value { color: var(--text-dim); }
 .forecast-tile-note { font-size: 10px; margin-top: 5px; }
 .forecast-tile .forecast-metric-lines { margin-top: 8px; font-size: 11px; line-height: 18px; }

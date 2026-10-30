@@ -218,6 +218,7 @@ function forecastTileEntries(run) {
       validation_error: run.best_error ?? best.fitness, test_ratio: run.verdict?.accuracy?.ratio,
       error_metrics: run.error_metrics,
       test_error: run.test_error, test_error_metric: run.verdict?.accuracy?.metric,
+      test_naive_wape: run.verdict?.accuracy?.metric === 'wape' ? run.verdict.accuracy.baseline_error : null,
       elapsed: run.progress?.elapsed ?? run.elapsed, generation: run.progress?.generation ?? run.generation,
       folds: (best.metrics?.fold_scores || []).map((error, index) => ({label: `fold ${index + 1}`, error})),
       chart_reason: 'test chart unavailable',
@@ -333,53 +334,80 @@ function forecastTileChart(tile) {
   return svg;
 }
 
-function forecastTileBars(tile) {
+function forecastTileWapeBars(tile) {
+  const folds = (tile.folds || []).filter(fold => Number.isFinite(fold.error) && fold.error >= 0);
+  const saved = tile.test_error_metric === 'wape' ? tile.test_error : null;
+  const error = Number.isFinite(saved) ? saved : tile.error_metrics?.wape?.value;
+  return [...folds, {label: 'test', error, baseline: tile.test_naive_wape}];
+}
+
+function forecastTileWapeScale(tiles) {
+  const values = tiles.flatMap(tile => forecastTileWapeBars(tile)
+    .flatMap(bar => [bar.error, bar.baseline])).filter(value => Number.isFinite(value) && value >= 0);
+  const largest = values.length ? Math.max(...values) : 0;
+  // round up to a whole percentage point, with room for the naive test marker
+  return Math.max(0.01, Math.ceil(largest * 100 - 1e-9) / 100);
+}
+
+function forecastTileBars(tile, scale) {
   const wrap = forecastNode('div', 'forecast-tile-bars');
-  const folds = tile.folds || [];
-  const bars = [...folds, {label: 'test', ratio: tile.test_ratio}];
+  const bars = forecastTileWapeBars(tile);
+  const height = `${Math.max(4, bars.length) * 22 + 6}px`;
+  wrap.style.height = height;
+  wrap.style.flexBasis = height;
+  const percent = value => forecastMetricNumber({unit: 'percent'}, value);
+  wrap.dataset.scaleMax = String(scale);
+  wrap.setAttribute('aria-label', `wape scale: 0 to ${percent(scale)}; lower is better`);
   bars.forEach(bar => {
-    const ratio = bar.ratio;
-    const known = Number.isFinite(ratio);
+    const known = Number.isFinite(bar.error) && bar.error >= 0;
+    const baseline = Number.isFinite(bar.baseline) && bar.baseline >= 0;
     const row = forecastNode('div', 'forecast-tile-bar');
     row.dataset.label = bar.label;
-    row.title = known ? `${bar.label}: ratio vs naive ${ratio.toFixed(2)}`
-      : `${bar.label}: ratio vs naive not saved`;
+    row.title = known ? `${bar.label}: wape ${percent(bar.error)}; lower is better`
+      : `${bar.label}: wape not saved`;
+    if (baseline) row.title += `; naive wape ${percent(bar.baseline)}`;
     const track = forecastNode('div', 'forecast-tile-track');
     const fill = forecastNode('div', 'forecast-tile-fill');
-    fill.style.width = `${known ? Math.max(0, Math.min(100, ratio / 1.5 * 100)) : 0}%`;
-    const state = known ? ratio < 1 ? 'better' : 'worse' : 'unknown';
-    row.dataset.state = state;
-    track.append(fill, forecastNode('div', 'forecast-tile-mark'));
+    fill.style.width = `${known ? Math.min(100, bar.error / scale * 100) : 0}%`;
+    if (!known) row.dataset.state = 'unknown';
+    track.append(fill);
+    if (baseline) {
+      const mark = forecastNode('div', 'forecast-tile-mark');
+      mark.style.left = `${Math.min(100, bar.baseline / scale * 100)}%`;
+      mark.title = `naive test wape ${percent(bar.baseline)}`;
+      track.append(mark);
+    }
     row.append(forecastNode('span', 'forecast-tile-bar-label forecast-tile-dim', bar.label), track,
-      forecastNode('span', 'forecast-tile-bar-value', known ? ratio.toFixed(2) : '-'));
+      forecastNode('span', 'forecast-tile-bar-value', known ? percent(bar.error) : '-'));
     row.setAttribute('aria-label', row.title);
     wrap.append(row);
   });
   return wrap;
 }
 
-function forecastCreateTile(tile, index, metrics) {
+function forecastCreateTile(tile, index, metrics, scale) {
   const wrap = forecastNode('article', 'forecast-tile');
   wrap.dataset.family = tile.name;
   wrap.dataset.state = forecastTileState(tile);
   wrap.setAttribute('aria-label', `${tile.name}: ${tile.state}`);
-  wrap.style.height = `${232 + metrics.length * 20}px`;
+  const foldSpace = Math.max(0, forecastTileWapeBars(tile).length - 4) * 22;
+  wrap.style.height = `${232 + metrics.length * 20 + foldSpace}px`;
   const inner = forecastNode('div', 'forecast-tile-inner');
-  const showRatio = metrics.some(metric => metric.id === 'test_ratio');
   for (const side of ['front', 'back']) {
     const face = forecastNode('div', `forecast-tile-face forecast-tile-${side}`);
     const header = forecastNode('div', 'forecast-tile-header');
     header.append(forecastNode('span', 'forecast-tile-name', `#${index + 1} ${tile.name}`));
-    const chart = side === 'front' ? forecastTileChart(tile) : showRatio ? forecastTileBars(tile)
-      : forecastNode('div', 'forecast-tile-chart forecast-tile-placeholder', 'selected metrics below');
+    const score = forecastTileState(tile) === 'running' ? '…' : Number.isFinite(tile.test_ratio)
+      ? `${tile.test_ratio <= 1 ? '+' : '−'}${Math.round(Math.abs(1 - tile.test_ratio) * 100)}%` : '-';
+    const scoreNode = forecastNode('span', 'forecast-tile-score', score);
+    scoreNode.title = Number.isFinite(tile.test_ratio) ? `test ratio ${tile.test_ratio.toFixed(2)} vs naive`
+      : forecastTileState(tile) === 'running' ? 'test score pending' : 'test ratio not saved';
+    header.append(scoreNode);
+    const chart = side === 'front' ? forecastTileChart(tile) : forecastTileBars(tile, scale);
     face.append(header, chart, forecastTileMenus(tile), forecastMetricLines(metrics, tile));
-    const summary = side === 'front' ? forecastTileSummary(tile) : showRatio ? 'ratio vs naive · mark at 1.0' : '';
+    const summary = side === 'front' ? forecastTileSummary(tile) : 'wape per validation window; mark = naive on test';
     const caption = forecastNode('div', 'forecast-tile-caption forecast-tile-dim', summary);
     if (side === 'front') caption.title = [summary, tile.pruned_reason || tile.reason].filter(Boolean).join(' ');
-    else if (showRatio) {
-      const missing = !(tile.folds || []).length || tile.folds.some(fold => !Number.isFinite(fold.ratio));
-      if (missing) face.append(forecastNode('div', 'forecast-tile-note forecast-tile-dim', 'fold ratios not saved'));
-    }
     face.append(caption);
     inner.append(face);
   }
@@ -1570,12 +1598,13 @@ class ForecastTopic {
       button.setAttribute('aria-pressed', String(this.runView === view));
     }
     const entries = forecastTileEntries(run);
+    const scale = forecastTileWapeScale(entries);
     const metrics = this.selectedMetrics(run);
     setText(`${this.topic}-tiles-count`, `candidates · ${entries.length}`);
     const existing = new Map([...grid.children].map(node => [node.dataset.family, node]));
     entries.forEach((tile, index) => {
       let node = existing.get(tile.name);
-      const signature = JSON.stringify([tile, index, metrics]);
+      const signature = JSON.stringify([tile, index, metrics, scale]);
       if (!node || node.dataset.signature !== signature) {
         const openMenus = [...(node?.querySelectorAll('details[open]') || [])].map(details => ({
           side: details.closest('.forecast-tile-back') ? 'back' : 'front',
@@ -1585,7 +1614,7 @@ class ForecastTopic {
         const focus = active ? {
           side: active.closest('.forecast-tile-back') ? 'back' : 'front', key: active.dataset.menu,
         } : null;
-        const fresh = forecastCreateTile(tile, index, metrics);
+        const fresh = forecastCreateTile(tile, index, metrics, scale);
         fresh.dataset.signature = signature;
         if (node) node.replaceWith(fresh);
         else grid.append(fresh);
