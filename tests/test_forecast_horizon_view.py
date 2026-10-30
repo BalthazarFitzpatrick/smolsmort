@@ -3,7 +3,13 @@
 import numpy as np
 import pytest
 
-from smolsmort.forecast.horizon_view import blend_rows, build_blend_weights, lead_rows
+from smolsmort.forecast.evaluate import apply_band, coverage
+from smolsmort.forecast.horizon_view import (
+    blend_rows,
+    build_blend_weights,
+    fit_blend_band,
+    lead_rows,
+)
 
 
 @pytest.fixture
@@ -165,5 +171,68 @@ def test_helpers_do_not_modify_input(overlapping_rows):
     original = {name: values.copy() for name, values in overlapping_rows.items()}
     lead_rows(overlapping_rows, 2)
     blend_rows(overlapping_rows, {1: 1, 2: 2, 3: 3})
+    fit_blend_band(overlapping_rows, {1: 1, 2: 2, 3: 3})
     for name in original:
         np.testing.assert_array_equal(overlapping_rows[name], original[name])
+
+
+@pytest.fixture
+def band_validation():
+    return {
+        "series": np.array(["synthetic"] * 10),
+        "step": np.repeat(np.arange(5), 2),
+        "weeks_ahead": np.tile([1, 2], 5),
+        "prediction": np.tile([8.0, 12.0], 5),
+        "actual": np.repeat([8.0, 10.0, 12.0, 14.0, 16.0], 2),
+        "lower": np.full(10, -100.0),
+        "upper": np.full(10, 100.0),
+    }
+
+
+def test_blend_band_offsets_and_test_coverage_are_hand_checked(band_validation):
+    band = fit_blend_band(band_validation)
+    # five blended residuals [-2, 0, 2, 4, 6] put q10/q90 at indices 0.4/3.6
+    assert band.n == 5
+    assert not band.relative
+    assert (band.lo, band.hi) == pytest.approx((-1.2, 5.2))
+    lower, upper = apply_band(band, [10.0] * 5)
+    np.testing.assert_allclose(lower, [8.8] * 5)
+    np.testing.assert_allclose(upper, [15.2] * 5)
+    assert coverage([9, 15, 8, 16, 12], lower, upper) == 3 / 5
+    assert coverage([lower[0], upper[1]], lower[:2], upper[:2]) == 1
+
+
+def test_blend_band_refits_offsets_for_selected_weights(band_validation):
+    band = fit_blend_band(band_validation, {1: 1, 2: 4})
+    # prediction 11.2 gives residuals [-3.2, -1.2, 0.8, 2.8, 4.8]
+    assert (band.lo, band.hi) == pytest.approx((-2.4, 4.0))
+
+
+@pytest.mark.parametrize("nonnegative,expected_lower", [(True, 0), (False, -0.7)])
+def test_blend_band_clips_only_when_target_is_nonnegative(
+    band_validation, nonnegative, expected_lower
+):
+    band = fit_blend_band(band_validation)
+    lower, upper = apply_band(band, [0.5], nonnegative)
+    assert lower[0] == pytest.approx(expected_lower)
+    assert upper[0] == pytest.approx(5.7)
+
+
+@pytest.mark.parametrize("count", [0, 1, 3, 4])
+def test_blend_band_counts_unique_finite_validation_targets(band_validation, count):
+    rows = {name: values[: count * 2] for name, values in band_validation.items()}
+    band = fit_blend_band(rows)
+    if count < 4:
+        assert band is None
+    else:
+        assert band.n == 4
+        assert (band.lo, band.hi) == pytest.approx((-1.4, 3.4))
+
+
+def test_blend_band_excludes_nonfinite_actuals_and_predictions(band_validation):
+    band_validation["actual"][:2] = np.nan
+    band = fit_blend_band(band_validation)
+    assert band.n == 4
+    assert (band.lo, band.hi) == pytest.approx((0.6, 5.4))
+    band_validation["prediction"][2] = np.inf
+    assert fit_blend_band(band_validation) is None

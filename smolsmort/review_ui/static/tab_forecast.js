@@ -201,6 +201,18 @@ function forecastRatioText(verdict) {
     : verdict?.summary || 'ratio unavailable';
 }
 
+function forecastBlendBandText(view) {
+  if (view?.view?.mode !== 'blend') return null;
+  const band = view.blend_band;
+  if (Number.isFinite(band?.test_coverage)) {
+    return `blend band test coverage: ${(band.test_coverage * 100).toFixed(1)}% against the 80% target.`;
+  }
+  if (band?.reason === 'no test rows with finite actuals and bounds') {
+    return `blend band test coverage unavailable against the 80% target: ${band.reason}.`;
+  }
+  return `no blend band: ${band?.reason || 'validation residuals unavailable'}.`;
+}
+
 function forecastRatioStyle(node, verdict) {
   const ratio = verdict?.accuracy?.ratio;
   node.classList.toggle('better', Number.isFinite(ratio) && ratio < 1);
@@ -2664,11 +2676,14 @@ class ForecastTopic {
   paintVerdict(verdict, label = null) {
     const box = this.infoVerdict;
     if (!box) return;
+    const blendBand = verdict === this.resultsView?.verdict
+      ? forecastBlendBandText(this.resultsView) : null;
     this.infoContext.textContent = [this.resultsRunId, label, 'pooled'].filter(Boolean).join(' · ');
     forecastRatioStyle(box, verdict);
     box.innerHTML = '';
     if (!verdict) {
       box.textContent = 'no verdict yet';
+      if (blendBand) box.append(forecastNode('div', 'forecast-verdict-check', blendBand));
       return;
     }
     const summary = document.createElement('div');
@@ -2679,11 +2694,13 @@ class ForecastTopic {
       : Number.isFinite(verdict?.accuracy?.ratio) ? 'test checks' : verdict?.summary || 'test checks');
     box.appendChild(summary);
     (verdict.checks || []).forEach(check => {
+      if (blendBand && (check.group === 'band' || check.check.startsWith('band'))) return;
       const line = document.createElement('div');
       line.className = 'forecast-verdict-check';
       line.textContent = `${check.check}: ${check.detail}`;
       box.appendChild(line);
     });
+    if (blendBand) box.append(forecastNode('div', 'forecast-verdict-check', blendBand));
   }
 
   paintModelResults(view) {
@@ -2756,7 +2773,7 @@ class ForecastTopic {
     const status = document.getElementById(`${this.topic}-chart-status`);
     const hazard = view.objective === 'hazard';
     const aggregate = view.aggregate;
-    const notes = [view.note, view.view?.mode === 'blend' ? 'no band for a blend' : null].filter(Boolean);
+    const notes = [view.note].filter(Boolean);
     this.setResultsNotes('chart', notes);
     status.textContent = hazard && !view.note ? (aggregate
       ? `weekly ${aggregate.rule.replaceAll('_', ' ')}`
@@ -2774,7 +2791,7 @@ class ForecastTopic {
         + (weighted.length < view.horizon ? ', the others 1x' : '') : 'every week counts 1x';
     caption.textContent = !view.view ? '' : view.view.mode === 'lead'
       ? `each week shows the forecast made ${view.view.n} weeks before that week.`
-      : `each week shows the weighted average of all its forecasts: ${weightDetails}. not a forecast the model made.`;
+      : `each week shows the weighted average of all its forecasts: ${weightDetails}. not a forecast the model made. ${forecastBlendBandText(view)}`;
     caption.classList.toggle('hidden', !caption.textContent);
   }
 

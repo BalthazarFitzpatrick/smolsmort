@@ -38,7 +38,12 @@ def write_json(path: Path, value) -> None:
 
 
 def write_horizon_run(
-    root: Path, *, legacy: bool = False, running: bool = False, horizon: int = 3
+    root: Path,
+    *,
+    legacy: bool = False,
+    running: bool = False,
+    horizon: int = 3,
+    short_validation: bool = False,
 ) -> str:
     run_id = write_multifamily_run(root)
     if legacy:
@@ -70,6 +75,23 @@ def write_horizon_run(
         "lower": predictions - 2,
         "upper": predictions + 2,
     }
+    validation = history
+    if not short_validation:
+        extra = {
+            "series": "all",
+            "step": "2026-01-12",
+            "origin": "2026-01-05",
+            "weeks_ahead": 1,
+            "bucket": "1-2",
+            "actual": 50.0,
+            "prediction": 37.7,
+            "lower": 35.7,
+            "upper": 39.7,
+        }
+        validation = {
+            key: np.concatenate((values, np.array([extra[key]], dtype=values.dtype)))
+            for key, values in history.items()
+        }
     future = {
         "series": np.array(["all"] * 3),
         "step": np.array(["2026-02-09", "2026-02-16", "2026-02-23"], dtype="datetime64[D]"),
@@ -81,13 +103,19 @@ def write_horizon_run(
         "upper": np.array([83.0, 92.0, 101.0]),
     }
     for prefix in ("", "winner_", "ensemble_"):
-        for kind in ("test", "validation"):
-            write_table(folder / f"{prefix}{kind}.parquet", history)
+        for kind, table in (("test", history), ("validation", validation)):
+            write_table(folder / f"{prefix}{kind}.parquet", table)
         write_table(folder / f"{prefix}forecast.parquet", future)
     for family in ("xgboost", "ridge", "snaive"):
-        for kind in ("test", "validation"):
-            write_table(folder / "families" / family / f"{kind}.parquet", history)
+        for kind, table in (("test", history), ("validation", validation)):
+            write_table(folder / "families" / family / f"{kind}.parquet", table)
     result = json.loads((folder / "result.json").read_text(encoding="utf-8"))
+    for verdict in (result["verdict"], result["winner"]["verdict"], result["ensemble"]["verdict"]):
+        verdict["checks"] = [
+            {"check": "band coverage", "group": "band", "detail": "saved lead coverage"},
+            {"check": "band width vs actuals", "group": "band", "detail": "saved lead width"},
+            {"check": "test history", "group": "history", "detail": "3 steps"},
+        ]
     result["lead_errors"] = [
         {"weeks_ahead": 1, "model_wape": 0.1, "naive_wape": 1 / 7, "ratio": 0.7, "rows": 3},
         {"weeks_ahead": 2, "model_wape": 0.2, "naive_wape": 4 / 13, "ratio": 0.65, "rows": 2},
@@ -102,13 +130,27 @@ def write_horizon_run(
 
 
 @contextmanager
-def horizon_session(tmp_path: Path, *, width: int = 1280, legacy=False, running=False, horizon=3):
+def horizon_session(
+    tmp_path: Path,
+    *,
+    width: int = 1280,
+    legacy=False,
+    running=False,
+    horizon=3,
+    short_validation=False,
+):
     errors = []
     review_world.register_world_backend()
     root = tmp_path / "forecast_root"
     root.mkdir()
     write_panel(root, weeks=60)
-    run_id = write_horizon_run(root, legacy=legacy, running=running, horizon=horizon)
+    run_id = write_horizon_run(
+        root,
+        legacy=legacy,
+        running=running,
+        horizon=horizon,
+        short_validation=short_validation,
+    )
 
     def reject_worker(*_args, **_kwargs):
         pytest.fail("browser checks must not launch forecast workers")
@@ -292,6 +334,12 @@ def read_forecasts(payload: dict) -> dict:
     return dict(zip(payload["x"], series["values"], strict=True))
 
 
+def read_bounds(payload: dict) -> dict:
+    band = next(band for band in payload["bands"] if band["series"] == "forecast")
+    bounds = zip(band["lo"], band["hi"], strict=True)
+    return dict(zip(payload["x"], bounds, strict=True))
+
+
 def save_horizon(page, name: str) -> None:
     folder = Path(__file__).resolve().parents[1] / "outputs" / "lead-blend"
     folder.mkdir(parents=True, exist_ok=True)
@@ -450,7 +498,11 @@ def test_horizon_controls_select_rows_metrics_and_bands(tmp_path):
         page.keyboard.press("Escape")
         blend = choose_horizon(page, "blend", 2)
         assert blend["view"] == blend_view()
-        assert blend["bands"] == []
+        bounds = read_bounds(blend)
+        assert bounds["2026-01-12"] == (None, None)
+        assert bounds["2026-01-19"] == pytest.approx((56.75, 60.21))
+        assert bounds["2026-02-09"] == pytest.approx((89.75, 93.21))
+        assert blend["blend_band"]["test_coverage"] == pytest.approx(2 / 3)
         predictions = read_forecasts(blend)
         assert [predictions[step] for step in ("2026-01-19", "2026-01-26", "2026-02-02")] == [
             48.0,
@@ -461,20 +513,31 @@ def test_horizon_controls_select_rows_metrics_and_bands(tmp_path):
         assert "off" in page.locator(LEAD).inner_text()
         assert "blend: equal weights" in page.locator(BLEND).inner_text()
         open_info(page)
-        assert "no band for a blend" in page.locator("#regression-info-notes").inner_text()
-        assert "no band for a blend" not in page.locator("#regression-chart-status").inner_text()
-        assert page.locator("#regression-info").inner_text() == "info · 1 note"
-        assert page.locator("#regression-chart .chart-band").count() == 0
+        coverage = "blend band test coverage: 66.7% against the 80% target."
+        assert coverage in page.locator("#regression-info-verdict").inner_text()
+        assert "saved lead" not in page.locator("#regression-info-verdict").inner_text()
+        assert "test history: 3 steps" in page.locator("#regression-info-verdict").inner_text()
+        assert "pooled verdict" in page.locator("#regression-info-verdict").inner_text()
+        assert "no band for a blend" not in page.locator("#regression-info-notes").inner_text()
+        assert page.locator("#regression-chart .chart-band").count() > 0
         assert "every week counts 1x" in page.locator("#regression-chart-caption").inner_text()
+        assert coverage in page.locator("#regression-chart-caption").inner_text()
         assert "blend weighted" in page.locator(
             '#regression-family-comparison th[data-metric-id="wape"]'
         ).get_attribute("title")
-        assert page.locator("#regression-info-verdict").inner_text() == verdict
         save_horizon(page, "desktop-blend")
         page.keyboard.press("Escape")
         weighted = choose_blend_weights(page, {2: 4})
         assert weighted["view"] == blend_view({2: 4})
-        assert weighted["bands"] == []
+        bounds = read_bounds(weighted)
+        assert bounds["2026-01-19"] == pytest.approx((57.2, 60.51))
+        assert bounds["2026-02-09"] == pytest.approx((90.2, 93.51))
+        assert weighted["blend_band"]["test_coverage"] == pytest.approx(1 / 3)
+        coverage = "blend band test coverage: 33.3% against the 80% target."
+        assert coverage in page.locator("#regression-chart-caption").inner_text()
+        open_info(page)
+        assert coverage in page.locator("#regression-info-verdict").inner_text()
+        page.keyboard.press("Escape")
         predictions = read_forecasts(weighted)
         assert [predictions[step] for step in ("2026-01-19", "2026-01-26", "2026-02-02")] == (
             pytest.approx([48.0, 57.4, 72.0])
@@ -498,6 +561,9 @@ def test_horizon_controls_select_rows_metrics_and_bands(tmp_path):
         choose_horizon(page, "lead", 2)
         assert "blend: off" in page.locator(BLEND).inner_text()
         assert read_wape(page) == "20.0%"
+        open_info(page)
+        assert page.locator("#regression-info-verdict").inner_text() == verdict
+        page.keyboard.press("Escape")
         choose_horizon(page, "blend", 3)
         default = choose_horizon(page, "blend", "off")
         assert default["view"] == {"mode": "lead", "n": 3}
@@ -505,6 +571,20 @@ def test_horizon_controls_select_rows_metrics_and_bands(tmp_path):
         open_blend(page)
         assert_blend_columns(page, week="off")
         page.keyboard.press("Escape")
+
+
+def test_horizon_blend_explains_insufficient_validation(tmp_path):
+    with horizon_session(tmp_path, short_validation=True) as (page, run_id):
+        open_horizon_run(page, run_id)
+        blend = choose_horizon(page, "blend", 1)
+        assert blend["bands"] == []
+        assert blend["blend_band"]["test_coverage"] is None
+        reason = "no blend band: fewer than 4 finite validation residuals."
+        assert reason in page.locator("#regression-chart-caption").inner_text()
+        assert page.locator("#regression-chart .chart-band").count() == 0
+        open_info(page)
+        assert reason in page.locator("#regression-info-verdict").inner_text()
+        assert "saved lead" not in page.locator("#regression-info-verdict").inner_text()
 
 
 def test_horizon_blend_drafts_save_discard_close_and_dismiss(tmp_path):
@@ -531,7 +611,8 @@ def test_horizon_blend_drafts_save_discard_close_and_dismiss(tmp_path):
         assert "blend: week 2 4x, week 3 2x" in page.locator(BLEND).inner_text()
         assert page.locator("#regression-chart-caption").inner_text() == (
             "each week shows the weighted average of all its forecasts: week 2 counts 4x, "
-            "week 3 counts 2x, the others 1x. not a forecast the model made."
+            "week 3 counts 2x, the others 1x. not a forecast the model made. "
+            "blend band test coverage: 33.3% against the 80% target."
         )
         assert (
             "blend weighted"

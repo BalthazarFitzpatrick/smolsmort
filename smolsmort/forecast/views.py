@@ -25,8 +25,10 @@ from smolsmort.forecast import evaluate as ev
 from smolsmort.forecast import metrics as fm
 from smolsmort.forecast.families import registered_families
 from smolsmort.forecast.horizon_view import (
+    MIN_BLEND_RESIDUALS,
     blend_rows,
     build_blend_weights,
+    fit_blend_band,
     lead_rows,
 )
 from smolsmort.forecast.spec import normalize_mode, normalize_saved_modes, spec_from_dict
@@ -1060,18 +1062,37 @@ def _horizon_sources(con, request, query, validation, test, forecast):
     table = _read_view_rows(con, sources["test"])
     selection = _horizon_selection(request, query, table)
     if selection is None:
-        return None, sources
+        return None, sources, None
+    band = None
+    if selection["mode"] == "blend":
+        validation_rows = _read_view_rows(con, sources["validation"])
+        band = fit_blend_band(validation_rows, selection["weights"])
+        panel = Path(request["prepared"]) / "panel.parquet"
+        target = _quote(_spec_target(request["spec"]))
+        nonnegative = bool(
+            con.execute(f"SELECT MIN({target}) >= 0 FROM read_parquet({_lit(panel)})").fetchone()[0]
+        )
+        test_targets = set(zip(table["series"], table["step"], strict=True))
     sources["history"] = _horizon_history_source(sources["validation"], sources["test"])
     for name, source in sources.items():
         rows = table if name == "test" else _read_view_rows(con, source)
         if name != "forecast":
             rows = _select_horizon_rows(rows, selection)
         count = len(rows["step"])
+        if selection["mode"] == "blend":
+            rows["lower"], rows["upper"] = ev.apply_band(band, rows["prediction"], nonnegative)
+            if name in ("validation", "history"):
+                # only held-out test targets get historical bounds, using the chart's blend
+                keep = np.asarray(
+                    [
+                        name == "history" and target in test_targets
+                        for target in zip(rows["series"], rows["step"], strict=True)
+                    ],
+                    dtype=bool,
+                )
+                rows["lower"][~keep] = rows["upper"][~keep] = np.nan
         for column in ("lower", "upper"):
-            if selection["mode"] == "blend":
-                rows[column] = np.full(count, np.nan)
-            else:
-                rows.setdefault(column, np.full(count, np.nan))
+            rows.setdefault(column, np.full(count, np.nan))
         registered = {
             column: values.astype("datetime64[ns]")
             if np.issubdtype(values.dtype, np.datetime64)
@@ -1080,7 +1101,7 @@ def _horizon_sources(con, request, query, validation, test, forecast):
         }
         con.register(f"horizon_{name}", registered)
         sources[name] = f"horizon_{name}"
-    return selection, sources
+    return selection, sources, band
 
 
 def _read_lead_errors(run_dir, result, model, horizon):
@@ -1327,7 +1348,9 @@ def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
     forecast = _prediction_path(run_dir, query, "forecast")
 
     con = connect()
-    selection, sources = _horizon_sources(con, request, query, validation, test, forecast)
+    selection, sources, blend_band = _horizon_sources(
+        con, request, query, validation, test, forecast
+    )
     where = _filter_clause(filters, dims)
     combos = _series_combos(con, panel, breakdown, where)
     note = None
@@ -1411,6 +1434,8 @@ def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
             )
             lo_by_step.update(future_lo)
             hi_by_step.update(future_hi)
+        elif blend_band is not None:
+            lo_by_step, hi_by_step = _horizon_band(con, keymap_sql, sources, combo_where)
         else:
             continue
         bands.append((f"band:{forecast_id}", forecast_id, lo_by_step, hi_by_step))
@@ -1442,10 +1467,31 @@ def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
             weeks_ahead_shown=selection["n"] if selection["mode"] == "lead" else None,
             lead_errors=_read_lead_errors(run_dir, result, model, int(spec["horizon"])),
         )
+        if selection["mode"] == "blend":
+            out["blend_band"] = _blend_band_summary(con, keymap_sql, sources, where, blend_band)
     if note:
         out["note"] = note
     con.close()
     return out
+
+
+def _blend_band_summary(con, keymap_sql, sources, where, band):
+    summary = {"target": 0.8, "test_coverage": None, "reason": None}
+    if band is None:
+        summary["reason"] = f"fewer than {MIN_BLEND_RESIDUALS} finite validation residuals"
+        return summary
+    rows = con.execute(f"""
+        WITH keymap AS ({keymap_sql}), targets AS (
+            SELECT DISTINCT series, step FROM {sources["test"]}
+        )
+        SELECT h.actual, h.lower, h.upper FROM {sources["history"]} h
+        JOIN targets USING (series, step) JOIN keymap USING (series) WHERE {where}
+    """).fetchall()
+    values = np.asarray(rows, dtype=float).reshape(-1, 3)
+    summary["test_coverage"] = _finite_number(ev.coverage(*values.T))
+    if summary["test_coverage"] is None:
+        summary["reason"] = "no test rows with finite actuals and bounds"
+    return summary
 
 
 def _horizon_band(con, keymap_sql, sources, where):
@@ -1810,7 +1856,7 @@ def timeseries_table(run_dir: Path, request: dict, query: dict) -> dict:
     test = _prediction_path(run_dir, query, "test")
     forecast = _prediction_path(run_dir, query, "forecast")
     con = connect()
-    selection, sources = _horizon_sources(con, request, query, validation, test, forecast)
+    selection, sources, _ = _horizon_sources(con, request, query, validation, test, forecast)
     single = selection is not None
     hist_leads = ", h.origin, h.weeks_ahead" if single else ""
     future_leads = ", f.origin, f.weeks_ahead" if single else ""
