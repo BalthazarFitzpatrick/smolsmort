@@ -176,7 +176,12 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-horizon-controls { display: contents; }
 .forecast-horizon-controls .dropdown-head { max-width: 100%; }
 .menu-panel.forecast-blend-menu:has(.label-columns) { width: min(420px, calc(100vw - 8px)); min-width: 0; max-width: calc(100vw - 8px); }
+.forecast-blend-menu .menu-body { overflow: hidden; }
+.forecast-blend-menu .menu-columns, .forecast-blend-menu .label-columns { min-height: 0; }
+.forecast-blend-menu .label-columns { align-items: stretch; }
+.forecast-blend-menu .col { overflow-y: auto; }
 .forecast-blend-menu .col:first-child { flex: 3 1 0; }
+.forecast-blend-menu .menu-item { gap: 8px; }
 .forecast-blend-menu .menu-item .stats { flex-shrink: 0; }
 .forecast-results [id$="-chart-caption"] { white-space: normal; overflow-wrap: anywhere; }
 .forecast-metric-lines { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-variant-numeric: tabular-nums; }

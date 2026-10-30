@@ -818,6 +818,19 @@ class ForecastBlendMenu extends Menu {
     if (this._trigger?.id) panel.id = `${this._trigger.id}-menu`;
     return panel;
   }
+
+  refresh(sections) {
+    const focusedColumn = this.el?.contains(document.activeElement)
+      ? document.activeElement.closest('.col')?.dataset.column : null;
+    const scroll = new Map([...this.el?.querySelectorAll('.col') || []]
+      .filter(column => column.dataset.column !== focusedColumn)
+      .map(column => [column.dataset.column, column.scrollTop]));
+    super.refresh(sections);
+    // menu restores keyboard focus; pointer picks also keep their place in long lists
+    this.el?.querySelectorAll('.col').forEach(column => {
+      if (scroll.has(column.dataset.column)) column.scrollTop = scroll.get(column.dataset.column);
+    });
+  }
 }
 
 // warm starts retain their own v1 budget controls
@@ -2554,15 +2567,20 @@ class ForecastTopic {
       lead: 'show only the forecast made n weeks before each week. nothing is averaged.',
       blend: 'average of all forecasts of a week; each time part counts with its weight. not a forecast the model made.',
     };
-    if (controls.dataset.horizon !== String(view.horizon)) {
+    const runId = this.resultsRunId;
+    if (controls.dataset.horizon !== String(view.horizon) || controls.dataset.runId !== runId) {
       controls.dataset.horizon = String(view.horizon);
+      controls.dataset.runId = runId;
       controls.replaceChildren();
       for (const mode of ['lead', 'blend']) {
         const picker = forecastNode('div', 'forecast-metric-picker');
         const options = Array.from({length: view.horizon}, (_, index) => index + 1);
         const button = mode === 'blend' ? forecastBlendDropdown(view.horizon,
-          () => this.horizonSelections[this.resultsRunId], selection => this.selectHorizonView(selection))
-          : forecastDropdown(options, 'off', n => this.selectHorizonView({mode: 'lead', n}),
+          () => this.resultsRunId === runId ? this.horizonSelections[runId] : null,
+          selection => { if (this.resultsRunId === runId) this.selectHorizonView(selection); })
+          : forecastDropdown(options, 'off', n => {
+            if (this.resultsRunId === runId) this.selectHorizonView({mode: 'lead', n});
+          },
         mode, n => n === 'off' ? 'off' : `${n} ${n === 1 ? 'week' : 'weeks'} ahead`);
         button.id = `${this.topic}-${mode}`;
         button.title = descriptions[mode];

@@ -37,13 +37,15 @@ def write_json(path: Path, value) -> None:
     path.write_text(json.dumps(value), encoding="utf-8")
 
 
-def write_horizon_run(root: Path, *, legacy: bool = False, running: bool = False) -> str:
+def write_horizon_run(
+    root: Path, *, legacy: bool = False, running: bool = False, horizon: int = 3
+) -> str:
     run_id = write_multifamily_run(root)
     if legacy:
         return run_id
     folder = root / ".forecast-runs" / run_id
     request = json.loads((folder / "request.json").read_text(encoding="utf-8"))
-    request["spec"].update(horizon=3, horizon_mode="single")
+    request["spec"].update(horizon=horizon, horizon_mode="single")
     write_json(folder / "request.json", request)
     dates = np.arange(
         np.datetime64("2025-12-15"), np.datetime64("2026-02-09"), np.timedelta64(7, "D")
@@ -100,13 +102,13 @@ def write_horizon_run(root: Path, *, legacy: bool = False, running: bool = False
 
 
 @contextmanager
-def horizon_session(tmp_path: Path, *, width: int = 1280, legacy=False, running=False):
+def horizon_session(tmp_path: Path, *, width: int = 1280, legacy=False, running=False, horizon=3):
     errors = []
     review_world.register_world_backend()
     root = tmp_path / "forecast_root"
     root.mkdir()
     write_panel(root, weeks=60)
-    run_id = write_horizon_run(root, legacy=legacy, running=running)
+    run_id = write_horizon_run(root, legacy=legacy, running=running, horizon=horizon)
 
     def reject_worker(*_args, **_kwargs):
         pytest.fail("browser checks must not launch forecast workers")
@@ -788,6 +790,145 @@ def test_horizon_controls_wait_for_new_run_before_opening_blend(tmp_path):
             )
             == chosen["view"]
         )
+
+
+def test_horizon_controls_wait_for_cached_run_metadata_before_opening_blend(tmp_path):
+    with horizon_session(tmp_path) as (page, run_id):
+        run_root = tmp_path / "forecast_root" / ".forecast-runs"
+        next_run = "20261017-120000-synthetic"
+        copytree(run_root / run_id, run_root / next_run)
+        request_path = run_root / next_run / "request.json"
+        request = json.loads(request_path.read_text(encoding="utf-8"))
+        request["spec"]["horizon"] = 8
+        write_json(request_path, request)
+        open_horizon_run(page, next_run)
+        expected = {"mode": "blend", "weights": {str(week): 1 for week in range(1, 9)}}
+        expected["weights"]["8"] = 2
+        assert choose_blend_weights(page, {8: 2})["view"] == expected
+        page.locator("#regression-results-run").click()
+        settle_menu(page)
+        with page.expect_response("**/api/forecast-view?**"):
+            page.locator(f'.menu-panel .menu-item[data-id="{run_id}"]').click()
+        page.wait_for_function("forecastTopics.get('regression').resultsView.view.n === 3")
+        held = []
+
+        def hold_next_run(route):
+            if parse_qs(urlparse(route.request.url).query).get("id") == [next_run]:
+                held.append(route)
+            else:
+                route.continue_()
+
+        page.route("**/api/forecast-run?**", hold_next_run)
+        page.locator("#regression-results-run").click()
+        settle_menu(page)
+        with page.expect_request("**/api/forecast-run?**"):
+            page.locator(f'.menu-panel .menu-item[data-id="{next_run}"]').click()
+        page.locator(BLEND).click()
+        pending_open = page.locator(BLEND_MENU).is_visible()
+        pending_rows = page.locator(f'{BLEND_MENU} [data-column="0"] .menu-item').evaluate_all(
+            "rows => rows.map(row => row.dataset.id)"
+        )
+        assert len(held) == 1
+        with page.expect_response("**/api/forecast-view?**") as response:
+            held[0].continue_()
+        page.unroute("**/api/forecast-run?**", hold_next_run)
+        assert response.value.json()["view"] == expected
+        page.wait_for_function(
+            "view => JSON.stringify(forecastTopics.get('regression').resultsView.view) === JSON.stringify(view)",
+            arg=expected,
+        )
+        assert not pending_open, {"pending_rows": pending_rows, "saved_view": expected}
+        open_blend(page)
+        assert page.locator(f'{BLEND_MENU} [data-column="0"] .menu-item').count() == 9
+        assert (
+            page.locator(
+                f'{BLEND_MENU} [data-column="0"] .menu-item[data-id="8"] .stats'
+            ).inner_text()
+            == "2x"
+        )
+        assert save_blend(page)["view"] == expected
+        saved = page.evaluate("key => JSON.parse(localStorage.getItem(key))", STORAGE_KEY)
+        assert saved[next_run] == expected
+
+
+def test_horizon_blend_long_phone_picker_keeps_footer_and_far_week_weights(tmp_path):
+    with horizon_session(tmp_path, width=390, horizon=52) as (page, run_id):
+        open_horizon_run(page, run_id)
+        open_blend(page)
+        menu = page.locator(BLEND_MENU)
+        assert menu.locator('[data-column="0"] .menu-item').count() == 53
+
+        def assert_viewport():
+            assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+            box = menu.bounding_box()
+            footer = menu.locator(".menu-section.menu-buttons").bounding_box()
+            assert box and box["x"] >= 0 and box["x"] + box["width"] <= 390
+            assert footer and footer["y"] >= 0 and footer["y"] + footer["height"] <= 900
+            for button in menu.locator(".menu-buttons [data-id]").all():
+                assert button.is_visible()
+                assert button.evaluate("""node => {
+                    const box = node.getBoundingClientRect();
+                    return document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2) === node;
+                }""")
+
+        def assert_selected_week_visible(week):
+            selected = menu.locator(f'[data-column="0"] .menu-item[data-id="{week}"]')
+            visible = selected.evaluate("""node => {
+                const box = node.getBoundingClientRect();
+                return node.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
+            }""")
+            truncated = menu.locator(".menu-item .name").evaluate_all("""nodes => nodes
+                .filter(node => node.scrollWidth > node.clientWidth)
+                .map(node => node.textContent)""")
+            children_visible = menu.locator('[data-column="1"] .menu-item').evaluate_all(
+                """nodes => nodes.every(node => {
+                    const box = node.getBoundingClientRect();
+                    return node.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
+                })"""
+            )
+            assert visible and not truncated and children_visible, {
+                "selected_visible": visible,
+                "truncated_labels": truncated,
+                "children_visible": children_visible,
+            }
+
+        assert_viewport()
+        for week, weight in ((3, 4), (8, 2), (52, 8)):
+            row = menu.locator(f'[data-column="0"] .menu-item[data-id="{week}"]')
+            row.click()
+            assert_viewport()
+            menu.locator(f'[data-column="1"] .menu-item[data-id="{weight}x"]').click()
+            assert row.locator(".stats").inner_text() == f"{weight}x"
+            assert_viewport()
+        assert_selected_week_visible(52)
+        expected = {"mode": "blend", "weights": {str(week): 1 for week in range(1, 53)}}
+        expected["weights"].update({"3": 4, "8": 2, "52": 8})
+        assert save_blend(page)["view"] == expected
+        assert "blend: week 3 4x, week 8 2x +1 more" in page.locator(BLEND).inner_text()
+        assert "week 52 counts 8x" in page.locator("#regression-chart-caption").inner_text()
+        open_blend(page)
+        far_week = menu.locator('[data-column="0"] .menu-item[data-id="52"]')
+        far_week.click()
+        assert far_week.locator(".stats").inner_text() == "8x"
+        assert_viewport()
+        assert_selected_week_visible(52)
+        save_blend_menu(page, "phone-long")
+        page.keyboard.press("Escape")
+        open_blend(page)
+        for _ in range(53):
+            page.keyboard.press("ArrowDown")
+        assert far_week.evaluate("node => node === document.activeElement")
+        assert_selected_week_visible(52)
+        assert_viewport()
+        page.keyboard.press("ArrowRight")
+        weight = menu.locator('[data-column="1"] .menu-item[data-id="8x"]')
+        assert weight.evaluate("node => node === document.activeElement")
+        page.keyboard.press("Space")
+        assert_selected_week_visible(52)
+        with page.expect_response("**/api/forecast-view?**") as response:
+            page.keyboard.press("Enter")
+        assert response.value.json()["view"] == expected
+        assert not menu.is_visible()
 
 
 @pytest.mark.parametrize("storage", ["malformed", "blocked"])
