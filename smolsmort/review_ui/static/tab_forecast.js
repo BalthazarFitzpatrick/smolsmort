@@ -833,6 +833,14 @@ class ForecastBlendMenu extends Menu {
   }
 }
 
+class ForecastInfoMenu extends Menu {
+  _build() {
+    const panel = super._build();
+    panel.classList.add('forecast-info-menu');
+    return panel;
+  }
+}
+
 // warm starts retain their own v1 budget controls
 function forecastStepperRow(prefix, row) {
   return `<div class="run-controls stepper-row" data-stepper="${row.key}">
@@ -912,6 +920,7 @@ class ForecastTopic {
     this.resultsRunId = null;
     this.resultsSpec = null;
     this.resultsModel = null;
+    this.resultsNotes = {};
     this.importanceFamily = null;
     this.resultsLoad = 0;
     this.horizonStorageKey = `${this.storageKey}:horizon-view`;
@@ -1838,6 +1847,16 @@ class ForecastTopic {
     this.paintRuns();
     if (this.selectedRunId === run.id) this.paintRunDetail(run);
     this.readLegacyTiles(run);
+    if (this.resultsRunId === run.id && !this.resultsLoading
+        && document.getElementById(`${this.topic}-info`)?.getClientRects().length) {
+      if (!this.resultsSpec || this.resultsNotes.load?.length) {
+        await this.loadResults();
+        return;
+      }
+      this.paintExcludedSeries(state.excluded_series || []);
+      await this.refreshView();
+      await this.refreshTable();
+    }
   }
 
   async readLegacyTiles(run) {
@@ -2299,10 +2318,9 @@ class ForecastTopic {
           <div id="${this.topic}-horizon-controls" class="forecast-horizon-controls hidden"></div>
           <button class="toggle dropdown-head" id="${this.topic}-breakdown-head"><span>break down by</span></button>
           <span class="spacer"></span>
+          <button class="toggle dropdown-head forecast-info-head" id="${this.topic}-info" type="button" aria-expanded="false"><span>info</span></button>
           <a class="hidden" id="${this.topic}-export" download>csv</a>
         </div>
-        <div id="${this.topic}-excluded-series" class="stat warn forecast-excluded-series hidden"></div>
-        <div id="${this.topic}-verdict" class="forecast-verdict hidden"></div>
         <section class="forecast-pane forecast-chart-panel">
           <div class="run-controls forecast-chart-heading">
             <span class="field-label">actual vs forecast</span>
@@ -2344,6 +2362,23 @@ class ForecastTopic {
           <div class="toggle" id="${this.topic}-page-next">next</div>
         </div>
       </div>`;
+    this.infoContext = forecastNode('div', 'forecast-info-context');
+    this.infoVerdict = forecastNode('div', 'forecast-info-verdict', 'no verdict yet');
+    this.infoVerdict.id = `${this.topic}-info-verdict`;
+    this.infoNotes = forecastNode('div', 'forecast-info-notes', 'no notes');
+    this.infoNotes.id = `${this.topic}-info-notes`;
+    const verdictSection = forecastNode('div', 'forecast-info-section');
+    verdictSection.append(this.infoContext, this.infoVerdict);
+    document.getElementById(`${this.topic}-info`).onclick = evt => {
+      this.infoMenu = forecastOpenMenu(new ForecastInfoMenu({columns: true, sections: [
+        {kind: 'node', label: 'verdict', node: verdictSection},
+        {kind: 'node', label: 'notes', node: this.infoNotes},
+      ]}), evt.currentTarget);
+      if (this.infoMenu.el) {
+        this.infoMenu.el.setAttribute('aria-label', 'results info');
+        this.infoMenu.el.style.setProperty('--forecast-info-top', this.infoMenu.el.style.top);
+      }
+    };
     document.getElementById(`${this.topic}-results-run`).onclick = evt => this.openRunPicker(evt.currentTarget);
     document.getElementById(`${this.topic}-breakdown-head`).onclick = evt => this.openBreakdownPicker(evt.currentTarget);
     document.getElementById(`${this.topic}-filter`).onclick = evt => this.openFilterPicker(evt.currentTarget);
@@ -2351,6 +2386,7 @@ class ForecastTopic {
     document.getElementById(`${this.topic}-page-prev`).onclick = () => this.changePage(-1);
     document.getElementById(`${this.topic}-page-next`).onclick = () => this.changePage(1);
     document.getElementById(`${this.topic}-results-model`).onclick = evt => {
+      if (!this.resultsView) return;
       listMenu('forecast', [
         {id: 'winner', label: this.resultsView.winner_family || 'xgboost', on: this.resultsModel === 'winner'},
         {id: 'ensemble', label: `ensemble of ${(this.resultsView.ensemble?.members || []).join(', ')}`, on: this.resultsModel === 'ensemble'},
@@ -2392,7 +2428,16 @@ class ForecastTopic {
   async loadResults() {
     if (!this.resultsRunId) return;
     const load = ++this.resultsLoad;
+    this.resultsLoading = true;
     const runId = this.resultsRunId;
+    if (this.infoRunId !== runId) {
+      this.infoRunId = runId;
+      this.resultsNotes = {};
+      this.resultsView = null;
+      this.resultsSpec = null;
+      this.paintVerdict(null);
+      this.paintResultsNotes();
+    }
     this.viewRequest++;
     this.tableRequest++;
     try {
@@ -2403,6 +2448,7 @@ class ForecastTopic {
       this.resultsModel = null;
       this.importanceFamily = null;
       this.paintExcludedSeries(state.excluded_series || []);
+      this.setResultsNotes('load', []);
       setHead(document.getElementById(`${this.topic}-results-run`), this.resultsRunId);
       const exportLink = document.getElementById(`${this.topic}-export`);
       exportLink.href = `/api/forecast-export/${encodeURIComponent(this.resultsRunId)}.csv`;
@@ -2417,7 +2463,9 @@ class ForecastTopic {
       await this.refreshTable();
     } catch (err) {
       if (load !== this.resultsLoad) return;
-      this.paintVerdict({summary: err.message, checks: []});
+      this.setResultsNotes('load', [err.message]);
+    } finally {
+      if (load === this.resultsLoad) this.resultsLoading = false;
     }
   }
 
@@ -2427,14 +2475,27 @@ class ForecastTopic {
   }
 
   paintExcludedSeries(series) {
-    const box = document.getElementById(`${this.topic}-excluded-series`);
     const combinations = series.map(item => {
       const dims = Object.entries(item.dims).map(([name, value]) => `${name}=${value}`).join(', ');
-      return `[${dims}] (last seen ${item.last_seen || 'unknown'})`;
+      return `excluded from the forecast, no data before the forecast start: [${dims}] (last seen ${item.last_seen || 'unknown'})`;
     });
-    box.textContent = combinations.length
-      ? `excluded from the forecast, no data before the forecast start: ${combinations.join(', ')}` : '';
-    box.classList.toggle('hidden', !combinations.length);
+    this.setResultsNotes('excluded', combinations);
+  }
+
+  setResultsNotes(source, notes) {
+    this.resultsNotes[source] = notes;
+    this.paintResultsNotes();
+  }
+
+  paintResultsNotes() {
+    const notes = Object.values(this.resultsNotes).flat();
+    const head = document.getElementById(`${this.topic}-info`);
+    if (!head || !this.infoNotes) return;
+    setHead(head, notes.length ? `info · ${notes.length} ${notes.length === 1 ? 'note' : 'notes'}` : 'info');
+    head.classList.toggle('warn', !!notes.length);
+    this.infoNotes.replaceChildren(...(notes.length
+      ? notes.map(note => forecastNode('div', 'forecast-info-note', note))
+      : [forecastNode('div', '', 'no notes')]));
   }
 
   // one page of the table, unfiltered, just to learn what values each dimension carries
@@ -2601,10 +2662,15 @@ class ForecastTopic {
   }
 
   paintVerdict(verdict, label = null) {
-    const box = document.getElementById(`${this.topic}-verdict`);
-    box.classList.remove('hidden');
+    const box = this.infoVerdict;
+    if (!box) return;
+    this.infoContext.textContent = [this.resultsRunId, label, 'pooled'].filter(Boolean).join(' · ');
     forecastRatioStyle(box, verdict);
     box.innerHTML = '';
+    if (!verdict) {
+      box.textContent = 'no verdict yet';
+      return;
+    }
     const summary = document.createElement('div');
     summary.className = 'forecast-verdict-summary';
     const showRatio = this.selectedMetricIds.includes('test_ratio');
@@ -2677,10 +2743,11 @@ class ForecastTopic {
       this.paintModelResults(view);
       this.paintVerdict(view.verdict, forecastModelLabel(view));
       this.paintChart(view);
+      this.setResultsNotes('view', []);
       document.getElementById(`${this.topic}-group-row`).classList.toggle('hidden', view.mode !== 'entity');
     } catch (err) {
       if (request !== this.viewRequest) return;
-      this.paintVerdict({summary: err.message, checks: []});
+      this.setResultsNotes('view', [err.message]);
     }
   }
 
@@ -2689,10 +2756,12 @@ class ForecastTopic {
     const status = document.getElementById(`${this.topic}-chart-status`);
     const hazard = view.objective === 'hazard';
     const aggregate = view.aggregate;
-    status.textContent = hazard ? view.note || (aggregate
+    const notes = [view.note, view.view?.mode === 'blend' ? 'no band for a blend' : null].filter(Boolean);
+    this.setResultsNotes('chart', notes);
+    status.textContent = hazard && !view.note ? (aggregate
       ? `weekly ${aggregate.rule.replaceAll('_', ' ')}`
       : 'weekly aggregation is off; entity dates and duration quantiles are below')
-      : view.view?.mode === 'blend' ? 'no band for a blend' : '';
+      : '';
     status.classList.toggle('hidden', !status.textContent);
     el.classList.toggle('hidden', hazard && !aggregate);
     if (hazard && !aggregate) return;
@@ -2728,9 +2797,10 @@ class ForecastTopic {
       const data = await api(`/api/forecast-table?${params.toString()}`);
       if (request !== this.tableRequest) return;
       this.paintTable(data);
+      this.setResultsNotes('table', []);
     } catch (err) {
       if (request !== this.tableRequest) return;
-      this.paintVerdict({summary: err.message, checks: []});
+      this.setResultsNotes('table', [err.message]);
     }
   }
 

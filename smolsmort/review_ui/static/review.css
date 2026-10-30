@@ -295,7 +295,26 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-verdict { padding: 8px 12px; border: 2px solid var(--grey-border); }
 .forecast-verdict.better { border-color: #c7ed5f; color: #c7ed5f; }
 .forecast-verdict.worse { border-color: #ad796f; color: #ad796f; }
-.forecast-results .forecast-excluded-series { flex-shrink: 0; overflow-x: auto; text-overflow: clip; }
+.forecast-info-head.warn, .forecast-info-note, .forecast-info-verdict.worse { color: var(--stone-red-lift); }
+.forecast-info-verdict.better { color: var(--status-good); }
+.menu-panel.forecast-info-menu {
+  width: 760px; min-width: 0; max-width: calc(100vw - 8px);
+  max-height: min(70vh, calc(100dvh - var(--forecast-info-top, 4px) - 4px));
+  white-space: normal;
+}
+.forecast-info-menu .menu-column-row { overflow-y: auto; }
+.forecast-info-menu .menu-column-row > .menu-section { min-width: 0; max-height: none; overflow: visible; }
+.forecast-info-section, .forecast-info-verdict, .forecast-info-notes { display: grid; gap: 8px; }
+.forecast-info-context { color: var(--text-dim); }
+.forecast-info-menu .forecast-verdict-summary, .forecast-info-menu .forecast-verdict-check,
+.forecast-info-context, .forecast-info-note { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .forecast-info-menu .menu-column-row { flex-direction: column; }
+  .forecast-info-menu .menu-column-row > .menu-section { flex: none; }
+  .forecast-info-menu .menu-column-row > .divider {
+    width: auto; height: 0; border-left: 0; border-top: 2px solid var(--grey-border); margin: 6px 15px;
+  }
+}
 .forecast-verdict-summary { font-weight: 600; }
 .forecast-results { flex: 0 0 auto; min-height: 0; }
 .forecast-results > * { flex-shrink: 0; }
