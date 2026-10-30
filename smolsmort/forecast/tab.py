@@ -567,6 +567,8 @@ def _view(app, query: dict) -> dict:
         return views.view(run_dir, request, query)
     except views.ViewError as exc:
         raise RequestError(str(exc), 409) from exc
+    except ValueError as exc:
+        raise RequestError(str(exc), 400) from exc
 
 
 def _table(app, query: dict) -> dict:
@@ -576,6 +578,8 @@ def _table(app, query: dict) -> dict:
         return views.table(run_dir, request, query)
     except views.ViewError as exc:
         raise RequestError(str(exc), 409) from exc
+    except ValueError as exc:
+        raise RequestError(str(exc), 400) from exc
 
 
 def _export(app, name: str) -> bytes | None:
