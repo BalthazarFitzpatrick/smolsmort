@@ -21,6 +21,8 @@ OBJECTIVES = {
 CLASSIFIERS = {"logistic", "softprob"}
 # these model a non-negative quantity; a negative target is refused rather than silently clipped
 NONNEGATIVE = {"tweedie", "poisson", "aft", "hazard"}
+# objectives whose predictions are target values, so wape and mae per round mean something
+TARGET_VALUED = {"squared", "absolute", "tweedie", "poisson"}
 
 
 class ModelError(ValueError):
@@ -35,6 +37,27 @@ class Fitted:
     feature_types: list[str] | None
     classes: list[str] | None = None
     eval_history: dict | None = None
+
+
+class RoundErrors:
+    """wape and mae of each boosting round on the round-picking tail, for the generation curves"""
+
+    def __init__(self, truth):
+        self.truth = np.asarray(truth, dtype=float)
+        self.scale = float(np.abs(self.truth).sum())
+        self.wape: list[float] = []
+        self.mae: list[float] = []
+
+    def add(self, prediction) -> None:
+        errors = np.abs(np.asarray(prediction, dtype=float) - self.truth)
+        self.wape.append(float(errors.sum() / self.scale) if self.scale > 0 else float("nan"))
+        self.mae.append(float(errors.mean()))
+
+    def curves(self, rounds: int) -> dict | None:
+        """None unless every round is recorded and finite [saved json refuses nan]"""
+        if len(self.wape) != rounds or not np.isfinite([self.wape, self.mae]).all():
+            return None
+        return {"wape": self.wape, "mae": self.mae}
 
 
 def _xgb():
@@ -107,9 +130,11 @@ def fit_model(
     patience: int = 50,
     seed: int = 0,
     nthread: int = 1,
+    round_errors: bool = True,
 ) -> Fitted:
     """fit one model on rows sorted oldest first; the newest `inner` share picks the rounds, then
-    everything is refit with them. nthread stays 1 unless the caller runs in the search worker"""
+    everything is refit with them. nthread stays 1 unless the caller runs in the search worker.
+    round_errors=False when y is on a transformed scale, where wape per round would mislead"""
     if objective not in OBJECTIVES:
         raise ModelError(f"no objective called {objective!r} - known: {', '.join(OBJECTIVES)}")
     xgb = _xgb()
@@ -142,15 +167,17 @@ def fit_model(
     history = None
     if patience and len(tail) >= 10 and len(head) >= 10:
         evals_result = {}
-        train = pick(head)
+        train, check = pick(head), pick(tail)
+        errors = RoundErrors(y[tail]) if round_errors and objective in TARGET_VALUED else None
         probe = xgb.train(
             config,
             train,
             max_rounds,
-            evals=[(train, "training"), (pick(tail), "validation")],
+            evals=[(train, "training"), (check, "validation")],
             evals_result=evals_result,
             early_stopping_rounds=patience,
             verbose_eval=False,
+            callbacks=[_record_rounds(check, errors)] if errors else None,
         )
         rounds = probe.best_iteration + 1
         # the last validation metric is the one xgboost uses for early stopping
@@ -163,8 +190,23 @@ def fit_model(
             and np.isfinite([training, validation]).all()
         ):
             history = {"metric": metric, "training": training, "validation": validation}
+            curves = errors.curves(len(validation)) if errors else None
+            if curves:
+                history["curves"] = curves
     booster = xgb.train(config, pick(rows), rounds, verbose_eval=False)
     return Fitted(booster, objective, rounds, feature_types, classes, history)
+
+
+def _record_rounds(check, errors):
+    """a training callback that predicts the tail each round [xgboost serves it from its cache]"""
+    xgb = _xgb()
+
+    class RecordRounds(xgb.callback.TrainingCallback):
+        def after_iteration(self, model, epoch, evals_log) -> bool:
+            errors.add(model.predict(check))
+            return False
+
+    return RecordRounds()
 
 
 def predict(fitted: Fitted, x) -> np.ndarray:

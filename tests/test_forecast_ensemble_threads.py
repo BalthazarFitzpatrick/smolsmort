@@ -19,10 +19,19 @@ from smolsmort.forecast import ensemble
         (None, None, None, 1),
     ],
 )
+@pytest.mark.parametrize("horizon_mode", ["single", "mixed"])
 def test_finish_and_importance_use_resolved_threads(
-    tmp_path, monkeypatch, coordinator_threads, request_threads, cpu_threads, expected_threads
+    tmp_path,
+    monkeypatch,
+    coordinator_threads,
+    request_threads,
+    cpu_threads,
+    expected_threads,
+    horizon_mode,
 ):
     request = {"spec": {}, "prepared": str(tmp_path), "summary": {}}
+    if horizon_mode == "single":
+        request["horizon_mode"] = horizon_mode
     if request_threads is not None:
         request["nthread"] = request_threads
     coordinator = {"families": {name: {"state": "done"} for name in ("xgboost", "lightgbm")}}
@@ -41,9 +50,10 @@ def test_finish_and_importance_use_resolved_threads(
     for name in coordinator["families"]:
         (tmp_path / "families" / name).mkdir(parents=True)
 
-    frame = SimpleNamespace(y=np.array([10, 10]), step=np.array([1, 2]))
+    frame = SimpleNamespace(y=np.array([10, 10]), step=np.array([1, 2]), origin=np.array([0, 0]))
     workspace = SimpleNamespace(
         mode="timeseries",
+        horizon_mode=horizon_mode,
         frames={"series": frame},
         series_masks={"series": {"val": np.array([True, True])}},
     )
@@ -64,10 +74,19 @@ def test_finish_and_importance_use_resolved_threads(
         (folder / "recipe.json").write_text("{}")
         (folder / "result.json").write_text("{}")
 
+    def load_workspace(*args, **kwargs):
+        assert kwargs["horizon_mode"] == horizon_mode
+        return workspace
+
+    def score_ensemble(ws, prediction, truth, periods):
+        expected = frame.origin if horizon_mode == "single" else frame.step
+        np.testing.assert_array_equal(periods, expected)
+        return SimpleNamespace(fitness=0.1)
+
     monkeypatch.setattr(ensemble, "watch_parent", lambda pid: None)
     monkeypatch.setattr(ensemble.os, "cpu_count", lambda: cpu_threads)
     monkeypatch.setattr(ensemble, "spec_from_dict", lambda data: data)
-    monkeypatch.setattr(ensemble, "load_workspace", lambda *args, **kwargs: workspace)
+    monkeypatch.setattr(ensemble, "load_workspace", load_workspace)
     monkeypatch.setattr(
         ensemble,
         "genome_from_dict",
@@ -76,7 +95,7 @@ def test_finish_and_importance_use_resolved_threads(
     monkeypatch.setattr(ensemble, "finish", finish_candidate)
     monkeypatch.setattr(ensemble, "fit_importance", fit_family_importance)
     monkeypatch.setattr(ensemble, "combine_importance", lambda name, importance: importance)
-    monkeypatch.setattr(ensemble, "_fitness", lambda *args: SimpleNamespace(fitness=0.1))
+    monkeypatch.setattr(ensemble, "_fitness", score_ensemble)
     monkeypatch.setattr(ensemble, "_write_result", write_result)
 
     ensemble.run(tmp_path, 123)

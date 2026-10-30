@@ -215,7 +215,8 @@ def test_pinned_families_are_always_on_in_the_model_search(monkeypatch):
     assert all("pinned" not in r and r["p_on"] <= 0.9 for r in others)
 
 
-def test_trial_runs_forward_the_holdout(tmp_path, monkeypatch):
+@pytest.mark.parametrize("mode", ["single", "mixed"])
+def test_trial_runs_forward_holdout_and_horizon_mode(tmp_path, monkeypatch, mode):
     from smolsmort.forecast import runs
 
     seen = {}
@@ -227,6 +228,39 @@ def test_trial_runs_forward_the_holdout(tmp_path, monkeypatch):
 
     monkeypatch.setattr(runs, "start_run", start)
     monkeypatch.setattr(runs, "wait_run", lambda root, run_id, timeout: {"state": "done"})
-    trial = input_search._run_trial(tmp_path, tmp_path, {"holdout": "seasonal"})
+    trial = input_search._run_trial(
+        tmp_path, tmp_path, {"holdout": "seasonal", "horizon_mode": mode}
+    )
     assert trial(make_spec(), ["ridge"], 60, False) == {"run": "run1", "state": "done"}
     assert seen["holdout"] == "seasonal"
+    assert seen["horizon_mode"] == mode
+
+
+def test_nudges_move_free_odds_within_bounds_and_leave_pins():
+    odds = {"a": 1.0, "b": 0.5, "c": 0.15, "d": 0.85}
+    out = input_search.nudge_odds(odds, {"a": -0.5, "b": 0.1, "c": -0.3, "d": 0.3})
+    assert out == {"a": 1.0, "b": pytest.approx(0.6), "c": 0.1, "d": 0.9}
+
+
+def test_seed_sets_run_after_the_core_and_before_random_draws(tmp_path, monkeypatch):
+    now = [0.0]
+    ranking = [
+        {"column": "orders", "score": 0.3, "rho": {}, "pinned": True},
+        {"column": "site", "score": 0.2, "rho": {}, "pinned": False},
+        {"column": "noise", "score": 0.1, "rho": {}, "pinned": False},
+    ]
+    monkeypatch.setattr(prep, "prepare", lambda spec, root: SimpleNamespace(folder=tmp_path))
+    monkeypatch.setattr(input_search, "screen_inputs", lambda spec, folder: ranking)
+    seen = []
+
+    def trial(spec, families, budget_s, until_plateau):
+        seen.append(sorted(c.name for c in spec.columns if c.role in ("measure", "input")))
+        now[0] += budget_s
+        return {"run": f"r{len(seen)}", "val": 0.2}
+
+    plan = InputSearch(deadline=4 * 3600, explore_s=360, seed_sets=(("site",), ("noise", "site")))
+    search_inputs(
+        tmp_path, tmp_path, make_spec(orders=True), plan, trial=trial, clock=lambda: now[0]
+    )
+    # control, core, then both seeds with the pin added, then random draws
+    assert seen[:4] == [[], ["orders"], ["orders", "site"], ["noise", "orders", "site"]]

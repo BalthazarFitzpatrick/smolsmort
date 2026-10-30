@@ -31,6 +31,12 @@ def parse_request(request: dict) -> dict:
     aggregate = request.get("aggregate", "none")
     get_aggregator(aggregate)
     _check_aggregate_weight(request, aggregate)
+    horizon_mode = request.get("horizon_mode", "single")
+    if horizon_mode not in ("single", "mixed", "grouped"):
+        raise ValueError("horizon_mode must be single or mixed")
+    if horizon_mode == "grouped":
+        horizon_mode = "mixed"
+        request = {**request, "horizon_mode": horizon_mode}
     if "version" not in request:
         return request
     if request["version"] != 2:
@@ -117,6 +123,7 @@ def parse_request(request: dict) -> dict:
         "aggregate": aggregate,
         "transform": transform,
         "holdout": holdout,
+        "horizon_mode": horizon_mode,
         "ensemble": ensemble,
         "max_concurrent_families": concurrency,
         "_max_concurrent_families_explicit": explicit_concurrency,

@@ -11,18 +11,34 @@ import datetime as dt
 import io
 import json
 import math
+import os
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
 
 from smolsmort.forecast import evaluate as ev
+from smolsmort.forecast import metrics as fm
 from smolsmort.forecast.families import registered_families
+from smolsmort.forecast.horizon_view import blend_rows, lead_rows
 from smolsmort.forecast.spec import normalize_mode, normalize_saved_modes, spec_from_dict
-from smolsmort.forecast.tables import connect
+from smolsmort.forecast.tables import _unmask, connect
+
+
+def write_json_atomic(path: Path, data) -> None:
+    """replace `path` in one step; each writer gets its own temp name, since every reader of a
+    run [the ui poll, a script waiting on the run] may write the cursors at the same moment"""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
 
 MAX_LINES = 12
 MC_DRAWS = 200
@@ -76,9 +92,10 @@ def read_result(run_dir: Path) -> dict | None:
 
 
 def read_leaderboard(run_dir: Path, top: int = 10) -> list[dict]:
-    if read_request(run_dir).get("version") == 2:
+    request = read_request(run_dir)
+    if request.get("version") == 2:
         board = []
-        for selection in read_request(run_dir)["families"]:
+        for selection in request["families"]:
             name = selection["name"]
             for entry in _read_json(run_dir / "families" / name / "leaderboard.json", []):
                 board.append({**entry, "family": name})
@@ -90,16 +107,31 @@ def read_leaderboard(run_dir: Path, top: int = 10) -> list[dict]:
                     str(entry.get("key", "")),
                 )
             )
-            return board[:top]
+            return _candidate_metrics(board[:top], request)
     path = run_dir / "leaderboard.json"
     if not path.exists():
         return []
-    return [
+    board = [
         {
             **entry,
             "family": entry.get("family") or (entry.get("genome") or {}).get("family") or "xgboost",
         }
-        for entry in json.loads(path.read_text())[:top]
+        for entry in _read_json(path, [])[:top]
+    ]
+    return _candidate_metrics(board, request)
+
+
+def _candidate_metrics(board, request):
+    return [
+        {
+            **entry,
+            "error_metrics": fm.error_metrics(
+                request.get("spec", {}),
+                fitness=entry.get("fitness"),
+                candidate=entry.get("metrics") or {},
+            ),
+        }
+        for entry in board
     ]
 
 
@@ -144,7 +176,9 @@ def probe_families() -> dict:
         raise ViewError("could not check family libraries in the isolated worker") from exc
 
 
-def family_catalog(runs_root: Path, spec=None, prepared=None, task="regression") -> list[dict]:
+def family_catalog(
+    runs_root: Path, spec=None, prepared=None, task="regression", horizon_mode="single"
+) -> list[dict]:
     """suitability uses the worker's split and features, without fitting any models"""
     from smolsmort.forecast.pipeline import PipelineError, load_workspace
     from smolsmort.forecast.splits import SplitError
@@ -153,7 +187,9 @@ def family_catalog(runs_root: Path, spec=None, prepared=None, task="regression")
     if spec is not None:
         task = spec.task
         try:
-            workspace = load_workspace(spec, prepared.folder, prepared.summary)
+            workspace = load_workspace(
+                spec, prepared.folder, prepared.summary, horizon_mode=horizon_mode
+            )
         except (PipelineError, SplitError) as exc:
             history_error = str(exc)
     estimates = {}
@@ -330,9 +366,7 @@ def multi_run_state(run_dir, request, status, *, since_generation=None, since_ev
             snapshot["board_revision"] += 1
             changed = True
         if changed:
-            tmp = run_dir / "route-cursors.json.tmp"
-            tmp.write_text(json.dumps(snapshot), encoding="utf-8")
-            tmp.replace(run_dir / "route-cursors.json")
+            write_json_atomic(run_dir / "route-cursors.json", snapshot)
     families = {}
     family_state = "pending"
     if status["state"] not in ("starting", "queued") and (
@@ -368,6 +402,21 @@ def multi_run_state(run_dir, request, status, *, since_generation=None, since_ev
     delivered_cursor = unseen_events[-1]["sequence"] if unseen_events else event_cursor
     result = _read_json(run_dir / "result.json", {})
     recipe = _read_json(run_dir / "recipe.json", {})
+    # list_runs uses both maximum cursors for summaries; charts belong to the selected run
+    include_charts = (since_generation, since_events) != (2**63 - 1, 2**63 - 1)
+    tiles = family_tiles(
+        run_dir,
+        request,
+        status,
+        result=result,
+        recipe=recipe,
+        include_charts=include_charts,
+        search_snapshot=snapshot,
+    )
+    for name, tile in tiles.items():
+        families[name]["error_metrics"] = tile["error_metrics"]
+        if include_charts:
+            families[name]["tile"] = tile
     kind = (
         "refit" if request.get("recipe") else "warm start" if request.get("warm_from") else "multi"
     )
@@ -401,10 +450,351 @@ def multi_run_state(run_dir, request, status, *, since_generation=None, since_ev
         else None,
         "test_error": result.get("model_error"),
         "excluded_series": result.get("excluded_series", []),
+        **run_metric_payload(run_dir, request, {"best_error": best}, result=result, recipe=recipe),
     }
     if since_generation is None:
         out["eval_history"] = _read_json(run_dir / "eval_history.json")
     return out
+
+
+def _finite_number(value):
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+        return value
+    return None
+
+
+def _tile_elapsed(progress):
+    wall_s = _finite_number(progress.get("wall_s"))
+    if wall_s is not None:
+        return max(0, wall_s)
+    history = progress.get("slice_history") or []
+    if history and isinstance(history, list) and all(isinstance(item, dict) for item in history):
+        elapsed = 0
+        for item in history:
+            duration = _finite_number(item.get("wall_s"))
+            if duration is None and item.get("started_at") is not None:
+                end = item.get("ended_at")
+                if end is None and progress.get("state") == "running":
+                    end = time.time()
+                if end is not None:
+                    duration = max(0, end - item["started_at"])
+            if duration is None:
+                return None
+            elapsed += duration
+        return elapsed
+    elapsed = _finite_number(progress.get("elapsed"))
+    if elapsed is not None:
+        return max(0, elapsed)
+    start = _finite_number(progress.get("started_at"))
+    end = _finite_number(progress.get("ended_at"))
+    if start is not None and (end is not None or progress.get("state") == "running"):
+        return max(0, (end if end is not None else time.time()) - start)
+    return None
+
+
+def _read_tile_search_records(target):
+    records = {}
+    for filename, collection in (("events.jsonl", "events"), ("generation_curves.jsonl", "curves")):
+        try:
+            lines = (target / filename).read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lines = []
+        records[collection] = []
+        for line in lines:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict):
+                records[collection].append(record)
+    return records
+
+
+def _tile_search_curve(records, *, fitness=None, metrics=None):
+    """use the same saved events and validation loss curves as the search tables"""
+    points = {}
+
+    def get_point(record):
+        generation = record.get("family_generation", record.get("generation"))
+        if not isinstance(generation, int) or isinstance(generation, bool) or generation < 0:
+            return None
+        return points.setdefault(
+            generation + 1,
+            {"generation": generation + 1, "validation_error": None, "wape": None, "mae": None},
+        )
+
+    for event in records["events"]:
+        if event.get("event") != "generation":
+            continue
+        point = get_point(event)
+        if point is None:
+            continue
+        point["validation_error"] = _finite_number(event.get("best"))
+        values = event.get("metrics")
+        if isinstance(values, dict):
+            for metric in ("wape", "mae"):
+                point[metric] = _finite_number(values.get(metric))
+    for curve in records["curves"]:
+        metric = curve.get("metric")
+        validation = curve.get("validation")
+        if (
+            not isinstance(metric, str)
+            or not metric
+            or metric in {"generation", "validation_error", "mape", "test_ratio"}
+            or not isinstance(validation, list)
+            or not validation
+        ):
+            continue
+        point = get_point(curve)
+        if point is not None and point.get(metric) is None:
+            point[metric] = _finite_number(validation[-1])
+    if points:
+        if not any(
+            value is not None
+            for point in points.values()
+            for metric, value in point.items()
+            if metric != "generation"
+        ):
+            return [], False
+        metric_names = {
+            metric for point in points.values() for metric in point if metric != "generation"
+        }
+        series = [
+            {
+                "generation": generation,
+                **{
+                    metric: points.get(generation, {}).get(metric)
+                    for metric in sorted(metric_names)
+                },
+            }
+            for generation in range(1, max(points) + 1)
+        ]
+        return series, False
+    values = {"validation_error": _finite_number(fitness)}
+    values.update(
+        {metric: _finite_number((metrics or {}).get(metric)) for metric in ("wape", "mae")}
+    )
+    if any(value is not None for value in values.values()):
+        return [{"generation": 1, **values}], True
+    return [], False
+
+
+TILE_ROUND_GENERATIONS = 30
+
+
+def _tile_round_curves(curves):
+    """the newest generations' per-round curves, as the tables loss chart draws them"""
+    latest = {}
+    for curve in curves:
+        generation = curve.get("family_generation", curve.get("generation"))
+        validation = curve.get("validation")
+        if (
+            not isinstance(generation, int)
+            or isinstance(generation, bool)
+            or not isinstance(validation, list)
+            or not validation
+        ):
+            continue
+        latest[generation] = {
+            "generation": generation + 1,
+            "key": curve.get("key"),
+            "metric": curve.get("metric"),
+            "validation": validation,
+            "curves": curve.get("curves") or {},
+        }
+    return [latest[generation] for generation in sorted(latest)[-TILE_ROUND_GENERATIONS:]]
+
+
+def family_tiles(
+    run_dir, request, status, *, result=None, recipe=None, include_charts=True, search_snapshot=None
+):
+    """expose saved family artifacts without inventing loser test scores or fold baselines"""
+    result = result if result is not None else _read_json(run_dir / "result.json", {})
+    recipe = recipe if recipe is not None else _read_json(run_dir / "recipe.json", {})
+    winner = result.get("winner") or {}
+    winner_family = winner.get("family") or (recipe.get("genome") or {}).get("family")
+    if not winner_family and recipe.get("family") != "ensemble":
+        winner_family = recipe.get("family")
+    legacy = request.get("version") != 2
+    names = [item["name"] for item in request.get("families", [])]
+    if legacy:
+        names = [winner_family or "xgboost"]
+        winner_family = names[0]
+    origins = (result.get("holdout") or {}).get("validation_origins", [])
+    tiles = {}
+    for name in names:
+        target = run_dir if legacy else run_dir / "families" / name
+        saved = result.get("families", {}).get(name, {})
+        progress = {
+            **_read_json(target / "status.json", {}),
+            **(status if legacy else status.get("families", {}).get(name, {})),
+            **saved,
+        }
+        board = _read_json(target / "leaderboard.json", [])
+        entries = [
+            entry
+            for entry in board
+            if _finite_number(entry.get("fitness")) is not None and entry.get("note") != "sample"
+        ]
+        best = min(entries, key=lambda entry: entry["fitness"], default={})
+        genome = _read_json(target / "winner.json") or best.get("genome") or {}
+        if progress.get("state") in {"running", "paused"} and best.get("genome"):
+            genome = best["genome"]
+        if name == winner_family and not genome:
+            genome = recipe.get("genome") or {}
+        summary = saved
+        if name == winner_family:
+            summary = {**result, **winner} if recipe.get("family") != "ensemble" else winner
+        path = target / "test.parquet"
+        if (legacy or not path.exists()) and name == winner_family:
+            path = run_dir / "winner_test.parquet"
+            if not path.exists() and recipe.get("family") != "ensemble":
+                path = run_dir / "test.parquet"
+        accuracy = (summary.get("verdict") or {}).get("accuracy") or {}
+        importance = saved.get("importance") or _read_json(target / "importance.json")
+        if importance is None and name == winner_family:
+            importance = summary.get("importance")
+            if importance is None and recipe.get("family") != "ensemble":
+                importance = _read_json(run_dir / "importance.json")
+        scores = (best.get("metrics") or {}).get("fold_scores") or summary.get("fold_scores") or []
+        folds = [
+            {
+                "label": str(origins[index]) if index < len(origins) else f"fold {index + 1}",
+                "error": _finite_number(error),
+                "ratio": None,
+            }
+            for index, error in enumerate(scores)
+        ]
+        test_metric = accuracy.get("metric") or (
+            "wape" if request.get("spec", {}).get("mode") == "timeseries" else None
+        )
+        test_error = next(
+            (
+                value
+                for value in (
+                    summary.get("test_error"),
+                    summary.get("model_error"),
+                    accuracy.get("model_error"),
+                )
+                if _finite_number(value) is not None
+            ),
+            None,
+        )
+        naive_error = next(
+            (
+                value
+                for value in (accuracy.get("baseline_error"), summary.get("baseline_error"))
+                if _finite_number(value) is not None
+            ),
+            None,
+        )
+        tiles[name] = {
+            "state": progress.get("state", status.get("state", "pending")),
+            "genome": genome,
+            "importance": importance,
+            "validation_error": next(
+                (
+                    value
+                    for value in (
+                        saved.get("fitness"),
+                        progress.get("best_error"),
+                        best.get("fitness"),
+                        summary.get("fitness"),
+                        summary.get("val_error"),
+                    )
+                    if _finite_number(value) is not None
+                ),
+                None,
+            ),
+            "test_ratio": _finite_number(accuracy.get("ratio")),
+            "test_error": test_error,
+            "test_error_metric": test_metric,
+            "test_naive_wape": naive_error if test_metric == "wape" else None,
+            "folds": folds,
+            "folds_note": "wape per validation window; mark = naive on test"
+            if folds
+            else "validation folds not saved",
+            "search_curve": [],
+            "search_single": False,
+            "round_curves": [],
+            "elapsed": _tile_elapsed(progress),
+            "generation": progress.get("generation", best.get("generation")),
+        }
+        if include_charts:
+            records = (
+                {
+                    collection: [
+                        record
+                        for record in search_snapshot[collection]
+                        if record.get("family") == name
+                    ]
+                    for collection in ("events", "curves")
+                }
+                if search_snapshot is not None
+                else _read_tile_search_records(target)
+            )
+            tiles[name]["search_curve"], tiles[name]["search_single"] = _tile_search_curve(
+                records, fitness=tiles[name]["validation_error"], metrics=best.get("metrics")
+            )
+            tiles[name]["round_curves"] = _tile_round_curves(records["curves"])
+        if request.get("horizon_mode") == "single":
+            tiles[name]["weeks_ahead_shown"] = request["spec"]["horizon"]
+        tiles[name]["error_metrics"] = fm.error_metrics(
+            request.get("spec", {}),
+            fitness=tiles[name]["validation_error"],
+            verdict=summary.get("verdict"),
+            path=path,
+        )
+    return tiles
+
+
+def run_metric_payload(run_dir, request, status=None, *, result=None, recipe=None, model=None):
+    """expose the selected saved model without borrowing another model's predictions"""
+    result = result if result is not None else _read_json(run_dir / "result.json", {})
+    recipe = recipe if recipe is not None else _read_json(run_dir / "recipe.json", {})
+    default_model = "ensemble" if recipe.get("family") == "ensemble" else "winner"
+    model = model or default_model
+    summary = result.get(model) or {}
+    if model == default_model:
+        summary = {**result, **summary}
+    path = run_dir / f"{model}_test.parquet"
+    if not path.exists() and model == default_model:
+        path = run_dir / "test.parquet"
+    fitness = next(
+        (
+            value
+            for value in (
+                summary.get("fitness"),
+                summary.get("val_error"),
+                (status or {}).get("best_error") if model == "winner" else None,
+            )
+            if _finite_number(value) is not None
+        ),
+        None,
+    )
+    if fitness is None and model == "winner" and (run_dir / "request.json").exists():
+        fitness = next(
+            (
+                entry["fitness"]
+                for entry in read_leaderboard(run_dir)
+                if _finite_number(entry.get("fitness")) is not None
+            ),
+            None,
+        )
+    spec = request.get("spec", {})
+    payload = {
+        "metric_registry": fm.metric_registry(spec),
+        "error_metrics": fm.error_metrics(
+            spec, fitness=fitness, verdict=summary.get("verdict"), path=path
+        ),
+    }
+    if spec.get("mode") == "timeseries":
+        payload["horizon_mode_label"] = (
+            "single model: all weeks ahead, one fit"
+            if request.get("horizon_mode") == "single"
+            else "mixed: one model per horizon group"
+        )
+    return payload
 
 
 def _spec_dims(spec: dict) -> list[str]:
@@ -473,6 +863,7 @@ def result_details(run_dir: Path, request: dict, query: dict) -> dict:
     result = _require_done(run_dir)
     selected = _select_model(run_dir, result, query)
     selected.pop("default_model")
+    tiles = family_tiles(run_dir, request, _read_json(run_dir / "status.json", {}), result=result)
     families = {}
     if request.get("version") == 2:
         status = _read_json(run_dir / "status.json", {}).get("families", {})
@@ -495,6 +886,9 @@ def result_details(run_dir: Path, request: dict, query: dict) -> dict:
             }
             if name == selected["winner_family"]:
                 row["verdict"] = result.get("winner", {}).get("verdict") or result.get("verdict")
+            row["error_metrics"] = tiles.get(name, {}).get("error_metrics") or fm.error_metrics(
+                request.get("spec", {}), fitness=row["fitness"], verdict=row.get("verdict")
+            )
             families[name] = row
     importance_family = query.get("importance_family") or selected["family"]
     known_families = set(families) | {selected["winner_family"]}
@@ -507,14 +901,33 @@ def result_details(run_dir: Path, request: dict, query: dict) -> dict:
             importance = _read_json(run_dir / "families" / importance_family / "importance.json")
         if importance is None and importance_family == selected["winner_family"]:
             importance = _read_json(run_dir / "importance.json")
+    winner = result.get("winner") or {
+        "family": selected["winner_family"],
+        "verdict": result.get("verdict"),
+    }
+    winner = {
+        **winner,
+        "error_metrics": run_metric_payload(run_dir, request, result=result, model="winner")[
+            "error_metrics"
+        ],
+    }
+    ensemble = result.get("ensemble")
+    if ensemble is not None:
+        ensemble = {
+            **ensemble,
+            "error_metrics": run_metric_payload(run_dir, request, result=result, model="ensemble")[
+                "error_metrics"
+            ],
+        }
     return {
         **selected,
         "families": families,
-        "winner": result.get("winner")
-        or {"family": selected["winner_family"], "verdict": result.get("verdict")},
-        "ensemble": result.get("ensemble"),
+        "winner": winner,
+        "ensemble": ensemble,
         "importance_family": importance_family,
         "importance": importance,
+        "tiles": tiles,
+        **run_metric_payload(run_dir, request, result=result, model=selected["model"]),
     }
 
 
@@ -536,6 +949,292 @@ def _parse_breakdown(raw: str | None, dims: list[str]) -> list[str]:
 
 
 # ---------------------------------------------------------------- time series mode view
+
+
+def _read_view_rows(con, source):
+    return {
+        name: _unmask(values)
+        for name, values in con.execute(f"SELECT * FROM {source}").fetchnumpy().items()
+    }
+
+
+def _horizon_selection(request, query, table):
+    if "lead" in query and "blend" in query:
+        raise ValueError("lead and blend are mutually exclusive")
+    horizon = int(request["spec"].get("horizon", 1))
+    mode = "blend" if "blend" in query else "lead"
+    try:
+        n = int(query.get(mode, horizon))
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f"{mode} must be an integer from 1 to {horizon}") from exc
+    if not 1 <= n <= horizon:
+        raise ValueError(f"{mode} must be an integer from 1 to {horizon}")
+    if "weights" in query and mode != "blend":
+        raise ValueError("weights requires blend")
+    if "weeks_ahead" not in table:
+        return None
+    return {"mode": mode, "n": n}
+
+
+def _horizon_weights(query, horizon):
+    if "weights" not in query:
+        return None
+    try:
+        raw = json.loads(query["weights"])
+        if not isinstance(raw, dict) or any(
+            str(int(k)) != k or not 1 <= int(k) <= horizon for k in raw
+        ):
+            raise ValueError
+        return {int(k): v for k, v in raw.items()}
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f"weights must be a json object with leads from 1 to {horizon}") from exc
+
+
+def _select_horizon_rows(table, selection, weights=None):
+    if selection["mode"] == "lead":
+        return lead_rows(table, selection["n"])
+    return blend_rows(table, selection["n"], weights)
+
+
+def _horizon_history_source(validation, test):
+    return (
+        f"(SELECT * FROM {validation} UNION BY NAME SELECT * FROM {test} "
+        "ORDER BY series, step, weeks_ahead, origin)"
+    )
+
+
+def _horizon_sources(con, request, query, validation, test, forecast):
+    sources = {
+        name: f"read_parquet({_lit(path)})"
+        for name, path in (("validation", validation), ("test", test), ("forecast", forecast))
+    }
+    table = _read_view_rows(con, sources["test"])
+    selection = _horizon_selection(request, query, table)
+    if selection is None:
+        return None, sources
+    weights = _horizon_weights(query, int(request["spec"]["horizon"]))
+    sources["history"] = _horizon_history_source(sources["validation"], sources["test"])
+    for name, source in sources.items():
+        rows = table if name == "test" else _read_view_rows(con, source)
+        if name != "forecast":
+            rows = _select_horizon_rows(rows, selection, weights)
+        count = len(rows["step"])
+        for column in ("lower", "upper"):
+            if selection["mode"] == "blend":
+                rows[column] = np.full(count, np.nan)
+            else:
+                rows.setdefault(column, np.full(count, np.nan))
+        registered = {
+            column: values.astype("datetime64[ns]")
+            if np.issubdtype(values.dtype, np.datetime64)
+            else values
+            for column, values in rows.items()
+        }
+        con.register(f"horizon_{name}", registered)
+        sources[name] = f"horizon_{name}"
+    return selection, sources
+
+
+def _read_lead_errors(run_dir, result, model, horizon):
+    rows = (result.get(model) or {}).get("lead_errors")
+    path = run_dir / f"{model}_lead_errors.parquet"
+    default_model = _select_model(run_dir, result, {})["default_model"]
+    if rows is None and not path.exists() and model == default_model:
+        rows = result.get("lead_errors")
+        path = run_dir / "lead_errors.parquet"
+    if rows is None and path.exists():
+        with connect() as con:
+            columns = _read_view_rows(con, f"read_parquet({_lit(path)})")
+        rows = [
+            dict(zip(columns, values, strict=True))
+            for values in zip(*columns.values(), strict=True)
+        ]
+    if isinstance(rows, dict):
+        rows = [
+            {
+                "weeks_ahead": int(k),
+                "model_wape": value.get("model"),
+                "naive_wape": value.get("naive"),
+                "rows": value.get("rows"),
+                "ratio": value["model"] / value["naive"]
+                if _finite_number(value.get("model")) is not None
+                and _finite_number(value.get("naive")) not in (None, 0)
+                else None,
+            }
+            for k, value in rows.items()
+        ]
+    rows = [row for row in (rows or []) if row.get("phase", "test") == "test"]
+
+    def clean(value):
+        if isinstance(value, np.generic):
+            value = value.item()
+        return None if isinstance(value, float) and not math.isfinite(value) else value
+
+    if not rows:
+        return []
+    by_lead = {int(row["weeks_ahead"]): row for row in rows}
+    return [
+        {key: clean(value) for key, value in by_lead.get(k, {"weeks_ahead": k}).items()}
+        for k in range(1, horizon + 1)
+    ]
+
+
+def _horizon_baseline(con, request, table):
+    from smolsmort.forecast.features import step_index
+
+    if "naive_prediction" in table:
+        return table
+    if "origin" not in table:
+        return {**table, "naive_prediction": np.full(len(table["step"]), np.nan)}
+    panel = Path(request["prepared"]) / "panel.parquet"
+    target = _quote(_spec_target(request["spec"]))
+    rows = con.execute(
+        f"SELECT __series, __step, {target} FROM read_parquet({_lit(panel)}) ORDER BY __step"
+    ).fetchall()
+    unit = request["spec"].get("step", "week")
+    period = {"week": 52, "day": 365, "month": 12, "quarter": 4, "year": 1}[unit]
+    dates = np.asarray([step for _, step, _ in rows], dtype="datetime64[D]")
+    histories = {}
+    for (series, _, value), position in zip(rows, step_index(dates, unit), strict=True):
+        histories.setdefault(series, {})[position] = value
+    targets = step_index(table["step"], unit)
+    origins = step_index(table["origin"], unit)
+    predictions = []
+    for series, target, origin in zip(table["series"], targets, origins, strict=True):
+        history = histories.get(series, {})
+        seasonal = history.get(target - period) if target - period <= origin else None
+        value = seasonal if seasonal is not None and np.isfinite(seasonal) else history.get(origin)
+        predictions.append(value)
+    return {**table, "naive_prediction": np.asarray(predictions, dtype=float)}
+
+
+def _horizon_metrics(con, run_dir, request, query, path, selection):
+    scope = (
+        f"lead {selection['n']}"
+        if selection["mode"] == "lead"
+        else f"blend around {selection['n']}"
+    )
+
+    def metric(value=None, reason=None, **extra):
+        value = float(value) if value is not None and np.isfinite(value) else None
+        return {
+            "value": value,
+            "scope": "test",
+            "note": scope,
+            "reason": reason if value is None else None,
+            **extra,
+        }
+
+    if path is None or not path.exists():
+        return {
+            name: metric(reason=f"{scope}: test predictions not saved")
+            for name in ("wape", "mae", "mape", "test_ratio")
+        }
+    table = _read_view_rows(con, f"read_parquet({_lit(path)})")
+    if "weeks_ahead" not in table:
+        return {
+            name: metric(reason=f"{scope}: weeks ahead not saved")
+            for name in ("wape", "mae", "mape", "test_ratio")
+        }
+    test_targets = set(zip(table["series"], table["step"], strict=True))
+    if selection["mode"] == "blend":
+        validation = path.with_name(path.name.removesuffix("test.parquet") + "validation.parquet")
+        if validation.exists():
+            source = _horizon_history_source(
+                f"read_parquet({_lit(validation)})", f"read_parquet({_lit(path)})"
+            )
+            table = _read_view_rows(con, source)
+    table = _horizon_baseline(con, request, table)
+    weights = _horizon_weights(query, int(request["spec"]["horizon"]))
+    table = _select_horizon_rows(table, selection, weights)
+    if selection["mode"] == "blend":
+        keep = np.asarray(
+            [target in test_targets for target in zip(table["series"], table["step"], strict=True)],
+            dtype=bool,
+        )
+        table = {name: values[keep] for name, values in table.items()}
+    filters = _parse_filters(query.get("filters"))
+    if filters:
+        where = _filter_clause(filters, _spec_dims(request["spec"]))
+        panel = Path(request["prepared"]) / "panel.parquet"
+        selected = con.execute(
+            f"SELECT DISTINCT __series FROM read_parquet({_lit(panel)}) WHERE {where}"
+        ).fetchall()
+        keep = np.isin(table["series"], [row[0] for row in selected])
+        table = {name: values[keep] for name, values in table.items()}
+    actual, prediction, naive = (
+        np.asarray(table[name], dtype=float)
+        for name in ("actual", "prediction", "naive_prediction")
+    )
+    known = np.isfinite(actual)
+    valid = known & np.isfinite(prediction)
+    positive = valid & (actual > 0)
+    errors = np.abs(actual - prediction)
+    denominator = np.abs(actual[known]).sum()
+    reason = (
+        "no known actuals in this view"
+        if not known.any()
+        else ("undefined predictions for known actuals" if not np.all(valid[known]) else None)
+    )
+    absolute = errors[valid].sum()
+    naive_valid = known & np.isfinite(naive)
+    naive_error = np.abs(actual[known] - naive[known]).sum()
+    ratio_reason = reason or (
+        "naive predictions unavailable on these target weeks"
+        if not np.all(naive_valid[known])
+        else None
+    )
+    return {
+        "wape": metric(
+            absolute / denominator if denominator and reason is None else None,
+            reason or "absolute actuals sum to zero",
+        ),
+        "mae": metric(absolute / known.sum() if reason is None else None, reason),
+        "mape": metric(
+            np.mean(errors[positive] / actual[positive]) if positive.any() else None,
+            "no finite predictions with actual > 0",
+            excluded_rows=int((~positive).sum()),
+        ),
+        "test_ratio": metric(
+            absolute / naive_error if naive_error and ratio_reason is None else None,
+            ratio_reason or "naive error is zero on these target weeks",
+        ),
+    }
+
+
+def _horizon_result_metrics(run_dir, request, query, details, selection):
+    with connect() as con:
+        for model in ("winner", "ensemble"):
+            entry = details.get(model)
+            if entry is None:
+                continue
+            path = _optional_prediction_path(run_dir, {**query, "model": model}, "test")
+            entry["error_metrics"].update(
+                _horizon_metrics(con, run_dir, request, query, path, selection)
+            )
+        for family, entry in details["families"].items():
+            if family == details["winner_family"]:
+                entry["error_metrics"] = dict(details["winner"]["error_metrics"])
+            else:
+                path = run_dir / "families" / family / "test.parquet"
+                entry["error_metrics"] = {
+                    **entry["error_metrics"],
+                    **_horizon_metrics(con, run_dir, request, query, path, selection),
+                }
+    details["error_metrics"] = dict(details[details["model"]]["error_metrics"])
+    scope = (
+        f"lead {selection['n']}"
+        if selection["mode"] == "lead"
+        else f"blend around {selection['n']}"
+    )
+    for metric in details["metric_registry"]:
+        if metric["scope"] == "test":
+            metric["label"] += f" · {scope}"
+            metric["explanation"] += f"; {scope}"
+            if metric["id"] == "test_ratio":
+                metric["computation"] = (
+                    "view model wape / naive wape on the same target weeks and with the same weights"
+                )
 
 
 def _series_combos(con, panel_path: Path, breakdown: list[str], where: str) -> list[tuple]:
@@ -585,6 +1284,7 @@ def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
     forecast = _prediction_path(run_dir, query, "forecast")
 
     con = connect()
+    selection, sources = _horizon_sources(con, request, query, validation, test, forecast)
     where = _filter_clause(filters, dims)
     combos = _series_combos(con, panel, breakdown, where)
     note = None
@@ -615,29 +1315,31 @@ def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
             f"WHERE {combo_where} GROUP BY __step ORDER BY __step",
         )
 
-        hist_sql = f"""
-            WITH keymap AS ({keymap_sql}),
-            hist AS (
+        history = sources.get("history")
+        if history is None:
+            history = f"""(
+            WITH hist AS (
                 SELECT series, step, bucket, actual, prediction
                 FROM read_parquet({_lit(str(validation))})
                 UNION ALL
                 SELECT series, step, bucket, actual, prediction
                 FROM read_parquet({_lit(str(test))})
-            ),
-            per_step AS (
-                SELECT series, step, AVG(prediction) AS prediction
-                FROM hist GROUP BY series, step
-            ),
-            joined AS (SELECT p.step, p.prediction, k.* FROM per_step p JOIN keymap k USING (series))
+            )
+            SELECT series, step, AVG(prediction) AS prediction FROM hist GROUP BY series, step
+            )"""
+        hist_sql = f"""
+            WITH keymap AS ({keymap_sql}),
+            joined AS (SELECT p.step, p.prediction, k.* FROM {history} p JOIN keymap k USING (series))
             SELECT step, SUM(prediction) FROM joined WHERE {combo_where} GROUP BY step ORDER BY step
         """
         hist_forecast = _fetch_series(con, hist_sql)
 
+        bucket = "f.weeks_ahead" if selection else "f.bucket"
         future_sql = f"""
             WITH keymap AS ({keymap_sql}),
             joined AS (
-                SELECT f.step, f.bucket, f.prediction, k.*
-                FROM read_parquet({_lit(str(forecast))}) f JOIN keymap k USING (series)
+                SELECT f.step, {bucket} AS bucket, f.prediction, k.*
+                FROM {sources["forecast"]} f JOIN keymap k USING (series)
             )
             SELECT step, bucket, SUM(prediction) FROM joined WHERE {combo_where}
             GROUP BY step, bucket ORDER BY step
@@ -653,9 +1355,19 @@ def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
         series_lines.append((actual_id, label, actual, False))
         series_lines.append((forecast_id, label, forecast_series, True))
 
-        lo_by_step, hi_by_step = _timeseries_band(
-            con, keymap_sql, validation, forecast, combo_where, future_rows, nonnegative
-        )
+        if selection is None:
+            lo_by_step, hi_by_step = _timeseries_band(
+                con, keymap_sql, validation, forecast, combo_where, future_rows, nonnegative
+            )
+        elif selection["mode"] == "lead":
+            lo_by_step, hi_by_step = _horizon_band(con, keymap_sql, sources, combo_where)
+            future_lo, future_hi = _timeseries_band(
+                con, keymap_sql, validation, forecast, combo_where, future_rows, nonnegative, True
+            )
+            lo_by_step.update(future_lo)
+            hi_by_step.update(future_hi)
+        else:
+            continue
         bands.append((f"band:{forecast_id}", forecast_id, lo_by_step, hi_by_step))
 
     x = sorted(x_set)
@@ -677,25 +1389,51 @@ def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
         "verdict": result["verdict"],
         "mode": "timeseries",
     }
+    if selection:
+        model = _select_model(run_dir, result, query)["model"]
+        out.update(
+            view=selection,
+            horizon=int(spec["horizon"]),
+            weeks_ahead_shown=selection["n"] if selection["mode"] == "lead" else None,
+            lead_errors=_read_lead_errors(run_dir, result, model, int(spec["horizon"])),
+        )
     if note:
         out["note"] = note
+    con.close()
     return out
 
 
-def _timeseries_band(con, keymap_sql, validation, forecast, combo_where, future_rows, nonnegative):
-    """per bucket: fit a band on the view's aggregated validation residuals, apply it to that
-    bucket's aggregated future prediction - buckets partition the horizon, so every future step
-    gets exactly one band"""
+def _horizon_band(con, keymap_sql, sources, where):
+    rows = con.execute(f"""
+        WITH keymap AS ({keymap_sql}), predictions AS (
+            SELECT series, step, lower, upper FROM {sources["history"]}
+            UNION ALL SELECT series, step, lower, upper FROM {sources["forecast"]}
+        ), joined AS (SELECT p.step, p.lower, p.upper, k.* FROM predictions p JOIN keymap k USING (series))
+        SELECT step,
+            CASE WHEN COUNT(lower) = COUNT(*) THEN SUM(lower) END,
+            CASE WHEN COUNT(upper) = COUNT(*) THEN SUM(upper) END
+        FROM joined WHERE {where} GROUP BY step ORDER BY step
+    """).fetchall()
+    lo = {_iso(step): float(low) if low is not None else None for step, low, _ in rows}
+    hi = {_iso(step): float(high) if high is not None else None for step, _, high in rows}
+    return lo, hi
+
+
+def _timeseries_band(
+    con, keymap_sql, validation, forecast, combo_where, future_rows, nonnegative, single=False
+):
+    """fit aggregate validation bands separately by lead in single mode or bucket in mixed"""
     buckets = sorted({b for _s, b, _p in future_rows})
     lo_by_step: dict[str, float] = {}
     hi_by_step: dict[str, float] = {}
     for bucket in buckets:
+        predicate = f"v.weeks_ahead = {int(bucket)}" if single else f"v.bucket = {_lit(bucket)}"
         val_sql = f"""
             WITH keymap AS ({keymap_sql}),
             joined AS (
                 SELECT v.step, v.actual, v.prediction, k.*
                 FROM read_parquet({_lit(str(validation))}) v JOIN keymap k USING (series)
-                WHERE v.bucket = {_lit(bucket)}
+                WHERE {predicate}
             )
             SELECT step, SUM(actual), SUM(prediction) FROM joined WHERE {combo_where}
             GROUP BY step ORDER BY step
@@ -990,6 +1728,8 @@ def view(run_dir: Path, request: dict, query: dict) -> dict:
         if mode == "entity"
         else timeseries_view(run_dir, request, query)
     )
+    if payload.get("view"):
+        _horizon_result_metrics(run_dir, request, query, details, payload["view"])
     for series in payload["series"]:
         if series.get("dashed"):
             series["family"] = details["family"]
@@ -1024,6 +1764,11 @@ def timeseries_table(run_dir: Path, request: dict, query: dict) -> dict:
     validation = _prediction_path(run_dir, query, "validation")
     test = _prediction_path(run_dir, query, "test")
     forecast = _prediction_path(run_dir, query, "forecast")
+    con = connect()
+    selection, sources = _horizon_sources(con, request, query, validation, test, forecast)
+    single = selection is not None
+    hist_leads = ", h.origin, h.weeks_ahead" if single else ""
+    future_leads = ", f.origin, f.weeks_ahead" if single else ""
 
     keymap_sql = (
         'SELECT DISTINCT "__series" AS series'
@@ -1034,21 +1779,34 @@ def timeseries_table(run_dir: Path, request: dict, query: dict) -> dict:
     hist_sql = f"""
         WITH keymap AS ({keymap_sql})
         SELECT h.step, {dims_sel + "," if dims else ""} h.prediction, NULL AS lower, NULL AS upper,
-               h.actual, FALSE AS future
+               h.actual, FALSE AS future{hist_leads}
         FROM read_parquet({_lit(str(validation))}) h
         JOIN keymap k USING (series)
         UNION ALL
         SELECT h.step, {dims_sel + "," if dims else ""} h.prediction, NULL AS lower, NULL AS upper,
-               h.actual, FALSE AS future
+               h.actual, FALSE AS future{hist_leads}
         FROM read_parquet({_lit(str(test))}) h
         JOIN keymap k USING (series)
         UNION ALL
         SELECT f.step, {dims_sel + "," if dims else ""} f.prediction, f.lower, f.upper,
-               CAST(NULL AS DOUBLE) AS actual, TRUE AS future
+               CAST(NULL AS DOUBLE) AS actual, TRUE AS future{future_leads}
         FROM read_parquet({_lit(str(forecast))}) f
         JOIN keymap k USING (series)
     """
-    con = connect()
+    if selection:
+        selected_leads = (
+            hist_leads if selection["mode"] == "lead" else ", NULL AS origin, NULL AS weeks_ahead"
+        )
+        hist_sql = f"""
+            WITH keymap AS ({keymap_sql})
+            SELECT h.step, {dims_sel + "," if dims else ""} h.prediction, h.lower, h.upper,
+                   h.actual, FALSE AS future{selected_leads}
+            FROM {sources["history"]} h JOIN keymap k USING (series)
+            UNION ALL
+            SELECT f.step, {dims_sel + "," if dims else ""} f.prediction, f.lower, f.upper,
+                   CAST(NULL AS DOUBLE) AS actual, TRUE AS future{future_leads}
+            FROM {sources["forecast"]} f JOIN keymap k USING (series)
+        """
     full_sql = f"SELECT * FROM ({hist_sql}) t WHERE {where}"
     sort = query.get("sort") or "future"
     if sort == _family_column(request):
@@ -1057,10 +1815,13 @@ def timeseries_table(run_dir: Path, request: dict, query: dict) -> dict:
     full_sql += f" ORDER BY {_quote(sort) if sort != 'future' else 'future'} {order}, step ASC"
     rows = con.execute(full_sql).fetchall()
     columns = ["step", *dims, "prediction", "lower", "upper", "actual", "future"]
+    if single:
+        columns += ["origin", "weeks_ahead"]
     page = int(query.get("page", 0))
     size = int(query.get("size", 50))
     page_rows, total = _paginate(rows, page, size)
     out_rows = [_row_to_json(r) for r in page_rows]
+    con.close()
     return {"columns": columns, "rows": out_rows, "total": total, "page": page}
 
 

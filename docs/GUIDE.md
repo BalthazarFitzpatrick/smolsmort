@@ -602,8 +602,9 @@ and, when available, `<column>:log`. entity calendar families use the anchor, in
 mapped using the spec. cost calibrations use model-family names and stay unchanged. feature
 columns, values and search behaviour stay the same.
 
-**timeseries feature candidates.** each horizon bucket reads target and measure values only through
-its origin, `target step - bucket end`. the examples below use target `unit` and time column
+**timeseries feature candidates.** single mode reads target and measure values through the row's
+origin, `target step - weeks_ahead`; mixed mode uses `target step - bucket end`.
+the examples below use target `unit` and time column
 `need_by_date`; `k`, `w` and `a` stand for the lag, window and alpha. the search can choose each
 family below independently:
 
@@ -611,7 +612,7 @@ family below independently:
 |---|---|
 | `unit@need_by_date:lag+0` through `unit@need_by_date:lag+3` | the origin value and its previous three steps |
 | `unit@need_by_date:season` | the target's seasonal lag, when it reaches back to the origin or earlier |
-| `unit@need_by_date:lag:k` | individual absolute lags; weekly: 1 through 13, 26 and 52; only `bucket end <= k < training history` |
+| `unit@need_by_date:lag:k` | individual lags; weekly: 1 through 13, 26 and 52; relative to the origin in single mode, relative to the target with `bucket end <= k < training history` in mixed mode |
 | `unit@need_by_date:roll:w:mean`, `unit@need_by_date:roll:w:std`, `unit@need_by_date:roll:w:max`, `unit@need_by_date:roll:w:zeros` | separate rolling mean, population standard deviation, maximum and zero share |
 | `unit@need_by_date:roll:w:min`, `unit@need_by_date:roll:w:median`, `unit@need_by_date:roll:w:q10`, `unit@need_by_date:roll:w:q90` | separate rolling minimum, median and interpolated 10th/90th percentiles |
 | `unit@need_by_date:diff:k` | origin value minus the value `k` steps before it |
@@ -693,6 +694,67 @@ only when finishing the winner. result and verdict accuracy fields include `val_
 `val_test_gap` (test wape minus mean validation wape; positive means worse on test).
 paused searches saved before walk-forward validation must restart; their single-window scores
 cannot be mixed with fold scores. checkpoints created with the same fold windows resume normally.
+
+#### one model for all weeks ahead
+
+`horizon_mode="single"` is the default for new runs. one global model learns all series and all
+leads, with one parameter set and one search. a training row is `(series, origin, weeks_ahead)`:
+for origin `o` and lead `k` from 1 through `horizon`, its target is the observed value at `o + k`.
+the numeric `weeks_ahead` feature is always present; ridge also gets a one-hot column per lead.
+the model does not discard recent observations for near weeks. from the last observed week,
+it predicts every one of the next `horizon` weeks in a single fit.
+
+`horizon_mode="mixed"` keeps the earlier horizon groups, such as 1, 2–4 and 5–8 weeks. each
+group has its own model and uses data through `target step - bucket end`. mixed stitches those
+models into one forecast. `"grouped"` is an alias of `"mixed"`. a saved `request.json` without
+`horizon_mode` means mixed, including reloads and refits; it does not acquire the new default.
+
+**leak rule.** every feature uses only data observed through and including its own origin.
+target lags, rolling windows, exponential means, differences, slopes, momentum, cycle ratios,
+measures and input mixes all end there. family names stay stable; individual lag families in
+single mode now mean a lag from the origin. calendar and holidays describe the target week,
+since they are known ahead of time. weekly seasonal features use the target's same week last
+year and its three-week neighbourhood when those observations are already known. a detected
+period contributes `target - period` only when that step is at or before the origin; otherwise
+the feature is missing. no future measure value or target value becomes an input.
+
+**origin blocks.** with seasonal holdout, the eight windows become eight blocks of origins:
+four validation blocks, then four test blocks, normally 13 weekly origins per block. every
+origin contributes all leads with an observed target; the history tail keeps its shorter rows.
+block holdout keeps the existing three validation folds and the final `max(horizon, 13)` steps
+as its test range, interpreting their ranges as origins. each block fits only training rows
+whose target precedes the block start. later origins in that block use newly observed inputs
+through their own origin, while the fitted model's training labels remain sealed at the start.
+changing data after an origin cannot affect that origin's prediction; changing data within a
+block can affect predictions at its later origins. statistical families refit every four
+origins and update their series state at every origin, always from data through that origin.
+
+validation fitness pools absolute errors and actual volumes over every `(origin, k)` row in
+each block, then averages block wape. test wape pools all test rows. seasonal naive is evaluated
+on those same rows, using the same target week last year where available and the existing
+origin-value fallback otherwise. the model/naive error ratio retains its existing meaning.
+`result.json` records the mode, horizon, block origin dates, origin counts and row counts.
+
+**saved leads and bands.** validation and test tables, including winner and ensemble variants,
+add `origin` and integer `weeks_ahead`; `bucket` remains `"1-horizon"`, such as `"1-8"`.
+the same target week can appear up to `horizon` times because these are forecasts made at
+different origins. those rows are distinct observations and are never averaged across leads.
+`forecast.parquet` has one origin, the last known week, and exactly one row per series and lead.
+charts show historical predictions at the largest lead and report `weeks_ahead_shown`; the
+future line keeps all future weeks. tables and exports preserve every origin and lead.
+
+`result.json` saves test wape by lead in `lead_errors` and validation wape in
+`validation_lead_errors`; each lead maps to `model`, `naive` and `rows`. `lead_errors.parquet`
+includes `phase` (`validation` or `test`), `weeks_ahead`, `rows`, `model_wape`, `naive_wape`,
+`ratio` and `mae`. the 80% band is fitted separately for each lead from its validation
+residuals and applied to test and future rows with that lead. saved `bands` keys are the leads
+`"1"` through `"horizon"`; mixed-mode keys remain horizon groups.
+
+`band.parquet` adds `phase` and `weeks_ahead`, retaining its existing columns and both series
+and `all` rows. lead 0 means pooled rows; leads 1 through `horizon` carry their own coverage
+and width. `band_summary` in `result.json` contains pooled `validation` and `test`,
+`validation_by_lead`, `test_by_lead`, and `forecast_by_lead` width percentages. aggregate chart
+bands also keep the leads separate.
 
 **search.** a genetic search tries feature families, objectives and tree settings against the
 validation rows and stops when a generation brings no gain larger than its own noise, or at the time
@@ -825,7 +887,7 @@ on validation residuals, applied to the held-out weeks), so a chart can show ban
 `band.parquet` has one row per series plus `all`: `rows`, `coverage`, `band_width_pct`,
 `median_width_pct`; `result.json` repeats it as `band_summary`, with the forecast's own width.
 
-**holdout.** the run request field `"holdout"` is `"block"` (default) or `"seasonal"`. block tests
+**holdout in mixed mode.** the run request field `"holdout"` is `"block"` (default) or `"seasonal"`. block tests
 one recent stretch, so it speaks for one time of year. seasonal (time series only) uses eight
 rolling origins a quarter apart (13 weekly steps, 3 monthly), the newest one the last whose
 horizon still ends inside the history. the four older origins are validation folds, the four newer

@@ -63,6 +63,7 @@ def start_run(
     time_budget_s: float | None = None,
     transform: str = "none",
     holdout: str = "block",
+    horizon_mode: str = "single",
     aggregate: str = "none",
     aggregate_weight: str | None = None,
     ensemble: dict | None = None,
@@ -86,6 +87,7 @@ def start_run(
         "recipe": recipe,
         "nthread": nthread,
         "aggregate": aggregate,
+        "horizon_mode": horizon_mode,
     }
     if aggregate_weight is not None:
         request["aggregate_weight"] = aggregate_weight
@@ -215,6 +217,8 @@ def run_state(
 
 
 def _metadata(folder: Path, status: dict, generations: list[dict], events: list[dict]) -> dict:
+    from smolsmort.forecast.views import run_metric_payload
+
     request_path = folder / "request.json"
     request = json.loads(request_path.read_text()) if request_path.exists() else {}
     result_path = folder / "result.json"
@@ -262,6 +266,7 @@ def _metadata(folder: Path, status: dict, generations: list[dict], events: list[
         "elapsed": status.get("elapsed") or finishing.get("elapsed") or latest.get("elapsed"),
         "leaderboard_generation": revision,
         "progress": progress,
+        **run_metric_payload(folder, request, {"best_error": latest.get("best")}, result=result),
     }
 
 
