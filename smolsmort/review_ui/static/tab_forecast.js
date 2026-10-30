@@ -5,6 +5,7 @@ const FORECAST_ENTITY_ROLES = ['anchor', 'dimension', 'measure', 'target', 'igno
 const FORECAST_AGGREGATIONS = ['sum', 'mean', 'median', 'min', 'max'];
 const FORECAST_UNITS = ['day', 'week', 'month', 'quarter', 'year'];
 const FORECAST_PAGE_SIZE = 50;
+const FORECAST_BLEND_STRENGTHS = [1, 2, 4, 8];
 
 function forecastSearchProgress(run) {
   const progress = run.progress || {};
@@ -346,12 +347,17 @@ function forecastTileSearchScale(tiles, selected, registry) {
     low: low >= 0 ? Math.max(0, low - padding) : low - padding, high: high + padding};
 }
 
-// tile charts share one drawing box: plot on top, axis and its labels below
-const FORECAST_TILE_PLOT = {height: 58, top: 4, bottom: 40, axis: 42, labels: 55};
+const FORECAST_TILE_SEARCH_HEIGHT = 120;
+const FORECAST_TILE_ROUND_HEIGHT = 120;
+// keep axis labels below the plot without scaling down its vertical space
+const FORECAST_TILE_PLOT = {top: 4, axis: 2, labels: 15, bottom: 18};
 
-function forecastTileSvg(width, ariaLabel, className) {
+function forecastTileSvg(width, plotHeight, ariaLabel, className) {
+  const top = FORECAST_TILE_PLOT.top, bottom = top + plotHeight;
+  const height = bottom + FORECAST_TILE_PLOT.bottom;
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', `0 0 ${width} ${FORECAST_TILE_PLOT.height}`);
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  svg.style.height = `${height}px`;
   svg.setAttribute('role', 'img');
   svg.setAttribute('aria-label', ariaLabel);
   svg.classList.add(className);
@@ -363,13 +369,13 @@ function forecastTileSvg(width, ariaLabel, className) {
   };
   const label = (text, attrs) => { add('text', attrs).textContent = text; };
   const axis = (last, name) => {
-    const {axis: line, labels} = FORECAST_TILE_PLOT;
+    const line = bottom + FORECAST_TILE_PLOT.axis, labels = bottom + FORECAST_TILE_PLOT.labels;
     add('line', {x1: 8, x2: width - 8, y1: line, y2: line, class: 'forecast-tile-axis'});
     label('1', {x: 8, y: labels});
     label(name, {x: width / 2, y: labels, 'text-anchor': 'middle'});
     if (last > 1) label(String(last), {x: width - 8, y: labels, 'text-anchor': 'end'});
   };
-  return {svg, add, axis};
+  return {svg, add, axis, top, bottom};
 }
 
 function forecastTileChartHead(className, title, value, explanation = title) {
@@ -389,6 +395,7 @@ function forecastTileChart(tile, scale, width) {
     ? forecastTileSearchScale([tile], scale.fallback, []) : scale;
   const generation = Math.max(1, ...points.map(point => point.generation));
   const wrap = forecastNode('div', 'forecast-tile-chart');
+  wrap.style.setProperty('--chart-height', `${FORECAST_TILE_SEARCH_HEIGHT + FORECAST_TILE_PLOT.top + FORECAST_TILE_PLOT.bottom}px`);
   wrap.dataset.chartMetric = metric.id;
   wrap.dataset.recorded = String(!fallback);
   wrap.dataset.scaleMin = String(low);
@@ -408,10 +415,9 @@ function forecastTileChart(tile, scale, width) {
   const end = (tile.state === 'pruned' ? 'pruned · ' : '')
     + (tile.search_single ? 'single value' : `gen ${last.generation}`);
   wrap.append(forecastTileChartHead('forecast-tile-chart-label', metricLabel, `${end}: ${value}`, explanation));
-  const {svg, add, axis} = forecastTileSvg(width,
+  const {svg, add, axis, top, bottom} = forecastTileSvg(width, FORECAST_TILE_SEARCH_HEIGHT,
     `${tile.name}: ${metricLabel} by generation; ${end}: ${value}; ${fallback ? 'own' : 'shared'} scale ${forecastMetricNumber(metric, low)} to ${forecastMetricNumber(metric, high)}`,
     'forecast-tile-search');
-  const {top, bottom} = FORECAST_TILE_PLOT;
   const x = step => 8 + (step - 1) / Math.max(1, generation - 1) * (width - 16);
   const y = score => bottom - (score - low) / (high - low) * (bottom - top);
   axis(generation, 'generation');
@@ -482,6 +488,7 @@ function forecastTileRoundScale(tiles, metric) {
 
 function forecastTileRoundChart(tile, metric, shared, width) {
   const wrap = forecastNode('div', 'forecast-tile-rounds');
+  wrap.style.setProperty('--chart-height', `${FORECAST_TILE_ROUND_HEIGHT + FORECAST_TILE_PLOT.top + FORECAST_TILE_PLOT.bottom}px`);
   const series = forecastTileRoundSeries(tile, metric);
   const curves = (series?.curves || []).filter(curve => curve.values.some(Number.isFinite));
   if (!curves.length) {
@@ -507,10 +514,9 @@ function forecastTileRoundChart(tile, metric, shared, width) {
     ? forecastMetricHelp(metric, 'validation') : FORECAST_LOSS_HELP;
   wrap.append(forecastTileChartHead('forecast-tile-chart-label', title,
     `gen ${newest.generation} · round ${newest.values.length}: ${format(end)}`, explanation));
-  const {svg, add, axis} = forecastTileSvg(width,
+  const {svg, add, axis, top, bottom} = forecastTileSvg(width, FORECAST_TILE_ROUND_HEIGHT,
     `${tile.name}: ${shown.label} per boosting round for the newest ${curves.length} generations; generation ${newest.generation} ends at ${format(end)}`,
     'forecast-tile-round-plot');
-  const {top, bottom} = FORECAST_TILE_PLOT;
   const x = round => 8 + (round - 1) / Math.max(1, rounds - 1) * (width - 16);
   // values above the scale pin to the top edge rather than leave the box
   const y = value => Math.max(top, bottom - (value - scale.low) / (scale.high - scale.low) * (bottom - top));
@@ -581,7 +587,7 @@ function forecastTileBars(tile, scale) {
   return wrap;
 }
 
-// a square tile: its side is the height the one-chart tile needed, so both charts fit above
+// preserve the existing tile width; both faces determine the height from their content
 function forecastTileSize(tiles, metrics) {
   const folds = Math.max(4, ...tiles.map(tile => forecastTileWapeBars(tile).length));
   return 266 + metrics.length * 20 + (folds - 4) * 22;
@@ -666,6 +672,40 @@ function forecastDropdown(options, value, onPick, label, format = value => value
   return head;
 }
 
+function forecastBlendDropdown(horizon, getSelection, onPick) {
+  const head = forecastNode('button', 'toggle dropdown-head');
+  head.type = 'button';
+  head.setAttribute('aria-label', 'blend');
+  head.setAttribute('aria-expanded', 'false');
+  head.onclick = () => {
+    const selected = getSelection();
+    if (!selected) return;
+    const week = selected.mode === 'blend' ? selected.n : 'off';
+    const strength = selected.strength ?? 1;
+    const pick = (n, counts, menu) => {
+      menu.close();
+      onPick(n, counts);
+    };
+    forecastOpenMenu(new ForecastBlendMenu({title: 'blend',
+      onConfirm: menu => {
+        const row = document.activeElement;
+        if (menu.el?.contains(row) && row.classList.contains('menu-item')) row.click();
+      },
+      sections: [{kind: 'columns', columns: [
+        {label: 'week', multi: false,
+          items: ['off', ...Array.from({length: horizon}, (_, index) => index + 1)]
+            .map(n => ({id: n, label: String(n), on: n === week})),
+          onPick: (item, _on, menu) => pick(item.id, strength, menu)},
+        {label: 'counts', multi: false,
+          items: FORECAST_BLEND_STRENGTHS.map(counts => ({id: `${counts}x`,
+            label: `${counts}x`, on: counts === strength})),
+          onPick: (item, _on, menu) => pick(week, Number.parseInt(item.id, 10), menu)},
+      ]}],
+    }), head);
+  };
+  return head;
+}
+
 // choices open inside the parent menu: a second floating menu would dismiss its draft
 function forecastInlineSelect(options, value, onPick, label) {
   const wrap = forecastNode('div', 'forecast-inline-select');
@@ -716,6 +756,14 @@ class ForecastFieldMenu extends Menu {
     const panel = super._build();
     panel.classList.add('forecast-field-menu');
     panel.querySelectorAll('.menu-item').forEach(row => { row.title = row.textContent; });
+    return panel;
+  }
+}
+
+class ForecastBlendMenu extends Menu {
+  _build() {
+    const panel = super._build();
+    panel.classList.add('forecast-blend-menu');
     return panel;
   }
 }
@@ -1604,13 +1652,13 @@ class ForecastTopic {
       ['date, newest first', 'best performance'], this.runOrder,
       value => {
         this.runOrder = value;
-        setHead(sortHead, 'sort by');
-        sortHead.title = `sort by: ${value}`;
+        setHead(sortHead, 'sort');
+        sortHead.title = 'sort runs';
         this.paintRuns();
       }, 'sort runs'
     );
-    setHead(sortHead, 'sort by');
-    sortHead.title = `sort by: ${this.runOrder}`;
+    setHead(sortHead, 'sort');
+    sortHead.title = 'sort runs';
     document.getElementById(`${this.topic}-run-sort`).append(sortHead);
     document.getElementById(`${this.topic}-run-warm`).onclick = () => this.warmStartRun(this.selectedRunId);
     document.getElementById(`${this.topic}-run-refit`).onclick = () => this.refitRun(this.selectedRunId);
@@ -2193,7 +2241,6 @@ class ForecastTopic {
           <div id="${this.topic}-chart-status" class="stat hidden"></div>
           <div id="${this.topic}-chart" class="forecast-chart"></div>
           <div id="${this.topic}-chart-caption" class="stat hidden"></div>
-          <div id="${this.topic}-horizon-help" class="stat hidden"></div>
           <div id="${this.topic}-view-metrics" class="forecast-metric-lines hidden"></div>
         </section>
         <section class="forecast-pane forecast-result-panel hidden" id="${this.topic}-family-comparison-wrap">
@@ -2404,14 +2451,26 @@ class ForecastTopic {
     if (selected && ['lead', 'blend'].includes(selected.mode) && Number.isInteger(selected.n)
         && selected.n >= 1 && selected.n <= this.resultsSpec?.horizon) {
       params.set(selected.mode, String(selected.n));
+      if (selected.mode === 'blend') {
+        if (selected.weights) params.set('weights', JSON.stringify(selected.weights));
+        else params.set('strength', String(selected.strength ?? 1));
+      }
     }
+  }
+
+  async selectHorizonView(selection) {
+    this.horizonSelections[this.resultsRunId] = selection;
+    try { localStorage.setItem(this.horizonStorageKey, JSON.stringify(this.horizonSelections)); }
+    catch (error) { /* selection still works when storage is unavailable */ }
+    this.tableRequest++;
+    this.tableState.page = 0;
+    await this.refreshView();
+    await this.refreshTable();
   }
 
   paintHorizonControls(view) {
     const controls = document.getElementById(`${this.topic}-horizon-controls`);
-    const help = document.getElementById(`${this.topic}-horizon-help`);
     controls.classList.toggle('hidden', !view.view);
-    help.classList.toggle('hidden', !view.view);
     const errors = view.lead_errors || [];
     document.getElementById(`${this.topic}-lead-errors-wrap`).classList.toggle('hidden', !errors.length);
     const percent = value => Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : '-';
@@ -2427,31 +2486,27 @@ class ForecastTopic {
         Number.isFinite(row.ratio) ? row.ratio.toFixed(2) : '-', row.rows ?? '-',
       ]));
     if (!view.view) return;
-    this.horizonSelections[this.resultsRunId] = {...view.view};
+    const strength = view.view.strength ?? this.horizonSelections[this.resultsRunId]?.strength ?? 1;
+    this.horizonSelections[this.resultsRunId] = {...view.view, strength};
     const descriptions = {
       lead: 'show only the forecast made n weeks before each week. nothing is averaged.',
-      blend: 'average every forecast of a week. equal weights for now. a blend is not a forecast the model made; use it to smooth, not to judge.',
+      blend: 'average of all forecasts of a week; the chosen week counts s times as much as each other week. not a forecast the model made.',
     };
-    help.textContent = descriptions[view.view.mode];
     if (controls.dataset.horizon !== String(view.horizon)) {
       controls.dataset.horizon = String(view.horizon);
       controls.replaceChildren();
       for (const mode of ['lead', 'blend']) {
         const picker = forecastNode('div', 'forecast-metric-picker');
         const options = Array.from({length: view.horizon}, (_, index) => index + 1);
-        if (mode === 'blend') options.unshift('off');
-        const format = n => n === 'off' ? 'off' : mode === 'blend' ? `around ${n}`
-          : `${n} ${n === 1 ? 'week' : 'weeks'} ahead`;
-        const button = forecastDropdown(options, 'off', async n => {
-          this.horizonSelections[this.resultsRunId] = n === 'off'
-            ? {mode: 'lead', n: view.horizon} : {mode, n};
-          try { localStorage.setItem(this.horizonStorageKey, JSON.stringify(this.horizonSelections)); }
-          catch (error) { /* selection still works when storage is unavailable */ }
-          this.tableRequest++;
-          this.tableState.page = 0;
-          await this.refreshView();
-          await this.refreshTable();
-        }, mode, format);
+        const button = mode === 'blend' ? forecastBlendDropdown(view.horizon,
+          () => this.horizonSelections[this.resultsRunId], (n, strength) => {
+          const selected = this.horizonSelections[this.resultsRunId];
+          this.selectHorizonView(n === 'off'
+            ? {mode: 'lead', n: selected.mode === 'lead' ? selected.n : view.horizon, strength}
+            : {mode: 'blend', n, strength});
+        }) : forecastDropdown(options, 'off', n => this.selectHorizonView({mode: 'lead', n,
+          strength: this.horizonSelections[this.resultsRunId]?.strength ?? 1}),
+        mode, n => n === 'off' ? 'off' : `${n} ${n === 1 ? 'week' : 'weeks'} ahead`);
         button.id = `${this.topic}-${mode}`;
         button.title = descriptions[mode];
         picker.append(button);
@@ -2463,8 +2518,11 @@ class ForecastTopic {
       const n = view.view.n;
       const button = document.getElementById(`${this.topic}-${mode}`);
       button.dataset.value = active ? String(n) : 'off';
+      button.dataset.strength = String(strength);
       setHead(button, `${mode}: ${!active ? 'off'
-        : mode === 'blend' ? `around ${n}` : `${n} ${n === 1 ? 'week' : 'weeks'} ahead`}`);
+        : mode === 'blend' ? view.view.weights ? 'custom weights'
+          : strength === 1 ? 'equal weights' : `week ${n} counts ${strength}x`
+          : `${n} ${n === 1 ? 'week' : 'weeks'} ahead`}`);
       button.title = descriptions[mode];
     }
   }
@@ -2570,7 +2628,8 @@ class ForecastTopic {
     const caption = document.getElementById(`${this.topic}-chart-caption`);
     caption.textContent = !view.view ? '' : view.view.mode === 'lead'
       ? `each week shows the forecast made ${view.view.n} weeks before that week.`
-      : `each week shows the average of all its forecasts, equal weights, centred on ${view.view.n} for later weighting.`;
+      : `each week shows the average of all its forecasts; ${view.view.weights ? 'custom weights' : (view.view.strength ?? 1) === 1
+        ? 'equal weights' : `week ${view.view.n} counts ${view.view.strength}x as much as each other week`}. not a forecast the model made.`;
     caption.classList.toggle('hidden', !caption.textContent);
   }
 

@@ -13,7 +13,22 @@ def _validate_lead(n: int) -> None:
         raise ValueError("lead must be a positive integer")
 
 
-def _validate_weights(weights: dict[int, float]) -> dict[int, float]:
+def build_blend_weights(horizon: int, n: int, strength: int = 1) -> dict[int, int]:
+    """every lead contributes; the chosen lead counts strength times as much"""
+    _validate_lead(horizon)
+    _validate_lead(n)
+    if n > horizon:
+        raise ValueError(f"blend must be an integer from 1 to {horizon}")
+    if (
+        isinstance(strength, bool)
+        or not isinstance(strength, Integral)
+        or strength not in (1, 2, 4, 8)
+    ):
+        raise ValueError("strength must be 1, 2, 4, or 8")
+    return {lead: int(strength) if lead == n else 1 for lead in range(1, horizon + 1)}
+
+
+def validate_blend_weights(weights: dict[int, float]) -> dict[int, float]:
     if not isinstance(weights, dict) or not weights:
         raise ValueError("weights must be a nonempty mapping of leads to weights")
     validated = {}
@@ -45,11 +60,11 @@ def lead_rows(table: dict[str, np.ndarray], n: int) -> dict[str, np.ndarray]:
 def blend_rows(
     table: dict[str, np.ndarray], n: int, weights: dict[int, float] | None = None
 ) -> dict[str, np.ndarray]:
-    """blend predictions per target; n records the centre but adds no implicit weighting"""
+    """blend all available predictions per target with explicit, locally normalized weights"""
     if "weeks_ahead" not in table:
         return table
     _validate_lead(n)
-    validated = _validate_weights(weights) if weights is not None else None
+    validated = validate_blend_weights(weights) if weights is not None else None
     columns = {name: np.asarray(values) for name, values in table.items()}
     groups = {}
     for index, target in enumerate(zip(columns["series"], columns["step"], strict=True)):

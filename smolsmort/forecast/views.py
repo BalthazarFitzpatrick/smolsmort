@@ -24,7 +24,12 @@ import numpy as np
 from smolsmort.forecast import evaluate as ev
 from smolsmort.forecast import metrics as fm
 from smolsmort.forecast.families import registered_families
-from smolsmort.forecast.horizon_view import blend_rows, lead_rows
+from smolsmort.forecast.horizon_view import (
+    blend_rows,
+    build_blend_weights,
+    lead_rows,
+    validate_blend_weights,
+)
 from smolsmort.forecast.spec import normalize_mode, normalize_saved_modes, spec_from_dict
 from smolsmort.forecast.tables import _unmask, connect
 
@@ -971,29 +976,55 @@ def _horizon_selection(request, query, table):
         raise ValueError(f"{mode} must be an integer from 1 to {horizon}")
     if "weights" in query and mode != "blend":
         raise ValueError("weights requires blend")
+    if "strength" in query and mode != "blend":
+        raise ValueError("strength requires blend")
+    raw_strength = query.get("strength", 1)
+    if str(raw_strength) not in ("1", "2", "4", "8"):
+        raise ValueError("strength must be 1, 2, 4, or 8")
+    if "strength" in query and "weights" in query:
+        raise ValueError("strength and weights are mutually exclusive")
     if "weeks_ahead" not in table:
         return None
-    return {"mode": mode, "n": n}
+    selection = {"mode": mode, "n": n}
+    if mode == "blend":
+        if "weights" in query:
+            selection["weights"] = _horizon_weights(query, horizon, selection)
+        else:
+            selection["strength"] = int(raw_strength)
+    return selection
 
 
-def _horizon_weights(query, horizon):
-    if "weights" not in query:
+def _horizon_weights(query, horizon, selection):
+    if selection["mode"] != "blend":
         return None
+    if "weights" in selection:
+        return selection["weights"]
+    if "weights" not in query:
+        return build_blend_weights(horizon, selection["n"], selection["strength"])
     try:
         raw = json.loads(query["weights"])
         if not isinstance(raw, dict) or any(
             str(int(k)) != k or not 1 <= int(k) <= horizon for k in raw
         ):
             raise ValueError
-        return {int(k): v for k, v in raw.items()}
+        weights = {int(k): v for k, v in raw.items()}
     except (ValueError, TypeError) as exc:
         raise ValueError(f"weights must be a json object with leads from 1 to {horizon}") from exc
+    return validate_blend_weights(weights)
+
+
+def _horizon_label(selection):
+    if selection["mode"] == "lead":
+        return f"lead {selection['n']}"
+    if "weights" in selection:
+        return "blend custom weights"
+    return f"blend week {selection['n']} x{selection['strength']}"
 
 
 def _select_horizon_rows(table, selection, weights=None):
     if selection["mode"] == "lead":
         return lead_rows(table, selection["n"])
-    return blend_rows(table, selection["n"], weights)
+    return blend_rows(table, selection["n"], weights=weights)
 
 
 def _horizon_history_source(validation, test):
@@ -1012,7 +1043,7 @@ def _horizon_sources(con, request, query, validation, test, forecast):
     selection = _horizon_selection(request, query, table)
     if selection is None:
         return None, sources
-    weights = _horizon_weights(query, int(request["spec"]["horizon"]))
+    weights = _horizon_weights(query, int(request["spec"]["horizon"]), selection)
     sources["history"] = _horizon_history_source(sources["validation"], sources["test"])
     for name, source in sources.items():
         rows = table if name == "test" else _read_view_rows(con, source)
@@ -1109,11 +1140,7 @@ def _horizon_baseline(con, request, table):
 
 
 def _horizon_metrics(con, run_dir, request, query, path, selection):
-    scope = (
-        f"lead {selection['n']}"
-        if selection["mode"] == "lead"
-        else f"blend around {selection['n']}"
-    )
+    scope = _horizon_label(selection)
 
     def metric(value=None, reason=None, **extra):
         value = float(value) if value is not None and np.isfinite(value) else None
@@ -1145,7 +1172,7 @@ def _horizon_metrics(con, run_dir, request, query, path, selection):
             )
             table = _read_view_rows(con, source)
     table = _horizon_baseline(con, request, table)
-    weights = _horizon_weights(query, int(request["spec"]["horizon"]))
+    weights = _horizon_weights(query, int(request["spec"]["horizon"]), selection)
     table = _select_horizon_rows(table, selection, weights)
     if selection["mode"] == "blend":
         keep = np.asarray(
@@ -1203,30 +1230,30 @@ def _horizon_metrics(con, run_dir, request, query, path, selection):
 
 
 def _horizon_result_metrics(run_dir, request, query, details, selection):
+    model = details["model"]
+    scope = _horizon_label(selection)
     with connect() as con:
-        for model in ("winner", "ensemble"):
-            entry = details.get(model)
-            if entry is None:
-                continue
-            path = _optional_prediction_path(run_dir, {**query, "model": model}, "test")
-            entry["error_metrics"].update(
-                _horizon_metrics(con, run_dir, request, query, path, selection)
-            )
-        for family, entry in details["families"].items():
-            if family == details["winner_family"]:
-                entry["error_metrics"] = dict(details["winner"]["error_metrics"])
-            else:
-                path = run_dir / "families" / family / "test.parquet"
-                entry["error_metrics"] = {
-                    **entry["error_metrics"],
-                    **_horizon_metrics(con, run_dir, request, query, path, selection),
-                }
-    details["error_metrics"] = dict(details[details["model"]]["error_metrics"])
-    scope = (
-        f"lead {selection['n']}"
-        if selection["mode"] == "lead"
-        else f"blend around {selection['n']}"
-    )
+        path = _optional_prediction_path(run_dir, {**query, "model": model}, "test")
+        selected_metrics = _horizon_metrics(con, run_dir, request, query, path, selection)
+    unavailable = {
+        name: {
+            "value": None,
+            "scope": "test",
+            "note": scope,
+            "reason": "not computed for this view",
+        }
+        for name in selected_metrics
+    }
+    for name in ("winner", "ensemble"):
+        entry = details.get(name)
+        if entry is not None:
+            metrics = selected_metrics if name == model else unavailable
+            entry["error_metrics"] = {**entry["error_metrics"], **metrics}
+    for family, entry in details["families"].items():
+        selected = model == "winner" and family == details["winner_family"]
+        metrics = selected_metrics if selected else unavailable
+        entry["error_metrics"] = {**entry["error_metrics"], **metrics}
+    details["error_metrics"] = dict(details[model]["error_metrics"])
     for metric in details["metric_registry"]:
         if metric["scope"] == "test":
             metric["label"] += f" · {scope}"
@@ -1352,8 +1379,10 @@ def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
 
         actual_id = f"actual:{label}" if breakdown else "actual"
         forecast_id = f"forecast:{label}" if breakdown else "forecast"
-        series_lines.append((actual_id, label, actual, False))
-        series_lines.append((forecast_id, label, forecast_series, True))
+        actual_label = f"actual: {label}" if breakdown else "actual"
+        forecast_label = f"forecast: {label}" if breakdown else "forecast"
+        series_lines.append((actual_id, actual_label, actual, False))
+        series_lines.append((forecast_id, forecast_label, forecast_series, True))
 
         if selection is None:
             lo_by_step, hi_by_step = _timeseries_band(
