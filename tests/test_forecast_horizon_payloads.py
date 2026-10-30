@@ -160,7 +160,7 @@ def test_selected_lead_drives_chart_and_all_test_metrics(
 
 def test_blend_metrics_score_target_weeks_once_and_keep_pooled_verdict(horizon_run):
     payload = fetch_view(horizon_run, blend="2")
-    assert payload["view"] == {"mode": "blend", "n": 2, "strength": 1}
+    assert payload["view"] == {"mode": "blend", "weights": {1: 1, 2: 1, 3: 1}}
     predictions = forecast_values(payload)
     assert [
         predictions[day] for day in ("2025-02-03", "2025-02-10", "2025-02-17")
@@ -185,16 +185,16 @@ def test_blend_centre_does_not_apply_an_unrequested_decay(horizon_run):
 
 
 @pytest.mark.parametrize("strength", [1, 2, 4, 8])
-def test_blend_strength_selects_weights_and_labels(horizon_run, strength):
+def test_legacy_blend_strength_migrates_to_weights_and_labels(horizon_run, strength):
     payload = fetch_view(horizon_run, blend="2", strength=str(strength))
-    assert payload["view"] == {"mode": "blend", "n": 2, "strength": strength}
+    assert payload["view"] == {"mode": "blend", "weights": {1: 1, 2: strength, 3: 1}}
     values = forecast_values(payload)
     assert values["2025-02-03"] == pytest.approx(16)
     assert values["2025-02-10"] == pytest.approx((24 + strength * 28) / (1 + strength))
     assert values["2025-02-17"] == 36
     for metric in payload["metric_registry"]:
         if metric["scope"] == "test":
-            assert metric["label"].endswith(f"blend week 2 x{strength}")
+            assert metric["label"].endswith("blend weighted")
     assert payload["bands"] == []
 
 
@@ -235,7 +235,7 @@ def test_horizon_metrics_belong_only_to_the_selected_model(horizon_run, model, s
     assert payload["verdict"]["accuracy"]["ratio"] == 0.75
     assert payload["winner"]["verdict"]["accuracy"]["ratio"] == 0.75
     if blended:
-        assert payload["error_metrics"]["wape"]["note"] == "blend week 2 x4"
+        assert payload["error_metrics"]["wape"]["note"] == "blend weighted"
 
 
 @pytest.mark.parametrize("selection", [{"lead": "1"}, {"blend": "2", "strength": "4"}])
@@ -247,13 +247,13 @@ def test_chart_labels_identify_actual_and_forecast(horizon_run, selection, break
     assert labels == (["actual: alpha", "forecast: alpha"] if breakdown else ["actual", "forecast"])
 
 
-def test_blend_strength_table_and_export_match_chart(horizon_run):
+def test_blend_weights_table_and_export_match_chart(horizon_run):
     run, request, _ = horizon_run
-    query = {"blend": "2", "strength": "4", "size": "100"}
+    query = {"blend_weights": "1:1,2:4,3:2", "size": "100"}
     payload = views.timeseries_table(run, request, query)
     rows = [dict(zip(payload["columns"], row, strict=True)) for row in payload["rows"]]
     historical = sorted((row for row in rows if not row["future"]), key=lambda row: row["step"])
-    assert [row["prediction"] for row in historical] == pytest.approx([9, 16, 27.2, 36])
+    assert [row["prediction"] for row in historical] == pytest.approx([65 / 7, 116 / 7, 27.2, 36])
     assert all(row["lower"] is None and row["upper"] is None for row in rows)
     export = views.export_csv(run, request, query).decode("utf-8")
     exported = csv.DictReader(io.StringIO(export.partition("\n")[2]))
@@ -261,21 +261,37 @@ def test_blend_strength_table_and_export_match_chart(horizon_run):
     assert float(target["prediction"]) == pytest.approx(27.2)
 
 
-def test_explicit_weights_normalize_over_each_target_tail(horizon_run):
-    payload = fetch_view(horizon_run, blend="2", weights=json.dumps({1: 1, 2: 2, 3: 3}))
-    assert payload["view"] == {"mode": "blend", "n": 2, "weights": {1: 1.0, 2: 2.0, 3: 3.0}}
+@pytest.mark.parametrize("weights", ["2:4,3:2", '{"2":4,"3":2}', {2: 4, 3: 2}, {"2": 4, "3": 2}])
+def test_explicit_weights_normalize_over_each_target_tail(horizon_run, weights):
+    payload = fetch_view(horizon_run, blend_weights=weights)
+    assert payload["view"] == {"mode": "blend", "weights": {1: 1, 2: 4, 3: 2}}
     values = forecast_values(payload)
-    assert values["2025-02-03"] == pytest.approx(52 / 3)
-    assert values["2025-02-10"] == pytest.approx(80 / 3)
+    assert values["2025-02-03"] == pytest.approx(116 / 7)
+    assert values["2025-02-10"] == pytest.approx(136 / 5)
     assert values["2025-02-17"] == 36
-    assert metric_values(payload)["wape"] == pytest.approx(1 / 3)
-    assert metric_values(payload)["test_ratio"] == pytest.approx(15 / 13)
+    assert metric_values(payload)["wape"] == pytest.approx(173 / 525)
+    assert metric_values(payload)["test_ratio"] == pytest.approx(173 / 153)
     for metric in payload["metric_registry"]:
         if metric["scope"] == "test":
-            assert metric["label"].endswith("blend custom weights")
-    assert payload["error_metrics"]["wape"]["note"] == "blend custom weights"
+            assert metric["label"].endswith("blend weighted")
+    assert payload["error_metrics"]["wape"]["note"] == "blend weighted"
     assert payload["bands"] == []
     json.dumps(payload, allow_nan=False)
+
+
+@pytest.mark.parametrize("weights", ["{}", {}, "1:1,2:1,3:1"])
+def test_empty_or_equal_weights_use_plain_average(horizon_run, weights):
+    payload = fetch_view(horizon_run, blend_weights=weights)
+    legacy = fetch_view(horizon_run, blend="2")
+    assert payload["view"] == {"mode": "blend", "weights": {1: 1, 2: 1, 3: 1}}
+    assert payload["series"] == legacy["series"]
+    assert metric_values(payload) == metric_values(legacy)
+
+
+def test_legacy_weights_parameter_migrates_to_full_weight_payload(horizon_run):
+    payload = fetch_view(horizon_run, blend="2", weights='{"2":4}')
+    assert payload["view"] == {"mode": "blend", "weights": {1: 1, 2: 4, 3: 1}}
+    assert payload["series"] == fetch_view(horizon_run, blend_weights="2:4")["series"]
 
 
 def test_saved_bounds_follow_only_the_selected_lead(horizon_run):
@@ -329,6 +345,19 @@ def test_selected_model_metrics_match_its_chart_predictions(horizon_run):
         {"blend": "1", "weights": '{"1": Infinity}'},
         {"blend": "1", "weights": "[]"},
         {"blend": "1", "weights": "{"},
+        {"lead": "1", "blend_weights": "2:4"},
+        {"blend_weights": "0:1"},
+        {"blend_weights": "4:1"},
+        {"blend_weights": "2.5:1"},
+        {"blend_weights": "2:4,2:8"},
+        {"blend_weights": "02:4"},
+        {"blend_weights": "2"},
+        {"blend_weights": ""},
+        {"blend_weights": "[]"},
+        {"blend_weights": "{"},
+        {"blend_weights": {True: 4}},
+        {"blend_weights": {2.5: 4}},
+        {"blend_weights": {"1": 1, 1: 2}},
     ],
 )
 def test_invalid_selections_return_plain_400(horizon_run, route, query):
@@ -337,6 +366,16 @@ def test_invalid_selections_return_plain_400(horizon_run, route, query):
         forecast_tab().get[route](app, {"id": run.name, **query})
     assert error.value.status == 400
     assert str(error.value) and "Traceback" not in str(error.value)
+
+
+@pytest.mark.parametrize("route", ["/api/forecast-view", "/api/forecast-table"])
+@pytest.mark.parametrize("weight", [0, -1, 3, 16, 1.0, "4", True, None, np.inf, np.nan])
+def test_invalid_blend_weight_returns_plain_400(horizon_run, route, weight):
+    run, _, app = horizon_run
+    with pytest.raises(RequestError) as error:
+        forecast_tab().get[route](app, {"id": run.name, "blend_weights": {2: weight}})
+    assert error.value.status == 400
+    assert str(error.value) == "blend_weights values must be 1, 2, 4, or 8"
 
 
 @pytest.mark.parametrize("route", ["/api/forecast-view", "/api/forecast-table"])
@@ -357,6 +396,14 @@ def test_invalid_strength_returns_plain_400(horizon_run, route, strength):
         (
             {"blend": "2", "strength": "4", "weights": '{"1": 1, "2": 4, "3": 1}'},
             "strength and weights are mutually exclusive",
+        ),
+        (
+            {"blend_weights": "2:4", "blend": "2"},
+            "blend_weights and blend, strength, or weights are mutually exclusive",
+        ),
+        (
+            {"blend_weights": "2:4", "strength": "4"},
+            "blend_weights and blend, strength, or weights are mutually exclusive",
         ),
     ],
 )

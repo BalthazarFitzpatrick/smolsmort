@@ -13,19 +13,25 @@ def _validate_lead(n: int) -> None:
         raise ValueError("lead must be a positive integer")
 
 
-def build_blend_weights(horizon: int, n: int, strength: int = 1) -> dict[int, int]:
-    """every lead contributes; the chosen lead counts strength times as much"""
+def build_blend_weights(horizon: int, weights: dict[int, int] | None = None) -> dict[int, int]:
+    """every lead contributes, with unspecified weeks counting once"""
     _validate_lead(horizon)
-    _validate_lead(n)
-    if n > horizon:
-        raise ValueError(f"blend must be an integer from 1 to {horizon}")
-    if (
-        isinstance(strength, bool)
-        or not isinstance(strength, Integral)
-        or strength not in (1, 2, 4, 8)
-    ):
-        raise ValueError("strength must be 1, 2, 4, or 8")
-    return {lead: int(strength) if lead == n else 1 for lead in range(1, horizon + 1)}
+    if weights is None:
+        weights = {}
+    if not isinstance(weights, dict):
+        raise ValueError("blend_weights must map weeks to weights")
+    complete = dict.fromkeys(range(1, horizon + 1), 1)
+    for lead, weight in weights.items():
+        if isinstance(lead, bool) or not isinstance(lead, Integral) or not 1 <= lead <= horizon:
+            raise ValueError(f"blend_weights weeks must be integers from 1 to {horizon}")
+        if (
+            isinstance(weight, bool)
+            or not isinstance(weight, Integral)
+            or weight not in (1, 2, 4, 8)
+        ):
+            raise ValueError("blend_weights values must be 1, 2, 4, or 8")
+        complete[int(lead)] = int(weight)
+    return complete
 
 
 def validate_blend_weights(weights: dict[int, float]) -> dict[int, float]:
@@ -58,12 +64,11 @@ def lead_rows(table: dict[str, np.ndarray], n: int) -> dict[str, np.ndarray]:
 
 
 def blend_rows(
-    table: dict[str, np.ndarray], n: int, weights: dict[int, float] | None = None
+    table: dict[str, np.ndarray], weights: dict[int, float] | None = None
 ) -> dict[str, np.ndarray]:
     """blend all available predictions per target with explicit, locally normalized weights"""
     if "weeks_ahead" not in table:
         return table
-    _validate_lead(n)
     validated = validate_blend_weights(weights) if weights is not None else None
     columns = {name: np.asarray(values) for name, values in table.items()}
     groups = {}

@@ -28,7 +28,6 @@ from smolsmort.forecast.horizon_view import (
     blend_rows,
     build_blend_weights,
     lead_rows,
-    validate_blend_weights,
 )
 from smolsmort.forecast.spec import normalize_mode, normalize_saved_modes, spec_from_dict
 from smolsmort.forecast.tables import _unmask, connect
@@ -964,9 +963,14 @@ def _read_view_rows(con, source):
 
 
 def _horizon_selection(request, query, table):
-    if "lead" in query and "blend" in query:
+    if "lead" in query and ("blend" in query or "blend_weights" in query):
         raise ValueError("lead and blend are mutually exclusive")
     horizon = int(request["spec"].get("horizon", 1))
+    if "blend_weights" in query:
+        if any(key in query for key in ("blend", "strength", "weights")):
+            raise ValueError("blend_weights and blend, strength, or weights are mutually exclusive")
+        weights = _parse_blend_weights(query["blend_weights"], horizon)
+        return {"mode": "blend", "weights": weights} if "weeks_ahead" in table else None
     mode = "blend" if "blend" in query else "lead"
     try:
         n = int(query.get(mode, horizon))
@@ -983,48 +987,62 @@ def _horizon_selection(request, query, table):
         raise ValueError("strength must be 1, 2, 4, or 8")
     if "strength" in query and "weights" in query:
         raise ValueError("strength and weights are mutually exclusive")
-    if "weeks_ahead" not in table:
-        return None
-    selection = {"mode": mode, "n": n}
     if mode == "blend":
         if "weights" in query:
-            selection["weights"] = _horizon_weights(query, horizon, selection)
+            weights = _parse_blend_weights(query["weights"], horizon)
         else:
-            selection["strength"] = int(raw_strength)
-    return selection
+            weights = build_blend_weights(horizon, {n: int(raw_strength)})
+        selection = {"mode": "blend", "weights": weights}
+    else:
+        selection = {"mode": "lead", "n": n}
+    return selection if "weeks_ahead" in table else None
 
 
-def _horizon_weights(query, horizon, selection):
-    if selection["mode"] != "blend":
-        return None
-    if "weights" in selection:
-        return selection["weights"]
-    if "weights" not in query:
-        return build_blend_weights(horizon, selection["n"], selection["strength"])
+def _parse_blend_weights(raw, horizon):
+    message = f"blend_weights must map weeks from 1 to {horizon} to weights, such as 1:1,2:4"
     try:
-        raw = json.loads(query["weights"])
-        if not isinstance(raw, dict) or any(
-            str(int(k)) != k or not 1 <= int(k) <= horizon for k in raw
-        ):
+        if isinstance(raw, str):
+            raw = raw.strip()
+            if raw.startswith("{"):
+                raw = json.loads(raw)
+            else:
+                pairs = [part.split(":") for part in raw.split(",")]
+                if any(len(pair) != 2 for pair in pairs):
+                    raise ValueError
+                if len({pair[0] for pair in pairs}) != len(pairs):
+                    raise ValueError
+                raw = {
+                    key: int(value) if str(int(value)) == value else value for key, value in pairs
+                }
+        if not isinstance(raw, dict):
             raise ValueError
-        weights = {int(k): v for k, v in raw.items()}
+        weights = {}
+        for key, value in raw.items():
+            if (
+                isinstance(key, bool)
+                or not isinstance(key, (str, int))
+                or str(int(key)) != str(key)
+            ):
+                raise ValueError
+            lead = int(key)
+            if lead in weights:
+                raise ValueError
+            weights[lead] = value
     except (ValueError, TypeError) as exc:
-        raise ValueError(f"weights must be a json object with leads from 1 to {horizon}") from exc
-    return validate_blend_weights(weights)
+        raise ValueError(message) from exc
+    return build_blend_weights(horizon, weights)
 
 
 def _horizon_label(selection):
     if selection["mode"] == "lead":
         return f"lead {selection['n']}"
-    if "weights" in selection:
-        return "blend custom weights"
-    return f"blend week {selection['n']} x{selection['strength']}"
+    return "blend weighted"
 
 
-def _select_horizon_rows(table, selection, weights=None):
+def _select_horizon_rows(table, selection):
     if selection["mode"] == "lead":
         return lead_rows(table, selection["n"])
-    return blend_rows(table, selection["n"], weights=weights)
+    return blend_rows(table, weights=selection["weights"])
 
 
 def _horizon_history_source(validation, test):
@@ -1043,12 +1061,11 @@ def _horizon_sources(con, request, query, validation, test, forecast):
     selection = _horizon_selection(request, query, table)
     if selection is None:
         return None, sources
-    weights = _horizon_weights(query, int(request["spec"]["horizon"]), selection)
     sources["history"] = _horizon_history_source(sources["validation"], sources["test"])
     for name, source in sources.items():
         rows = table if name == "test" else _read_view_rows(con, source)
         if name != "forecast":
-            rows = _select_horizon_rows(rows, selection, weights)
+            rows = _select_horizon_rows(rows, selection)
         count = len(rows["step"])
         for column in ("lower", "upper"):
             if selection["mode"] == "blend":
@@ -1172,8 +1189,7 @@ def _horizon_metrics(con, run_dir, request, query, path, selection):
             )
             table = _read_view_rows(con, source)
     table = _horizon_baseline(con, request, table)
-    weights = _horizon_weights(query, int(request["spec"]["horizon"]), selection)
-    table = _select_horizon_rows(table, selection, weights)
+    table = _select_horizon_rows(table, selection)
     if selection["mode"] == "blend":
         keep = np.asarray(
             [target in test_targets for target in zip(table["series"], table["step"], strict=True)],

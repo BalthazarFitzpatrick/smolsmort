@@ -151,7 +151,7 @@ def open_info(page: Page, topic: str = TOPIC):
 
 
 @contextmanager
-def session(tmp_path: Path, *, width: int = 1280, numeric: bool = False, port: int = 8108):
+def session(tmp_path: Path, *, width: int = 1280, numeric: bool = False, port: int = 8110):
     """the real review server, its forecast root holding the synthetic rows fixture, and a
     headless page on it"""
     errors: list[str] = []

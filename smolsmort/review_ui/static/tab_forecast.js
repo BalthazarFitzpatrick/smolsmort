@@ -672,7 +672,34 @@ function forecastDropdown(options, value, onPick, label, format = value => value
   return head;
 }
 
-function forecastBlendDropdown(horizon, getSelection, onPick) {
+function forecastHorizonSelection(selected, horizon = null) {
+  const validWeek = week => Number.isInteger(week) && week >= 1
+    && (horizon === null || week <= horizon);
+  if (selected?.mode === 'lead' && validWeek(selected.n)) return {mode: 'lead', n: selected.n};
+  if (selected?.mode !== 'blend') return null;
+  let weights = selected.weights;
+  if (!weights && validWeek(selected.n) && FORECAST_BLEND_STRENGTHS.includes(selected.strength ?? 1)) {
+    weights = {[selected.n]: selected.strength ?? 1};
+  }
+  if (!weights || typeof weights !== 'object' || Array.isArray(weights)) return null;
+  if (!Object.entries(weights).every(([week, weight]) => String(Number(week)) === week
+      && validWeek(Number(week)) && FORECAST_BLEND_STRENGTHS.includes(weight))) return null;
+  return {mode: 'blend', weights: horizon === null ? {...weights}
+    : Object.fromEntries(Array.from({length: horizon}, (_, index) => [index + 1, weights[index + 1] ?? 1]))};
+}
+
+function forecastWeightedWeeks(weights) {
+  return Object.entries(weights || {}).filter(([, weight]) => weight !== 1);
+}
+
+function forecastBlendCaption(weights) {
+  const weighted = forecastWeightedWeeks(weights);
+  if (!weighted.length) return 'equal weights';
+  const parts = weighted.slice(0, 2).map(([week, weight]) => `week ${week} ${weight}x`);
+  return parts.join(', ') + (weighted.length > 2 ? ` +${weighted.length - 2} more` : '');
+}
+
+function forecastBlendDropdown(horizon, getSelection, onSave) {
   const head = forecastNode('button', 'toggle dropdown-head');
   head.type = 'button';
   head.setAttribute('aria-label', 'blend');
@@ -680,28 +707,52 @@ function forecastBlendDropdown(horizon, getSelection, onPick) {
   head.onclick = () => {
     const selected = getSelection();
     if (!selected) return;
-    const week = selected.mode === 'blend' ? selected.n : 'off';
-    const strength = selected.strength ?? 1;
-    const pick = (n, counts, menu) => {
-      menu.close();
-      onPick(n, counts);
+    const savedWeights = Object.fromEntries(Array.from({length: horizon}, (_, index) =>
+      [index + 1, selected.weights?.[index + 1] ?? 1]));
+    const savedWeek = selected.mode === 'blend'
+      ? Number(forecastWeightedWeeks(savedWeights)[0]?.[0] ?? 1) : 'off';
+    let week = savedWeek;
+    let weights = {...savedWeights};
+    const focusWeek = (item, menu) => {
+      if (week === item.id) return;
+      week = item.id;
+      menu.refresh(buildSections());
     };
-    forecastOpenMenu(new ForecastBlendMenu({title: 'blend',
-      onConfirm: menu => {
-        const row = document.activeElement;
-        if (menu.el?.contains(row) && row.classList.contains('menu-item')) row.click();
-      },
-      sections: [{kind: 'columns', columns: [
-        {label: 'week', multi: false,
-          items: ['off', ...Array.from({length: horizon}, (_, index) => index + 1)]
-            .map(n => ({id: n, label: String(n), on: n === week})),
-          onPick: (item, _on, menu) => pick(item.id, strength, menu)},
-        {label: 'counts', multi: false,
-          items: FORECAST_BLEND_STRENGTHS.map(counts => ({id: `${counts}x`,
-            label: `${counts}x`, on: counts === strength})),
-          onPick: (item, _on, menu) => pick(week, Number.parseInt(item.id, 10), menu)},
-      ]}],
-    }), head);
+    const buildSections = () => [{kind: 'columns', columns: [
+      {label: 'weeks ahead', multi: false,
+        items: [{id: 'off', label: 'off', on: week === 'off'},
+          ...Array.from({length: horizon}, (_, index) => {
+            const n = index + 1;
+            return {id: n, label: `${n} ${n === 1 ? 'week' : 'weeks'} ahead`,
+              stats: `${weights[n]}x`, on: n === week, path: n === week};
+          })],
+        onFocus: focusWeek,
+        onPick: (item, _on, menu) => {
+          week = item.id;
+          menu.refresh(buildSections());
+        }},
+      {label: 'weight', multi: false, empty: 'off',
+        items: week === 'off' ? [] : FORECAST_BLEND_STRENGTHS.map(weight => ({
+          id: `${weight}x`, label: `${weight}x`, on: weight === weights[week],
+        })),
+        onPick: (item, _on, menu) => {
+          weights[week] = Number.parseInt(item.id, 10);
+          menu.refresh(buildSections());
+        }},
+    ]}, {kind: 'buttons', buttons: [
+      {id: 'save', label: 'save', tone: 'adds', primary: true, onClick: menu => {
+        menu.close();
+        onSave(week === 'off' ? {mode: 'lead', n: selected.mode === 'lead' ? selected.n : horizon}
+          : {mode: 'blend', weights: {...weights}});
+      }},
+      {id: 'discard', label: 'discard', tone: 'removes', onClick: menu => {
+        weights = {...savedWeights};
+        week = savedWeek;
+        menu.refresh(buildSections());
+      }},
+    ]}];
+    forecastOpenMenu(new ForecastBlendMenu({title: 'blend', persistent: true,
+      sections: buildSections()}), head);
   };
   return head;
 }
@@ -764,7 +815,21 @@ class ForecastBlendMenu extends Menu {
   _build() {
     const panel = super._build();
     panel.classList.add('forecast-blend-menu');
+    if (this._trigger?.id) panel.id = `${this._trigger.id}-menu`;
     return panel;
+  }
+
+  refresh(sections) {
+    const focusedColumn = this.el?.contains(document.activeElement)
+      ? document.activeElement.closest('.col')?.dataset.column : null;
+    const scroll = new Map([...this.el?.querySelectorAll('.col') || []]
+      .filter(column => column.dataset.column !== focusedColumn)
+      .map(column => [column.dataset.column, column.scrollTop]));
+    super.refresh(sections);
+    // menu restores keyboard focus; pointer picks also keep their place in long lists
+    this.el?.querySelectorAll('.col').forEach(column => {
+      if (scroll.has(column.dataset.column)) column.scrollTop = scroll.get(column.dataset.column);
+    });
   }
 }
 
@@ -862,7 +927,12 @@ class ForecastTopic {
     this.horizonSelections = {};
     try {
       const saved = JSON.parse(localStorage.getItem(this.horizonStorageKey));
-      if (saved && typeof saved === 'object' && !Array.isArray(saved)) this.horizonSelections = saved;
+      if (saved && typeof saved === 'object' && !Array.isArray(saved)) {
+        this.horizonSelections = Object.fromEntries(Object.entries(saved)
+          .map(([run, selection]) => [run, forecastHorizonSelection(selection)])
+          .filter(([, selection]) => selection));
+        if (JSON.stringify(saved) !== JSON.stringify(this.horizonSelections)) this.storeHorizonSelections();
+      }
     } catch (error) { /* storage can be unavailable in private windows */ }
     this.viewRequest = 0;
     this.tableRequest = 0;
@@ -2508,21 +2578,26 @@ class ForecastTopic {
   }
 
   addHorizonParams(params) {
-    const selected = this.horizonSelections[this.resultsRunId];
-    if (selected && ['lead', 'blend'].includes(selected.mode) && Number.isInteger(selected.n)
-        && selected.n >= 1 && selected.n <= this.resultsSpec?.horizon) {
-      params.set(selected.mode, String(selected.n));
-      if (selected.mode === 'blend') {
-        if (selected.weights) params.set('weights', JSON.stringify(selected.weights));
-        else params.set('strength', String(selected.strength ?? 1));
-      }
+    const stored = this.horizonSelections[this.resultsRunId];
+    const selected = forecastHorizonSelection(stored, this.resultsSpec?.horizon);
+    if (!selected) return;
+    if (JSON.stringify(stored) !== JSON.stringify(selected)) {
+      this.horizonSelections[this.resultsRunId] = selected;
+      this.storeHorizonSelections();
     }
+    if (selected.mode === 'lead') params.set('lead', String(selected.n));
+    else params.set('blend_weights', Object.entries(selected.weights)
+      .map(([week, weight]) => `${week}:${weight}`).join(','));
+  }
+
+  storeHorizonSelections() {
+    try { localStorage.setItem(this.horizonStorageKey, JSON.stringify(this.horizonSelections)); }
+    catch (error) { /* selection still works when storage is unavailable */ }
   }
 
   async selectHorizonView(selection) {
     this.horizonSelections[this.resultsRunId] = selection;
-    try { localStorage.setItem(this.horizonStorageKey, JSON.stringify(this.horizonSelections)); }
-    catch (error) { /* selection still works when storage is unavailable */ }
+    this.storeHorizonSelections();
     this.tableRequest++;
     this.tableState.page = 0;
     await this.refreshView();
@@ -2547,26 +2622,26 @@ class ForecastTopic {
         Number.isFinite(row.ratio) ? row.ratio.toFixed(2) : '-', row.rows ?? '-',
       ]));
     if (!view.view) return;
-    const strength = view.view.strength ?? this.horizonSelections[this.resultsRunId]?.strength ?? 1;
-    this.horizonSelections[this.resultsRunId] = {...view.view, strength};
+    this.horizonSelections[this.resultsRunId] = view.view.mode === 'blend'
+      ? {mode: 'blend', weights: {...view.view.weights}} : {...view.view};
     const descriptions = {
       lead: 'show only the forecast made n weeks before each week. nothing is averaged.',
-      blend: 'average of all forecasts of a week; the chosen week counts s times as much as each other week. not a forecast the model made.',
+      blend: 'average of all forecasts of a week; each time part counts with its weight. not a forecast the model made.',
     };
-    if (controls.dataset.horizon !== String(view.horizon)) {
+    const runId = this.resultsRunId;
+    if (controls.dataset.horizon !== String(view.horizon) || controls.dataset.runId !== runId) {
       controls.dataset.horizon = String(view.horizon);
+      controls.dataset.runId = runId;
       controls.replaceChildren();
       for (const mode of ['lead', 'blend']) {
         const picker = forecastNode('div', 'forecast-metric-picker');
         const options = Array.from({length: view.horizon}, (_, index) => index + 1);
         const button = mode === 'blend' ? forecastBlendDropdown(view.horizon,
-          () => this.horizonSelections[this.resultsRunId], (n, strength) => {
-          const selected = this.horizonSelections[this.resultsRunId];
-          this.selectHorizonView(n === 'off'
-            ? {mode: 'lead', n: selected.mode === 'lead' ? selected.n : view.horizon, strength}
-            : {mode: 'blend', n, strength});
-        }) : forecastDropdown(options, 'off', n => this.selectHorizonView({mode: 'lead', n,
-          strength: this.horizonSelections[this.resultsRunId]?.strength ?? 1}),
+          () => this.resultsRunId === runId ? this.horizonSelections[runId] : null,
+          selection => { if (this.resultsRunId === runId) this.selectHorizonView(selection); })
+          : forecastDropdown(options, 'off', n => {
+            if (this.resultsRunId === runId) this.selectHorizonView({mode: 'lead', n});
+          },
         mode, n => n === 'off' ? 'off' : `${n} ${n === 1 ? 'week' : 'weeks'} ahead`);
         button.id = `${this.topic}-${mode}`;
         button.title = descriptions[mode];
@@ -2578,11 +2653,9 @@ class ForecastTopic {
       const active = view.view.mode === mode;
       const n = view.view.n;
       const button = document.getElementById(`${this.topic}-${mode}`);
-      button.dataset.value = active ? String(n) : 'off';
-      button.dataset.strength = String(strength);
+      button.dataset.value = active ? mode === 'blend' ? 'on' : String(n) : 'off';
       setHead(button, `${mode}: ${!active ? 'off'
-        : mode === 'blend' ? view.view.weights ? 'custom weights'
-          : strength === 1 ? 'equal weights' : `week ${n} counts ${strength}x`
+        : mode === 'blend' ? forecastBlendCaption(view.view.weights)
           : `${n} ${n === 1 ? 'week' : 'weeks'} ahead`}`);
       button.title = descriptions[mode];
     }
@@ -2695,10 +2768,13 @@ class ForecastTopic {
     if (!this.chart) this.chart = timeChart(el, {height: 220});
     this.chart.update({x: view.x, series: view.series, bands: view.bands, markers: view.markers});
     const caption = document.getElementById(`${this.topic}-chart-caption`);
+    const weighted = forecastWeightedWeeks(view.view?.weights);
+    const weightDetails = weighted.length
+      ? weighted.map(([week, weight]) => `week ${week} counts ${weight}x`).join(', ')
+        + (weighted.length < view.horizon ? ', the others 1x' : '') : 'every week counts 1x';
     caption.textContent = !view.view ? '' : view.view.mode === 'lead'
       ? `each week shows the forecast made ${view.view.n} weeks before that week.`
-      : `each week shows the average of all its forecasts; ${view.view.weights ? 'custom weights' : (view.view.strength ?? 1) === 1
-        ? 'equal weights' : `week ${view.view.n} counts ${view.view.strength}x as much as each other week`}. not a forecast the model made.`;
+      : `each week shows the weighted average of all its forecasts: ${weightDetails}. not a forecast the model made.`;
     caption.classList.toggle('hidden', !caption.textContent);
   }
 

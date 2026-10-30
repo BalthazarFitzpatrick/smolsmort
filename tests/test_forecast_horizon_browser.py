@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlparse
 import numpy as np
 import pytest
 import review_world
+from forecast_fixtures import write_panel
 from forecast_ui_audit import settle_menu
 from test_forecast_progress_browser import write_multifamily_run
 from test_forecast_ui_browser import open_info, show_tab, switch_to_regression
@@ -28,6 +29,7 @@ sync_playwright = pytest.importorskip("playwright.sync_api").sync_playwright
 STORAGE_KEY = "smolsmort:forecast:regression:horizon-view"
 LEAD = "#regression-lead"
 BLEND = "#regression-blend"
+BLEND_MENU = "#regression-blend-menu"
 CONTROLS = "#regression-horizon-controls"
 
 
@@ -35,13 +37,15 @@ def write_json(path: Path, value) -> None:
     path.write_text(json.dumps(value), encoding="utf-8")
 
 
-def write_horizon_run(root: Path, *, legacy: bool = False, running: bool = False) -> str:
+def write_horizon_run(
+    root: Path, *, legacy: bool = False, running: bool = False, horizon: int = 3
+) -> str:
     run_id = write_multifamily_run(root)
     if legacy:
         return run_id
     folder = root / ".forecast-runs" / run_id
     request = json.loads((folder / "request.json").read_text(encoding="utf-8"))
-    request["spec"].update(horizon=3, horizon_mode="single")
+    request["spec"].update(horizon=horizon, horizon_mode="single")
     write_json(folder / "request.json", request)
     dates = np.arange(
         np.datetime64("2025-12-15"), np.datetime64("2026-02-09"), np.timedelta64(7, "D")
@@ -98,12 +102,13 @@ def write_horizon_run(root: Path, *, legacy: bool = False, running: bool = False
 
 
 @contextmanager
-def horizon_session(tmp_path: Path, *, width: int = 1280, legacy=False, running=False):
+def horizon_session(tmp_path: Path, *, width: int = 1280, legacy=False, running=False, horizon=3):
     errors = []
     review_world.register_world_backend()
     root = tmp_path / "forecast_root"
     root.mkdir()
-    run_id = write_horizon_run(root, legacy=legacy, running=running)
+    write_panel(root, weeks=60)
+    run_id = write_horizon_run(root, legacy=legacy, running=running, horizon=horizon)
 
     def reject_worker(*_args, **_kwargs):
         pytest.fail("browser checks must not launch forecast workers")
@@ -121,7 +126,7 @@ def horizon_session(tmp_path: Path, *, width: int = 1280, legacy=False, running=
             crop_file=world.root / "crop.json",
         )
         app.state.set_bases({"forecast": str(root)})
-        server = serve(app, port=8109)
+        server = serve(app, port=8111)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
@@ -129,7 +134,7 @@ def horizon_session(tmp_path: Path, *, width: int = 1280, legacy=False, running=
                 browser = playwright.chromium.launch(headless=True)
                 page = browser.new_page(viewport={"width": width, "height": 900})
                 page.on("pageerror", lambda error: errors.append(str(error)))
-                page.goto("http://127.0.0.1:8109/")
+                page.goto("http://127.0.0.1:8111/")
                 yield page, run_id
                 browser.close()
         finally:
@@ -153,6 +158,9 @@ def choose_horizon(page, mode: str, value: int | str):
     page.locator(f"#regression-{mode}").click()
     settle_menu(page)
     assert page.locator(f'#regression-{mode}-menu input[type="checkbox"]').count() == 0
+    if mode == "blend":
+        page.locator(f'{BLEND_MENU} [data-column="0"] .menu-item[data-id="{value}"]').click()
+        return save_blend(page)
     with page.expect_response("**/api/forecast-view?**") as response:
         page.locator(f'#regression-{mode}-menu .menu-item[data-id="{value}"]').click()
     assert not page.locator(f"#regression-{mode}-menu").is_visible()
@@ -165,38 +173,94 @@ def choose_horizon(page, mode: str, value: int | str):
     return data
 
 
+def open_blend(page) -> None:
+    page.locator(BLEND).click()
+    settle_menu(page)
+    assert page.locator(BLEND_MENU).is_visible()
+
+
+def pick_blend_weight(page, week: int, weight: int) -> None:
+    page.locator(f'{BLEND_MENU} [data-column="0"] .menu-item[data-id="{week}"]').click()
+    page.locator(f'{BLEND_MENU} [data-column="1"] .menu-item[data-id="{weight}x"]').click()
+    assert page.locator(BLEND_MENU).is_visible()
+    row = page.locator(f'{BLEND_MENU} [data-column="0"] .menu-item[data-id="{week}"]')
+    assert row.locator(".stats").inner_text() == f"{weight}x"
+
+
+def save_blend(page) -> dict:
+    with page.expect_response("**/api/forecast-view?**") as response:
+        page.locator(f'{BLEND_MENU} .menu-buttons [data-id="save"]').click()
+    data = response.value.json()
+    page.wait_for_function(
+        "view => JSON.stringify(forecastTopics.get('regression').resultsView.view) === JSON.stringify(view)",
+        arg=data["view"],
+    )
+    assert not page.locator(BLEND_MENU).is_visible()
+    assert_horizon_titles(page)
+    return data
+
+
+def choose_blend_weights(page, weights: dict[int, int]) -> dict:
+    open_blend(page)
+    for week, weight in weights.items():
+        pick_blend_weight(page, week, weight)
+    return save_blend(page)
+
+
+def blend_view(weights: dict[int, int] | None = None) -> dict:
+    return {
+        "mode": "blend",
+        "weights": {str(week): (weights or {}).get(week, 1) for week in range(1, 4)},
+    }
+
+
 def assert_horizon_titles(page) -> None:
     assert "show only the forecast made n weeks before each week" in page.locator(
         LEAD
     ).get_attribute("title")
     assert "nothing is averaged" in page.locator(LEAD).get_attribute("title")
     assert page.locator(BLEND).get_attribute("title") == (
-        "average of all forecasts of a week; the chosen week counts s times as much as each "
-        "other week. not a forecast the model made."
+        "average of all forecasts of a week; each time part counts with its weight. "
+        "not a forecast the model made."
     )
 
 
-def assert_blend_columns(page, *, week: int | str = "off", strength: int = 1) -> None:
-    menu = page.locator("#regression-blend-menu")
-    columns = menu.locator(".menu-columns .col")
+def assert_blend_columns(page, *, week: int | str | None = None, weights=None) -> None:
+    menu = page.locator(BLEND_MENU)
+    columns = menu.locator(".col")
     assert columns.count() == 2
-    assert columns.locator(".field-label").all_text_contents() == ["week", "counts"]
     assert columns.nth(0).locator(".menu-item .name").all_text_contents() == [
         "off",
-        "1",
-        "2",
-        "3",
+        "1 week ahead",
+        "2 weeks ahead",
+        "3 weeks ahead",
     ]
-    assert columns.nth(1).locator(".menu-item .name").all_text_contents() == [
-        "1x",
-        "2x",
-        "4x",
-        "8x",
+    assert columns.nth(0).locator(".menu-item.on").count() == 1
+    focused = columns.nth(0).locator(".menu-item.on").get_attribute("data-id")
+    if week is not None:
+        assert focused == str(week)
+    expected = blend_view(weights)["weights"]
+    assert columns.nth(0).locator(".menu-item .stats").all_text_contents() == [
+        f"{weight}x" for weight in expected.values()
     ]
-    assert columns.nth(0).locator(".menu-item.on").get_attribute("data-id") == str(week)
-    assert columns.nth(1).locator(".menu-item.on").get_attribute("data-id") == f"{strength}x"
+    if focused == "off":
+        assert columns.nth(1).locator(".menu-item").count() == 0
+    else:
+        assert columns.nth(1).locator(".menu-item .name").all_text_contents() == [
+            "1x",
+            "2x",
+            "4x",
+            "8x",
+        ]
+        assert (
+            columns.nth(1).locator(".menu-item.on").get_attribute("data-id")
+            == f"{expected[focused]}x"
+        )
     assert columns.evaluate_all("nodes => nodes.every(node => node.dataset.multi === 'false')")
     assert menu.locator('input[type="checkbox"]').count() == 0
+    buttons = menu.locator(".menu-buttons [data-id]")
+    assert buttons.all_text_contents() == ["save", "discard", "close"]
+    assert menu.locator('.menu-buttons [data-id="save"]').get_attribute("data-primary") == "true"
     assert menu.locator(".menu-item .name").evaluate_all(
         """nodes => nodes.every(node => {
             const name = node.getBoundingClientRect();
@@ -204,10 +268,9 @@ def assert_blend_columns(page, *, week: int | str = "off", strength: int = 1) ->
             return node.scrollWidth <= node.clientWidth && name.right <= row.right - 2;
         })"""
     )
-    left, right = [column.bounding_box() for column in columns.all()]
-    assert left and right
-    assert left["x"] + left["width"] <= right["x"]
-    assert abs(left["y"] - right["y"]) <= 1
+    body = columns.first.bounding_box()
+    footer = menu.locator(".menu-section.menu-buttons").bounding_box()
+    assert body and footer and body["y"] + body["height"] <= footer["y"]
 
 
 def choose_wape(page) -> None:
@@ -242,6 +305,12 @@ def save_horizon(page, name: str) -> None:
     )
 
 
+def save_blend_menu(page, name: str) -> None:
+    folder = Path(__file__).resolve().parents[1] / "outputs"
+    folder.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=folder / f"blend-weights-{name}.png", animations="disabled")
+
+
 @pytest.mark.parametrize("mode", ["lead", "blend"])
 def test_horizon_metrics_belong_only_to_selected_model(tmp_path, mode):
     with horizon_session(tmp_path) as (page, run_id):
@@ -253,7 +322,7 @@ def test_horizon_metrics_belong_only_to_selected_model(tmp_path, mode):
         page.keyboard.press("Escape")
         choose_horizon(page, mode, 2)
         if mode == "blend":
-            choose_horizon(page, "blend", "4x")
+            choose_blend_weights(page, {2: 4})
         rows = page.locator("#regression-family-comparison tbody tr")
         validation = {
             row.locator("td").first.inner_text(): row.locator(
@@ -298,7 +367,7 @@ def test_horizon_chart_keeps_one_caption_and_distinct_legend(tmp_path, mode):
         choose_wape(page)
         choose_horizon(page, mode, 2)
         if mode == "blend":
-            choose_horizon(page, "blend", "4x")
+            choose_blend_weights(page, {2: 4})
         assert page.locator("#regression-chart-caption").is_visible()
         assert page.locator("#regression-horizon-help").count() == 0
         assert page.locator("#regression-chart .chart-legend-item").all_text_contents() == [
@@ -376,11 +445,11 @@ def test_horizon_controls_select_rows_metrics_and_bands(tmp_path):
         save_horizon(page, "desktop-lead")
         page.locator(BLEND).click()
         settle_menu(page)
-        assert_blend_columns(page)
+        assert_blend_columns(page, week="off")
         save_horizon(page, "desktop-blend-menu")
         page.keyboard.press("Escape")
         blend = choose_horizon(page, "blend", 2)
-        assert blend["view"] == {"mode": "blend", "n": 2, "strength": 1}
+        assert blend["view"] == blend_view()
         assert blend["bands"] == []
         predictions = read_forecasts(blend)
         assert [predictions[step] for step in ("2026-01-19", "2026-01-26", "2026-02-02")] == [
@@ -396,34 +465,34 @@ def test_horizon_controls_select_rows_metrics_and_bands(tmp_path):
         assert "no band for a blend" not in page.locator("#regression-chart-status").inner_text()
         assert page.locator("#regression-info").inner_text() == "info · 1 note"
         assert page.locator("#regression-chart .chart-band").count() == 0
-        assert "equal weights" in page.locator("#regression-chart-caption").inner_text()
-        assert "blend week 2 x1" in page.locator(
+        assert "every week counts 1x" in page.locator("#regression-chart-caption").inner_text()
+        assert "blend weighted" in page.locator(
             '#regression-family-comparison th[data-metric-id="wape"]'
         ).get_attribute("title")
         assert page.locator("#regression-info-verdict").inner_text() == verdict
         save_horizon(page, "desktop-blend")
         page.keyboard.press("Escape")
-        weighted = choose_horizon(page, "blend", "4x")
-        assert weighted["view"] == {"mode": "blend", "n": 2, "strength": 4}
+        weighted = choose_blend_weights(page, {2: 4})
+        assert weighted["view"] == blend_view({2: 4})
         assert weighted["bands"] == []
         predictions = read_forecasts(weighted)
         assert [predictions[step] for step in ("2026-01-19", "2026-01-26", "2026-02-02")] == (
             pytest.approx([48.0, 57.4, 72.0])
         )
         assert read_wape(page) == "15.5%"
-        assert "blend: week 2 counts 4x" in page.locator(BLEND).inner_text()
+        assert "blend: week 2 4x" in page.locator(BLEND).inner_text()
         assert "week 2" in page.locator("#regression-chart-caption").inner_text()
         assert "4" in page.locator("#regression-chart-caption").inner_text()
-        assert "blend week 2 x4" in page.locator(
+        assert "blend weighted" in page.locator(
             '#regression-family-comparison th[data-metric-id="wape"]'
         ).get_attribute("title")
         assert (
-            "blend week 2 x4"
+            "blend weighted"
             in page.locator('#regression-family-comparison th[data-metric-id="wape"]').inner_text()
         )
         page.locator(BLEND).click()
         settle_menu(page)
-        assert_blend_columns(page, week=2, strength=4)
+        assert_blend_columns(page, weights={2: 4})
         save_horizon(page, "desktop-weighted-blend-menu")
         page.keyboard.press("Escape")
         choose_horizon(page, "lead", 2)
@@ -432,15 +501,82 @@ def test_horizon_controls_select_rows_metrics_and_bands(tmp_path):
         choose_horizon(page, "blend", 3)
         default = choose_horizon(page, "blend", "off")
         assert default["view"] == {"mode": "lead", "n": 3}
-        counts_only = choose_horizon(page, "blend", "8x")
-        assert counts_only["view"] == {"mode": "lead", "n": 3}
         assert "blend: off" in page.locator(BLEND).inner_text()
-        page.locator(BLEND).click()
-        settle_menu(page)
-        assert_blend_columns(page, strength=8)
+        open_blend(page)
+        assert_blend_columns(page, week="off")
         page.keyboard.press("Escape")
-        remembered = choose_horizon(page, "blend", 2)
-        assert remembered["view"] == {"mode": "blend", "n": 2, "strength": 8}
+
+
+def test_horizon_blend_drafts_save_discard_close_and_dismiss(tmp_path):
+    with horizon_session(tmp_path) as (page, run_id):
+        open_horizon_run(page, run_id)
+        choose_wape(page)
+        requests = []
+        page.on(
+            "request",
+            lambda request: (
+                requests.append(request.url) if "/api/forecast-view?" in request.url else None
+            ),
+        )
+        open_blend(page)
+        assert_blend_columns(page, week="off")
+        pick_blend_weight(page, 2, 4)
+        pick_blend_weight(page, 3, 2)
+        assert_blend_columns(page, week=3, weights={2: 4, 3: 2})
+        assert not requests
+        assert "blend: off" in page.locator(BLEND).inner_text()
+        saved = save_blend(page)
+        expected = blend_view({2: 4, 3: 2})
+        assert saved["view"] == expected
+        assert "blend: week 2 4x, week 3 2x" in page.locator(BLEND).inner_text()
+        assert page.locator("#regression-chart-caption").inner_text() == (
+            "each week shows the weighted average of all its forecasts: week 2 counts 4x, "
+            "week 3 counts 2x, the others 1x. not a forecast the model made."
+        )
+        assert (
+            "blend weighted"
+            in page.locator('#regression-family-comparison th[data-metric-id="wape"]').inner_text()
+        )
+        open_blend(page)
+        pick_blend_weight(page, 3, 2)
+        assert_blend_columns(page, week=3, weights={2: 4, 3: 2})
+        save_blend_menu(page, "desktop")
+        pick_blend_weight(page, 1, 8)
+        pick_blend_weight(page, 2, 1)
+        page.locator(f'{BLEND_MENU} .menu-buttons [data-id="discard"]').click()
+        assert page.locator(BLEND_MENU).is_visible()
+        assert_blend_columns(page, weights={2: 4, 3: 2})
+        assert page.evaluate("forecastTopics.get('regression').resultsView.view") == expected
+        page.locator(f'{BLEND_MENU} .menu-buttons [data-id="menu-close"]').click()
+        for dismissal in ("close", "escape", "outside"):
+            open_blend(page)
+            pick_blend_weight(page, 1, 8)
+            pick_blend_weight(page, 2, 1)
+            if dismissal == "close":
+                page.locator(f'{BLEND_MENU} .menu-buttons [data-id="menu-close"]').click()
+            elif dismissal == "escape":
+                page.keyboard.press("Escape")
+            else:
+                page.locator("#regression-chart-caption").click()
+            assert not page.locator(BLEND_MENU).is_visible()
+            assert page.evaluate("forecastTopics.get('regression').resultsView.view") == expected
+            open_blend(page)
+            assert_blend_columns(page, weights={2: 4, 3: 2})
+            page.keyboard.press("Escape")
+        assert len(requests) == 1
+        page.reload()
+        open_horizon_run(page, run_id)
+        assert page.evaluate("forecastTopics.get('regression').resultsView.view") == expected
+        open_blend(page)
+        assert_blend_columns(page, weights={2: 4, 3: 2})
+        page.locator(f'{BLEND_MENU} [data-column="0"] [data-id="off"]').click()
+        assert_blend_columns(page, week="off", weights={2: 4, 3: 2})
+        page.locator(f'{BLEND_MENU} .menu-buttons [data-id="discard"]').click()
+        assert_blend_columns(page, weights={2: 4, 3: 2})
+        page.locator(f'{BLEND_MENU} [data-column="0"] [data-id="off"]').click()
+        off = save_blend(page)
+        assert off["view"] == {"mode": "lead", "n": 3}
+        assert "blend: off" in page.locator(BLEND).inner_text()
 
 
 def test_results_info_kept_open_and_focused_across_polling(tmp_path):
@@ -516,14 +652,8 @@ def test_horizon_controls_keyboard_reload_and_polling(tmp_path):
             page.keyboard.press("ArrowDown")
         option = page.locator('#regression-blend-menu .menu-item[data-id="2"]')
         assert option.evaluate("node => node === document.activeElement")
-        with page.expect_response("**/api/forecast-view?**"):
-            page.keyboard.press("Space")
-        assert not page.locator("#regression-blend-menu").is_visible()
-        assert button.evaluate("node => node === document.activeElement")
-        assert "blend: equal weights" in button.inner_text()
-        button.click()
-        settle_menu(page)
-        page.keyboard.press("ArrowDown")
+        page.keyboard.press("Space")
+        assert_blend_columns(page, week=2)
         page.keyboard.press("ArrowRight")
         assert page.locator('#regression-blend-menu .menu-item[data-id="1x"]').evaluate(
             "node => node === document.activeElement"
@@ -532,20 +662,26 @@ def test_horizon_controls_keyboard_reload_and_polling(tmp_path):
         page.keyboard.press("ArrowDown")
         strength = page.locator('#regression-blend-menu .menu-item[data-id="4x"]')
         assert strength.evaluate("node => node === document.activeElement")
+        page.keyboard.press("Space")
+        assert_blend_columns(page, week=2, weights={2: 4})
+        assert "blend: off" in button.inner_text()
         with page.expect_response("**/api/forecast-view?**") as response:
             page.keyboard.press("Enter")
-        assert response.value.json()["view"] == {"mode": "blend", "n": 2, "strength": 4}
+        assert response.value.json()["view"] == blend_view({2: 4})
         assert not page.locator("#regression-blend-menu").is_visible()
         assert button.evaluate("node => node === document.activeElement")
-        button.click()
-        settle_menu(page)
-        page.locator("#regression-chart-caption").click()
-        assert not page.locator("#regression-blend-menu").is_visible()
-        button.click()
-        settle_menu(page)
-        page.keyboard.press("ArrowDown")
+        open_blend(page)
+        for _ in range(3):
+            page.keyboard.press("ArrowDown")
         page.keyboard.press("ArrowRight")
         focused = page.locator('#regression-blend-menu .menu-item[data-id="4x"]')
+        assert focused.evaluate("node => node === document.activeElement")
+        page.keyboard.press("ArrowLeft")
+        page.keyboard.press("ArrowDown")
+        page.keyboard.press("ArrowRight")
+        page.keyboard.press("ArrowDown")
+        page.keyboard.press("Space")
+        focused = page.locator('#regression-blend-menu .menu-item[data-id="2x"]')
         assert focused.evaluate("node => node === document.activeElement")
         before = len(polls)
         with page.expect_response(
@@ -559,11 +695,12 @@ def test_horizon_controls_keyboard_reload_and_polling(tmp_path):
         assert len(polls) > before
         assert page.locator("#regression-blend-menu").is_visible()
         assert focused.evaluate("node => node === document.activeElement")
+        assert_blend_columns(page, week=3, weights={2: 4, 3: 2})
         page.keyboard.press("Escape")
-        assert "blend: week 2 counts 4x" in button.inner_text()
+        assert "blend: week 2 4x" in button.inner_text()
         assert "off" in page.locator(LEAD).inner_text()
         saved = page.evaluate("key => JSON.parse(localStorage.getItem(key))", STORAGE_KEY)
-        assert saved[run_id] == {"mode": "blend", "n": 2, "strength": 4}
+        assert saved[run_id] == blend_view({2: 4})
         show_tab(page, "regression-search")
         metrics = page.locator("#regression-error-metrics")
         metrics.focus()
@@ -581,34 +718,39 @@ def test_horizon_controls_keyboard_reload_and_polling(tmp_path):
         page.keyboard.press("Escape")
         page.reload()
         open_horizon_run(page, run_id)
-        assert "blend: week 2 counts 4x" in page.locator(BLEND).inner_text()
+        assert "blend: week 2 4x" in page.locator(BLEND).inner_text()
         assert "off" in page.locator(LEAD).inner_text()
         page.locator(BLEND).click()
         settle_menu(page)
-        assert_blend_columns(page, week=2, strength=4)
+        assert_blend_columns(page, weights={2: 4})
 
 
-def test_horizon_controls_restore_older_blend_with_equal_weights(tmp_path):
+@pytest.mark.parametrize("strength", [None, 4])
+def test_horizon_controls_migrate_older_blend_weights(tmp_path, strength):
     with horizon_session(tmp_path) as (page, run_id):
+        selection = {"mode": "blend", "n": 2}
+        if strength is not None:
+            selection["strength"] = strength
         page.evaluate(
-            "([key, run]) => localStorage.setItem(key, JSON.stringify({[run]: {mode: 'blend', n: 2}}))",
-            [STORAGE_KEY, run_id],
+            "([key, run, selection]) => localStorage.setItem(key, JSON.stringify({[run]: selection}))",
+            [STORAGE_KEY, run_id, selection],
         )
         page.reload()
         open_horizon_run(page, run_id)
-        assert "blend: equal weights" in page.locator(BLEND).inner_text()
+        caption = "blend: week 2 4x" if strength else "blend: equal weights"
+        assert caption in page.locator(BLEND).inner_text()
         assert "off" in page.locator(LEAD).inner_text()
         page.locator(BLEND).click()
         settle_menu(page)
-        assert_blend_columns(page, week=2)
-        assert page.evaluate("forecastTopics.get('regression').resultsView.view") == {
-            "mode": "blend",
-            "n": 2,
-            "strength": 1,
-        }
+        assert_blend_columns(page, weights={2: strength or 1})
+        assert page.evaluate("forecastTopics.get('regression').resultsView.view") == blend_view(
+            {2: strength or 1}
+        )
+        saved = page.evaluate("key => JSON.parse(localStorage.getItem(key))", STORAGE_KEY)
+        assert saved[run_id] == blend_view({2: strength or 1})
 
 
-def test_horizon_controls_keep_pending_week_and_strength_changes(tmp_path):
+def test_horizon_controls_keep_pending_weight_changes(tmp_path):
     with horizon_session(tmp_path) as (page, run_id):
         open_horizon_run(page, run_id)
         page.evaluate(
@@ -623,41 +765,35 @@ def test_horizon_controls_keep_pending_week_and_strength_changes(tmp_path):
                 };
             }"""
         )
-        for first, pending, second, expected in (
-            (2, (2, 1), "4x", {"mode": "blend", "n": 2, "strength": 4}),
-            ("8x", (2, 8), 1, {"mode": "blend", "n": 1, "strength": 8}),
-        ):
-            held = []
+        held = []
 
-            def hold_first(route, *, held=held):
-                if not held:
-                    held.append(route)
-                else:
-                    route.continue_()
+        def hold_first(route):
+            if not held:
+                held.append(route)
+            else:
+                route.continue_()
 
-            page.route("**/api/forecast-view?**", hold_first)
-            page.locator(BLEND).click()
-            settle_menu(page)
-            with page.expect_request("**/api/forecast-view?**"):
-                page.locator(f'#regression-blend-menu .menu-item[data-id="{first}"]').click()
-            page.locator(BLEND).click()
-            settle_menu(page)
-            assert len(held) == 1
-            assert_blend_columns(page, week=pending[0], strength=pending[1])
-            with page.expect_response("**/api/forecast-view?**") as response:
-                page.locator(f'#regression-blend-menu .menu-item[data-id="{second}"]').click()
-            assert response.value.json()["view"] == expected
-            query = parse_qs(urlparse(response.value.url).query)
-            assert query["blend"] == [str(expected["n"])]
-            assert query["strength"] == [str(expected["strength"])]
-            held[0].continue_()
-            page.evaluate("() => Promise.all(window.horizonRefreshes)")
-            page.unroute("**/api/forecast-view?**", hold_first)
-            assert page.evaluate("forecastTopics.get('regression').resultsView.view") == expected
-            assert (
-                f"blend: week {expected['n']} counts {expected['strength']}x"
-                in page.locator(BLEND).inner_text()
-            )
+        page.route("**/api/forecast-view?**", hold_first)
+        open_blend(page)
+        pick_blend_weight(page, 2, 4)
+        with page.expect_request("**/api/forecast-view?**"):
+            page.locator(f'{BLEND_MENU} .menu-buttons [data-id="save"]').click()
+        open_blend(page)
+        assert len(held) == 1
+        assert_blend_columns(page, weights={2: 4})
+        pick_blend_weight(page, 3, 2)
+        with page.expect_response("**/api/forecast-view?**") as response:
+            page.locator(f'{BLEND_MENU} .menu-buttons [data-id="save"]').click()
+        expected = blend_view({2: 4, 3: 2})
+        assert response.value.json()["view"] == expected
+        query = parse_qs(urlparse(response.value.url).query)
+        assert query["blend_weights"] == ["1:1,2:4,3:2"]
+        assert "blend" not in query and "strength" not in query
+        held[0].continue_()
+        page.evaluate("() => Promise.all(window.horizonRefreshes)")
+        page.unroute("**/api/forecast-view?**", hold_first)
+        assert page.evaluate("forecastTopics.get('regression').resultsView.view") == expected
+        assert "blend: week 2 4x, week 3 2x" in page.locator(BLEND).inner_text()
 
 
 def test_horizon_controls_wait_for_new_run_before_opening_blend(tmp_path):
@@ -701,13 +837,152 @@ def test_horizon_controls_wait_for_new_run_before_opening_blend(tmp_path):
             arg=next_run,
         )
         chosen = choose_horizon(page, "blend", 1)
-        assert chosen["view"] == {"mode": "blend", "n": 1, "strength": 1}
+        assert chosen["view"] == blend_view()
         assert (
             page.evaluate(
                 "run => forecastTopics.get('regression').horizonSelections[run]", next_run
             )
             == chosen["view"]
         )
+
+
+def test_horizon_controls_wait_for_cached_run_metadata_before_opening_blend(tmp_path):
+    with horizon_session(tmp_path) as (page, run_id):
+        run_root = tmp_path / "forecast_root" / ".forecast-runs"
+        next_run = "20261017-120000-synthetic"
+        copytree(run_root / run_id, run_root / next_run)
+        request_path = run_root / next_run / "request.json"
+        request = json.loads(request_path.read_text(encoding="utf-8"))
+        request["spec"]["horizon"] = 8
+        write_json(request_path, request)
+        open_horizon_run(page, next_run)
+        expected = {"mode": "blend", "weights": {str(week): 1 for week in range(1, 9)}}
+        expected["weights"]["8"] = 2
+        assert choose_blend_weights(page, {8: 2})["view"] == expected
+        page.locator("#regression-results-run").click()
+        settle_menu(page)
+        with page.expect_response("**/api/forecast-view?**"):
+            page.locator(f'.menu-panel .menu-item[data-id="{run_id}"]').click()
+        page.wait_for_function("forecastTopics.get('regression').resultsView.view.n === 3")
+        held = []
+
+        def hold_next_run(route):
+            if parse_qs(urlparse(route.request.url).query).get("id") == [next_run]:
+                held.append(route)
+            else:
+                route.continue_()
+
+        page.route("**/api/forecast-run?**", hold_next_run)
+        page.locator("#regression-results-run").click()
+        settle_menu(page)
+        with page.expect_request("**/api/forecast-run?**"):
+            page.locator(f'.menu-panel .menu-item[data-id="{next_run}"]').click()
+        page.locator(BLEND).click()
+        pending_open = page.locator(BLEND_MENU).is_visible()
+        pending_rows = page.locator(f'{BLEND_MENU} [data-column="0"] .menu-item').evaluate_all(
+            "rows => rows.map(row => row.dataset.id)"
+        )
+        assert len(held) == 1
+        with page.expect_response("**/api/forecast-view?**") as response:
+            held[0].continue_()
+        page.unroute("**/api/forecast-run?**", hold_next_run)
+        assert response.value.json()["view"] == expected
+        page.wait_for_function(
+            "view => JSON.stringify(forecastTopics.get('regression').resultsView.view) === JSON.stringify(view)",
+            arg=expected,
+        )
+        assert not pending_open, {"pending_rows": pending_rows, "saved_view": expected}
+        open_blend(page)
+        assert page.locator(f'{BLEND_MENU} [data-column="0"] .menu-item').count() == 9
+        assert (
+            page.locator(
+                f'{BLEND_MENU} [data-column="0"] .menu-item[data-id="8"] .stats'
+            ).inner_text()
+            == "2x"
+        )
+        assert save_blend(page)["view"] == expected
+        saved = page.evaluate("key => JSON.parse(localStorage.getItem(key))", STORAGE_KEY)
+        assert saved[next_run] == expected
+
+
+def test_horizon_blend_long_phone_picker_keeps_footer_and_far_week_weights(tmp_path):
+    with horizon_session(tmp_path, width=390, horizon=52) as (page, run_id):
+        open_horizon_run(page, run_id)
+        open_blend(page)
+        menu = page.locator(BLEND_MENU)
+        assert menu.locator('[data-column="0"] .menu-item').count() == 53
+
+        def assert_viewport():
+            assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+            box = menu.bounding_box()
+            footer = menu.locator(".menu-section.menu-buttons").bounding_box()
+            assert box and box["x"] >= 0 and box["x"] + box["width"] <= 390
+            assert footer and footer["y"] >= 0 and footer["y"] + footer["height"] <= 900
+            for button in menu.locator(".menu-buttons [data-id]").all():
+                assert button.is_visible()
+                assert button.evaluate("""node => {
+                    const box = node.getBoundingClientRect();
+                    return document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2) === node;
+                }""")
+
+        def assert_selected_week_visible(week):
+            selected = menu.locator(f'[data-column="0"] .menu-item[data-id="{week}"]')
+            visible = selected.evaluate("""node => {
+                const box = node.getBoundingClientRect();
+                return node.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
+            }""")
+            truncated = menu.locator(".menu-item .name").evaluate_all("""nodes => nodes
+                .filter(node => node.scrollWidth > node.clientWidth)
+                .map(node => node.textContent)""")
+            children_visible = menu.locator('[data-column="1"] .menu-item').evaluate_all(
+                """nodes => nodes.every(node => {
+                    const box = node.getBoundingClientRect();
+                    return node.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
+                })"""
+            )
+            assert visible and not truncated and children_visible, {
+                "selected_visible": visible,
+                "truncated_labels": truncated,
+                "children_visible": children_visible,
+            }
+
+        assert_viewport()
+        for week, weight in ((3, 4), (8, 2), (52, 8)):
+            row = menu.locator(f'[data-column="0"] .menu-item[data-id="{week}"]')
+            row.click()
+            assert_viewport()
+            menu.locator(f'[data-column="1"] .menu-item[data-id="{weight}x"]').click()
+            assert row.locator(".stats").inner_text() == f"{weight}x"
+            assert_viewport()
+        assert_selected_week_visible(52)
+        expected = {"mode": "blend", "weights": {str(week): 1 for week in range(1, 53)}}
+        expected["weights"].update({"3": 4, "8": 2, "52": 8})
+        assert save_blend(page)["view"] == expected
+        assert "blend: week 3 4x, week 8 2x +1 more" in page.locator(BLEND).inner_text()
+        assert "week 52 counts 8x" in page.locator("#regression-chart-caption").inner_text()
+        open_blend(page)
+        far_week = menu.locator('[data-column="0"] .menu-item[data-id="52"]')
+        far_week.click()
+        assert far_week.locator(".stats").inner_text() == "8x"
+        assert_viewport()
+        assert_selected_week_visible(52)
+        save_blend_menu(page, "phone-long")
+        page.keyboard.press("Escape")
+        open_blend(page)
+        for _ in range(53):
+            page.keyboard.press("ArrowDown")
+        assert far_week.evaluate("node => node === document.activeElement")
+        assert_selected_week_visible(52)
+        assert_viewport()
+        page.keyboard.press("ArrowRight")
+        weight = menu.locator('[data-column="1"] .menu-item[data-id="8x"]')
+        assert weight.evaluate("node => node === document.activeElement")
+        page.keyboard.press("Space")
+        assert_selected_week_visible(52)
+        with page.expect_response("**/api/forecast-view?**") as response:
+            page.keyboard.press("Enter")
+        assert response.value.json()["view"] == expected
+        assert not menu.is_visible()
 
 
 @pytest.mark.parametrize("storage", ["malformed", "blocked"])
@@ -750,10 +1025,18 @@ def test_horizon_controls_phone_layout_and_palette_tokens(tmp_path):
             box = menu.bounding_box()
             assert box and box["x"] >= 0 and box["x"] + box["width"] <= 390
             if mode == "blend":
-                assert_blend_columns(page)
+                assert_blend_columns(page, week="off")
             save_horizon(page, f"phone-dark-{mode}")
             page.keyboard.press("Escape")
-        choose_horizon(page, "blend", 1)
+        choose_blend_weights(page, {2: 4, 3: 2})
+        open_blend(page)
+        pick_blend_weight(page, 3, 2)
+        assert_blend_columns(page, week=3, weights={2: 4, 3: 2})
+        assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+        box = page.locator(BLEND_MENU).bounding_box()
+        assert box and box["x"] >= 0 and box["x"] + box["width"] <= 390
+        save_blend_menu(page, "phone")
+        page.keyboard.press("Escape")
         dark = page.locator(BLEND).evaluate("node => getComputedStyle(node).backgroundColor")
         page.evaluate(
             """() => {
@@ -776,7 +1059,7 @@ def test_horizon_controls_phone_layout_and_palette_tokens(tmp_path):
         page.locator(BLEND).click()
         settle_menu(page)
         assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
-        assert_blend_columns(page, week=1)
+        assert_blend_columns(page, weights={2: 4, 3: 2})
         save_horizon(page, "phone-light-blend")
 
 
