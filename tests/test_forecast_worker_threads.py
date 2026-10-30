@@ -66,6 +66,7 @@ def test_worker_persists_threads_before_screen_and_recipe_refit(
 
     def load_workspace(*args, **kwargs):
         read_threads()
+        assert kwargs["horizon_mode"] == "mixed"
         calls.append("load")
         return workspace
 

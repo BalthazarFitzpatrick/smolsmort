@@ -35,6 +35,11 @@ def summarize(final):
             "fold_count",
             "val_error",
             "val_test_gap",
+            "horizon_mode",
+            "horizon",
+            "origin_blocks",
+            "lead_errors",
+            "validation_lead_errors",
         )
     }
 
@@ -52,6 +57,7 @@ def run(folder, parent_pid):
         request["summary"],
         transform=request.get("transform", "none"),
         holdout=request.get("holdout", "block"),
+        horizon_mode=request.get("horizon_mode", "mixed"),
     )
     ranked = read_json(folder / "finalists.json")
     ranked = [
@@ -85,7 +91,9 @@ def run(folder, parent_pid):
         )
         periods = np.concatenate(
             [
-                frame.step[ws.series_masks[bucket]["val"]].astype(int)
+                (frame.origin if getattr(ws, "horizon_mode", "mixed") == "single" else frame.step)[
+                    ws.series_masks[bucket]["val"]
+                ].astype(int)
                 for bucket, frame in ws.frames.items()
             ]
         )

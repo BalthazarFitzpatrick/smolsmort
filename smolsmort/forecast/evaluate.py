@@ -233,6 +233,68 @@ def apply_band(band: Band | None, p, nonnegative: bool = False):
     return lo, hi
 
 
+def fit_lead_bands(actual, prediction, leads) -> dict[int, Band | None]:
+    """calibrate each lead on its own validation residuals"""
+    return {
+        int(lead): fit_band(actual[leads == lead], prediction[leads == lead])
+        for lead in np.unique(leads)
+    }
+
+
+def apply_lead_bands(bands, prediction, leads, *, nonnegative=True):
+    lower, upper = np.full(len(prediction), np.nan), np.full(len(prediction), np.nan)
+    for lead in np.unique(leads):
+        rows = leads == lead
+        lower[rows], upper[rows] = apply_band(bands.get(int(lead)), prediction[rows], nonnegative)
+    return lower, upper
+
+
+def lead_errors(actual, prediction, naive, leads, phase):
+    """pooled errors for each lead on identical rows, plus a parquet-ready table"""
+    columns = {
+        name: []
+        for name in ("phase", "weeks_ahead", "rows", "model_wape", "naive_wape", "ratio", "mae")
+    }
+    errors = {}
+    for lead in np.unique(leads):
+        rows = leads == lead
+        model, baseline = wape(actual[rows], prediction[rows]), wape(actual[rows], naive[rows])
+        count = int(rows.sum())
+        errors[str(lead)] = {"model": model, "naive": baseline, "rows": count}
+        values = (
+            phase,
+            int(lead),
+            count,
+            model,
+            baseline,
+            model / baseline if baseline else float("inf"),
+            mae(actual[rows], prediction[rows]),
+        )
+        for name, value in zip(columns, values, strict=True):
+            columns[name].append(value)
+    return errors, {name: np.asarray(values) for name, values in columns.items()}
+
+
+def lead_band_summary(table, phase):
+    """retain pooled series rows at lead zero and add the same statistics for every lead"""
+    parts = []
+    leads = table["weeks_ahead"]
+    for lead in (0, *np.unique(leads)):
+        rows = np.ones(len(leads), dtype=bool) if lead == 0 else leads == lead
+        summary = band_summary(
+            table["series"][rows], table["actual"][rows], table["lower"][rows], table["upper"][rows]
+        )
+        count = len(summary["series"])
+        parts.append(
+            {
+                **summary,
+                "weeks_ahead": np.full(count, lead, dtype=int),
+                "phase": np.full(count, phase, dtype=object),
+            }
+        )
+    return {name: np.concatenate([part[name] for part in parts]) for name in parts[0]}
+
+
 def width_pct(scale, lo, hi) -> float:
     """total band width over the total of `scale` (actuals or predictions): 0.5 is a band as wide
     as half the volume"""

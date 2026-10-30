@@ -7,13 +7,14 @@ import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
 import pytest
 
 from smolsmort.forecast import pipeline, screen, worker
-from smolsmort.forecast.features import split_family_name, step_index
+from smolsmort.forecast.features import Features, TimeseriesFrame, split_family_name, step_index
 from smolsmort.forecast.pipeline import load_workspace
 from smolsmort.forecast.screen import screen_families
 from smolsmort.forecast.spec import SERIES, STEP, Column, PrepSpec
@@ -245,6 +246,53 @@ def test_seasonal_residual_and_row_cap(workspace):
             if previous is not None:
                 expected.append(frame.y[row] - previous)
     np.testing.assert_allclose(residual, expected)
+
+
+def test_single_screen_uses_yearly_baseline_and_origin_fallback():
+    dates = np.datetime64("2025-01-06") + np.arange(5) * np.timedelta64(7, "D")
+    leads = np.array([1, 8, 1, 8, 1])
+    targets = np.arange(1, 6, dtype=float) * 10
+    frame = TimeseriesFrame(
+        Features(
+            np.array([[1], [np.nan], [3], [4], [5]], dtype=float),
+            ["target_season_lag"],
+            ["q"],
+            ["season"],
+        ),
+        targets,
+        np.array(["a"] * 5),
+        dates,
+        dates - leads * np.timedelta64(7, "D"),
+        np.zeros(5, dtype=bool),
+        np.arange(1, 6, dtype=float) * 2,
+        leads,
+    )
+    spec = PrepSpec(
+        "synthetic.csv",
+        "timeseries",
+        "regression",
+        (Column("date", "time"), Column("target", "target", "sum")),
+        step="week",
+        horizon=8,
+    )
+    ws = SimpleNamespace(
+        families=["season"],
+        frames={(1, 8): frame},
+        series_masks={
+            (1, 8): {
+                "train": np.array([True, True, True, False, False]),
+                "val": np.array([False, False, False, True, False]),
+                "test": np.array([False, False, False, False, True]),
+            }
+        },
+        series_folds=(),
+        profile={"genes": {"period": 3}},
+        unit="week",
+        spec=spec,
+        panel={SERIES: frame.series, STEP: dates, "target": targets},
+    )
+    _, residual, _ = screen._training_data(ws, 20, np.random.default_rng(0))
+    np.testing.assert_array_equal(residual, [9, 16, 27])
 
 
 @pytest.mark.parametrize("version", [1, 2])

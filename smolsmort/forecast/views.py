@@ -175,7 +175,9 @@ def probe_families() -> dict:
         raise ViewError("could not check family libraries in the isolated worker") from exc
 
 
-def family_catalog(runs_root: Path, spec=None, prepared=None, task="regression") -> list[dict]:
+def family_catalog(
+    runs_root: Path, spec=None, prepared=None, task="regression", horizon_mode="single"
+) -> list[dict]:
     """suitability uses the worker's split and features, without fitting any models"""
     from smolsmort.forecast.pipeline import PipelineError, load_workspace
     from smolsmort.forecast.splits import SplitError
@@ -184,7 +186,9 @@ def family_catalog(runs_root: Path, spec=None, prepared=None, task="regression")
     if spec is not None:
         task = spec.task
         try:
-            workspace = load_workspace(spec, prepared.folder, prepared.summary)
+            workspace = load_workspace(
+                spec, prepared.folder, prepared.summary, horizon_mode=horizon_mode
+            )
         except (PipelineError, SplitError) as exc:
             history_error = str(exc)
     estimates = {}
@@ -498,7 +502,12 @@ def _read_tile_chart(path: Path) -> list[dict]:
                 else "NULL::DOUBLE"
                 for name in values
             }
-            if "series" in columns:
+            if "weeks_ahead" in columns:
+                source = (
+                    f"(SELECT * FROM {source} WHERE weeks_ahead = "
+                    f"(SELECT MAX(weeks_ahead) FROM {source}))"
+                )
+            elif "series" in columns:
                 # holdout rows repeat across horizon buckets; average before summing series
                 averages = [f"AVG({finite[name]}) AS {_quote(name)}" for name in values]
                 source = f"(SELECT step, {', '.join(averages)} FROM {source} GROUP BY series, step)"
@@ -633,6 +642,8 @@ def family_tiles(run_dir, request, status, *, result=None, recipe=None, include_
             "elapsed": _tile_elapsed(progress),
             "generation": progress.get("generation", best.get("generation")),
         }
+        if request.get("horizon_mode") == "single":
+            tiles[name]["weeks_ahead_shown"] = request["spec"]["horizon"]
         tiles[name]["error_metrics"] = fm.error_metrics(
             request.get("spec", {}),
             fitness=tiles[name]["validation_error"],
@@ -676,12 +687,19 @@ def run_metric_payload(run_dir, request, status=None, *, result=None, recipe=Non
             None,
         )
     spec = request.get("spec", {})
-    return {
+    payload = {
         "metric_registry": fm.metric_registry(spec),
         "error_metrics": fm.error_metrics(
             spec, fitness=fitness, verdict=summary.get("verdict"), path=path
         ),
     }
+    if spec.get("mode") == "timeseries":
+        payload["horizon_mode_label"] = (
+            "single model: all weeks ahead, one fit"
+            if request.get("horizon_mode") == "single"
+            else "mixed: one model per horizon group"
+        )
+    return payload
 
 
 def _spec_dims(spec: dict) -> list[str]:
@@ -883,6 +901,13 @@ def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
     validation = _prediction_path(run_dir, query, "validation")
     test = _prediction_path(run_dir, query, "test")
     forecast = _prediction_path(run_dir, query, "forecast")
+    single = request.get("horizon_mode") == "single"
+    lead_filter = f"WHERE weeks_ahead = {int(spec['horizon'])}" if single else ""
+    per_step = (
+        "SELECT series, step, prediction FROM hist"
+        if single
+        else "SELECT series, step, AVG(prediction) AS prediction FROM hist GROUP BY series, step"
+    )
 
     con = connect()
     where = _filter_clause(filters, dims)
@@ -920,14 +945,13 @@ def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
             hist AS (
                 SELECT series, step, bucket, actual, prediction
                 FROM read_parquet({_lit(str(validation))})
+                {lead_filter}
                 UNION ALL
                 SELECT series, step, bucket, actual, prediction
                 FROM read_parquet({_lit(str(test))})
+                {lead_filter}
             ),
-            per_step AS (
-                SELECT series, step, AVG(prediction) AS prediction
-                FROM hist GROUP BY series, step
-            ),
+            per_step AS ({per_step}),
             joined AS (SELECT p.step, p.prediction, k.* FROM per_step p JOIN keymap k USING (series))
             SELECT step, SUM(prediction) FROM joined WHERE {combo_where} GROUP BY step ORDER BY step
         """
@@ -936,7 +960,7 @@ def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
         future_sql = f"""
             WITH keymap AS ({keymap_sql}),
             joined AS (
-                SELECT f.step, f.bucket, f.prediction, k.*
+                SELECT f.step, f.{"weeks_ahead" if single else "bucket"} AS bucket, f.prediction, k.*
                 FROM read_parquet({_lit(str(forecast))}) f JOIN keymap k USING (series)
             )
             SELECT step, bucket, SUM(prediction) FROM joined WHERE {combo_where}
@@ -954,7 +978,7 @@ def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
         series_lines.append((forecast_id, label, forecast_series, True))
 
         lo_by_step, hi_by_step = _timeseries_band(
-            con, keymap_sql, validation, forecast, combo_where, future_rows, nonnegative
+            con, keymap_sql, validation, forecast, combo_where, future_rows, nonnegative, single
         )
         bands.append((f"band:{forecast_id}", forecast_id, lo_by_step, hi_by_step))
 
@@ -977,25 +1001,28 @@ def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
         "verdict": result["verdict"],
         "mode": "timeseries",
     }
+    if single:
+        out["weeks_ahead_shown"] = spec["horizon"]
     if note:
         out["note"] = note
     return out
 
 
-def _timeseries_band(con, keymap_sql, validation, forecast, combo_where, future_rows, nonnegative):
-    """per bucket: fit a band on the view's aggregated validation residuals, apply it to that
-    bucket's aggregated future prediction - buckets partition the horizon, so every future step
-    gets exactly one band"""
+def _timeseries_band(
+    con, keymap_sql, validation, forecast, combo_where, future_rows, nonnegative, single=False
+):
+    """fit aggregate validation bands separately by lead in single mode or bucket in mixed"""
     buckets = sorted({b for _s, b, _p in future_rows})
     lo_by_step: dict[str, float] = {}
     hi_by_step: dict[str, float] = {}
     for bucket in buckets:
+        predicate = f"v.weeks_ahead = {int(bucket)}" if single else f"v.bucket = {_lit(bucket)}"
         val_sql = f"""
             WITH keymap AS ({keymap_sql}),
             joined AS (
                 SELECT v.step, v.actual, v.prediction, k.*
                 FROM read_parquet({_lit(str(validation))}) v JOIN keymap k USING (series)
-                WHERE v.bucket = {_lit(bucket)}
+                WHERE {predicate}
             )
             SELECT step, SUM(actual), SUM(prediction) FROM joined WHERE {combo_where}
             GROUP BY step ORDER BY step
@@ -1324,6 +1351,9 @@ def timeseries_table(run_dir: Path, request: dict, query: dict) -> dict:
     validation = _prediction_path(run_dir, query, "validation")
     test = _prediction_path(run_dir, query, "test")
     forecast = _prediction_path(run_dir, query, "forecast")
+    single = request.get("horizon_mode") == "single"
+    hist_leads = ", h.origin, h.weeks_ahead" if single else ""
+    future_leads = ", f.origin, f.weeks_ahead" if single else ""
 
     keymap_sql = (
         'SELECT DISTINCT "__series" AS series'
@@ -1334,17 +1364,17 @@ def timeseries_table(run_dir: Path, request: dict, query: dict) -> dict:
     hist_sql = f"""
         WITH keymap AS ({keymap_sql})
         SELECT h.step, {dims_sel + "," if dims else ""} h.prediction, NULL AS lower, NULL AS upper,
-               h.actual, FALSE AS future
+               h.actual, FALSE AS future{hist_leads}
         FROM read_parquet({_lit(str(validation))}) h
         JOIN keymap k USING (series)
         UNION ALL
         SELECT h.step, {dims_sel + "," if dims else ""} h.prediction, NULL AS lower, NULL AS upper,
-               h.actual, FALSE AS future
+               h.actual, FALSE AS future{hist_leads}
         FROM read_parquet({_lit(str(test))}) h
         JOIN keymap k USING (series)
         UNION ALL
         SELECT f.step, {dims_sel + "," if dims else ""} f.prediction, f.lower, f.upper,
-               CAST(NULL AS DOUBLE) AS actual, TRUE AS future
+               CAST(NULL AS DOUBLE) AS actual, TRUE AS future{future_leads}
         FROM read_parquet({_lit(str(forecast))}) f
         JOIN keymap k USING (series)
     """
@@ -1357,6 +1387,8 @@ def timeseries_table(run_dir: Path, request: dict, query: dict) -> dict:
     full_sql += f" ORDER BY {_quote(sort) if sort != 'future' else 'future'} {order}, step ASC"
     rows = con.execute(full_sql).fetchall()
     columns = ["step", *dims, "prediction", "lower", "upper", "actual", "future"]
+    if single:
+        columns += ["origin", "weeks_ahead"]
     page = int(query.get("page", 0))
     size = int(query.get("size", 50))
     page_rows, total = _paginate(rows, page, size)

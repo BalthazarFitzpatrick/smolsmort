@@ -17,7 +17,7 @@ from smolsmort.forecast.features import (
     step_index,
 )
 from smolsmort.forecast.importance import measure_importance
-from smolsmort.forecast.pipeline import Workspace, _validation_masks
+from smolsmort.forecast.pipeline import Workspace, _timeseries_baseline, _validation_masks
 from smolsmort.forecast.spec import SERIES, STEP
 
 
@@ -120,16 +120,19 @@ def _training_data(ws, max_rows, rng):
         frame = ws.frames[bucket]
         features = frame.features
         names = features.names
-        # use the most recent same-phase value available at each bucket's origin
-        lag = ((bucket[1] + period - 1) // period) * period if period else bucket[1]
-        baseline = np.array(
-            [
-                history.get((key, step - lag), np.nan)
-                for key, step in zip(
-                    frame.series[rows], step_index(frame.step[rows], ws.unit), strict=True
-                )
-            ]
-        )
+        if frame.weeks_ahead is not None:
+            baseline = _timeseries_baseline(frame, rows, bucket, period)
+        else:
+            # use the most recent same-phase value available at each bucket's origin
+            lag = ((bucket[1] + period - 1) // period) * period if period else bucket[1]
+            baseline = np.array(
+                [
+                    history.get((key, step - lag), np.nan)
+                    for key, step in zip(
+                        frame.series[rows], step_index(frame.step[rows], ws.unit), strict=True
+                    )
+                ]
+            )
         residual = frame.y[rows] - baseline
         usable = np.isfinite(residual)
         x = np.full((int(usable.sum()), len(columns)), np.nan, dtype=np.float32)
