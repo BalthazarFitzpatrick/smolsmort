@@ -6,6 +6,7 @@ import json
 import threading
 from contextlib import contextmanager
 from pathlib import Path
+from shutil import copytree
 from urllib.parse import parse_qs, urlparse
 
 import numpy as np
@@ -505,7 +506,7 @@ def test_horizon_controls_keep_pending_week_and_strength_changes(tmp_path):
         ):
             held = []
 
-            def hold_first(route, held=held):
+            def hold_first(route, *, held=held):
                 if not held:
                     held.append(route)
                 else:
@@ -534,6 +535,54 @@ def test_horizon_controls_keep_pending_week_and_strength_changes(tmp_path):
                 f"blend: week {expected['n']} counts {expected['strength']}x"
                 in page.locator(BLEND).inner_text()
             )
+
+
+def test_horizon_controls_wait_for_new_run_before_opening_blend(tmp_path):
+    with horizon_session(tmp_path) as (page, run_id):
+        run_root = tmp_path / "forecast_root" / ".forecast-runs"
+        next_run = "20261017-120000-synthetic"
+        copytree(run_root / run_id, run_root / next_run)
+        open_horizon_run(page, run_id)
+        choose_horizon(page, "blend", 2)
+        errors = []
+        held = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+
+        def hold_next_run(route):
+            if parse_qs(urlparse(route.request.url).query).get("id") == [next_run]:
+                held.append(route)
+            else:
+                route.continue_()
+
+        page.route("**/api/forecast-run?**", hold_next_run)
+        page.locator("#regression-results-run").click()
+        settle_menu(page)
+        with page.expect_request("**/api/forecast-run?**"):
+            page.locator(f'.menu-panel .menu-item[data-id="{next_run}"]').click()
+        page.locator(BLEND).click()
+        assert len(held) == 1
+        assert not errors, errors
+        assert not page.locator("#regression-blend-menu").is_visible()
+        assert page.locator(BLEND).get_attribute("aria-expanded") == "false"
+        with page.expect_response("**/api/forecast-view?**") as response:
+            held[0].continue_()
+        assert response.value.json()["view"] == {"mode": "lead", "n": 3}
+        page.unroute("**/api/forecast-run?**", hold_next_run)
+        page.wait_for_function(
+            """run => {
+                const topic = forecastTopics.get('regression');
+                return topic.resultsRunId === run && topic.resultsView.view.mode === 'lead';
+            }""",
+            arg=next_run,
+        )
+        chosen = choose_horizon(page, "blend", 1)
+        assert chosen["view"] == {"mode": "blend", "n": 1, "strength": 1}
+        assert (
+            page.evaluate(
+                "run => forecastTopics.get('regression').horizonSelections[run]", next_run
+            )
+            == chosen["view"]
+        )
 
 
 @pytest.mark.parametrize("storage", ["malformed", "blocked"])

@@ -679,6 +679,7 @@ function forecastBlendDropdown(horizon, getSelection, onPick) {
   head.setAttribute('aria-expanded', 'false');
   head.onclick = () => {
     const selected = getSelection();
+    if (!selected) return;
     const week = selected.mode === 'blend' ? selected.n : 'off';
     const strength = selected.strength ?? 1;
     const pick = (n, counts, menu) => {
