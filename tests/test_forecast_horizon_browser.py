@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 import numpy as np
 import pytest
 import review_world
+from forecast_ui_audit import settle_menu
 from test_forecast_progress_browser import write_multifamily_run
 from test_forecast_ui_browser import show_tab, switch_to_regression
 
@@ -119,7 +120,7 @@ def horizon_session(tmp_path: Path, *, width: int = 1280, legacy=False, running=
             crop_file=world.root / "crop.json",
         )
         app.state.set_bases({"forecast": str(root)})
-        server = serve(app, port=8094)
+        server = serve(app, port=8097)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
@@ -127,7 +128,7 @@ def horizon_session(tmp_path: Path, *, width: int = 1280, legacy=False, running=
                 browser = playwright.chromium.launch(headless=True)
                 page = browser.new_page(viewport={"width": width, "height": 900})
                 page.on("pageerror", lambda error: errors.append(str(error)))
-                page.goto("http://127.0.0.1:8094/")
+                page.goto("http://127.0.0.1:8097/")
                 yield page, run_id
                 browser.close()
         finally:
@@ -149,20 +150,34 @@ def open_horizon_run(page, run_id: str) -> None:
 
 def choose_horizon(page, mode: str, value: int | str):
     page.locator(f"#regression-{mode}").click()
+    settle_menu(page)
+    assert page.locator(f'#regression-{mode}-menu input[type="checkbox"]').count() == 0
     with page.expect_response("**/api/forecast-view?**") as response:
-        page.locator(f'#regression-{mode}-menu input[data-{mode}="{value}"]').check()
-    page.keyboard.press("Escape")
+        page.locator(f'#regression-{mode}-menu .menu-item[data-id="{value}"]').click()
+    assert not page.locator(f"#regression-{mode}-menu").is_visible()
     data = response.value.json()
     page.wait_for_function(
         "view => JSON.stringify(forecastTopics.get('regression').resultsView.view) === JSON.stringify(view)",
         arg=data["view"],
     )
+    assert_horizon_titles(page)
     return data
+
+
+def assert_horizon_titles(page) -> None:
+    assert "show only the forecast made n weeks before each week" in page.locator(
+        LEAD
+    ).get_attribute("title")
+    assert "nothing is averaged" in page.locator(LEAD).get_attribute("title")
+    assert "average every forecast of a week" in page.locator(BLEND).get_attribute("title")
+    assert "equal weights for now" in page.locator(BLEND).get_attribute("title")
 
 
 def choose_wape(page) -> None:
     page.locator("#regression-error-metrics").click()
-    page.locator('#regression-error-metrics-menu input[data-metric-id="wape"]').check()
+    settle_menu(page)
+    page.locator('#regression-error-metrics-menu .menu-item[data-id="wape"]').click()
+    assert page.locator("#regression-error-metrics-menu").is_visible()
     page.keyboard.press("Escape")
 
 
@@ -197,16 +212,14 @@ def test_horizon_controls_select_rows_metrics_and_bands(tmp_path):
         assert page.locator(CONTROLS).is_visible()
         assert "3 weeks ahead" in page.locator(LEAD).inner_text()
         assert "off" in page.locator(BLEND).inner_text()
-        assert page.locator(LEAD).get_attribute("title")
-        assert page.locator(BLEND).get_attribute("title")
+        assert_horizon_titles(page)
+        assert page.locator(f'{CONTROLS} input[type="checkbox"]').count() == 0
+        assert page.locator(f".forecast-results-header {CONTROLS}").count() == 1
         for selector in (LEAD, BLEND):
             assert {"toggle", "dropdown-head"}.issubset(
                 page.locator(selector).get_attribute("class").split()
             )
-            assert (
-                "forecast-metric-picker"
-                in page.locator(selector).locator("..").get_attribute("class").split()
-            )
+            assert page.locator(f"{CONTROLS} {selector}").count() == 1
         assert read_wape(page) == "30.0%"
         verdict = page.locator("#regression-verdict").inner_text()
         assert "pooled verdict" in verdict and "0.95" in verdict
@@ -217,9 +230,19 @@ def test_horizon_controls_select_rows_metrics_and_bands(tmp_path):
         assert page.locator("#regression-lead-errors tbody tr").first.locator(
             "td"
         ).all_text_contents() == ["1", "10.0%", "14.3%", "0.70", "3"]
+        for label in ("model wape", "naive wape"):
+            title = page.locator(f'#regression-lead-errors th:text-is("{label}")').get_attribute(
+                "title"
+            )
+            assert "absolute error as a share of absolute actuals" in title
+        ratio_title = page.locator('#regression-lead-errors th:text-is("ratio")').get_attribute(
+            "title"
+        )
+        assert "model error / naive error" in ratio_title and "below 1 beats naive" in ratio_title
         line_before = page.locator("#regression-chart .chart-line").last.get_attribute("d")
         page.locator(LEAD).click()
-        assert page.locator("#regression-lead-menu label").all_text_contents() == [
+        settle_menu(page)
+        assert page.locator("#regression-lead-menu .menu-item .name").all_text_contents() == [
             "1 week ahead",
             "2 weeks ahead",
             "3 weeks ahead",
@@ -241,7 +264,8 @@ def test_horizon_controls_select_rows_metrics_and_bands(tmp_path):
         )
         save_horizon(page, "desktop-lead")
         page.locator(BLEND).click()
-        assert page.locator("#regression-blend-menu label").all_text_contents() == [
+        settle_menu(page)
+        assert page.locator("#regression-blend-menu .menu-item .name").all_text_contents() == [
             "off",
             "around 1",
             "around 2",
@@ -291,26 +315,37 @@ def test_horizon_controls_keyboard_reload_and_polling(tmp_path):
         )
         open_horizon_run(page, run_id)
         page.locator(LEAD).focus()
+        page.keyboard.press("Enter")
+        settle_menu(page)
         page.keyboard.press("ArrowDown")
-        assert page.locator('#regression-lead-menu input[data-lead="1"]').evaluate(
+        assert page.locator('#regression-lead-menu .menu-item[data-id="1"]').evaluate(
             "node => node === document.activeElement"
         )
         page.keyboard.press("Escape")
         button = page.locator(BLEND)
         button.focus()
         page.keyboard.press("Enter")
+        settle_menu(page)
         assert page.locator("#regression-blend-menu").is_visible()
         assert button.get_attribute("aria-expanded") == "true"
-        option = page.locator('#regression-blend-menu input[data-blend="2"]')
-        option.focus()
+        for _ in range(3):
+            page.keyboard.press("ArrowDown")
+        option = page.locator('#regression-blend-menu .menu-item[data-id="2"]')
+        assert option.evaluate("node => node === document.activeElement")
         with page.expect_response("**/api/forecast-view?**"):
             page.keyboard.press("Space")
-        page.keyboard.press("Escape")
         assert not page.locator("#regression-blend-menu").is_visible()
         assert button.evaluate("node => node === document.activeElement")
         button.click()
+        settle_menu(page)
         page.locator("#regression-chart-caption").click()
         assert not page.locator("#regression-blend-menu").is_visible()
+        button.click()
+        settle_menu(page)
+        page.keyboard.press("ArrowDown")
+        page.keyboard.press("ArrowDown")
+        focused = page.locator('#regression-blend-menu .menu-item[data-id="1"]')
+        assert focused.evaluate("node => node === document.activeElement")
         before = len(polls)
         with page.expect_response(
             lambda response: (
@@ -321,16 +356,35 @@ def test_horizon_controls_keyboard_reload_and_polling(tmp_path):
         ):
             pass
         assert len(polls) > before
+        assert page.locator("#regression-blend-menu").is_visible()
+        assert focused.evaluate("node => node === document.activeElement")
+        page.keyboard.press("Escape")
         assert "around 2" in button.inner_text()
         assert "off" in page.locator(LEAD).inner_text()
         saved = page.evaluate("key => JSON.parse(localStorage.getItem(key))", STORAGE_KEY)
         assert saved[run_id] == {"mode": "blend", "n": 2}
+        show_tab(page, "regression-search")
+        metrics = page.locator("#regression-error-metrics")
+        metrics.focus()
+        page.keyboard.press("Enter")
+        settle_menu(page)
+        page.keyboard.press("ArrowDown")
+        page.keyboard.press("ArrowDown")
+        wape = page.locator('#regression-error-metrics-menu .menu-item[data-id="wape"]')
+        assert wape.evaluate("node => node === document.activeElement")
+        page.keyboard.press("Space")
+        page.evaluate("() => forecastTopics.get('regression').pollSearch()")
+        assert page.locator("#regression-error-metrics-menu").is_visible()
+        assert wape.evaluate("node => node === document.activeElement")
+        assert "on" in wape.get_attribute("class").split()
+        page.keyboard.press("Escape")
         page.reload()
         open_horizon_run(page, run_id)
         assert "around 2" in page.locator(BLEND).inner_text()
         assert "off" in page.locator(LEAD).inner_text()
         page.locator(BLEND).click()
-        assert page.locator('#regression-blend-menu input[data-blend="2"]').is_checked()
+        settle_menu(page)
+        assert page.locator('#regression-blend-menu .menu-item[data-id="2"].on').count() == 1
 
 
 @pytest.mark.parametrize("storage", ["malformed", "blocked"])
@@ -367,6 +421,7 @@ def test_horizon_controls_phone_layout_and_palette_tokens(tmp_path):
         choose_wape(page)
         for mode in ("lead", "blend"):
             page.locator(f"#regression-{mode}").click()
+            settle_menu(page)
             assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
             menu = page.locator(f"#regression-{mode}-menu")
             box = menu.bounding_box()
@@ -394,6 +449,7 @@ def test_horizon_controls_phone_layout_and_palette_tokens(tmp_path):
             == "rgb(34, 34, 34)"
         )
         page.locator(BLEND).click()
+        settle_menu(page)
         assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
         save_horizon(page, "phone-light-blend")
 

@@ -511,6 +511,12 @@ def test_multifamily_saved_run_named_models_and_explained_importance(tmp_path):
             == "xgboost"
         )
         assert_family_layout(page)
+        assert page.locator("#regression-family-comparison-wrap").evaluate(
+            "node => !!(node.compareDocumentPosition(document.querySelector("
+            "'.forecast-results-models')) & Node.DOCUMENT_POSITION_FOLLOWING)"
+        )
+        assert page.locator(".forecast-results-models #regression-importance-wrap").count() == 1
+        assert page.locator(".forecast-results-models #regression-lead-errors-wrap").count() == 1
         legend_box = page.locator("#regression-chart .chart-legend").bounding_box()
         table_box = page.locator("#regression-results-table").bounding_box()
         assert legend_box["y"] + legend_box["height"] <= table_box["y"]

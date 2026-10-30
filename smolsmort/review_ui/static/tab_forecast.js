@@ -336,19 +336,14 @@ function forecastTileMenus(tile) {
 function forecastTileSearchScale(tiles, selected, registry) {
   const fallback = registry.find(metric => metric.id === 'validation_error')
     || {id: 'validation_error', label: 'validation error', unit: 'number'};
-  const requested = selected || fallback;
-  const tracked = ['validation_error', 'wape', 'mae'].includes(requested.id)
-    || tiles.some(tile => (tile.search_curve || []).some(point => Number.isFinite(point[requested.id])));
-  const unsupported = ['mape', 'test_ratio'].includes(requested.id) || !tracked;
-  const metric = unsupported ? fallback : requested;
+  const metric = selected || fallback;
   const points = tiles.flatMap(tile => tile.search_curve || []);
   const values = points.map(point => point[metric.id]).filter(Number.isFinite);
   const low = values.length ? Math.min(...values) : 0;
   const high = values.length ? Math.max(...values) : 1;
   const padding = (high - low || Math.abs(high) || 1) * 0.1;
-  return {metric, note: unsupported ? `${requested.label}: not tracked per generation` : '',
-    low: low >= 0 ? Math.max(0, low - padding) : low - padding, high: high + padding,
-    generation: Math.max(1, ...points.map(point => point.generation).filter(Number.isFinite))};
+  return {metric, fallback,
+    low: low >= 0 ? Math.max(0, low - padding) : low - padding, high: high + padding};
 }
 
 // tile charts share one drawing box: plot on top, axis and its labels below
@@ -377,36 +372,44 @@ function forecastTileSvg(width, ariaLabel, className) {
   return {svg, add, axis};
 }
 
-function forecastTileChartHead(className, title, value) {
+function forecastTileChartHead(className, title, value, explanation = title) {
   const head = forecastNode('div', className);
-  head.append(forecastNode('span', '', title));
+  const label = forecastNode('span', '', title);
+  label.title = explanation;
+  head.append(label);
   if (value) head.append(forecastNode('span', 'forecast-tile-current-value', value));
   return head;
 }
 
 function forecastTileChart(tile, scale, width) {
-  const {metric, low, high, generation} = scale;
+  const points = (tile.search_curve || []).filter(point => Number.isFinite(point.generation));
+  const recorded = points.some(point => Number.isFinite(point[scale.metric.id]));
+  const fallback = !recorded && scale.metric.id !== 'validation_error';
+  const {metric, low, high} = fallback
+    ? forecastTileSearchScale([tile], scale.fallback, []) : scale;
+  const generation = Math.max(1, ...points.map(point => point.generation));
   const wrap = forecastNode('div', 'forecast-tile-chart');
   wrap.dataset.chartMetric = metric.id;
+  wrap.dataset.recorded = String(!fallback);
   wrap.dataset.scaleMin = String(low);
   wrap.dataset.scaleMax = String(high);
   wrap.dataset.generationMax = String(generation);
-  const metricLabel = metric.id === 'validation_error' ? metric.label : `${metric.label} · validation`;
-  const points = (tile.search_curve || []).filter(point => Number.isFinite(point.generation));
+  const metricLabel = fallback ? `own loss, ${scale.metric.label} not recorded`
+    : metric.id === 'validation_error' ? metric.label : `${metric.label} · validation`;
+  const explanation = metric.explanation ? forecastMetricHelp(metric, 'validation') : metricLabel;
   const known = points.filter(point => Number.isFinite(point[metric.id]));
   if (!known.length) {
-    wrap.append(forecastTileChartHead('forecast-tile-chart-label', metricLabel),
+    wrap.append(forecastTileChartHead('forecast-tile-chart-label', metricLabel, null, explanation),
       forecastNode('div', 'forecast-tile-placeholder', 'no search curve saved for this family'));
-    if (scale.note) wrap.append(forecastNode('div', 'forecast-tile-chart-note', scale.note));
     return wrap;
   }
   const last = points.at(-1);
   const value = Number.isFinite(last[metric.id]) ? forecastMetricNumber(metric, last[metric.id]) : 'not saved';
   const end = (tile.state === 'pruned' ? 'pruned · ' : '')
     + (tile.search_single ? 'single value' : `gen ${last.generation}`);
-  wrap.append(forecastTileChartHead('forecast-tile-chart-label', metricLabel, `${end}: ${value}`));
+  wrap.append(forecastTileChartHead('forecast-tile-chart-label', metricLabel, `${end}: ${value}`, explanation));
   const {svg, add, axis} = forecastTileSvg(width,
-    `${tile.name}: ${metric.label} by generation; ${end}: ${value}; shared scale ${forecastMetricNumber(metric, low)} to ${forecastMetricNumber(metric, high)}`,
+    `${tile.name}: ${metricLabel} by generation; ${end}: ${value}; ${fallback ? 'own' : 'shared'} scale ${forecastMetricNumber(metric, low)} to ${forecastMetricNumber(metric, high)}`,
     'forecast-tile-search');
   const {top, bottom} = FORECAST_TILE_PLOT;
   const x = step => 8 + (step - 1) / Math.max(1, generation - 1) * (width - 16);
@@ -432,14 +435,7 @@ function forecastTileChart(tile, scale, width) {
     add('path', {d: `M${cx - 4},${cy - 4}l8,8m0,-8l-8,8`, class: 'forecast-tile-pruned'});
   }
   wrap.append(svg);
-  if (scale.note) wrap.append(forecastNode('div', 'forecast-tile-chart-note', scale.note));
   return wrap;
-}
-
-// the picked metric when it is recorded per boosting round, else wape
-function forecastTileRoundMetric(selectedIds, registry) {
-  const id = selectedIds.find(name => ['wape', 'mae'].includes(name)) || 'wape';
-  return registry.find(metric => metric.id === id) || {id, label: id, unit: id === 'wape' ? 'percent' : 'target'};
 }
 
 // one tile's per-round series: the picked metric where saved, else the fit's own loss metric
@@ -447,12 +443,15 @@ function forecastTileRoundSeries(tile, metric) {
   const curves = tile.round_curves || [];
   const newest = curves.at(-1);
   if (!newest) return null;
-  if (Array.isArray(newest.curves?.[metric.id])) {
-    return {metric, recorded: true, curves: curves.filter(curve => Array.isArray(curve.curves?.[metric.id]))
-      .map(curve => ({generation: curve.generation, values: curve.curves[metric.id]}))};
+  if (metric.id !== 'validation_error') {
+    const recorded = curves.map(curve => ({generation: curve.generation,
+      values: curve.curves?.[metric.id] || (curve.metric === metric.id ? curve.validation : [])}))
+      .filter(curve => curve.values.some(Number.isFinite));
+    if (recorded.length) return {metric, recorded: true, curves: recorded};
   }
-  const loss = {id: newest.metric, label: newest.metric || 'loss', unit: 'number'};
-  return {metric: loss, recorded: false, curves: curves.filter(curve => curve.metric === newest.metric)
+  const loss = {id: newest.metric || 'loss', label: newest.metric || 'loss',
+    unit: newest.metric === 'wape' ? 'percent' : 'number'};
+  return {metric: loss, recorded: metric.id === 'validation_error', curves: curves.filter(curve => curve.metric === newest.metric)
     .map(curve => ({generation: curve.generation, values: curve.validation}))};
 }
 
@@ -472,8 +471,13 @@ function forecastTileRoundRange(curves) {
 
 // one shared scale across tiles, only over curves of the picked metric itself
 function forecastTileRoundScale(tiles, metric) {
-  return forecastTileRoundRange(tiles.map(tile => forecastTileRoundSeries(tile, metric))
-    .filter(series => series?.recorded).flatMap(series => series.curves));
+  const groups = {};
+  for (const tile of tiles) {
+    const series = forecastTileRoundSeries(tile, metric);
+    if (!series?.recorded) continue;
+    (groups[series.metric.id] ||= []).push(...series.curves);
+  }
+  return Object.fromEntries(Object.entries(groups).map(([id, curves]) => [id, forecastTileRoundRange(curves)]));
 }
 
 function forecastTileRoundChart(tile, metric, shared, width) {
@@ -481,7 +485,8 @@ function forecastTileRoundChart(tile, metric, shared, width) {
   const series = forecastTileRoundSeries(tile, metric);
   const curves = (series?.curves || []).filter(curve => curve.values.some(Number.isFinite));
   if (!curves.length) {
-    wrap.append(forecastTileChartHead('forecast-tile-chart-label', `${metric.label} per round`),
+    wrap.append(forecastTileChartHead('forecast-tile-chart-label', `${metric.label} per round`, null,
+      metric.explanation ? forecastMetricHelp(metric, 'validation') : FORECAST_LOSS_HELP),
       forecastNode('div', 'forecast-tile-placeholder', 'no round curve saved for this family'));
     return wrap;
   }
@@ -489,14 +494,19 @@ function forecastTileRoundChart(tile, metric, shared, width) {
   wrap.dataset.chartMetric = shown.id;
   wrap.dataset.recorded = String(series.recorded);
   // a fallback loss metric differs per tile, so it gets its own scale
-  const scale = (series.recorded && shared) || forecastTileRoundRange(curves);
+  const scale = (series.recorded && shared[shown.id]) || forecastTileRoundRange(curves);
+  wrap.dataset.scaleMin = String(scale.low);
+  wrap.dataset.scaleMax = String(scale.high);
   const format = value => shown.unit === 'number' ? String(Number(value.toPrecision(3))) : forecastMetricNumber(shown, value);
   const newest = curves.at(-1);
   const end = newest.values.filter(Number.isFinite).at(-1);
   const rounds = Math.max(...curves.map(curve => curve.values.length));
-  const title = series.recorded ? `${shown.label} per round` : `${shown.label} · ${metric.label} not saved`;
+  const title = !series.recorded ? `own loss, ${metric.label} not recorded`
+    : metric.id === 'validation_error' ? `validation error · ${shown.label} per round` : `${shown.label} per round`;
+  const explanation = metric.id !== 'validation_error' && series.recorded && metric.explanation
+    ? forecastMetricHelp(metric, 'validation') : FORECAST_LOSS_HELP;
   wrap.append(forecastTileChartHead('forecast-tile-chart-label', title,
-    `gen ${newest.generation} · round ${newest.values.length}: ${format(end)}`));
+    `gen ${newest.generation} · round ${newest.values.length}: ${format(end)}`, explanation));
   const {svg, add, axis} = forecastTileSvg(width,
     `${tile.name}: ${shown.label} per boosting round for the newest ${curves.length} generations; generation ${newest.generation} ends at ${format(end)}`,
     'forecast-tile-round-plot');
@@ -618,16 +628,41 @@ const FORECAST_OBJECTIVES = {
 
 const FORECAST_LOSS_HELP = 'l1 (absolute) is absolute-error loss: the model minimises mean absolute error; mae is the measured number. squared is squared-error loss. tweedie and poisson use their named distribution losses; logistic and softprob use log loss; hazard uses hazard log loss; aft uses survival loss';
 
-function forecastDropdown(options, value, onPick, label) {
+function forecastOpenMenu(menu, head) {
+  const onDismiss = menu.onDismiss;
+  menu.onDismiss = () => {
+    head.setAttribute('aria-expanded', 'false');
+    if (document.activeElement === document.body) head.focus({preventScroll: true});
+    onDismiss?.();
+  };
+  menu.openAt(head);
+  head.setAttribute('aria-expanded', String(menu.isOpen));
+  if (menu.el && head.id) {
+    menu.el.id = `${head.id}-menu`;
+    head.setAttribute('aria-controls', menu.el.id);
+  }
+  return menu;
+}
+
+function forecastDropdown(options, value, onPick, label, format = value => value, describe = null) {
   const head = forecastNode('button', 'toggle dropdown-head');
   head.type = 'button';
   head.setAttribute('aria-label', label);
-  head.append(forecastNode('span', null, value));
-  head.onclick = () => listMenu(label, options.map(id => ({id, label: id, on: id === value})), item => {
-    value = item.id;
-    setHead(head, value);
-    onPick(value);
-  }).openAt(head);
+  head.setAttribute('aria-expanded', 'false');
+  head.dataset.value = String(value);
+  head.append(forecastNode('span', null, format(value)));
+  head.onclick = () => {
+    const menu = forecastOpenMenu(listMenu(label, options.map(id => ({
+      id, label: format(id), on: String(id) === head.dataset.value,
+    })), item => {
+      head.dataset.value = String(item.id);
+      setHead(head, format(item.id));
+      onPick(item.id);
+    }), head);
+    if (describe) menu.el?.querySelectorAll('.menu-item').forEach(row => {
+      row.title = describe(row.dataset.id);
+    });
+  };
   return head;
 }
 
@@ -739,6 +774,12 @@ class ForecastTopic {
     this.runView = 'tiles';
     this.tilesFlipped = false;
     this.tilesRunId = null;
+    this.tileMetric = 'validation_error';
+    this.tileMetricStorageKey = `${this.storageKey}:tile-metric`;
+    try {
+      const saved = localStorage.getItem(this.tileMetricStorageKey);
+      if (['validation_error', 'wape', 'mae'].includes(saved)) this.tileMetric = saved;
+    } catch (error) { /* storage can be unavailable in private windows */ }
     this.metricRegistry = [];
     this.selectedMetricIds = ['validation_error', 'test_ratio'];
     this.metricStorageKey = `${this.storageKey}:error-metrics`;
@@ -801,64 +842,31 @@ class ForecastTopic {
       button.id = `${this.topic}-error-metrics`;
       button.setAttribute('aria-expanded', 'false');
       button.setAttribute('aria-controls', `${this.topic}-error-metrics-menu`);
-      const menu = forecastNode('div', 'forecast-metric-menu hidden');
-      menu.id = `${this.topic}-error-metrics-menu`;
-      menu.setAttribute('role', 'group');
-      menu.setAttribute('aria-label', 'error metrics');
-      const close = (focus = false) => {
-        menu.classList.add('hidden');
-        button.setAttribute('aria-expanded', 'false');
-        if (focus) button.focus();
-      };
       button.onclick = () => {
-        const open = menu.classList.toggle('hidden') === false;
-        button.setAttribute('aria-expanded', String(open));
+        this.metricMenu = forecastOpenMenu(new Menu({title: 'error metrics', persistent: true,
+          sections: this.metricSections(),
+        }), button);
+        this.paintMetricPicker();
       };
-      picker.addEventListener('keydown', event => {
-        if (event.key === 'Escape') { event.preventDefault(); close(true); }
-        if (event.key === 'ArrowDown' && event.target === button) {
-          event.preventDefault();
-          menu.classList.remove('hidden');
-          button.setAttribute('aria-expanded', 'true');
-          menu.querySelector('input')?.focus();
-        }
-      });
-      document.addEventListener('pointerdown', event => {
-        if (!picker.contains(event.target)) close();
-      });
-      picker.addEventListener('focusout', event => {
-        if (event.relatedTarget && !picker.contains(event.relatedTarget)) close();
-      });
-      const help = forecastNode('details', 'forecast-metric-help');
-      help.append(forecastNode('summary', '', 'what do these numbers mean'));
-      help.append(forecastNode('div', 'forecast-metric-help-lines'));
-      picker.append(button, menu);
-      controls.append(picker, help);
+      picker.append(button);
+      controls.append(picker);
       this.metricControls = controls;
     }
-    document.getElementById(`${this.topic}-${slot}-metrics`).append(this.metricControls);
+    const target = document.getElementById(`${this.topic}-${slot}-metrics`);
+    if (this.metricControls.parentElement !== target) {
+      this.metricMenu?.close();
+      target.append(this.metricControls);
+    }
     this.paintMetricPicker();
   }
 
-  paintMetricPicker() {
-    if (!this.metricControls) return;
-    const menu = this.metricControls.querySelector('.forecast-metric-menu');
-    const signature = JSON.stringify(this.metricRegistry);
-    if (menu.dataset.signature === signature) return;
-    menu.dataset.signature = signature;
-    menu.replaceChildren();
-    const help = this.metricControls.querySelector('.forecast-metric-help-lines');
-    help.replaceChildren();
-    this.metricRegistry.forEach(metric => {
-      const label = forecastNode('label', 'forecast-metric-choice');
-      label.title = forecastMetricHelp(metric);
-      const input = document.createElement('input');
-      input.type = 'checkbox';
-      input.dataset.metricId = metric.id;
-      input.checked = this.selectedMetricIds.includes(metric.id);
-      input.onchange = () => {
-        this.selectedMetricIds = input.checked ? [...this.selectedMetricIds, metric.id]
-          : this.selectedMetricIds.filter(id => id !== metric.id);
+  metricSections() {
+    return [{kind: 'list', multi: true, empty: 'metric definitions not saved',
+      items: this.metricRegistry.map(metric => ({id: metric.id, label: metric.label,
+        on: this.selectedMetricIds.includes(metric.id)})),
+      onPick: (item, on) => {
+        this.selectedMetricIds = on ? [...this.selectedMetricIds, item.id]
+          : this.selectedMetricIds.filter(id => id !== item.id);
         try { localStorage.setItem(this.metricStorageKey, JSON.stringify(this.selectedMetricIds)); }
         catch (error) { /* selection still works when storage is unavailable */ }
         this.paintRuns();
@@ -867,14 +875,23 @@ class ForecastTopic {
           this.paintModelResults(this.resultsView);
           this.paintVerdict(this.resultsView.verdict, forecastModelLabel(this.resultsView));
         }
-      };
-      label.append(input, forecastNode('span', '', metric.label));
-      menu.append(label);
-      help.append(forecastNode('p', '', `${metric.label}: ${metric.explanation}`));
+      },
+    }];
+  }
+
+  paintMetricPicker() {
+    const menu = this.metricMenu;
+    if (!menu?.isOpen) return;
+    const signature = JSON.stringify(this.metricRegistry);
+    if (menu.signature && menu.signature !== signature) {
+      menu.refresh(this.metricSections());
+      menu.el.id = `${this.topic}-error-metrics-menu`;
+    }
+    menu.signature = signature;
+    menu.el.querySelectorAll('.menu-item').forEach(row => {
+      const metric = this.metricRegistry.find(metric => metric.id === row.dataset.id);
+      if (metric) row.title = forecastMetricHelp(metric);
     });
-    if (!this.metricRegistry.length) menu.append(forecastNode('span', 'field-label', 'metric definitions not saved'));
-    help.append(forecastNode('p', '', FORECAST_LOSS_HELP));
-    help.append(forecastNode('p', '', 'recipe wape and mae use saved validation metrics; test predictions are not saved per recipe. a dash means the metric is unavailable; hover for the reason'));
   }
 
   // ---- persistence: the last spec per topic, wrapped so a private window never breaks the tab ----
@@ -1466,12 +1483,12 @@ class ForecastTopic {
       {key: 'minutes', label: 'time cap (minutes)', step: 1, min: 1, max: 240, value: this.searchValues.minutes},
     ];
     panel.innerHTML = `
-      <div id="${this.topic}-search-metrics"></div>
       <div class="forecast-search-layout">
         <aside class="panel-inline forecast-run-rail">
           <div class="forecast-run-controls">
             <button class="toggle adds" id="${this.topic}-new-search">+ new run</button>
             <div class="forecast-run-sort" id="${this.topic}-run-sort"></div>
+            <div id="${this.topic}-search-metrics"></div>
           </div>
           <section id="${this.topic}-running-section" class="hidden">
             <div class="field-label">running</div>
@@ -1518,7 +1535,10 @@ class ForecastTopic {
               <span><i data-state="running"></i>running</span>
               <span><i data-state="worse"></i>worse</span>
             </div>
-            <button type="button" class="toggle" id="${this.topic}-tiles-flip" aria-pressed="false">flip all: folds</button>
+            <div class="forecast-tiles-controls">
+              <span id="${this.topic}-tiles-metric-slot"></span>
+              <button type="button" class="toggle" id="${this.topic}-tiles-flip" aria-pressed="false">flip all: folds</button>
+            </div>
           </div>
           <div class="forecast-tiles-grid" id="${this.topic}-tiles-grid"></div>
         </section>
@@ -1564,12 +1584,34 @@ class ForecastTopic {
       this.tilesFlipped = !this.tilesFlipped;
       this.paintTileFlip();
     };
+    const metricLabel = id => id === 'validation_error' ? 'validation error' : id;
+    const tileMetricHead = forecastDropdown(['validation_error', 'wape', 'mae'], this.tileMetric, value => {
+      this.tileMetric = value;
+      try { localStorage.setItem(this.tileMetricStorageKey, value); }
+      catch (error) { /* selection still works when storage is unavailable */ }
+      setHead(tileMetricHead, `y metric: ${metricLabel(value)}`);
+      this.paintRunTiles(this.runCache.get(this.selectedRunId));
+    }, 'y metric', metricLabel, id => {
+      const metric = this.metricRegistry.find(metric => metric.id === id);
+      return metric ? forecastMetricHelp(metric, 'validation') : metricLabel(id);
+    });
+    tileMetricHead.id = `${this.topic}-tiles-metric`;
+    setHead(tileMetricHead, `y metric: ${metricLabel(this.tileMetric)}`);
+    document.getElementById(`${this.topic}-tiles-metric-slot`).append(tileMetricHead);
     document.getElementById(`${this.topic}-search-cancel`).onclick = () => this.cancelSearch();
     document.getElementById(`${this.topic}-new-search`).onclick = () => activateTab(`${this.topic}-models`);
-    document.getElementById(`${this.topic}-run-sort`).append(forecastDropdown(
+    const sortHead = forecastDropdown(
       ['date, newest first', 'best performance'], this.runOrder,
-      value => { this.runOrder = value; this.paintRuns(); }, 'sort runs'
-    ));
+      value => {
+        this.runOrder = value;
+        setHead(sortHead, 'sort by');
+        sortHead.title = `sort by: ${value}`;
+        this.paintRuns();
+      }, 'sort runs'
+    );
+    setHead(sortHead, 'sort by');
+    sortHead.title = `sort by: ${this.runOrder}`;
+    document.getElementById(`${this.topic}-run-sort`).append(sortHead);
     document.getElementById(`${this.topic}-run-warm`).onclick = () => this.warmStartRun(this.selectedRunId);
     document.getElementById(`${this.topic}-run-refit`).onclick = () => this.refitRun(this.selectedRunId);
     document.getElementById(`${this.topic}-run-open`).onclick = () => this.openResults(this.selectedRunId);
@@ -1802,8 +1844,13 @@ class ForecastTopic {
     const scale = forecastTileWapeScale(entries);
     const metrics = this.selectedMetrics(run);
     const registry = run?.metric_registry || this.metricRegistry;
-    const searchScale = forecastTileSearchScale(entries, null, registry);
-    const roundMetric = forecastTileRoundMetric(this.selectedMetricIds, registry);
+    const roundMetric = registry.find(metric => metric.id === this.tileMetric)
+      || {id: this.tileMetric, label: this.tileMetric === 'validation_error' ? 'validation error' : this.tileMetric,
+        unit: this.tileMetric === 'wape' ? 'percent' : 'number'};
+    const searchScale = forecastTileSearchScale(entries, roundMetric, registry);
+    if (roundMetric.explanation) {
+      document.getElementById(`${this.topic}-tiles-metric`).title = forecastMetricHelp(roundMetric, 'validation');
+    }
     const rounds = {metric: roundMetric, scale: forecastTileRoundScale(entries, roundMetric),
       size: forecastTileSize(entries, metrics)};
     grid.style.setProperty('--tile-size', `${rounds.size}px`);
@@ -2127,41 +2174,45 @@ class ForecastTopic {
   mountResults(panel) {
     panel.innerHTML = `
       <div class="forecast-pane forecast-results">
-        <div id="${this.topic}-results-metrics"></div>
-        <div id="${this.topic}-horizon-controls" class="forecast-metric-controls forecast-horizon-controls hidden"></div>
-        <div id="${this.topic}-horizon-help" class="stat hidden"></div>
-        <div class="run-controls">
-          <div class="toggle dropdown-head" id="${this.topic}-results-run"><span>pick a run</span></div>
+        <div class="run-controls forecast-results-header">
+          <button class="toggle dropdown-head" id="${this.topic}-results-run"><span>pick a run</span></button>
           <button class="toggle dropdown-head hidden" id="${this.topic}-results-model"><span>winner</span></button>
-          <span class="field-label">break down by</span>
-          <div class="toggle dropdown-head narrow" id="${this.topic}-breakdown-head"><span>none</span></div>
+          <div id="${this.topic}-results-metrics"></div>
+          <div id="${this.topic}-horizon-controls" class="forecast-horizon-controls hidden"></div>
+          <button class="toggle dropdown-head" id="${this.topic}-breakdown-head"><span>break down by</span></button>
           <span class="spacer"></span>
-          <a class="toggle adds hidden" id="${this.topic}-export" download>export csv</a>
+          <a class="hidden" id="${this.topic}-export" download>csv</a>
         </div>
         <div id="${this.topic}-excluded-series" class="stat warn forecast-excluded-series hidden"></div>
         <div id="${this.topic}-verdict" class="forecast-verdict hidden"></div>
-        <div class="forecast-results-models hidden" id="${this.topic}-results-models">
-          <div class="forecast-pane hidden" id="${this.topic}-family-comparison-wrap">
-            <div class="run-controls"><span class="field-label">family comparison · validation error ranks models</span></div>
-            <div class="forecast-model-table-wrap"><table class="forecast-column-grid forecast-family-table" id="${this.topic}-family-comparison"></table></div>
+        <section class="forecast-pane forecast-chart-panel">
+          <div class="run-controls forecast-chart-heading">
+            <span class="field-label">actual vs forecast</span>
+            <button class="toggle dropdown-head" id="${this.topic}-filter"><span>filter</span></button>
           </div>
-          <div class="forecast-pane">
+          <div id="${this.topic}-chart-status" class="stat hidden"></div>
+          <div id="${this.topic}-chart" class="forecast-chart"></div>
+          <div id="${this.topic}-chart-caption" class="stat hidden"></div>
+          <div id="${this.topic}-horizon-help" class="stat hidden"></div>
+          <div id="${this.topic}-view-metrics" class="forecast-metric-lines hidden"></div>
+        </section>
+        <section class="forecast-pane forecast-result-panel hidden" id="${this.topic}-family-comparison-wrap">
+          <div class="run-controls"><span class="field-label">family test results</span></div>
+          <div class="forecast-model-table-wrap"><table class="forecast-column-grid forecast-family-table" id="${this.topic}-family-comparison"></table></div>
+        </section>
+        <div class="forecast-results-models hidden" id="${this.topic}-results-models">
+          <section class="forecast-pane forecast-result-panel" id="${this.topic}-importance-wrap">
             <div class="run-controls">
               <span class="field-label">feature importance</span>
               <button class="toggle dropdown-head" id="${this.topic}-importance-family"><span>xgboost</span></button>
             </div>
             <div class="stat" id="${this.topic}-importance-status"></div>
             <div class="forecast-model-table-wrap"><table class="forecast-column-grid forecast-family-table" id="${this.topic}-importance"></table></div>
-          </div>
-        </div>
-        <div id="${this.topic}-filter-chips" class="label-columns"></div>
-        <div id="${this.topic}-chart-status" class="stat hidden"></div>
-        <div id="${this.topic}-chart" class="forecast-chart"></div>
-        <div id="${this.topic}-chart-caption" class="stat hidden"></div>
-        <div id="${this.topic}-view-metrics" class="forecast-metric-lines hidden"></div>
-        <div id="${this.topic}-lead-errors-wrap" class="hidden">
-          <div class="field-label">error by weeks ahead</div>
-          <div class="forecast-model-table-wrap"><table id="${this.topic}-lead-errors" class="forecast-column-grid"></table></div>
+          </section>
+          <section id="${this.topic}-lead-errors-wrap" class="forecast-pane forecast-result-panel hidden">
+            <div class="run-controls"><span class="field-label">error by weeks ahead</span></div>
+            <div class="forecast-model-table-wrap"><table id="${this.topic}-lead-errors" class="forecast-column-grid"></table></div>
+          </section>
         </div>
         <div class="run-controls hidden" id="${this.topic}-group-row">
           <span class="field-label">group by</span>
@@ -2178,6 +2229,7 @@ class ForecastTopic {
       </div>`;
     document.getElementById(`${this.topic}-results-run`).onclick = evt => this.openRunPicker(evt.currentTarget);
     document.getElementById(`${this.topic}-breakdown-head`).onclick = evt => this.openBreakdownPicker(evt.currentTarget);
+    document.getElementById(`${this.topic}-filter`).onclick = evt => this.openFilterPicker(evt.currentTarget);
     document.getElementById(`${this.topic}-group-head`).onclick = evt => this.openGroupPicker(evt.currentTarget);
     document.getElementById(`${this.topic}-page-prev`).onclick = () => this.changePage(-1);
     document.getElementById(`${this.topic}-page-next`).onclick = () => this.changePage(1);
@@ -2273,7 +2325,7 @@ class ForecastTopic {
     const load = this.resultsLoad;
     this.filterChoices = {};
     const dims = this.dims();
-    if (!dims.length) { this.renderFilterChips(); return; }
+    if (!dims.length) { this.paintFilterHead(); return; }
     const data = await api(
       `/api/forecast-table?id=${encodeURIComponent(this.resultsRunId)}&page=0&size=2000`
     );
@@ -2283,34 +2335,35 @@ class ForecastTopic {
       if (idx < 0) return;
       this.filterChoices[dim] = [...new Set(data.rows.map(r => r[idx]))].filter(v => v != null);
     });
-    this.renderFilterChips();
+    this.paintFilterHead();
   }
 
-  renderFilterChips() {
-    const box = document.getElementById(`${this.topic}-filter-chips`);
-    box.innerHTML = '';
-    const dims = this.dims();
-    dims.forEach((dim, index) => {
-      if (index) box.appendChild(Object.assign(document.createElement('div'), {className: 'divider'}));
-      const col = document.createElement('div');
-      col.className = 'col';
-      col.appendChild(Object.assign(document.createElement('div'), {className: 'field-label', textContent: dim}));
-      (this.filterChoices[dim] || []).forEach(value => {
-        const chip = document.createElement('div');
-        chip.className = 'toggle';
-        chip.textContent = String(value);
-        chip.onclick = () => {
-          chip.classList.toggle('on');
-          const picked = [...col.querySelectorAll('.toggle.on')].map(el => el.textContent);
-          if (picked.length) this.filters[dim] = picked; else delete this.filters[dim];
+  paintFilterHead() {
+    const head = document.getElementById(`${this.topic}-filter`);
+    const count = Object.values(this.filters).reduce((total, values) => total + values.length, 0);
+    setHead(head, count ? `filter: ${count}` : 'filter');
+    head.title = Object.entries(this.filters).map(([dim, values]) => `${dim}: ${values.join(', ')}`)
+      .join('; ') || 'filter by dimension';
+  }
+
+  openFilterPicker(head) {
+    forecastOpenMenu(new Menu({title: 'filter', persistent: true,
+      sections: this.dims().length ? this.dims().map(dim => ({
+        kind: 'list', label: dim, multi: true, empty: 'no saved values',
+        items: (this.filterChoices[dim] || []).map(value => ({id: String(value), label: String(value),
+          on: (this.filters[dim] || []).includes(String(value))})),
+        onPick: (item, on) => {
+          const picked = on ? [...(this.filters[dim] || []), item.id]
+            : (this.filters[dim] || []).filter(value => value !== item.id);
+          if (picked.length) this.filters[dim] = picked;
+          else delete this.filters[dim];
+          this.paintFilterHead();
           this.refreshView();
           this.tableState.page = 0;
           this.refreshTable();
-        };
-        col.appendChild(chip);
-      });
-      box.appendChild(col);
-    });
+        },
+      })) : [{kind: 'list', items: [], empty: 'no dimensions to filter'}],
+    }), head);
   }
 
   openBreakdownPicker(head) {
@@ -2325,7 +2378,7 @@ class ForecastTopic {
           this.breakdown = on
             ? [...this.breakdown, item.id]
             : this.breakdown.filter(d => d !== item.id);
-          setHead(head, this.breakdown.length ? this.breakdown.join(', ') : 'none');
+          setHead(head, this.breakdown.length ? `break down by: ${this.breakdown.join(', ')}` : 'break down by');
           this.refreshView();
           this.refreshTable();
         },
@@ -2362,8 +2415,14 @@ class ForecastTopic {
     const errors = view.lead_errors || [];
     document.getElementById(`${this.topic}-lead-errors-wrap`).classList.toggle('hidden', !errors.length);
     const percent = value => Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : '-';
+    const metricHeader = (id, label) => {
+      const metric = (view.metric_registry || this.metricRegistry).find(metric => metric.id === id);
+      return metric ? forecastMetricHeader({...metric, label, scope: 'test rows at each weeks ahead'})
+        : forecastNode('th', '', label);
+    };
     forecastFillTable(document.getElementById(`${this.topic}-lead-errors`),
-      ['weeks ahead', 'model wape', 'naive wape', 'ratio', 'rows'], errors.map(row => [
+      ['weeks ahead', metricHeader('wape', 'model wape'), metricHeader('wape', 'naive wape'),
+        metricHeader('test_ratio', 'ratio'), 'rows'], errors.map(row => [
         row.weeks_ahead, percent(row.model_wape), percent(row.naive_wape),
         Number.isFinite(row.ratio) ? row.ratio.toFixed(2) : '-', row.rows ?? '-',
       ]));
@@ -2379,75 +2438,34 @@ class ForecastTopic {
       controls.replaceChildren();
       for (const mode of ['lead', 'blend']) {
         const picker = forecastNode('div', 'forecast-metric-picker');
-        const button = forecastNode('button', 'toggle dropdown-head');
-        button.type = 'button';
-        button.id = `${this.topic}-${mode}`;
-        button.title = descriptions[mode];
-        button.setAttribute('aria-expanded', 'false');
-        button.setAttribute('aria-controls', `${this.topic}-${mode}-menu`);
-        const menu = forecastNode('div', 'forecast-metric-menu hidden');
-        menu.id = `${this.topic}-${mode}-menu`;
-        menu.setAttribute('role', 'group');
-        menu.setAttribute('aria-label', mode);
-        const close = (focus = false) => {
-          menu.classList.add('hidden');
-          button.setAttribute('aria-expanded', 'false');
-          if (focus) button.focus();
-        };
-        button.onclick = () => {
-          const open = menu.classList.toggle('hidden') === false;
-          button.setAttribute('aria-expanded', String(open));
-        };
-        picker.addEventListener('keydown', event => {
-          if (event.key === 'Escape') { event.preventDefault(); close(true); }
-          if (event.key === 'ArrowDown' && event.target === button) {
-            event.preventDefault();
-            menu.classList.remove('hidden');
-            button.setAttribute('aria-expanded', 'true');
-            menu.querySelector('input')?.focus();
-          }
-        });
-        document.addEventListener('pointerdown', event => {
-          if (!picker.contains(event.target)) close();
-        });
-        picker.addEventListener('focusout', event => {
-          if (event.relatedTarget && !picker.contains(event.relatedTarget)) close();
-        });
         const options = Array.from({length: view.horizon}, (_, index) => index + 1);
         if (mode === 'blend') options.unshift('off');
-        options.forEach(n => {
-          const label = forecastNode('label', 'forecast-metric-choice');
-          const input = document.createElement('input');
-          input.type = 'checkbox';
-          input.dataset[mode] = String(n);
-          input.onchange = async () => {
-            this.horizonSelections[this.resultsRunId] = n === 'off'
-              ? {mode: 'lead', n: view.horizon} : {mode, n};
-            try { localStorage.setItem(this.horizonStorageKey, JSON.stringify(this.horizonSelections)); }
-            catch (error) { /* selection still works when storage is unavailable */ }
-            close(true);
-            this.tableRequest++;
-            this.tableState.page = 0;
-            await this.refreshView();
-            await this.refreshTable();
-          };
-          const text = n === 'off' ? 'off' : mode === 'blend' ? `around ${n}`
-            : `${n} ${n === 1 ? 'week' : 'weeks'} ahead`;
-          label.append(input, forecastNode('span', '', text));
-          menu.append(label);
-        });
-        picker.append(button, menu);
+        const format = n => n === 'off' ? 'off' : mode === 'blend' ? `around ${n}`
+          : `${n} ${n === 1 ? 'week' : 'weeks'} ahead`;
+        const button = forecastDropdown(options, 'off', async n => {
+          this.horizonSelections[this.resultsRunId] = n === 'off'
+            ? {mode: 'lead', n: view.horizon} : {mode, n};
+          try { localStorage.setItem(this.horizonStorageKey, JSON.stringify(this.horizonSelections)); }
+          catch (error) { /* selection still works when storage is unavailable */ }
+          this.tableRequest++;
+          this.tableState.page = 0;
+          await this.refreshView();
+          await this.refreshTable();
+        }, mode, format);
+        button.id = `${this.topic}-${mode}`;
+        button.title = descriptions[mode];
+        picker.append(button);
         controls.append(picker);
       }
     }
     for (const mode of ['lead', 'blend']) {
       const active = view.view.mode === mode;
       const n = view.view.n;
-      document.getElementById(`${this.topic}-${mode}`).textContent = `${mode}: ${!active ? 'off'
-        : mode === 'blend' ? `around ${n}` : `${n} ${n === 1 ? 'week' : 'weeks'} ahead`}`;
-      controls.querySelectorAll(`input[data-${mode}]`).forEach(input => {
-        input.checked = active ? input.dataset[mode] === String(n) : input.dataset[mode] === 'off';
-      });
+      const button = document.getElementById(`${this.topic}-${mode}`);
+      button.dataset.value = active ? String(n) : 'off';
+      setHead(button, `${mode}: ${!active ? 'off'
+        : mode === 'blend' ? `around ${n}` : `${n} ${n === 1 ? 'week' : 'weeks'} ahead`}`);
+      button.title = descriptions[mode];
     }
   }
 

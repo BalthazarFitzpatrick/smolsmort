@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from forecast_ui_audit import settle_menu
 from test_forecast_progress_browser import write_multifamily_run
 from test_forecast_ui_browser import session, show_tab, switch_to_regression
 
@@ -60,8 +61,14 @@ def open_metric_run(page, root: Path) -> str:
 
 def select_metrics(page, selected: list[str]) -> None:
     page.locator(PICKER).click()
+    settle_menu(page)
+    assert page.locator(f'{MENU} input[type="checkbox"]').count() == 0
     for metric in METRICS:
-        page.locator(f'{MENU} input[data-metric-id="{metric}"]').set_checked(metric in selected)
+        item = page.locator(f'{MENU} .menu-item[data-id="{metric}"]')
+        checked = "on" in item.get_attribute("class").split()
+        if checked != (metric in selected):
+            item.click()
+        assert page.locator(MENU).is_visible()
     page.keyboard.press("Escape")
 
 
@@ -72,12 +79,9 @@ def assert_metric_headers(page, selector: str, selected: list[str]) -> None:
 
 
 def assert_metric_lines(locator, selected: list[str]) -> None:
-    assert (
-        locator.locator(".forecast-metric[data-metric-id]").evaluate_all(
-            "nodes => nodes.map(node => node.dataset.metricId)"
-        )
-        == selected
-    )
+    metrics = locator.locator(".forecast-metric[data-metric-id]")
+    assert metrics.evaluate_all("nodes => nodes.map(node => node.dataset.metricId)") == selected
+    assert all(metrics.nth(index).get_attribute("title") for index in range(metrics.count()))
 
 
 def save_metrics(page, name: str) -> None:
@@ -108,6 +112,10 @@ def save_metrics(page, name: str) -> None:
 def test_error_metric_selection_updates_every_display_from_saved_predictions(tmp_path):
     with session(tmp_path, width=1440) as (page, _base):
         run_id = open_metric_run(page, tmp_path / "forecast_root")
+        picker = page.locator(PICKER).element_handle()
+        assert page.locator(f".forecast-run-controls {PICKER}").count() == 1
+        assert page.locator(PICKER).count() == 1
+        assert page.locator('.forecast-metric-controls input[type="checkbox"]').count() == 0
         run_row = page.locator(f'#regression-runs-list [data-run-id="{run_id}"]')
         tile = page.locator('#regression-tiles .forecast-tile[data-family="xgboost"]')
         assert_metric_lines(tile.locator(".forecast-tile-front"), DEFAULTS)
@@ -141,13 +149,16 @@ def test_error_metric_selection_updates_every_display_from_saved_predictions(tmp
         objective = page.locator('#regression-leaderboard-table th:text-is("loss (objective)")')
         assert "l1" in objective.get_attribute("title")
         assert "squared" in objective.get_attribute("title")
-        help_block = page.locator(".forecast-metric-help")
-        help_block.locator("summary").click()
-        explanation = help_block.inner_text()
-        assert "held-out validation windows" in explanation
-        assert "l1" in explanation and "absolute-error loss" in explanation
-        assert "actual > 0" in explanation and "zero" in explanation
-        help_block.locator("summary").click()
+        assert page.locator(".forecast-metric-help").count() == 0
+        page.locator(PICKER).click()
+        settle_menu(page)
+        validation = page.locator(f'{MENU} .menu-item[data-id="validation_error"]')
+        assert "held-out validation windows" in validation.get_attribute("title")
+        mape_help = page.locator(f'{MENU} .menu-item[data-id="mape"]').get_attribute("title")
+        assert "actual > 0" in mape_help and "zero" in mape_help
+        for metric in METRICS:
+            assert page.locator(f'{MENU} .menu-item[data-id="{metric}"]').get_attribute("title")
+        page.keyboard.press("Escape")
         save_metrics(page, "tables")
 
         page.locator("#regression-run-view-tiles").click()
@@ -164,6 +175,9 @@ def test_error_metric_selection_updates_every_display_from_saved_predictions(tmp
 
         page.locator("#regression-run-open").click()
         page.locator("#regression-family-comparison tbody tr").first.wait_for()
+        assert page.locator(f".forecast-results-header {PICKER}").count() == 1
+        assert page.locator(PICKER).evaluate("(node, original) => node === original", picker)
+        assert page.locator(PICKER).count() == 1
         assert_metric_headers(page, "#regression-family-comparison", METRICS)
         comparison = page.locator("#regression-family-comparison tbody tr").first
         for metric, value in values.items():
@@ -174,6 +188,8 @@ def test_error_metric_selection_updates_every_display_from_saved_predictions(tmp
         select_metrics(page, selected)
         assert_metric_headers(page, "#regression-family-comparison", selected)
         show_tab(page, "regression-search")
+        assert page.locator(f".forecast-run-controls {PICKER}").count() == 1
+        assert page.locator(PICKER).evaluate("(node, original) => node === original", picker)
         assert_metric_lines(tile.locator(".forecast-tile-front"), selected)
         assert_metric_lines(tile.locator(".forecast-tile-back"), selected)
         assert_metric_lines(run_row, selected)
@@ -188,16 +204,26 @@ def test_error_metric_picker_keyboard_close_and_reload_persistence(tmp_path):
         button = page.locator(PICKER)
         button.focus()
         page.keyboard.press("Enter")
+        settle_menu(page)
         assert page.locator(MENU).is_visible()
         assert button.get_attribute("aria-expanded") == "true"
-        mape = page.locator(f'{MENU} input[data-metric-id="mape"]')
-        mape.focus()
+        page.keyboard.press("ArrowDown")
+        assert page.locator(f'{MENU} .menu-item[data-id="validation_error"]').evaluate(
+            "node => node === document.activeElement"
+        )
+        for _ in range(3):
+            page.keyboard.press("ArrowDown")
+        mape = page.locator(f'{MENU} .menu-item[data-id="mape"]')
+        assert mape.evaluate("node => node === document.activeElement")
         page.keyboard.press("Space")
-        assert mape.is_checked()
+        assert "on" in mape.get_attribute("class").split()
+        assert page.locator(MENU).is_visible()
+        assert mape.evaluate("node => node === document.activeElement")
         page.keyboard.press("Escape")
         assert not page.locator(MENU).is_visible()
         assert button.evaluate("node => node === document.activeElement")
         button.click()
+        settle_menu(page)
         page.locator("#regression-run-title").click()
         assert not page.locator(MENU).is_visible()
         assert button.get_attribute("aria-expanded") == "false"
@@ -214,7 +240,8 @@ def test_error_metric_picker_keyboard_close_and_reload_persistence(tmp_path):
             ["validation_error", "mape", "test_ratio"],
         )
         page.locator(PICKER).click()
-        assert page.locator(f'{MENU} input[data-metric-id="mape"]').is_checked()
+        settle_menu(page)
+        assert page.locator(f'{MENU} .menu-item[data-id="mape"].on').count() == 1
 
 
 @pytest.mark.parametrize("storage", ["malformed", "blocked"])
@@ -266,6 +293,7 @@ def test_error_metric_picker_keeps_phone_document_within_viewport(tmp_path):
         page.locator("#regression-family-comparison tbody tr").first.wait_for()
         assert_width()
         page.locator(PICKER).click()
+        settle_menu(page)
         assert_width()
         menu = page.locator(MENU).bounding_box()
         assert menu and menu["x"] >= 0 and menu["x"] + menu["width"] <= 390
