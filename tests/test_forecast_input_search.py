@@ -215,7 +215,8 @@ def test_pinned_families_are_always_on_in_the_model_search(monkeypatch):
     assert all("pinned" not in r and r["p_on"] <= 0.9 for r in others)
 
 
-def test_trial_runs_forward_the_holdout(tmp_path, monkeypatch):
+@pytest.mark.parametrize("mode", ["single", "mixed"])
+def test_trial_runs_forward_holdout_and_horizon_mode(tmp_path, monkeypatch, mode):
     from smolsmort.forecast import runs
 
     seen = {}
@@ -227,9 +228,12 @@ def test_trial_runs_forward_the_holdout(tmp_path, monkeypatch):
 
     monkeypatch.setattr(runs, "start_run", start)
     monkeypatch.setattr(runs, "wait_run", lambda root, run_id, timeout: {"state": "done"})
-    trial = input_search._run_trial(tmp_path, tmp_path, {"holdout": "seasonal"})
+    trial = input_search._run_trial(
+        tmp_path, tmp_path, {"holdout": "seasonal", "horizon_mode": mode}
+    )
     assert trial(make_spec(), ["ridge"], 60, False) == {"run": "run1", "state": "done"}
     assert seen["holdout"] == "seasonal"
+    assert seen["horizon_mode"] == mode
 
 
 def test_nudges_move_free_odds_within_bounds_and_leave_pins():

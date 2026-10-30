@@ -415,6 +415,7 @@ class TimeseriesFrame:
     origin: np.ndarray
     future: np.ndarray
     base: np.ndarray
+    weeks_ahead: np.ndarray | None = None
 
 
 def _build_input_values(spec: PrepSpec, panel: dict, inputs: dict | None, train) -> dict:
@@ -598,6 +599,134 @@ def timeseries_features(
         np.concatenate([p["origin"] for p in parts]),
         np.concatenate([p["future"] for p in parts]),
         np.concatenate([p["base"] for p in parts]),
+    )
+
+
+def stacked_timeseries_features(
+    spec: PrepSpec,
+    panel: dict,
+    scaffold: dict,
+    unit: str,
+    train,
+    *,
+    period: int | None = None,
+    measure_lags: dict[str, int] | None = None,
+    inputs: dict | None = None,
+) -> TimeseriesFrame:
+    """one row per series, origin and lead; every history read ends at its own origin"""
+    target, clock = spec.named("target")[0], spec.named("time")[0]
+    train = np.asarray(train, dtype=bool)
+    history = len(np.unique(panel[STEP][train]))
+    aggregation = {column.name: column.aggregation for column in spec.columns}
+    measures = [name for name in spec.named("measure") if name in panel]
+    dims = [name for name in spec.named("dimension") if name in panel]
+    dim_codes = {name: _codes(panel[name], train) for name in dims}
+    input_values = _build_input_values(spec, panel, inputs, train)
+    detected = {period} if period else set()
+    absolute_lags, windows = _step_features(unit, history, detected)
+    _, _, differences, fallback_period = STEP_FEATURES[unit]
+    last = step_index(panel[STEP], unit).max()
+    parts = []
+    for key in np.unique(panel[SERIES]):
+        mine = np.flatnonzero(panel[SERIES] == key)
+        mine = mine[np.argsort(panel[STEP][mine])]
+        index = step_index(panel[STEP][mine], unit)
+        first = index[0]
+        length = last - first + 1
+        values = {
+            name: _extend(panel[name][mine], length, aggregation.get(name))
+            for name in [target, *measures]
+        }
+        base = _timeseries_base(
+            values,
+            target,
+            measures,
+            0,
+            None,
+            measure_lags or {},
+            absolute_lags,
+            windows,
+            differences=tuple(k for k in differences if k < history),
+            dynamics_windows=tuple(w for w in windows if w <= history),
+            cycle_period=period or fallback_period,
+            clock=clock,
+        )
+        for name, (family, source) in input_values.items():
+            extended = _extend(source[mine], length, None)
+            for lag in LAGS:
+                base[f"{name}_lag_{lag}"] = (family, _shift(extended, lag))
+        # target labels come only from observed panel rows, never from the future scaffold
+        targets, leads, labels, dates = [], [], [], []
+        for position, row in zip(index - first, mine, strict=True):
+            for lead in range(1, min(spec.horizon, position) + 1):
+                targets.append(position)
+                leads.append(lead)
+                labels.append(panel[target][row])
+                dates.append(panel[STEP][row])
+        known_count = len(targets)
+        for row in np.flatnonzero(scaffold[SERIES] == key):
+            position = int(step_index(scaffold[STEP][row], unit) - first)
+            lead = position - (last - first)
+            if 1 <= lead <= spec.horizon:
+                targets.append(position)
+                leads.append(lead)
+                labels.append(np.nan)
+                dates.append(scaffold[STEP][row])
+        if not targets:
+            continue
+        targets, leads = np.asarray(targets), np.asarray(leads)
+        origins = targets - leads
+        step = np.asarray(dates, dtype="datetime64[D]")
+        cols = {name: (family, source[origins]) for name, (family, source) in base.items()}
+
+        def read_known(offset, targets=targets, origins=origins, length=length, values=values):
+            positions = targets - offset
+            valid = (positions >= 0) & (positions <= origins) & (positions < length)
+            result = np.full(len(targets), np.nan)
+            result[valid] = values[target][positions[valid]]
+            return result
+
+        season = family_name("season", target, clock)
+        seasonal_period = {"week": 52, "day": 365, "month": 12, "quarter": 4, "year": 1}[unit]
+        cols["target_season_lag"] = (season, read_known(seasonal_period))
+        neighbors = np.column_stack([read_known(seasonal_period + j) for j in (-1, 0, 1)])
+        cols["target_season_mean"] = (season, np.mean(neighbors, axis=1))
+        if period:
+            cols[f"target_period_lag_{period}"] = (season, read_known(period))
+        cols["weeks_ahead"] = ("weeks_ahead", leads)
+        for part, source in _calendar(step).items():
+            if part != "weekday" or unit == "day":
+                cols[f"cal_{part}"] = (family_name(f"cal:{part}", clock=clock), source)
+        cols.update(_timeseries_calendar(step, unit, spec.holidays_country, clock=clock))
+        for name in dims:
+            cols[name] = (family_name("dim", name), np.full(len(targets), dim_codes[name][mine[0]]))
+        # dates come from the actual clock, including variable-length months and quarters
+        clock_dates = dict(zip(index - first, panel[STEP][mine], strict=True))
+        parts.append(
+            {
+                "cols": cols,
+                "y": np.asarray(labels, dtype=float),
+                "series": np.full(len(targets), key, dtype=object),
+                "step": step,
+                "origin": np.asarray([clock_dates[o] for o in origins], dtype="datetime64[D]"),
+                "future": np.arange(len(targets)) >= known_count,
+                "base": values[target][origins],
+                "weeks_ahead": leads,
+            }
+        )
+    build = _Builder(sum(len(part["y"]) for part in parts))
+    for name in parts[0]["cols"] if parts else []:
+        family = parts[0]["cols"][name][0]
+        source = np.concatenate([part["cols"][name][1] for part in parts])
+        build.add(name, source, "c" if split_family_name(family)[2] == "dim" else "q", family)
+    features = build.done()
+    features.aliases = family_aliases(spec, (family_sort_key(name) for name in features.families))
+    return TimeseriesFrame(
+        features,
+        **{
+            name: np.concatenate([part[name] for part in parts])
+            for name in ("y", "series", "step", "origin", "future", "base", "weeks_ahead")
+        },
     )
 
 
