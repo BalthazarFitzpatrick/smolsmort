@@ -120,12 +120,12 @@ def test_chart_bands_use_each_future_leads_own_validation_residuals(single_run):
     assert upper["2025-03-31"] == 48
 
 
-def test_table_preserves_every_origin_and_lead(single_run):
+def test_table_preserves_selected_origins_and_all_future_leads(single_run):
     folder, request = single_run
     payload = views.timeseries_table(folder, request, {})
     assert payload["columns"][-2:] == ["origin", "weeks_ahead"]
-    assert payload["total"] == 12
-    assert sum(row[-1] == 1 for row in payload["rows"]) == 6
+    assert payload["total"] == 8
+    assert sum(row[-1] == 1 for row in payload["rows"]) == 2
     assert sum(row[-1] == 8 for row in payload["rows"]) == 6
 
 

@@ -24,8 +24,9 @@ import numpy as np
 from smolsmort.forecast import evaluate as ev
 from smolsmort.forecast import metrics as fm
 from smolsmort.forecast.families import registered_families
+from smolsmort.forecast.horizon_view import blend_rows, lead_rows
 from smolsmort.forecast.spec import normalize_mode, normalize_saved_modes, spec_from_dict
-from smolsmort.forecast.tables import connect
+from smolsmort.forecast.tables import _unmask, connect
 
 
 def write_json_atomic(path: Path, data) -> None:
@@ -856,6 +857,292 @@ def _parse_breakdown(raw: str | None, dims: list[str]) -> list[str]:
 # ---------------------------------------------------------------- time series mode view
 
 
+def _read_view_rows(con, source):
+    return {
+        name: _unmask(values)
+        for name, values in con.execute(f"SELECT * FROM {source}").fetchnumpy().items()
+    }
+
+
+def _horizon_selection(request, query, table):
+    if "lead" in query and "blend" in query:
+        raise ValueError("lead and blend are mutually exclusive")
+    horizon = int(request["spec"].get("horizon", 1))
+    mode = "blend" if "blend" in query else "lead"
+    try:
+        n = int(query.get(mode, horizon))
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f"{mode} must be an integer from 1 to {horizon}") from exc
+    if not 1 <= n <= horizon:
+        raise ValueError(f"{mode} must be an integer from 1 to {horizon}")
+    if "weights" in query and mode != "blend":
+        raise ValueError("weights requires blend")
+    if "weeks_ahead" not in table:
+        return None
+    return {"mode": mode, "n": n}
+
+
+def _horizon_weights(query, horizon):
+    if "weights" not in query:
+        return None
+    try:
+        raw = json.loads(query["weights"])
+        if not isinstance(raw, dict) or any(
+            str(int(k)) != k or not 1 <= int(k) <= horizon for k in raw
+        ):
+            raise ValueError
+        return {int(k): v for k, v in raw.items()}
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f"weights must be a json object with leads from 1 to {horizon}") from exc
+
+
+def _select_horizon_rows(table, selection, weights=None):
+    if selection["mode"] == "lead":
+        return lead_rows(table, selection["n"])
+    return blend_rows(table, selection["n"], weights)
+
+
+def _horizon_history_source(validation, test):
+    return (
+        f"(SELECT * FROM {validation} UNION BY NAME SELECT * FROM {test} "
+        "ORDER BY series, step, weeks_ahead, origin)"
+    )
+
+
+def _horizon_sources(con, request, query, validation, test, forecast):
+    sources = {
+        name: f"read_parquet({_lit(path)})"
+        for name, path in (("validation", validation), ("test", test), ("forecast", forecast))
+    }
+    table = _read_view_rows(con, sources["test"])
+    selection = _horizon_selection(request, query, table)
+    if selection is None:
+        return None, sources
+    weights = _horizon_weights(query, int(request["spec"]["horizon"]))
+    sources["history"] = _horizon_history_source(sources["validation"], sources["test"])
+    for name, source in sources.items():
+        rows = table if name == "test" else _read_view_rows(con, source)
+        if name != "forecast":
+            rows = _select_horizon_rows(rows, selection, weights)
+        count = len(rows["step"])
+        for column in ("lower", "upper"):
+            if selection["mode"] == "blend":
+                rows[column] = np.full(count, np.nan)
+            else:
+                rows.setdefault(column, np.full(count, np.nan))
+        registered = {
+            column: values.astype("datetime64[ns]")
+            if np.issubdtype(values.dtype, np.datetime64)
+            else values
+            for column, values in rows.items()
+        }
+        con.register(f"horizon_{name}", registered)
+        sources[name] = f"horizon_{name}"
+    return selection, sources
+
+
+def _read_lead_errors(run_dir, result, model, horizon):
+    rows = (result.get(model) or {}).get("lead_errors")
+    path = run_dir / f"{model}_lead_errors.parquet"
+    default_model = _select_model(run_dir, result, {})["default_model"]
+    if rows is None and not path.exists() and model == default_model:
+        rows = result.get("lead_errors")
+        path = run_dir / "lead_errors.parquet"
+    if rows is None and path.exists():
+        with connect() as con:
+            columns = _read_view_rows(con, f"read_parquet({_lit(path)})")
+        rows = [
+            dict(zip(columns, values, strict=True))
+            for values in zip(*columns.values(), strict=True)
+        ]
+    if isinstance(rows, dict):
+        rows = [
+            {
+                "weeks_ahead": int(k),
+                "model_wape": value.get("model"),
+                "naive_wape": value.get("naive"),
+                "rows": value.get("rows"),
+                "ratio": value["model"] / value["naive"]
+                if _finite_number(value.get("model")) is not None
+                and _finite_number(value.get("naive")) not in (None, 0)
+                else None,
+            }
+            for k, value in rows.items()
+        ]
+    rows = [row for row in (rows or []) if row.get("phase", "test") == "test"]
+
+    def clean(value):
+        if isinstance(value, np.generic):
+            value = value.item()
+        return None if isinstance(value, float) and not math.isfinite(value) else value
+
+    if not rows:
+        return []
+    by_lead = {int(row["weeks_ahead"]): row for row in rows}
+    return [
+        {key: clean(value) for key, value in by_lead.get(k, {"weeks_ahead": k}).items()}
+        for k in range(1, horizon + 1)
+    ]
+
+
+def _horizon_baseline(con, request, table):
+    from smolsmort.forecast.features import step_index
+
+    if "naive_prediction" in table:
+        return table
+    if "origin" not in table:
+        return {**table, "naive_prediction": np.full(len(table["step"]), np.nan)}
+    panel = Path(request["prepared"]) / "panel.parquet"
+    target = _quote(_spec_target(request["spec"]))
+    rows = con.execute(
+        f"SELECT __series, __step, {target} FROM read_parquet({_lit(panel)}) ORDER BY __step"
+    ).fetchall()
+    unit = request["spec"].get("step", "week")
+    period = {"week": 52, "day": 365, "month": 12, "quarter": 4, "year": 1}[unit]
+    dates = np.asarray([step for _, step, _ in rows], dtype="datetime64[D]")
+    histories = {}
+    for (series, _, value), position in zip(rows, step_index(dates, unit), strict=True):
+        histories.setdefault(series, {})[position] = value
+    targets = step_index(table["step"], unit)
+    origins = step_index(table["origin"], unit)
+    predictions = []
+    for series, target, origin in zip(table["series"], targets, origins, strict=True):
+        history = histories.get(series, {})
+        seasonal = history.get(target - period) if target - period <= origin else None
+        value = seasonal if seasonal is not None and np.isfinite(seasonal) else history.get(origin)
+        predictions.append(value)
+    return {**table, "naive_prediction": np.asarray(predictions, dtype=float)}
+
+
+def _horizon_metrics(con, run_dir, request, query, path, selection):
+    scope = (
+        f"lead {selection['n']}"
+        if selection["mode"] == "lead"
+        else f"blend around {selection['n']}"
+    )
+
+    def metric(value=None, reason=None, **extra):
+        value = float(value) if value is not None and np.isfinite(value) else None
+        return {
+            "value": value,
+            "scope": "test",
+            "note": scope,
+            "reason": reason if value is None else None,
+            **extra,
+        }
+
+    if path is None or not path.exists():
+        return {
+            name: metric(reason=f"{scope}: test predictions not saved")
+            for name in ("wape", "mae", "mape", "test_ratio")
+        }
+    table = _read_view_rows(con, f"read_parquet({_lit(path)})")
+    if "weeks_ahead" not in table:
+        return {
+            name: metric(reason=f"{scope}: weeks ahead not saved")
+            for name in ("wape", "mae", "mape", "test_ratio")
+        }
+    test_targets = set(zip(table["series"], table["step"], strict=True))
+    if selection["mode"] == "blend":
+        validation = path.with_name(path.name.removesuffix("test.parquet") + "validation.parquet")
+        if validation.exists():
+            source = _horizon_history_source(
+                f"read_parquet({_lit(validation)})", f"read_parquet({_lit(path)})"
+            )
+            table = _read_view_rows(con, source)
+    table = _horizon_baseline(con, request, table)
+    weights = _horizon_weights(query, int(request["spec"]["horizon"]))
+    table = _select_horizon_rows(table, selection, weights)
+    if selection["mode"] == "blend":
+        keep = np.asarray(
+            [target in test_targets for target in zip(table["series"], table["step"], strict=True)],
+            dtype=bool,
+        )
+        table = {name: values[keep] for name, values in table.items()}
+    filters = _parse_filters(query.get("filters"))
+    if filters:
+        where = _filter_clause(filters, _spec_dims(request["spec"]))
+        panel = Path(request["prepared"]) / "panel.parquet"
+        selected = con.execute(
+            f"SELECT DISTINCT __series FROM read_parquet({_lit(panel)}) WHERE {where}"
+        ).fetchall()
+        keep = np.isin(table["series"], [row[0] for row in selected])
+        table = {name: values[keep] for name, values in table.items()}
+    actual, prediction, naive = (
+        np.asarray(table[name], dtype=float)
+        for name in ("actual", "prediction", "naive_prediction")
+    )
+    known = np.isfinite(actual)
+    valid = known & np.isfinite(prediction)
+    positive = valid & (actual > 0)
+    errors = np.abs(actual - prediction)
+    denominator = np.abs(actual[known]).sum()
+    reason = (
+        "no known actuals in this view"
+        if not known.any()
+        else ("undefined predictions for known actuals" if not np.all(valid[known]) else None)
+    )
+    absolute = errors[valid].sum()
+    naive_valid = known & np.isfinite(naive)
+    naive_error = np.abs(actual[known] - naive[known]).sum()
+    ratio_reason = reason or (
+        "naive predictions unavailable on these target weeks"
+        if not np.all(naive_valid[known])
+        else None
+    )
+    return {
+        "wape": metric(
+            absolute / denominator if denominator and reason is None else None,
+            reason or "absolute actuals sum to zero",
+        ),
+        "mae": metric(absolute / known.sum() if reason is None else None, reason),
+        "mape": metric(
+            np.mean(errors[positive] / actual[positive]) if positive.any() else None,
+            "no finite predictions with actual > 0",
+            excluded_rows=int((~positive).sum()),
+        ),
+        "test_ratio": metric(
+            absolute / naive_error if naive_error and ratio_reason is None else None,
+            ratio_reason or "naive error is zero on these target weeks",
+        ),
+    }
+
+
+def _horizon_result_metrics(run_dir, request, query, details, selection):
+    with connect() as con:
+        for model in ("winner", "ensemble"):
+            entry = details.get(model)
+            if entry is None:
+                continue
+            path = _optional_prediction_path(run_dir, {**query, "model": model}, "test")
+            entry["error_metrics"].update(
+                _horizon_metrics(con, run_dir, request, query, path, selection)
+            )
+        for family, entry in details["families"].items():
+            if family == details["winner_family"]:
+                entry["error_metrics"] = dict(details["winner"]["error_metrics"])
+            else:
+                path = run_dir / "families" / family / "test.parquet"
+                entry["error_metrics"] = {
+                    **entry["error_metrics"],
+                    **_horizon_metrics(con, run_dir, request, query, path, selection),
+                }
+    details["error_metrics"] = dict(details[details["model"]]["error_metrics"])
+    scope = (
+        f"lead {selection['n']}"
+        if selection["mode"] == "lead"
+        else f"blend around {selection['n']}"
+    )
+    for metric in details["metric_registry"]:
+        if metric["scope"] == "test":
+            metric["label"] += f" · {scope}"
+            metric["explanation"] += f"; {scope}"
+            if metric["id"] == "test_ratio":
+                metric["computation"] = (
+                    "view model wape / naive wape on the same target weeks and with the same weights"
+                )
+
+
 def _series_combos(con, panel_path: Path, breakdown: list[str], where: str) -> list[tuple]:
     if not breakdown:
         return [()]
@@ -901,15 +1188,9 @@ def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
     validation = _prediction_path(run_dir, query, "validation")
     test = _prediction_path(run_dir, query, "test")
     forecast = _prediction_path(run_dir, query, "forecast")
-    single = request.get("horizon_mode") == "single"
-    lead_filter = f"WHERE weeks_ahead = {int(spec['horizon'])}" if single else ""
-    per_step = (
-        "SELECT series, step, prediction FROM hist"
-        if single
-        else "SELECT series, step, AVG(prediction) AS prediction FROM hist GROUP BY series, step"
-    )
 
     con = connect()
+    selection, sources = _horizon_sources(con, request, query, validation, test, forecast)
     where = _filter_clause(filters, dims)
     combos = _series_combos(con, panel, breakdown, where)
     note = None
@@ -940,28 +1221,31 @@ def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
             f"WHERE {combo_where} GROUP BY __step ORDER BY __step",
         )
 
-        hist_sql = f"""
-            WITH keymap AS ({keymap_sql}),
-            hist AS (
+        history = sources.get("history")
+        if history is None:
+            history = f"""(
+            WITH hist AS (
                 SELECT series, step, bucket, actual, prediction
                 FROM read_parquet({_lit(str(validation))})
-                {lead_filter}
                 UNION ALL
                 SELECT series, step, bucket, actual, prediction
                 FROM read_parquet({_lit(str(test))})
-                {lead_filter}
-            ),
-            per_step AS ({per_step}),
-            joined AS (SELECT p.step, p.prediction, k.* FROM per_step p JOIN keymap k USING (series))
+            )
+            SELECT series, step, AVG(prediction) AS prediction FROM hist GROUP BY series, step
+            )"""
+        hist_sql = f"""
+            WITH keymap AS ({keymap_sql}),
+            joined AS (SELECT p.step, p.prediction, k.* FROM {history} p JOIN keymap k USING (series))
             SELECT step, SUM(prediction) FROM joined WHERE {combo_where} GROUP BY step ORDER BY step
         """
         hist_forecast = _fetch_series(con, hist_sql)
 
+        bucket = "f.weeks_ahead" if selection else "f.bucket"
         future_sql = f"""
             WITH keymap AS ({keymap_sql}),
             joined AS (
-                SELECT f.step, f.{"weeks_ahead" if single else "bucket"} AS bucket, f.prediction, k.*
-                FROM read_parquet({_lit(str(forecast))}) f JOIN keymap k USING (series)
+                SELECT f.step, {bucket} AS bucket, f.prediction, k.*
+                FROM {sources["forecast"]} f JOIN keymap k USING (series)
             )
             SELECT step, bucket, SUM(prediction) FROM joined WHERE {combo_where}
             GROUP BY step, bucket ORDER BY step
@@ -977,9 +1261,19 @@ def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
         series_lines.append((actual_id, label, actual, False))
         series_lines.append((forecast_id, label, forecast_series, True))
 
-        lo_by_step, hi_by_step = _timeseries_band(
-            con, keymap_sql, validation, forecast, combo_where, future_rows, nonnegative, single
-        )
+        if selection is None:
+            lo_by_step, hi_by_step = _timeseries_band(
+                con, keymap_sql, validation, forecast, combo_where, future_rows, nonnegative
+            )
+        elif selection["mode"] == "lead":
+            lo_by_step, hi_by_step = _horizon_band(con, keymap_sql, sources, combo_where)
+            future_lo, future_hi = _timeseries_band(
+                con, keymap_sql, validation, forecast, combo_where, future_rows, nonnegative, True
+            )
+            lo_by_step.update(future_lo)
+            hi_by_step.update(future_hi)
+        else:
+            continue
         bands.append((f"band:{forecast_id}", forecast_id, lo_by_step, hi_by_step))
 
     x = sorted(x_set)
@@ -1001,11 +1295,34 @@ def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
         "verdict": result["verdict"],
         "mode": "timeseries",
     }
-    if single:
-        out["weeks_ahead_shown"] = spec["horizon"]
+    if selection:
+        model = _select_model(run_dir, result, query)["model"]
+        out.update(
+            view=selection,
+            horizon=int(spec["horizon"]),
+            weeks_ahead_shown=selection["n"] if selection["mode"] == "lead" else None,
+            lead_errors=_read_lead_errors(run_dir, result, model, int(spec["horizon"])),
+        )
     if note:
         out["note"] = note
+    con.close()
     return out
+
+
+def _horizon_band(con, keymap_sql, sources, where):
+    rows = con.execute(f"""
+        WITH keymap AS ({keymap_sql}), predictions AS (
+            SELECT series, step, lower, upper FROM {sources["history"]}
+            UNION ALL SELECT series, step, lower, upper FROM {sources["forecast"]}
+        ), joined AS (SELECT p.step, p.lower, p.upper, k.* FROM predictions p JOIN keymap k USING (series))
+        SELECT step,
+            CASE WHEN COUNT(lower) = COUNT(*) THEN SUM(lower) END,
+            CASE WHEN COUNT(upper) = COUNT(*) THEN SUM(upper) END
+        FROM joined WHERE {where} GROUP BY step ORDER BY step
+    """).fetchall()
+    lo = {_iso(step): float(low) if low is not None else None for step, low, _ in rows}
+    hi = {_iso(step): float(high) if high is not None else None for step, _, high in rows}
+    return lo, hi
 
 
 def _timeseries_band(
@@ -1317,6 +1634,8 @@ def view(run_dir: Path, request: dict, query: dict) -> dict:
         if mode == "entity"
         else timeseries_view(run_dir, request, query)
     )
+    if payload.get("view"):
+        _horizon_result_metrics(run_dir, request, query, details, payload["view"])
     for series in payload["series"]:
         if series.get("dashed"):
             series["family"] = details["family"]
@@ -1351,7 +1670,9 @@ def timeseries_table(run_dir: Path, request: dict, query: dict) -> dict:
     validation = _prediction_path(run_dir, query, "validation")
     test = _prediction_path(run_dir, query, "test")
     forecast = _prediction_path(run_dir, query, "forecast")
-    single = request.get("horizon_mode") == "single"
+    con = connect()
+    selection, sources = _horizon_sources(con, request, query, validation, test, forecast)
+    single = selection is not None
     hist_leads = ", h.origin, h.weeks_ahead" if single else ""
     future_leads = ", f.origin, f.weeks_ahead" if single else ""
 
@@ -1378,7 +1699,20 @@ def timeseries_table(run_dir: Path, request: dict, query: dict) -> dict:
         FROM read_parquet({_lit(str(forecast))}) f
         JOIN keymap k USING (series)
     """
-    con = connect()
+    if selection:
+        selected_leads = (
+            hist_leads if selection["mode"] == "lead" else ", NULL AS origin, NULL AS weeks_ahead"
+        )
+        hist_sql = f"""
+            WITH keymap AS ({keymap_sql})
+            SELECT h.step, {dims_sel + "," if dims else ""} h.prediction, h.lower, h.upper,
+                   h.actual, FALSE AS future{selected_leads}
+            FROM {sources["history"]} h JOIN keymap k USING (series)
+            UNION ALL
+            SELECT f.step, {dims_sel + "," if dims else ""} f.prediction, f.lower, f.upper,
+                   CAST(NULL AS DOUBLE) AS actual, TRUE AS future{future_leads}
+            FROM {sources["forecast"]} f JOIN keymap k USING (series)
+        """
     full_sql = f"SELECT * FROM ({hist_sql}) t WHERE {where}"
     sort = query.get("sort") or "future"
     if sort == _family_column(request):
@@ -1393,6 +1727,7 @@ def timeseries_table(run_dir: Path, request: dict, query: dict) -> dict:
     size = int(query.get("size", 50))
     page_rows, total = _paginate(rows, page, size)
     out_rows = [_row_to_json(r) for r in page_rows]
+    con.close()
     return {"columns": columns, "rows": out_rows, "total": total, "page": page}
 
 
