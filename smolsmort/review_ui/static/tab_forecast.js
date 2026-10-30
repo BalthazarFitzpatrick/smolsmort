@@ -2164,7 +2164,7 @@ class ForecastTopic {
     forecastFillTable(document.getElementById(`${this.topic}-lead-errors`),
       ['weeks ahead', 'model wape', 'naive wape', 'ratio', 'rows'], errors.map(row => [
         row.weeks_ahead, percent(row.model_wape), percent(row.naive_wape),
-        Number.isFinite(row.ratio) ? row.ratio.toFixed(2) : '-', row.rows,
+        Number.isFinite(row.ratio) ? row.ratio.toFixed(2) : '-', row.rows ?? '-',
       ]));
     if (!view.view) return;
     this.horizonSelections[this.resultsRunId] = {...view.view};

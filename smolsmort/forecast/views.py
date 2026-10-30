@@ -884,6 +884,13 @@ def _select_horizon_rows(table, selection, weights=None):
     return blend_rows(table, selection["n"], weights)
 
 
+def _horizon_history_source(validation, test):
+    return (
+        f"(SELECT * FROM {validation} UNION BY NAME SELECT * FROM {test} "
+        "ORDER BY series, step, weeks_ahead, origin)"
+    )
+
+
 def _horizon_sources(con, request, query, validation, test, forecast):
     sources = {
         name: f"read_parquet({_lit(path)})"
@@ -894,9 +901,7 @@ def _horizon_sources(con, request, query, validation, test, forecast):
     if selection is None:
         return None, sources
     weights = _horizon_weights(query, int(request["spec"]["horizon"]))
-    sources["history"] = (
-        f"(SELECT * FROM {sources['validation']} UNION BY NAME SELECT * FROM {sources['test']})"
-    )
+    sources["history"] = _horizon_history_source(sources["validation"], sources["test"])
     for name, source in sources.items():
         rows = table if name == "test" else _read_view_rows(con, source)
         rows = _select_horizon_rows(rows, selection, weights)
@@ -914,27 +919,47 @@ def _horizon_sources(con, request, query, validation, test, forecast):
     return selection, sources
 
 
-def _read_lead_errors(run_dir, result, model):
-    rows = (result.get(model) or {}).get("lead_errors") or result.get("lead_errors")
-    if rows is None:
-        path = run_dir / f"{model}_lead_errors.parquet"
-        if not path.exists():
-            path = run_dir / "lead_errors.parquet"
-        if path.exists():
-            with connect() as con:
-                columns = _read_view_rows(con, f"read_parquet({_lit(path)})")
-            rows = [
-                dict(zip(columns, values, strict=True))
-                for values in zip(*columns.values(), strict=True)
-            ]
+def _read_lead_errors(run_dir, result, model, horizon):
+    rows = (result.get(model) or {}).get("lead_errors")
+    path = run_dir / f"{model}_lead_errors.parquet"
+    default_model = _select_model(run_dir, result, {})["default_model"]
+    if rows is None and not path.exists() and model == default_model:
+        rows = result.get("lead_errors")
+        path = run_dir / "lead_errors.parquet"
+    if rows is None and path.exists():
+        with connect() as con:
+            columns = _read_view_rows(con, f"read_parquet({_lit(path)})")
+        rows = [
+            dict(zip(columns, values, strict=True))
+            for values in zip(*columns.values(), strict=True)
+        ]
     if isinstance(rows, dict):
-        rows = [{"weeks_ahead": int(k), **v} for k, v in rows.items()]
+        rows = [
+            {
+                "weeks_ahead": int(k),
+                "model_wape": value.get("model"),
+                "naive_wape": value.get("naive"),
+                "rows": value.get("rows"),
+                "ratio": value["model"] / value["naive"]
+                if _finite_number(value.get("model")) is not None
+                and _finite_number(value.get("naive")) not in (None, 0)
+                else None,
+            }
+            for k, value in rows.items()
+        ]
+    rows = [row for row in (rows or []) if row.get("phase", "test") == "test"]
+
+    def clean(value):
+        if isinstance(value, np.generic):
+            value = value.item()
+        return None if isinstance(value, float) and not math.isfinite(value) else value
+
+    if not rows:
+        return []
+    by_lead = {int(row["weeks_ahead"]): row for row in rows}
     return [
-        {
-            key: value.item() if isinstance(value, np.generic) else value
-            for key, value in row.items()
-        }
-        for row in (rows or [])
+        {key: clean(value) for key, value in by_lead.get(k, {"weeks_ahead": k}).items()}
+        for k in range(1, horizon + 1)
     ]
 
 
@@ -995,9 +1020,23 @@ def _horizon_metrics(con, run_dir, request, query, path, selection):
             name: metric(reason=f"{scope}: weeks ahead not saved")
             for name in ("wape", "mae", "mape", "test_ratio")
         }
+    test_targets = set(zip(table["series"], table["step"], strict=True))
+    if selection["mode"] == "blend":
+        validation = path.with_name(path.name.removesuffix("test.parquet") + "validation.parquet")
+        if validation.exists():
+            source = _horizon_history_source(
+                f"read_parquet({_lit(validation)})", f"read_parquet({_lit(path)})"
+            )
+            table = _read_view_rows(con, source)
     table = _horizon_baseline(con, request, table)
     weights = _horizon_weights(query, int(request["spec"]["horizon"]))
     table = _select_horizon_rows(table, selection, weights)
+    if selection["mode"] == "blend":
+        keep = np.asarray(
+            [target in test_targets for target in zip(table["series"], table["step"], strict=True)],
+            dtype=bool,
+        )
+        table = {name: values[keep] for name, values in table.items()}
     filters = _parse_filters(query.get("filters"))
     if filters:
         where = _filter_clause(filters, _spec_dims(request["spec"]))
@@ -1062,9 +1101,10 @@ def _horizon_result_metrics(run_dir, request, query, details, selection):
                 entry["error_metrics"] = dict(details["winner"]["error_metrics"])
             else:
                 path = run_dir / "families" / family / "test.parquet"
-                entry["error_metrics"].update(
-                    _horizon_metrics(con, run_dir, request, query, path, selection)
-                )
+                entry["error_metrics"] = {
+                    **entry["error_metrics"],
+                    **_horizon_metrics(con, run_dir, request, query, path, selection),
+                }
     details["error_metrics"] = dict(details[details["model"]]["error_metrics"])
     scope = (
         f"lead {selection['n']}"
@@ -1233,7 +1273,7 @@ def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
         out.update(
             view=selection,
             horizon=int(spec["horizon"]),
-            lead_errors=_read_lead_errors(run_dir, result, model),
+            lead_errors=_read_lead_errors(run_dir, result, model, int(spec["horizon"])),
         )
     if note:
         out["note"] = note

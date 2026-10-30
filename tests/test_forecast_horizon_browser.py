@@ -182,6 +182,12 @@ def save_horizon(page, name: str) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     page.locator(CONTROLS).scroll_into_view_if_needed()
     page.screenshot(path=folder / f"{name}.png", full_page=True, animations="disabled")
+    page.locator("#regression-chart").screenshot(
+        path=folder / f"{name}-chart.png", animations="disabled"
+    )
+    page.locator("#regression-lead-errors").screenshot(
+        path=folder / f"{name}-errors.png", animations="disabled"
+    )
 
 
 def test_horizon_controls_select_rows_metrics_and_bands(tmp_path):

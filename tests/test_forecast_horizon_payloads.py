@@ -349,6 +349,89 @@ def test_missing_lead_errors_are_optional(horizon_run):
     assert not fetch_view(horizon_run).get("lead_errors")
 
 
+@pytest.mark.parametrize("source", ["json", "parquet"])
+def test_upstream_lead_error_shapes_show_test_phase(horizon_run, source):
+    run, _, _ = horizon_run
+    if source == "json":
+        result = json.loads((run / "result.json").read_text(encoding="utf-8"))
+        result["lead_errors"] = {"1": {"model": 0.1, "naive": 0.2, "rows": 3}}
+        write_json(run / "result.json", result)
+    else:
+        write_table(
+            run / "lead_errors.parquet",
+            {
+                "phase": np.array(["test", "validation"]),
+                "weeks_ahead": np.array([1, 1]),
+                "model_wape": np.array([0.1, 0.9]),
+                "naive_wape": np.array([0.2, 0.3]),
+                "ratio": np.array([0.5, 3]),
+                "rows": np.array([3, 9]),
+            },
+        )
+    errors = fetch_view(horizon_run)["lead_errors"]
+    assert len(errors) == 3
+    assert errors[0]["model_wape"] == 0.1
+    assert errors[0]["naive_wape"] == 0.2
+    assert errors[0]["ratio"] == 0.5
+    assert errors[0]["rows"] == 3
+
+
+def test_selected_family_metrics_do_not_mutate_tile_metrics(horizon_run):
+    payload = fetch_view(horizon_run, lead="1")
+    assert payload["families"]["snaive"]["error_metrics"]["wape"]["value"] == 0.2
+    assert payload["tiles"]["snaive"]["error_metrics"]["wape"]["value"] == 0.3
+
+
+def test_blended_test_metrics_include_validation_forecasts_of_test_targets(horizon_run):
+    run, _, _ = horizon_run
+    validation = read_table(run / "winner_validation.parquet")
+    overlap = make_predictions(["2025-02-17"], [3], [0], actual=[30], naive=[0])
+    combined = {
+        name: np.concatenate([values, overlap[name]]) for name, values in validation.items()
+    }
+    write_table(run / "winner_validation.parquet", combined)
+    payload = fetch_view(horizon_run, blend="2")
+    assert forecast_values(payload)["2025-02-17"] == 18
+    assert metric_values(payload)["wape"] == pytest.approx(24 / 60)
+    assert metric_values(payload)["test_ratio"] == pytest.approx(24 / 28)
+    assert metric_values(fetch_view(horizon_run, lead="1"))["wape"] == pytest.approx(0.2)
+
+
+def test_nullable_lead_errors_are_json_safe(horizon_run):
+    run, _, _ = horizon_run
+    write_table(
+        run / "lead_errors.parquet",
+        {
+            "weeks_ahead": np.array([1]),
+            "model_wape": np.array([0.1]),
+            "naive_wape": np.array([0.0]),
+            "ratio": np.array([np.nan]),
+            "rows": np.array([3]),
+        },
+    )
+    payload = fetch_view(horizon_run)
+    assert payload["lead_errors"][0]["ratio"] is None
+    json.dumps(payload, allow_nan=False)
+
+
+def test_lead_errors_follow_the_selected_model(horizon_run):
+    run, _, _ = horizon_run
+    result = json.loads((run / "result.json").read_text(encoding="utf-8"))
+    result["lead_errors"] = [{"weeks_ahead": 1, "model_wape": 0.9}]
+    write_json(run / "result.json", result)
+    write_json(run / "recipe.json", {"family": "ensemble"})
+    assert fetch_view(horizon_run, model="winner")["lead_errors"] == []
+    write_table(
+        run / "winner_lead_errors.parquet",
+        {
+            "weeks_ahead": np.array([1]),
+            "model_wape": np.array([0.2]),
+        },
+    )
+    assert fetch_view(horizon_run, model="winner")["lead_errors"][0]["model_wape"] == 0.2
+    assert fetch_view(horizon_run, model="ensemble")["lead_errors"][0]["model_wape"] == 0.9
+
+
 def test_legacy_tables_leave_existing_view_and_metrics_unchanged(horizon_run):
     run, request, _ = horizon_run
     request["spec"].pop("horizon_mode")
