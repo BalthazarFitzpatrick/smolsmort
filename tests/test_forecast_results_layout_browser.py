@@ -103,7 +103,10 @@ def test_results_stacked_report_and_shared_metric_picker(tmp_path, width):
 
 
 @pytest.mark.parametrize("dimensions", [("project",), ("project", "product")])
-def test_filter_menu_kept_dimension_selections_and_refreshed_chart_and_table(tmp_path, dimensions):
+@pytest.mark.parametrize("width", [1280, 390])
+def test_filter_menu_kept_dimension_selections_and_refreshed_chart_and_table(
+    tmp_path, dimensions, width
+):
     records = [
         {"project": "north", "product": "a", "prediction": 10},
         {"project": "north", "product": "b", "prediction": 20},
@@ -158,7 +161,7 @@ def test_filter_menu_kept_dimension_selections_and_refreshed_chart_and_table(tmp
             )
         )
 
-    with session(tmp_path) as (page, _base):
+    with session(tmp_path, width=width) as (page, _base):
         page.route(
             "**/api/forecast-runs",
             lambda route: route.fulfill(json={"runs": [{"id": run_id, "state": "done"}]}),
@@ -179,6 +182,16 @@ def test_filter_menu_kept_dimension_selections_and_refreshed_chart_and_table(tmp
         menu = page.locator("#regression-filter-menu")
         assert menu.locator(".menu-list").count() == len(dimensions)
         assert menu.locator('input[type="checkbox"]').count() == 0
+        box = menu.bounding_box()
+        assert box["x"] >= 0 and box["x"] + box["width"] <= width
+        assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+        artifacts = Path(__file__).resolve().parents[1] / "outputs" / "results-layout"
+        artifacts.mkdir(parents=True, exist_ok=True)
+        page.screenshot(
+            path=artifacts / f"filter-{len(dimensions)}-{width}.png",
+            full_page=True,
+            animations="disabled",
+        )
         expected = {}
 
         def pick(dimension, value):
