@@ -2351,7 +2351,7 @@ class ForecastTopic {
           <section class="forecast-pane forecast-result-panel" id="${this.topic}-importance-wrap">
             <div class="run-controls">
               <span class="field-label">feature importance</span>
-              <button class="toggle dropdown-head" id="${this.topic}-importance-family"><span>xgboost</span></button>
+              <button class="toggle dropdown-head" id="${this.topic}-importance-family" disabled><span>none</span></button>
             </div>
             <div class="stat" id="${this.topic}-importance-status"></div>
             <div class="forecast-model-table-wrap"><table class="forecast-column-grid forecast-family-table" id="${this.topic}-importance"></table></div>
@@ -2412,8 +2412,8 @@ class ForecastTopic {
       }).openAt(evt.currentTarget);
     };
     document.getElementById(`${this.topic}-importance-family`).onclick = evt => {
-      const names = Object.keys(this.resultsView?.families || {});
-      if (!names.length) names.push(this.resultsView?.family || 'xgboost');
+      const names = this.resultsView?.importance_families || [];
+      if (!names.length) return;
       listMenu('feature importance', names.map(name => ({
         id: name, label: name, on: name === this.importanceFamily,
       })), item => { this.importanceFamily = item.id; this.refreshView(); }).openAt(evt.currentTarget);
@@ -2708,8 +2708,7 @@ class ForecastTopic {
     this.paintHorizonControls(view);
     this.acceptMetricRegistry(view, 'results');
     this.resultsModel = view.model || this.resultsModel || 'winner';
-    const family = view.family || 'xgboost';
-    this.importanceFamily = view.importance_family || this.importanceFamily || (family === 'ensemble' ? view.winner_family : family) || 'xgboost';
+    this.importanceFamily = view.importance_family || null;
     const modelHead = document.getElementById(`${this.topic}-results-model`);
     modelHead.classList.toggle('hidden', !view.ensemble);
     setHead(modelHead, forecastModelLabel(view));
@@ -2731,13 +2730,12 @@ class ForecastTopic {
     ]);
     forecastFillTable(document.getElementById(`${this.topic}-family-comparison`),
       ['family', 'state', ...metrics.map(forecastMetricHeader), 'candidates', 'reason'], rows);
-    setHead(document.getElementById(`${this.topic}-importance-family`), this.importanceFamily);
+    const importanceHead = document.getElementById(`${this.topic}-importance-family`);
+    importanceHead.disabled = !view.importance_families?.length;
+    setHead(importanceHead, this.importanceFamily || 'none');
     const importance = view.importance;
     const method = importance?.method === 'absolute_standardized_coefficient' ? 'absolute standardised coefficient' : importance?.method;
-    const noImportance = this.importanceFamily === 'ensemble' ? 'select a member for feature importance'
-      : ['snaive', 'ets', 'theta', 'arima'].includes(this.importanceFamily)
-        ? 'no feature importance for this family' : 'no saved feature importance for this run';
-    setText(`${this.topic}-importance-status`, importance ? `${method} · normalised top features` : noImportance);
+    setText(`${this.topic}-importance-status`, importance ? `${method} · normalised top features` : 'no saved feature importance for this run');
     const table = document.getElementById(`${this.topic}-importance`);
     table.classList.toggle('hidden', !importance?.features?.length);
     forecastFillTable(table, ['feature', 'importance'], (importance?.features || []).map(entry => [

@@ -80,6 +80,14 @@ def test_results_stacked_report_and_shared_metric_picker(tmp_path, width):
         assert order
         family_label = page.locator("#regression-family-comparison-wrap").inner_text()
         assert "family test results" in family_label
+        row_height = page.locator("#regression-family-comparison th").first.bounding_box()["height"]
+        cells = page.locator("#regression-lead-errors th, #regression-lead-errors td")
+        assert cells.evaluate_all(
+            "(cells, height) => cells.every(cell => "
+            "Math.abs(cell.getBoundingClientRect().height - height) < 1 "
+            "&& getComputedStyle(cell).boxSizing === 'border-box')",
+            row_height,
+        )
         panels = results.locator(".forecast-results-models")
         importance = panels.locator("#regression-importance-wrap").bounding_box()
         errors = panels.locator("#regression-lead-errors-wrap").bounding_box()
