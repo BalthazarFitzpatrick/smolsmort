@@ -25,6 +25,7 @@ class RawSeriesTask:
     rows: np.ndarray
     bucket: tuple[int, int]
     season_length: int
+    horizon_mode: str = "mixed"
 
 
 @dataclass
@@ -70,6 +71,8 @@ def build_model(name: str, period: int):
 
 
 def forecast_rows(task: RawSeriesTask, name: str, nthread: int) -> np.ndarray:
+    if task.horizon_mode == "single":
+        return forecast_single_rows(task, name)
     import pandas as pd
     from statsforecast import StatsForecast
 
@@ -125,6 +128,74 @@ def forecast_rows(task: RawSeriesTask, name: str, nthread: int) -> np.ndarray:
         refit=False,
     )
     return join_predictions(output, expected, str(model))
+
+
+def forecast_single_rows(task: RawSeriesTask, name: str) -> np.ndarray:
+    """refit every four origins and update state from observed history between fits"""
+    import pandas as pd
+
+    frame, rows = task.frame, task.rows
+    expected = pd.DataFrame(
+        {
+            "unique_id": frame.series[rows],
+            "ds": np.asarray(frame.step[rows], dtype="datetime64[ns]"),
+            "cutoff": np.asarray(frame.origin[rows], dtype="datetime64[ns]"),
+            "weeks_ahead": frame.weeks_ahead[rows],
+        }
+    )
+    prediction = np.empty(len(expected), dtype=float)
+    if expected.empty:
+        return prediction
+    if expected.duplicated(["unique_id", "ds", "cutoff"]).any():
+        raise ValueError("duplicate series/step/origin matches in statistical forecasts")
+    horizon = task.bucket[1]
+    if not expected.weeks_ahead.between(1, horizon).all():
+        raise ValueError("statistical forecast leads must be within the requested horizon")
+    frequencies = {"day": "D", "week": "W-MON", "month": "MS", "quarter": "QS", "year": "YS"}
+    freq = frequencies[task.unit]
+    panel = pd.DataFrame(
+        {
+            "unique_id": task.panel[SERIES],
+            "ds": np.asarray(task.panel[STEP], dtype="datetime64[ns]"),
+            "y": task.panel[task.target],
+        }
+    )
+    for key, targets in expected.groupby("unique_id", sort=False):
+        history = panel[(panel.unique_id == key) & (panel.ds <= targets.cutoff.max())].sort_values(
+            "ds"
+        )
+        if history.empty:
+            raise ValueError(f"insufficient history for series {key!r}: 0 observations")
+        if history.ds.duplicated().any():
+            raise ValueError(f"duplicate steps in history for series {key!r}")
+        regular = pd.date_range(history.ds.min(), history.ds.max(), freq=freq)
+        if not np.array_equal(history.ds.to_numpy(), regular.to_numpy()):
+            raise ValueError(f"irregular history for series {key!r}; expected {freq} steps")
+        model = None
+        for number, (origin, origin_rows) in enumerate(targets.groupby("cutoff", sort=True)):
+            observed = history[history.ds <= origin]
+            if len(observed) < 2:
+                raise ValueError(
+                    f"insufficient history for series {key!r} at {origin}: "
+                    f"{len(observed)} observations"
+                )
+            if observed.ds.iloc[-1] != origin:
+                raise ValueError(f"unobserved origin for series {key!r}: {origin}")
+            values = observed.y.to_numpy(dtype=float)
+            if not np.isfinite(values).all():
+                raise ValueError(f"nonfinite history for series {key!r} at {origin}")
+            leads = origin_rows.weeks_ahead.to_numpy(dtype=int)
+            future = pd.date_range(origin, periods=horizon + 1, freq=freq)[1:]
+            if not np.array_equal(origin_rows.ds.to_numpy(), future.to_numpy()[leads - 1]):
+                raise ValueError("statistical forecast target does not match its origin and lead")
+            # each model sees the current origin, never the targets it will predict
+            if number % 4 == 0:
+                model = build_model(name, task.season_length).fit(values)
+                forecast = model.predict(h=horizon)
+            else:
+                forecast = model.forward(y=values, h=horizon)
+            prediction[origin_rows.index] = np.asarray(forecast["mean"])[leads - 1]
+    return prediction
 
 
 class StatsFamily:

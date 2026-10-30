@@ -21,6 +21,7 @@ from smolsmort.forecast.features import (
     family_aliases,
     family_sort_key,
     split_family_name,
+    stacked_timeseries_features,
     step_index,
     timeseries_features,
 )
@@ -135,6 +136,7 @@ class Workspace:
     holdout: str = "block"
     test_folds: tuple[tuple[np.datetime64, np.datetime64], ...] = ()
     holdout_info: dict | None = None
+    horizon_mode: str = "mixed"
 
     @property
     def mode(self) -> str:
@@ -142,11 +144,20 @@ class Workspace:
 
 
 def load_workspace(
-    spec: PrepSpec, folder: Path, summary: dict, *, transform: str = "none", holdout: str = "block"
+    spec: PrepSpec,
+    folder: Path,
+    summary: dict,
+    *,
+    transform: str = "none",
+    holdout: str = "block",
+    horizon_mode: str = "mixed",
 ) -> Workspace:
     """everything a search needs, read and built once: tables, cuts, profile, candidate features"""
     folder = Path(folder)
     target_transform = get_transform(transform)
+    horizon_mode = "mixed" if horizon_mode == "grouped" else horizon_mode
+    if horizon_mode not in {"single", "mixed"}:
+        raise PipelineError("horizon_mode must be single or mixed")
     if spec.mode == "entity":
         if transform != "none":
             raise PipelineError("target transforms require time series regression")
@@ -155,7 +166,7 @@ def load_workspace(
         return _entity_workspace(spec, folder, summary)
     if spec.task == "classification":
         raise PipelineError("classification requires entity mode; time series runs use regression")
-    ws = _timeseries_workspace(spec, folder, summary, holdout)
+    ws = _timeseries_workspace(spec, folder, summary, holdout, horizon_mode)
     ws.transform = transform
     if transform != "none":
         target_transform.validate_target(ws.panel[spec.named("target")[0]])
@@ -191,7 +202,9 @@ def _entity_workspace(spec, folder, summary) -> Workspace:
     return ws
 
 
-def _timeseries_workspace(spec, folder, summary, holdout="block") -> Workspace:
+def _timeseries_workspace(
+    spec, folder, summary, holdout="block", horizon_mode="mixed"
+) -> Workspace:
     panel = read_table(folder / "panel.parquet", order_by=f"{SERIES}, {STEP}")
     scaffold = read_table(folder / "scaffold.parquet")
     inputs = read_table(folder / "inputs.parquet") if spec.named("input") else None
@@ -209,21 +222,49 @@ def _timeseries_workspace(spec, folder, summary, holdout="block") -> Workspace:
     profile = build_profile(spec, panel, train)
     genes = profile["genes"]
     frames, masks = {}, {}
-    for bucket in buckets_for(spec.horizon):
-        frame = timeseries_features(
+    single = horizon_mode == "single"
+    buckets = [(1, spec.horizon)] if single else buckets_for(spec.horizon)
+    for bucket in buckets:
+        builder = stacked_timeseries_features if single else timeseries_features
+        frame = builder(
             spec,
             panel,
             scaffold,
-            bucket,
+            *(() if single else (bucket,)),
             unit,
             train,
             period=genes.get("period"),
             measure_lags=genes.get("measure_lags"),
             inputs=inputs,
         )
-        step = frame.step
+        step = frame.origin if single else frame.step
         known = ~frame.future & np.isfinite(frame.y)
         frames[bucket] = frame
+        if single:
+            val_windows = (
+                _origin_windows(steps, cuts.val, cuts.stride)
+                if seasonal
+                else tuple((steps[start], steps[end]) for start, end in cuts.folds)
+            )
+            test_windows = (
+                _origin_windows(steps, cuts.test, cuts.stride)
+                if seasonal
+                else _origin_windows(steps, (cuts.test_start,), len(steps) - cuts.test_start)
+            )
+
+            def in_windows(windows, known=known, step=step):
+                return known & np.logical_or.reduce(
+                    [(step >= start) & (step < end) for start, end in windows]
+                )
+
+            masks[bucket] = {
+                "train": known & (frame.step < val_start),
+                "val": in_windows(val_windows),
+                "test": in_windows(test_windows),
+                "known": known,
+                "future": frame.future,
+            }
+            continue
         if seasonal:
             masks[bucket] = _seasonal_masks(frame, known, bucket, cuts, steps, unit)
             continue
@@ -238,6 +279,7 @@ def _timeseries_workspace(spec, folder, summary, holdout="block") -> Workspace:
     ws = Workspace(spec, folder, summary, profile, [], unit)
     ws.frames, ws.series_masks = frames, masks
     ws.panel = panel
+    ws.horizon_mode = horizon_mode
     ws.excluded_series = excluded
     if seasonal:
         ws.holdout = holdout
@@ -251,6 +293,9 @@ def _timeseries_workspace(spec, folder, summary, holdout="block") -> Workspace:
             for start, end in cuts.folds
         )
         ws.test_steps = int(cuts.steps - cuts.test_start)
+    if single:
+        ws.test_folds = test_windows
+        ws.test_steps = len(np.unique(frame.origin[masks[bucket]["test"]]))
     families = set().union(*(set(f.features.families) for f in frames.values()))
     ws.families = sorted(families - _excluded_families(profile, families), key=family_sort_key)
     return ws
@@ -570,7 +615,8 @@ def _timeseries_phase(ws, genome, phase, nthread, sample=None, histories=None):
             )
         preds.append(prediction)
         truths.append(frame.y[eval_rows])
-        periods.append(frame.step[eval_rows].astype(int))
+        clock = frame.origin if ws.horizon_mode == "single" else frame.step
+        periods.append(clock[eval_rows].astype(int))
     return np.concatenate(preds), np.concatenate(truths), np.concatenate(periods)
 
 
@@ -582,10 +628,11 @@ def _validation_masks(ws, bucket):
         return
     # seasonal holdout leaves gaps between windows; their rows still train later folds
     known = masks["known"] if "known" in masks else masks["train"] | masks["val"]
+    clock = frame.origin if ws.horizon_mode == "single" else frame.step
     for start, end in folds:
         yield (
             known & (frame.step < start),
-            masks["val"] & (frame.step >= start) & (frame.step < end),
+            masks["val"] & (clock >= start) & (clock < end),
         )
 
 
@@ -601,10 +648,11 @@ def _test_windows(ws, bucket):
     if not folds:
         yield masks["train"] | masks["val"], masks["test"]
         return
+    clock = frame.origin if ws.horizon_mode == "single" else frame.step
     for start, end in folds:
         yield (
             masks["known"] & (frame.step < start),
-            masks["test"] & (frame.step >= start) & (frame.step < end),
+            masks["test"] & (clock >= start) & (clock < end),
         )
 
 
@@ -629,6 +677,19 @@ def _timeseries_validation(ws, bucket, predict_fold):
     return prediction
 
 
+def _timeseries_design(genome, frame):
+    selected = set(genome.families)
+    if frame.weeks_ahead is not None:
+        selected.add("weeks_ahead")
+    x, names, types = frame.features.pick(selected)
+    if frame.weeks_ahead is not None and genome.family == "ridge":
+        leads = np.arange(1, int(frame.weeks_ahead.max()) + 1)
+        x = np.column_stack((x, frame.weeks_ahead[:, None] == leads))
+        names = [*names, *(f"weeks_ahead_{lead}" for lead in leads)]
+        types = [*types, *(["q"] * len(leads))]
+    return x, names, types
+
+
 def _timeseries_fit(ws, genome, frame, rows, nthread):
     if genome.objective == "hazard":
         raise PipelineError("hazard requires censored entity regression")
@@ -640,7 +701,7 @@ def _timeseries_fit(ws, genome, frame, rows, nthread):
         raise PipelineError(
             f"logdiff transform requires a signed-target objective, got {genome.objective!r}"
         )
-    x, _, types = frame.features.pick(set(genome.families))
+    x, _, types = _timeseries_design(genome, frame)
     if not x.shape[1]:
         raise PipelineError("a genome with no feature families cannot be fitted")
     # oldest first, so the early-stopping slice is the newest steps rather than the last series
@@ -682,6 +743,7 @@ def _timeseries_raw_fit(ws, genome, frame, rows, bucket, nthread):
         rows,
         bucket,
         season_length(ws.profile),
+        horizon_mode=ws.horizon_mode,
     )
     fitted = get_family(genome.family).fit(
         task, objective=genome.objective, params=dict(genome.params), nthread=nthread
@@ -706,7 +768,7 @@ def _timeseries_predict(
     else:
         fitted, x = _timeseries_fit(ws, genome, frame, fit_rows, nthread)
         if importance is not None:
-            _, names, _ = frame.features.pick(set(genome.families))
+            _, names, _ = _timeseries_design(genome, frame)
             importance.append(
                 measure_importance(genome.family, fitted, names, x[fit_rows & np.isfinite(frame.y)])
             )
@@ -747,7 +809,7 @@ def fit_importance(ws, genome, *, nthread=1):
         masks = ws.series_masks[bucket]
         rows = _known_rows(masks)
         fitted, x = _timeseries_fit(ws, genome, frame, rows, nthread)
-        _, names, _ = frame.features.pick(set(genome.families))
+        _, names, _ = _timeseries_design(genome, frame)
         scores.append(
             measure_importance(genome.family, fitted, names, x[rows & np.isfinite(frame.y)])
         )
@@ -1125,7 +1187,7 @@ def _finish_timeseries(
         ws,
         validation_rows["prediction"],
         validation_rows["actual"],
-        validation_rows["step"].astype(int),
+        validation_rows["origin" if ws.horizon_mode == "single" else "step"].astype(int),
     )
     verdict = ev.judge(
         model_error=model_error,
@@ -1150,6 +1212,9 @@ def _finish_timeseries(
         metadata["season_length"] = season_length(ws.profile)
     return {
         **metadata,
+        "horizon_mode": ws.horizon_mode,
+        "horizon": ws.spec.horizon,
+        "origin_blocks": _origin_blocks(ws),
         "excluded_series": ws.excluded_series,
         "verdict": verdict,
         "bands": bands,
@@ -1211,6 +1276,11 @@ def _band_summary(table, forecast) -> dict:
 
 def _timeseries_rows(frame, mask, pred, bucket) -> dict:
     return {
+        **(
+            {"origin": frame.origin[mask], "weeks_ahead": frame.weeks_ahead[mask]}
+            if frame.weeks_ahead is not None
+            else {}
+        ),
         "series": frame.series[mask],
         "step": frame.step[mask],
         "bucket": np.full(int(mask.sum()), f"{bucket[0]}-{bucket[1]}", dtype=object),
@@ -1222,12 +1292,38 @@ def _timeseries_rows(frame, mask, pred, bucket) -> dict:
 def _timeseries_baseline(frame, mask, bucket, period) -> np.ndarray:
     """seasonal naive when a season reaches past the bucket, else the value at the origin"""
     names = frame.features.names
+    if frame.weeks_ahead is not None:
+        seasonal = frame.features.x[mask, names.index("target_season_lag")].astype(float)
+        return np.where(np.isfinite(seasonal), seasonal, frame.base[mask])
     column = (
         f"lag_{period}"
         if period and period >= bucket[1] and f"lag_{period}" in names
         else f"lag_{bucket[1]}"
     )
     return frame.features.x[mask, names.index(column)].astype(float)
+
+
+def _origin_blocks(ws):
+    if ws.horizon_mode != "single":
+        return None
+    bucket, frame = next(iter(ws.frames.items()))
+    blocks = {}
+    for phase, windows, masks in (
+        ("validation", ws.series_folds, _validation_masks(ws, bucket)),
+        ("test", ws.test_folds, _test_windows(ws, bucket)),
+    ):
+        blocks[phase] = [
+            {
+                "start": str(start),
+                "end": str(end),
+                "origins": [str(day) for day in np.unique(frame.origin[evaluate])],
+                "origin_count": len(np.unique(frame.origin[evaluate])),
+                "train_rows": int(train.sum()),
+                "rows": int(evaluate.sum()),
+            }
+            for (start, end), (train, evaluate) in zip(windows, masks, strict=True)
+        ]
+    return blocks
 
 
 def _median_width(lo, hi) -> float:

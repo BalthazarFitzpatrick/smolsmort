@@ -126,7 +126,7 @@ def run(folder: Path) -> int:
         started_at = time.time()
         job.status("running", started_at=started_at)
         request = json.loads((folder / "request.json").read_text())
-        request = parse_request(request)
+        request = parse_request({"horizon_mode": "mixed", **request})
         if request.get("version") == 2:
             from smolsmort.forecast.coordinator import initialize_state
 
@@ -149,6 +149,7 @@ def run(folder: Path) -> int:
             request["summary"],
             transform=transform,
             holdout=request.get("holdout", "block"),
+            horizon_mode=request["horizon_mode"],
         )
         if ws.excluded_series:
             job.event({"event": "excluded_series", "excluded_series": ws.excluded_series})
@@ -285,6 +286,7 @@ def _write_result(folder, spec, result, final):
     }
     summary = {
         "transform": transform,
+        "horizon_mode": final.get("horizon_mode", "mixed"),
         "verdict": final["verdict"],
         "model_error": final["model_error"],
         "baseline_error": final["baseline_error"],
@@ -307,6 +309,9 @@ def _write_result(folder, spec, result, final):
             summary[key] = final.get(key)
         summary["holdout"] = final.get("holdout")
         summary["band_summary"] = final.get("band_summary")
+        for key in ("horizon", "origin_blocks", "lead_errors", "validation_lead_errors"):
+            if key in final:
+                summary[key] = final[key]
     if "season_length" in final:
         recipe["season_length"] = summary["season_length"] = final["season_length"]
     for name, data in (("recipe.json", recipe), ("result.json", summary)):
@@ -319,7 +324,7 @@ def _write_result(folder, spec, result, final):
 
 
 def _write_tables(folder, spec, final, *, prefix="", aggregate="none"):
-    names = ("forecast", "validation", "test", "curve", "band_table")
+    names = ("forecast", "validation", "test", "curve", "band_table", "lead_errors_table")
     tables = {name: final.get(name) for name in names}
     rule = get_aggregator(aggregate)
     if tables["curve"] is not None:
@@ -333,6 +338,7 @@ def _write_tables(folder, spec, final, *, prefix="", aggregate="none"):
             and all(isinstance(v, np.ndarray) for v in columns.values())
         ):
             name = "band" if name == "band_table" else name
+            name = "lead_errors" if name == "lead_errors_table" else name
             filename = f"{prefix}_{name}" if prefix else name
             write_table(folder / f"{filename}.parquet", columns)
 
