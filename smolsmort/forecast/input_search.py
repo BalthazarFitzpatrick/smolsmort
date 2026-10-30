@@ -36,6 +36,10 @@ class InputSearch:
     fast_families: tuple[str, ...] = FAST_FAMILIES
     final_families: tuple[str, ...] | None = None
     control: bool = True
+    # sets tried right after the control and the pinned set, e.g. the winners of an earlier search
+    seed_sets: tuple[tuple[str, ...], ...] = ()
+    # added to each column's inclusion odds, e.g. +0.1 for columns that helped before
+    odds_nudge: dict[str, float] = field(default_factory=dict)
     seed: int = 0
     run_options: dict = field(default_factory=dict)
 
@@ -156,6 +160,14 @@ def input_odds(ranking: list[dict]) -> dict[str, float]:
     }
 
 
+def nudge_odds(odds: dict[str, float], nudge: dict[str, float]) -> dict[str, float]:
+    """shift free columns' odds by a prior from earlier searches, kept inside 0.1-0.9; pins stay 1"""
+    return {
+        name: p if p >= 1 else min(0.9, max(0.1, p + nudge.get(name, 0.0)))
+        for name, p in odds.items()
+    }
+
+
 def draw_set(odds, rng, seen, parents=()) -> tuple[str, ...] | None:
     """an unseen input set: a fresh weighted draw, or one or two weighted flips of a parent.
     pinned columns (odds 1) are never dropped; none when nothing new turns up"""
@@ -194,14 +206,14 @@ def search_inputs(
     folder.mkdir(parents=True)
     trial = trial or _run_trial(runs_root, cache_root, plan.run_options)
     ranking = screen_inputs(spec, prepare(spec, cache_root).folder)
-    odds = input_odds(ranking)
+    odds = nudge_odds(input_odds(ranking), plan.odds_nudge)
     state = {"spec": spec.digest(), "screen": ranking, "odds": odds, "trials": []}
 
     def left() -> float:
         return plan.deadline - clock()
 
     def run(genes, families, budget_s, stage, until_plateau=False) -> dict:
-        row = trial(with_inputs(spec, genes), list(families), budget_s, until_plateau)
+        row = trial(with_inputs(spec, genes), list(families or ()), budget_s, until_plateau)
         row = {"stage": stage, "inputs": list(genes), "budget_s": budget_s, **row}
         state["trials"].append(row)
         _save(folder, state)
@@ -224,6 +236,11 @@ def search_inputs(
             if core and core not in seen:
                 seen.add(core)
                 rows.append(run(core, plan.fast_families, plan.explore_s, "explore1"))
+            for chosen in plan.seed_sets:
+                genes = tuple(sorted({*chosen, *core}))
+                if genes not in seen:
+                    seen.add(genes)
+                    rows.append(run(genes, plan.fast_families, plan.explore_s, "explore1"))
         while clock() < explore_end and left() > plan.explore_s + 300:
             parents = [tuple(r["inputs"]) for r in _ranked(rows)[: plan.halve_top]]
             genes = draw_set(odds, rng, seen, parents)
