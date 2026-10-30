@@ -21,7 +21,7 @@ def test_results_stacked_report_and_shared_metric_picker(tmp_path, width):
         show_tab(page, "regression-search")
         rail = page.locator("#regression-new-search").locator("..")
         assert rail.locator("#regression-new-search").is_visible()
-        assert rail.locator("#regression-run-sort .dropdown-head").inner_text() == "sort by"
+        assert rail.locator("#regression-run-sort .dropdown-head").inner_text() == "sort"
         assert rail.locator("#regression-error-metrics").is_visible()
         page.evaluate(
             "window.sharedMetricHead = document.getElementById('regression-error-metrics')"
@@ -39,6 +39,7 @@ def test_results_stacked_report_and_shared_metric_picker(tmp_path, width):
             "lead",
             "blend",
             "breakdown-head",
+            "info",
             "export",
         ):
             assert header.locator(f"#regression-{control}").is_visible()
@@ -47,6 +48,7 @@ def test_results_stacked_report_and_shared_metric_picker(tmp_path, width):
         )
         assert page.locator("#regression-error-metrics").count() == 1
         assert header.locator('input[type="checkbox"]').count() == 0
+        assert results.locator("#regression-verdict, #regression-excluded-series").count() == 0
         assert page.locator(".forecast-metric-help").count() == 0
 
         chart = results.locator(".forecast-chart-panel")
@@ -67,7 +69,7 @@ def test_results_stacked_report_and_shared_metric_picker(tmp_path, width):
             """() => {
                 const root = document.querySelector('.tab-panel[data-panel="regression-results"]');
                 const nodes = [
-                    '.forecast-results-header', '#regression-verdict', '.forecast-chart-panel',
+                    '.forecast-results-header', '.forecast-chart-panel',
                     '#regression-family-comparison-wrap', '.forecast-results-models',
                     '#regression-results-table', '#regression-page-info'
                 ].map(selector => root.querySelector(selector));
