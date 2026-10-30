@@ -77,6 +77,24 @@ by the same tab.
 to it by index in a `.decisions.json` beside it, so rewriting a candidates file would re-point every
 recorded keep at a different box. A re-sweep is a new file.
 
+### paced process pool
+
+`smolsmort.parallel.paced.paced_map` yields `(task, result)` as tasks finish, with the pool as wide
+as the machine allows. it starts one worker and adds one at a time, each after the last has settled
+(`settle_s`, 15), while the memory left once every running worker reaches its measured peak stays
+above `reserve_gb` (4.0; a caller under a job supervisor sets it above the supervisor's line), the pagefile
+is not growing past `page_high` mb a second and the cores are under `cpu_full` percent.
+
+under pressure the limit narrows by one, not faster than `step_s`, and running tasks finish before
+workers retire. below `emergency_gb` (default 0.8 under the floor) the newest worker is stopped and
+its task goes back to the front: the one case where a running task is redone. the last worker is
+never stopped, so a tight machine slows instead of stalling.
+
+`control` is a json file re-read each poll with optional `max_workers`, `floor_gb`, `emergency_gb`,
+`cpu_full` and `page_high`; a bad file changes nothing and is logged. `on_status` gets a dict each
+poll: `width`, `limit`, `running`, `available_gb`, `cpu`, `paging_mb_s` and `shed`. `memory`
+accepts a `MemoryReading` or `(available_bytes, rss_by_pid)`, so tests drive it without a machine.
+
 ### Tiles and the pool
 
 Saving in the find tab cuts each box into a tile: the box plus a margin of real frame around it, so
