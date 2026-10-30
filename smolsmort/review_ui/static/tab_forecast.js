@@ -206,6 +206,39 @@ function forecastRatioStyle(node, verdict) {
   node.classList.toggle('worse', Number.isFinite(ratio) && ratio >= 1);
 }
 
+function forecastLegacyTileSearch(run, best) {
+  const points = new Map();
+  const finite = value => Number.isFinite(value) ? value : null;
+  const getPoint = record => {
+    const index = record.family_generation ?? record.generation;
+    if (!Number.isInteger(index) || index < 0) return null;
+    if (!points.has(index + 1)) points.set(index + 1,
+      {generation: index + 1, validation_error: null, wape: null, mae: null});
+    return points.get(index + 1);
+  };
+  // live legacy polls carry search records before result details can load
+  for (const event of run.generations || []) {
+    const point = getPoint(event);
+    if (!point) continue;
+    point.validation_error = finite(event.best);
+    for (const metric of ['wape', 'mae']) point[metric] = finite(event.metrics?.[metric]);
+  }
+  for (const curve of run.curves || []) {
+    if (!curve.metric || ['generation', 'validation_error', 'mape', 'test_ratio'].includes(curve.metric)
+        || !Array.isArray(curve.validation) || !curve.validation.length) continue;
+    const point = getPoint(curve);
+    if (point && point[curve.metric] == null) point[curve.metric] = finite(curve.validation.at(-1));
+  }
+  if (points.size) return {
+    search_curve: Array.from({length: Math.max(...points.keys())}, (_, index) =>
+      points.get(index + 1) || {generation: index + 1}), search_single: false,
+  };
+  const values = {validation_error: finite(run.best_error ?? best.fitness),
+    wape: finite(best.metrics?.wape), mae: finite(best.metrics?.mae)};
+  const known = Object.values(values).some(Number.isFinite);
+  return {search_curve: known ? [{generation: 1, ...values}] : [], search_single: known};
+}
+
 function forecastTileEntries(run) {
   const families = run?.version === 1 ? [] : Object.entries(run?.families || {});
   const entries = families.length ? families.map(([name, status]) => ({
@@ -221,7 +254,7 @@ function forecastTileEntries(run) {
       test_naive_wape: run.verdict?.accuracy?.metric === 'wape' ? run.verdict.accuracy.baseline_error : null,
       elapsed: run.progress?.elapsed ?? run.elapsed, generation: run.progress?.generation ?? run.generation,
       folds: (best.metrics?.fold_scores || []).map((error, index) => ({label: `fold ${index + 1}`, error})),
-      chart_reason: 'test chart unavailable',
+      ...forecastLegacyTileSearch(run, best),
     });
   }
   return entries.sort((a, b) => {
@@ -288,50 +321,87 @@ function forecastTileMenus(tile) {
   return group;
 }
 
-function forecastTileChart(tile) {
-  const points = forecastTileState(tile) === 'running' ? [] : (tile.chart || []);
-  if (!points.length) {
-    return forecastNode('div', 'forecast-tile-chart forecast-tile-placeholder',
-      forecastTileState(tile) === 'running' ? 'test chart pending' : tile.chart_reason || 'test chart not saved');
+function forecastTileSearchScale(tiles, selected, registry) {
+  const fallback = registry.find(metric => metric.id === 'validation_error')
+    || {id: 'validation_error', label: 'validation error', unit: 'number'};
+  const requested = selected || fallback;
+  const tracked = ['validation_error', 'wape', 'mae'].includes(requested.id)
+    || tiles.some(tile => (tile.search_curve || []).some(point => Number.isFinite(point[requested.id])));
+  const unsupported = ['mape', 'test_ratio'].includes(requested.id) || !tracked;
+  const metric = unsupported ? fallback : requested;
+  const points = tiles.flatMap(tile => tile.search_curve || []);
+  const values = points.map(point => point[metric.id]).filter(Number.isFinite);
+  const low = values.length ? Math.min(...values) : 0;
+  const high = values.length ? Math.max(...values) : 1;
+  const padding = (high - low || Math.abs(high) || 1) * 0.1;
+  return {metric, note: unsupported ? `${requested.label}: not tracked per generation` : '',
+    low: low >= 0 ? Math.max(0, low - padding) : low - padding, high: high + padding,
+    generation: Math.max(1, ...points.map(point => point.generation).filter(Number.isFinite))};
+}
+
+function forecastTileChart(tile, scale) {
+  const {metric, low, high, generation} = scale;
+  const wrap = forecastNode('div', 'forecast-tile-chart');
+  wrap.dataset.chartMetric = metric.id;
+  wrap.dataset.scaleMin = String(low);
+  wrap.dataset.scaleMax = String(high);
+  wrap.dataset.generationMax = String(generation);
+  const metricLabel = metric.id === 'validation_error' ? metric.label : `${metric.label} · validation`;
+  wrap.append(forecastNode('div', 'forecast-tile-chart-label', metricLabel));
+  const points = (tile.search_curve || []).filter(point => Number.isFinite(point.generation));
+  const known = points.filter(point => Number.isFinite(point[metric.id]));
+  if (!known.length) {
+    wrap.append(forecastNode('div', 'forecast-tile-placeholder', 'no search curve saved for this family'));
+    if (scale.note) wrap.append(forecastNode('div', 'forecast-tile-chart-note', scale.note));
+    return wrap;
   }
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('viewBox', '0 0 204 84');
   svg.setAttribute('role', 'img');
-  svg.setAttribute('aria-label', 'test period: actual against forecast, summed over series');
-  svg.classList.add('forecast-tile-chart');
+  const last = points.at(-1);
+  const value = Number.isFinite(last[metric.id]) ? forecastMetricNumber(metric, last[metric.id]) : 'not saved';
+  const end = (tile.state === 'pruned' ? 'pruned · ' : '')
+    + (tile.search_single ? 'single value' : `gen ${last.generation}`);
+  svg.setAttribute('aria-label', `${tile.name}: ${metric.label} by generation; ${end}: ${value}; shared scale ${forecastMetricNumber(metric, low)} to ${forecastMetricNumber(metric, high)}`);
+  svg.classList.add('forecast-tile-search');
   const add = (tag, attrs) => {
     const node = document.createElementNS(svg.namespaceURI, tag);
     Object.entries(attrs).forEach(([key, value]) => node.setAttribute(key, value));
     svg.append(node);
     return node;
   };
-  const values = points.flatMap(point => [point.actual, point.prediction]).filter(Number.isFinite);
-  if (!values.length) return forecastNode('div', 'forecast-tile-chart forecast-tile-placeholder', 'test values unavailable');
-  const low = Math.min(...values), high = Math.max(...values);
-  const span = high - low || Math.abs(high) * 0.1 || 1;
-  const x = index => 4 + index / Math.max(1, points.length - 1) * 196;
-  const y = value => 78 - (value - low) / span * 72;
-  // saved test points start at the split; no training history is invented
-  add('line', {x1: 4, x2: 4, y1: 0, y2: 84, class: 'forecast-tile-split'});
-  const title = add('title', {});
-  title.textContent = `test only · ${points[0].step} – ${points.at(-1).step} · actual grey, forecast state colour`;
-  for (const field of ['actual', 'prediction']) {
-    let segment = [];
-    const draw = () => {
-      if (segment.length > 1) add('polyline', {points: segment.join(' '), class: `forecast-tile-${field}`});
-      else if (segment.length) {
-        const [cx, cy] = segment[0].split(',');
-        add('circle', {cx, cy, r: 2, class: `forecast-tile-${field}`});
-      }
-      segment = [];
-    };
-    points.forEach((point, index) => {
-      if (Number.isFinite(point[field])) segment.push(`${x(index).toFixed(1)},${y(point[field]).toFixed(1)}`);
-      else draw();
-    });
-    draw();
+  const x = step => 8 + (step - 1) / Math.max(1, generation - 1) * 188;
+  const y = score => 63 - (score - low) / (high - low) * 40;
+  const label = (text, attrs) => { add('text', attrs).textContent = text; };
+  label(`${end}: ${value}`, {x: 0, y: 10, class: 'forecast-tile-current-value'});
+  add('line', {x1: 8, x2: 196, y1: 66, y2: 66, class: 'forecast-tile-axis'});
+  label('1', {x: 8, y: 81});
+  label('generation', {x: 102, y: 81, 'text-anchor': 'middle'});
+  if (generation > 1) label(String(generation), {x: 196, y: 81, 'text-anchor': 'end'});
+  let segment = [];
+  const draw = () => {
+    if (segment.length > 1) add('polyline', {points: segment.join(' '), class: 'forecast-tile-search-line'});
+    segment = [];
+  };
+  points.forEach(point => {
+    if (!Number.isFinite(point[metric.id])) { draw(); return; }
+    const cx = x(point.generation), cy = y(point[metric.id]);
+    segment.push(`${cx.toFixed(1)},${cy.toFixed(1)}`);
+    const marker = add('circle', {cx, cy, r: point === last ? 4 : 2,
+      class: point === last ? 'forecast-tile-current' : 'forecast-tile-search-point',
+      'data-generation': point.generation, 'data-value': point[metric.id]});
+    const title = document.createElementNS(svg.namespaceURI, 'title');
+    title.textContent = `generation ${point.generation}: ${forecastMetricNumber(metric, point[metric.id])}`;
+    marker.append(title);
+  });
+  draw();
+  if (tile.state === 'pruned' && Number.isFinite(last[metric.id])) {
+    const cx = x(last.generation), cy = y(last[metric.id]);
+    add('path', {d: `M${cx - 4},${cy - 4}l8,8m0,-8l-8,8`, class: 'forecast-tile-pruned'});
   }
-  return svg;
+  wrap.append(svg);
+  if (scale.note) wrap.append(forecastNode('div', 'forecast-tile-chart-note', scale.note));
+  return wrap;
 }
 
 function forecastTileWapeBars(tile) {
@@ -385,13 +455,13 @@ function forecastTileBars(tile, scale) {
   return wrap;
 }
 
-function forecastCreateTile(tile, index, metrics, scale) {
+function forecastCreateTile(tile, index, metrics, scale, searchScale) {
   const wrap = forecastNode('article', 'forecast-tile');
   wrap.dataset.family = tile.name;
   wrap.dataset.state = forecastTileState(tile);
   wrap.setAttribute('aria-label', `${tile.name}: ${tile.state}`);
   const foldSpace = Math.max(0, forecastTileWapeBars(tile).length - 4) * 22;
-  wrap.style.height = `${232 + metrics.length * 20 + foldSpace}px`;
+  wrap.style.height = `${266 + metrics.length * 20 + foldSpace}px`;
   const inner = forecastNode('div', 'forecast-tile-inner');
   for (const side of ['front', 'back']) {
     const face = forecastNode('div', `forecast-tile-face forecast-tile-${side}`);
@@ -403,7 +473,7 @@ function forecastCreateTile(tile, index, metrics, scale) {
     scoreNode.title = Number.isFinite(tile.test_ratio) ? `test ratio ${tile.test_ratio.toFixed(2)} vs naive`
       : forecastTileState(tile) === 'running' ? 'test score pending' : 'test ratio not saved';
     header.append(scoreNode);
-    const chart = side === 'front' ? forecastTileChart(tile) : forecastTileBars(tile, scale);
+    const chart = side === 'front' ? forecastTileChart(tile, searchScale) : forecastTileBars(tile, scale);
     face.append(header, chart, forecastTileMenus(tile), forecastMetricLines(metrics, tile));
     const summary = side === 'front' ? forecastTileSummary(tile) : 'wape per validation window; mark = naive on test';
     const caption = forecastNode('div', 'forecast-tile-caption forecast-tile-dim', summary);
@@ -1606,11 +1676,13 @@ class ForecastTopic {
     const entries = forecastTileEntries(run);
     const scale = forecastTileWapeScale(entries);
     const metrics = this.selectedMetrics(run);
+    const selected = this.selectedMetricIds.map(id => metrics.find(metric => metric.id === id)).find(Boolean);
+    const searchScale = forecastTileSearchScale(entries, selected, run?.metric_registry || this.metricRegistry);
     setText(`${this.topic}-tiles-count`, `candidates · ${entries.length}`);
     const existing = new Map([...grid.children].map(node => [node.dataset.family, node]));
     entries.forEach((tile, index) => {
       let node = existing.get(tile.name);
-      const signature = JSON.stringify([tile, index, metrics, scale]);
+      const signature = JSON.stringify([tile, index, metrics, scale, searchScale]);
       if (!node || node.dataset.signature !== signature) {
         const openMenus = [...(node?.querySelectorAll('details[open]') || [])].map(details => ({
           side: details.closest('.forecast-tile-back') ? 'back' : 'front',
@@ -1620,7 +1692,7 @@ class ForecastTopic {
         const focus = active ? {
           side: active.closest('.forecast-tile-back') ? 'back' : 'front', key: active.dataset.menu,
         } : null;
-        const fresh = forecastCreateTile(tile, index, metrics, scale);
+        const fresh = forecastCreateTile(tile, index, metrics, scale, searchScale);
         fresh.dataset.signature = signature;
         if (node) node.replaceWith(fresh);
         else grid.append(fresh);

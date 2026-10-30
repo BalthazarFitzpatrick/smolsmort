@@ -78,17 +78,6 @@ def single_run(tmp_path):
     return tmp_path, request
 
 
-def test_tile_chart_selects_largest_lead_without_averaging(single_run):
-    folder, request = single_run
-    chart = views._read_tile_chart(folder / "test.parquet")
-    assert chart == [
-        {"step": "2025-01-13", "actual": 30.0, "prediction": 22.0, "lower": 20.0, "upper": 24.0}
-    ]
-    tile = next(iter(views.family_tiles(folder, request, {"state": "done"}).values()))
-    assert tile["weeks_ahead_shown"] == 8
-    assert tile["chart"] == chart
-
-
 def test_chart_keeps_largest_historical_lead_and_all_future_weeks(single_run):
     folder, request = single_run
     payload = views.timeseries_view(folder, request, {})

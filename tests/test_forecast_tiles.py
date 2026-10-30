@@ -17,6 +17,11 @@ def write_json(path, data):
     path.write_text(json.dumps(data), encoding="utf-8")
 
 
+def write_json_lines(path, records):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+
+
 def write_predictions(path, prediction=10):
     path.parent.mkdir(parents=True, exist_ok=True)
     write_table(
@@ -91,17 +96,18 @@ def saved_run(tmp_path):
     return tmp_path, request, status
 
 
-def test_tiles_keep_family_winner_and_ensemble_test_artifacts_separate(saved_run):
+def test_tiles_keep_family_winner_and_ensemble_metrics_separate(saved_run):
     folder, request, status = saved_run
     state = views.multi_run_state(folder, request, status)
     tile = state["families"]["ridge"]["tile"]
     assert tile["test_ratio"] == 0.71
     assert tile["test_error"] == 0.182 and tile["test_error_metric"] == "wape"
     assert tile["test_naive_wape"] == 0.256
-    assert tile["chart"] == [
-        {"step": "2025-01-06", "actual": 10.0, "prediction": 21.0, "lower": 3.0, "upper": 19.0},
-        {"step": "2025-01-13", "actual": 12.0, "prediction": 12.0, "lower": 3.0, "upper": 11.0},
+    assert tile["search_curve"] == [
+        {"generation": 1, "validation_error": 0.2, "wape": None, "mae": None}
     ]
+    assert tile["search_single"] is True
+    assert "chart" not in tile and "chart_reason" not in tile
     assert tile["importance"]["features"] == [{"feature": "lag_1", "importance": 1.0}]
     assert tile["genome"]["params"] == {"alpha": 1}
     assert tile["elapsed"] == 60 and tile["generation"] == 4
@@ -109,7 +115,8 @@ def test_tiles_keep_family_winner_and_ensemble_test_artifacts_separate(saved_run
         loser = state["families"][name]["tile"]
         assert loser["test_ratio"] is None and loser["test_error"] is None
         assert loser["test_naive_wape"] is None
-        assert loser["chart"] == [] and loser["chart_reason"]
+        assert loser["search_curve"][0]["validation_error"] == loser["validation_error"]
+        assert loser["search_single"] is True
     assert tile["folds"] == [
         {"label": "fold 1", "error": 0.2, "ratio": None},
         {"label": "fold 2", "error": 0.3, "ratio": None},
@@ -162,48 +169,37 @@ def test_tiles_label_seasonal_origins_and_refresh_on_poll(saved_run):
     assert [fold["label"] for fold in first["families"]["ridge"]["tile"]["folds"]] == result[
         "holdout"
     ]["validation_origins"]
-    write_predictions(folder / "winner_test.parquet", prediction=20)
+    write_json_lines(
+        folder / "families/ridge/events.jsonl",
+        [{"event": "generation", "generation": 0, "best": 0.12, "metrics": {"mae": 3.5}}],
+    )
     next_state = views.multi_run_state(
         folder, request, status, since_generation=first["generation"]
     )
     assert "eval_history" not in next_state
-    assert next_state["families"]["ridge"]["tile"]["chart"][0]["prediction"] == 41
-
-
-def test_tile_chart_averages_horizon_buckets_before_summing_series(tmp_path):
-    path = tmp_path / "test.parquet"
-    write_table(
-        path,
-        {
-            "step": np.array(["2025-01-06"] * 4, dtype="datetime64[D]"),
-            "series": np.array(["a", "a", "b", "b"]),
-            "bucket": np.array(["1-4", "5-13", "1-4", "5-13"]),
-            "actual": np.array([4.0, 4.0, 6.0, 6.0]),
-            "prediction": np.array([2.0, 6.0, 9.0, np.nan]),
-            "lower": np.array([1.0, 3.0, 8.0, np.nan]),
-            "upper": np.array([5.0, 7.0, 10.0, np.nan]),
-        },
-    )
-    assert views._read_tile_chart(path) == [
-        {"step": "2025-01-06", "actual": 10.0, "prediction": 13.0, "lower": 10.0, "upper": 16.0}
+    tile = next_state["families"]["ridge"]["tile"]
+    assert tile["search_curve"] == [
+        {"generation": 1, "validation_error": 0.12, "wape": None, "mae": 3.5}
     ]
+    assert tile["search_single"] is False
 
 
-def test_tiles_never_substitute_ensemble_for_missing_winner_chart(saved_run):
+def test_tiles_keep_search_data_without_winner_predictions(saved_run):
     folder, request, status = saved_run
     (folder / "winner_test.parquet").unlink()
     tile = views.family_tiles(folder, request, status)["ridge"]
-    assert tile["chart"] == []
+    assert tile["search_curve"][0]["validation_error"] == 0.2
     assert tile["test_ratio"] == 0.71
 
 
 def test_summary_poll_skips_family_chart_reads(saved_run, monkeypatch):
     folder, request, status = saved_run
 
-    def reject_chart(_path):
-        pytest.fail("run summaries must not read tile charts")
+    def reject_chart(*_args, **_kwargs):
+        pytest.fail("run summaries must not build tile search curves")
 
-    monkeypatch.setattr(views, "_read_tile_chart", reject_chart)
+    monkeypatch.setattr(views, "_tile_search_curve", reject_chart)
+    monkeypatch.setattr(views, "_read_tile_search_records", reject_chart)
     summary = views.multi_run_state(
         folder, request, status, since_generation=2**63 - 1, since_events=2**63 - 1
     )
@@ -216,11 +212,12 @@ def test_tiles_read_family_score_without_requiring_a_test_artifact(saved_run):
     result["families"]["xgboost"]["verdict"] = {"accuracy": {"ratio": 1.1, "model_error": 0.3}}
     write_json(folder / "result.json", result)
     tile = views.family_tiles(folder, request, status)["xgboost"]
-    assert tile["test_ratio"] == 1.1 and tile["chart"] == []
+    assert tile["test_ratio"] == 1.1
+    search_curve = tile["search_curve"]
     write_predictions(folder / "families/xgboost/test.parquet", prediction=30)
     tile = views.family_tiles(folder, request, status)["xgboost"]
     assert tile["test_ratio"] == 1.1 and tile["test_error"] == 0.3
-    assert tile["chart"][0]["prediction"] == 61
+    assert tile["search_curve"] == search_curve
 
 
 def test_tiles_use_default_winner_verdict_for_older_partial_summaries(saved_run):
@@ -268,7 +265,11 @@ def test_running_tiles_preserve_candidate_metrics_and_active_slice_time(
     assert tile["state"] == family_state and tile["generation"] == 5
     assert tile["elapsed"] == 80 and tile["validation_error"] == 0.3
     assert tile["genome"]["params"] == {"alpha": 2}
-    assert tile["test_ratio"] is None and tile["chart"] == []
+    assert tile["test_ratio"] is None
+    assert tile["search_curve"] == [
+        {"generation": 1, "validation_error": 0.3, "wape": None, "mae": None}
+    ]
+    assert tile["search_single"] is True
     assert [fold["error"] for fold in tile["folds"]] == [0.2, 0.4]
 
 
@@ -284,14 +285,14 @@ def test_legacy_result_details_expose_a_single_tile_with_metric(tmp_path):
     assert list(result["tiles"]) == ["xgboost"]
     tile = result["tiles"]["xgboost"]
     assert tile["test_error_metric"] == "ibs" and tile["test_ratio"] == 0.8
-    assert tile["chart"] == [] and tile["folds"] == []
+    assert tile["search_curve"] == [] and tile["folds"] == []
 
 
 def test_partial_parquet_does_not_break_polling(saved_run):
     folder, request, status = saved_run
     (folder / "winner_test.parquet").write_bytes(b"partial")
     tiles = views.family_tiles(folder, request, status)
-    assert tiles["ridge"]["chart"] == []
+    assert tiles["ridge"]["search_curve"][0]["validation_error"] == 0.2
     json.dumps(tiles, allow_nan=False)
 
 
@@ -301,3 +302,202 @@ def test_nonrecord_slice_history_does_not_break_family_poll(saved_run):
     state = views.multi_run_state(folder, request, status)
     assert state["families"]["ridge"]["tile"]["elapsed"] == 60
     assert "slice_history" not in state["families"]["ridge"]
+
+
+def test_tile_payload_carries_running_done_pruned_and_one_shot_searches(tmp_path, monkeypatch):
+    states = {"ridge": "running", "xgboost": "done", "lightgbm": "pruned", "snaive": "done"}
+    request = {
+        "version": 2,
+        "families": [{"name": name} for name in states],
+        "spec": {"mode": "timeseries", "task": "regression"},
+        "time_budget_s": 600,
+    }
+    status = {
+        "state": "running",
+        "families": {name: {"state": state} for name, state in states.items()},
+    }
+    write_json(tmp_path / "request.json", request)
+    for index, name in enumerate(states):
+        target = tmp_path / "families" / name
+        write_json(
+            target / "leaderboard.json",
+            [{"fitness": 0.4, "metrics": {"wape": 0.4, "mae": 4.0}, "genome": {"family": name}}],
+        )
+        if name == "snaive":
+            continue
+        write_json_lines(
+            target / "events.jsonl",
+            [
+                {
+                    "event": "generation",
+                    "generation": generation,
+                    "best": 0.6 - generation / 10,
+                    "metrics": {"wape": 0.7 - generation / 10, "mae": 5 - generation},
+                }
+                for generation in range(3 - index)
+            ],
+        )
+        write_json_lines(
+            target / "generation_curves.jsonl",
+            [
+                {"generation": generation, "metric": "rmse", "validation": [9, 8 - generation]}
+                for generation in range(3 - index)
+            ],
+        )
+
+    def reject_read(_target):
+        pytest.fail("multi-run tiles must reuse the saved polling snapshot")
+
+    monkeypatch.setattr(views, "_read_tile_search_records", reject_read)
+    state = views.multi_run_state(tmp_path, request, status)
+    for index, (name, expected_state) in enumerate(states.items()):
+        tile = state["families"][name]["tile"]
+        assert tile["state"] == expected_state
+        assert tile["search_single"] is (name == "snaive")
+        if name == "snaive":
+            assert tile["search_curve"] == [
+                {"generation": 1, "validation_error": 0.4, "wape": 0.4, "mae": 4.0}
+            ]
+        else:
+            assert tile["search_curve"] == [
+                {
+                    "generation": generation + 1,
+                    "validation_error": 0.6 - generation / 10,
+                    "wape": 0.7 - generation / 10,
+                    "mae": 5 - generation,
+                    "rmse": 8 - generation,
+                }
+                for generation in range(3 - index)
+            ]
+    refreshed = views.multi_run_state(
+        tmp_path,
+        request,
+        status,
+        since_generation=state["generation"],
+        since_events=state["events_cursor"],
+    )
+    assert refreshed["generation_curves"] == [] and refreshed["generations"] == []
+    assert (
+        refreshed["families"]["ridge"]["tile"]["search_curve"]
+        == state["families"]["ridge"]["tile"]["search_curve"]
+    )
+
+
+@pytest.mark.parametrize("name", ["ets", "theta", "arima", "snaive"])
+def test_one_shot_tiles_use_saved_validation_metrics_only(tmp_path, name):
+    request = {"version": 2, "families": [{"name": name}], "spec": {"mode": "timeseries"}}
+    status = {"state": "done", "families": {name: {"state": "done", "best_error": 0.3}}}
+    result = {"families": {name: {"test_error": 0.01, "model_error": 0.02}}}
+    tile = views.family_tiles(tmp_path, request, status, result=result)[name]
+    assert tile["search_curve"] == [
+        {"generation": 1, "validation_error": 0.3, "wape": None, "mae": None}
+    ]
+    assert tile["search_single"] is True
+
+
+def test_search_series_preserves_gaps_and_maps_saved_metrics(tmp_path):
+    request = {"version": 2, "families": [{"name": "ridge"}], "spec": {"mode": "timeseries"}}
+    target = tmp_path / "families/ridge"
+    write_json_lines(
+        target / "events.jsonl",
+        [
+            {
+                "event": "generation",
+                "generation": 0,
+                "best": 0.4,
+                "metrics": {"wape": 0.45, "mae": 4},
+            },
+            {
+                "event": "generation",
+                "generation": 2,
+                "best": 0.2,
+                "metrics": {"wape": float("inf"), "mae": 2},
+            },
+        ],
+    )
+    write_json_lines(
+        target / "generation_curves.jsonl",
+        [
+            {"generation": 0, "metric": "mae", "validation": [20, 10]},
+            {"generation": 0, "metric": "rmse", "validation": [7, 5]},
+            {"generation": 2, "metric": "rmse", "validation": [6, float("nan")]},
+            {"generation": 2, "metric": "logloss", "validation": [1, 0.6]},
+        ],
+    )
+    tile = views.family_tiles(tmp_path, request, {"state": "running"})["ridge"]
+    assert tile["search_curve"] == [
+        {
+            "generation": 1,
+            "validation_error": 0.4,
+            "wape": 0.45,
+            "mae": 4,
+            "rmse": 5,
+            "logloss": None,
+        },
+        {
+            "generation": 2,
+            "validation_error": None,
+            "wape": None,
+            "mae": None,
+            "rmse": None,
+            "logloss": None,
+        },
+        {
+            "generation": 3,
+            "validation_error": 0.2,
+            "wape": None,
+            "mae": 2,
+            "rmse": None,
+            "logloss": 0.6,
+        },
+    ]
+    json.dumps(tile, allow_nan=False)
+
+
+def test_missing_corrupt_and_partial_search_records_do_not_break_tiles(tmp_path):
+    request = {"version": 2, "families": [{"name": "ridge"}], "spec": {"mode": "timeseries"}}
+    status = {"state": "running"}
+    assert views.family_tiles(tmp_path, request, status)["ridge"]["search_curve"] == []
+    target = tmp_path / "families/ridge"
+    target.mkdir(parents=True)
+    (target / "events.jsonl").write_text(
+        'null\n[]\ninvalid\n{"event":"generation","generation":false,"best":1}\n'
+        '{"event":"generation","generation":0,"best":0.5}\n'
+        '{"event":"generation","generation":1,"best":',
+        encoding="utf-8",
+    )
+    (target / "generation_curves.jsonl").write_text(
+        '{"generation":0,"metric":"rmse","validation":[5,3]}\n{"generation":',
+        encoding="utf-8",
+    )
+    tile = views.family_tiles(tmp_path, request, status)["ridge"]
+    assert tile["search_curve"] == [
+        {"generation": 1, "validation_error": 0.5, "wape": None, "mae": None, "rmse": 3}
+    ]
+    assert tile["search_single"] is False
+
+
+def test_legacy_tile_search_uses_its_own_generation_artifacts(tmp_path):
+    request = {"spec": {"mode": "entity", "task": "classification"}}
+    write_json_lines(
+        tmp_path / "events.jsonl",
+        [{"event": "generation", "generation": 0, "best": 0.3}],
+    )
+    write_json_lines(
+        tmp_path / "generation_curves.jsonl",
+        [{"generation": 0, "metric": "mlogloss", "validation": [1.0, 0.25]}],
+    )
+    tile = views.family_tiles(tmp_path, request, {"state": "done"})["xgboost"]
+    assert tile["search_curve"] == [
+        {"generation": 1, "validation_error": 0.3, "wape": None, "mae": None, "mlogloss": 0.25}
+    ]
+
+
+def test_unusable_generation_values_produce_an_explicit_empty_series(tmp_path):
+    write_json_lines(
+        tmp_path / "events.jsonl",
+        [{"event": "generation", "generation": 0, "best": float("nan"), "metrics": None}],
+    )
+    tile = views.family_tiles(tmp_path, {"spec": {}}, {"state": "running"})["xgboost"]
+    assert tile["search_curve"] == [] and tile["search_single"] is False
+    json.dumps(tile, allow_nan=False)

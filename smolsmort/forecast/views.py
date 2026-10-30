@@ -405,7 +405,13 @@ def multi_run_state(run_dir, request, status, *, since_generation=None, since_ev
     # list_runs uses both maximum cursors for summaries; charts belong to the selected run
     include_charts = (since_generation, since_events) != (2**63 - 1, 2**63 - 1)
     tiles = family_tiles(
-        run_dir, request, status, result=result, recipe=recipe, include_charts=include_charts
+        run_dir,
+        request,
+        status,
+        result=result,
+        recipe=recipe,
+        include_charts=include_charts,
+        search_snapshot=snapshot,
     )
     for name, tile in tiles.items():
         families[name]["error_metrics"] = tile["error_metrics"]
@@ -486,49 +492,96 @@ def _tile_elapsed(progress):
     return None
 
 
-def _read_tile_chart(path: Path) -> list[dict]:
-    """sum saved test rows at each step without reading training data or refitting"""
-    import duckdb
+def _read_tile_search_records(target):
+    records = {}
+    for filename, collection in (("events.jsonl", "events"), ("generation_curves.jsonl", "curves")):
+        try:
+            lines = (target / filename).read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lines = []
+        records[collection] = []
+        for line in lines:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict):
+                records[collection].append(record)
+    return records
 
-    try:
-        with connect() as con:
-            source = f"read_parquet({_lit(path)})"
-            columns = {row[0] for row in con.execute(f"DESCRIBE SELECT * FROM {source}").fetchall()}
-            if not {"step", "actual", "prediction"} <= columns:
-                return []
-            values = ["actual", "prediction", "lower", "upper"]
-            finite = {
-                name: f"CASE WHEN isfinite({_quote(name)}) THEN {_quote(name)} END"
-                if name in columns
-                else "NULL::DOUBLE"
-                for name in values
-            }
-            if "weeks_ahead" in columns:
-                source = (
-                    f"(SELECT * FROM {source} WHERE weeks_ahead = "
-                    f"(SELECT MAX(weeks_ahead) FROM {source}))"
-                )
-            elif "series" in columns:
-                # holdout rows repeat across horizon buckets; average before summing series
-                averages = [f"AVG({finite[name]}) AS {_quote(name)}" for name in values]
-                source = f"(SELECT step, {', '.join(averages)} FROM {source} GROUP BY series, step)"
-                finite = {name: _quote(name) for name in values}
-            sums = [f"SUM({finite[name]})" for name in values]
-            rows = con.execute(
-                f"SELECT step, {', '.join(sums)} FROM {source} GROUP BY step ORDER BY step"
-            ).fetchall()
-    except (duckdb.Error, OSError):
-        return []
-    return [
-        {
-            "step": _iso(row[0]) if isinstance(row[0], (dt.date, np.datetime64)) else str(row[0]),
-            **{name: _finite_number(value) for name, value in zip(values, row[1:], strict=True)},
+
+def _tile_search_curve(records, *, fitness=None, metrics=None):
+    """use the same saved events and validation loss curves as the search tables"""
+    points = {}
+
+    def get_point(record):
+        generation = record.get("family_generation", record.get("generation"))
+        if not isinstance(generation, int) or isinstance(generation, bool) or generation < 0:
+            return None
+        return points.setdefault(
+            generation + 1,
+            {"generation": generation + 1, "validation_error": None, "wape": None, "mae": None},
+        )
+
+    for event in records["events"]:
+        if event.get("event") != "generation":
+            continue
+        point = get_point(event)
+        if point is None:
+            continue
+        point["validation_error"] = _finite_number(event.get("best"))
+        values = event.get("metrics")
+        if isinstance(values, dict):
+            for metric in ("wape", "mae"):
+                point[metric] = _finite_number(values.get(metric))
+    for curve in records["curves"]:
+        metric = curve.get("metric")
+        validation = curve.get("validation")
+        if (
+            not isinstance(metric, str)
+            or not metric
+            or metric in {"generation", "validation_error", "mape", "test_ratio"}
+            or not isinstance(validation, list)
+            or not validation
+        ):
+            continue
+        point = get_point(curve)
+        if point is not None and point.get(metric) is None:
+            point[metric] = _finite_number(validation[-1])
+    if points:
+        if not any(
+            value is not None
+            for point in points.values()
+            for metric, value in point.items()
+            if metric != "generation"
+        ):
+            return [], False
+        metric_names = {
+            metric for point in points.values() for metric in point if metric != "generation"
         }
-        for row in rows
-    ]
+        series = [
+            {
+                "generation": generation,
+                **{
+                    metric: points.get(generation, {}).get(metric)
+                    for metric in sorted(metric_names)
+                },
+            }
+            for generation in range(1, max(points) + 1)
+        ]
+        return series, False
+    values = {"validation_error": _finite_number(fitness)}
+    values.update(
+        {metric: _finite_number((metrics or {}).get(metric)) for metric in ("wape", "mae")}
+    )
+    if any(value is not None for value in values.values()):
+        return [{"generation": 1, **values}], True
+    return [], False
 
 
-def family_tiles(run_dir, request, status, *, result=None, recipe=None, include_charts=True):
+def family_tiles(
+    run_dir, request, status, *, result=None, recipe=None, include_charts=True, search_snapshot=None
+):
     """expose saved family artifacts without inventing loser test scores or fold baselines"""
     result = result if result is not None else _read_json(run_dir / "result.json", {})
     recipe = recipe if recipe is not None else _read_json(run_dir / "recipe.json", {})
@@ -586,9 +639,6 @@ def family_tiles(run_dir, request, status, *, result=None, recipe=None, include_
             }
             for index, error in enumerate(scores)
         ]
-        chart = []
-        if include_charts and request.get("spec", {}).get("mode") == "timeseries" and path.exists():
-            chart = _read_tile_chart(path)
         test_metric = accuracy.get("metric") or (
             "wape" if request.get("spec", {}).get("mode") == "timeseries" else None
         )
@@ -638,11 +688,27 @@ def family_tiles(run_dir, request, status, *, result=None, recipe=None, include_
             "folds_note": "wape per validation window; mark = naive on test"
             if folds
             else "validation folds not saved",
-            "chart": chart,
-            "chart_reason": None if chart else "test forecast not saved for this family",
+            "search_curve": [],
+            "search_single": False,
             "elapsed": _tile_elapsed(progress),
             "generation": progress.get("generation", best.get("generation")),
         }
+        if include_charts:
+            records = (
+                {
+                    collection: [
+                        record
+                        for record in search_snapshot[collection]
+                        if record.get("family") == name
+                    ]
+                    for collection in ("events", "curves")
+                }
+                if search_snapshot is not None
+                else _read_tile_search_records(target)
+            )
+            tiles[name]["search_curve"], tiles[name]["search_single"] = _tile_search_curve(
+                records, fitness=tiles[name]["validation_error"], metrics=best.get("metrics")
+            )
         if request.get("horizon_mode") == "single":
             tiles[name]["weeks_ahead_shown"] = request["spec"]["horizon"]
         tiles[name]["error_metrics"] = fm.error_metrics(
