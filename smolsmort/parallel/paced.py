@@ -1,8 +1,8 @@
 """a spawned process pool that runs as wide as the machine allows and no wider.
 
 cpu-bound tasks want every core busy, but a machine has two memory cliffs: the os pages to disk and
-everything slows, and a supervisor watching free memory (claude code stops background jobs near
-6.6 gb free) may stop the job. `paced_map` starts one worker and adds one at a time, each only after
+everything slows, and a supervisor watching free memory (claude code stopped background jobs
+near 6.6 gb free) may stop the job; a caller under one sets the floor above that line. `paced_map` starts one worker and adds one at a time, each only after
 the last has settled, while the memory left once every running worker reaches its measured peak
 stays above a floor, the pagefile is not growing and the cores are not yet full. under pressure the
 width narrows by one as running tasks finish. below an emergency line it stops the newest worker
@@ -214,7 +214,7 @@ def paced_map(
     fn: Callable[[Any], Any],
     tasks: Iterable[Any],
     *,
-    reserve_gb: float = 7.6,
+    reserve_gb: float = 4.0,
     emergency_gb: float | None = None,
     max_workers: int | None = None,
     worker_gb: float = 1.0,
@@ -232,7 +232,7 @@ def paced_map(
 ) -> Iterator[tuple[Any, Any]]:
     """(task, fn(task)) as each finishes, in finishing order. `fn` must be picklable (a module
     level function). `reserve_gb` is the floor of free memory the pool keeps; `emergency_gb`
-    (default 0.6 gb under it) is where the newest worker is stopped and its task redone.
+    (default 0.8 gb under it) is where the newest worker is stopped and its task redone.
     `worker_gb` guesses a worker's size until one is measured; `recycle_after` caps tasks per
     worker; a worker whose peak passes `grow_share` x the median is replaced after its task. a
     task's exception stops the pool and raises PacedError with the worker's traceback"""
@@ -242,7 +242,7 @@ def paced_map(
     floor = reserve_gb
     limits = Limits(
         floor_gb=floor,
-        emergency_gb=floor - 0.6 if emergency_gb is None else emergency_gb,
+        emergency_gb=floor - 0.8 if emergency_gb is None else emergency_gb,
         max_workers=max_workers or default_workers(),
         cpu_full=cpu_full,
         page_high=page_high,
