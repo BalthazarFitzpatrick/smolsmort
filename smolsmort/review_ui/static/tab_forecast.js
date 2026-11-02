@@ -22,7 +22,7 @@ function forecastSearchProgress(run) {
   if (run.version === 2 || (!run.version && Number.isFinite(run.time_budget_s))) {
     const duration = run.time_budget_s || timeCap;
     const fill = done ? 1 : Math.min(1, elapsed / duration);
-    const state = run.stopped === 'cancelled' ? 'cancelled' : run.state;
+    const state = run.state === 'cancelled' || run.stopped === 'cancelled' ? 'stopped' : run.state;
     return {fill, done, label: `${run.phase || state} - ${Math.floor(elapsed)}s of ${duration / 60} min - ${state}`};
   }
   const fill = done ? 1 : Math.min(1, Math.max(0, elapsed / timeCap,
@@ -31,7 +31,7 @@ function forecastSearchProgress(run) {
   if (run.state === 'stopped') label += ' - stopped';
   if (done) label += ' - done';
   else if (run.state === 'failed' || run.state === 'cancelled' || run.stopped === 'cancelled') {
-    label += run.state === 'failed' ? ' - failed' : ' - cancelled';
+    label += run.state === 'failed' && run.stopped !== 'cancelled' ? ' - failed' : ' - stopped';
   }
   return {fill, label, done};
 }
@@ -297,7 +297,8 @@ function forecastTileEntries(run) {
 
 function forecastTileState(tile) {
   if (['starting', 'queued', 'pending', 'running', 'paused'].includes(tile.state)) return 'running';
-  if (['pruned', 'failed', 'cancelled'].includes(tile.state)) return 'worse';
+  if (['cancelled', 'stopped'].includes(tile.state)) return 'unknown';
+  if (['pruned', 'failed'].includes(tile.state)) return 'worse';
   if (Number.isFinite(tile.test_ratio)) return tile.test_ratio < 1 ? 'better' : 'worse';
   return 'unknown';
 }
@@ -1906,12 +1907,12 @@ class ForecastTopic {
   }
 
   stopReason(run) {
-    if (run.state === 'stopped') return 'stopped';
+    if (['cancelled', 'stopped'].includes(run.state) || run.stopped === 'cancelled') return 'stopped';
     if (run.state === 'failed') return `failed: ${run.reason || 'unknown error'}`;
     const reason = run.stopped || run.latest?.stopped;
     if (reason === 'plateau') return `no gain larger than the noise for ${run.budget?.plateau ?? 5} generations in a row`;
     return {time_cap: 'time cap', max_generations: 'generation cap', generation_cap: 'generation cap',
-      cancelled: 'cancelled'}[reason] || (reason || (this.isRunning(run) ? 'search in progress' : '-'));
+      cancelled: 'stopped'}[reason] || (reason || (this.isRunning(run) ? 'search in progress' : '-'));
   }
 
   paintRunDetail(run) {
@@ -1945,7 +1946,8 @@ class ForecastTopic {
       return;
     }
     this.displayTask = run.spec?.task || run.task || this.task;
-    setText(`${this.topic}-run-title`, `${run.id.split('-').at(-1)} · ${run.kind || 'search'} · ${run.state}`);
+    const stateLabel = run.state === 'cancelled' || run.stopped === 'cancelled' ? 'stopped' : run.state;
+    setText(`${this.topic}-run-title`, `${run.id.split('-').at(-1)} · ${run.kind || 'search'} · ${stateLabel}`);
     setText(`${this.topic}-run-stop`, this.stopReason(run));
     if (run.verdict && ratioMetric) {
       verdict.replaceChildren(forecastMetricValue(ratioMetric, run, 'span', true));
@@ -1961,7 +1963,7 @@ class ForecastTopic {
     setText(`${this.topic}-run-stats`, stats);
     this.searchSay(this.isRunning(run)
       ? latest ? `generation ${latest.generation} - evaluated ${latest.evaluated} - elapsed ${latest.elapsed}s` : run.state
-      : ['failed', 'stopped'].includes(run.state) ? this.stopReason(run) : '');
+      : ['failed', 'stopped', 'cancelled'].includes(run.state) || run.stopped === 'cancelled' ? this.stopReason(run) : '');
     const chartVersion = `${run.id}:${this.generationFamily}:${generations.length}:${run.cursor}`;
     if (this.paintedChartVersion !== chartVersion) {
       this.paintSearchChart(generations.map(entry => ({...entry, generation: entry.family_generation ?? entry.generation})));
@@ -2239,9 +2241,8 @@ class ForecastTopic {
       if (run.part_of && !this.showParts && run.id !== this.selectedRunId) continue;
       const row = forecastNode('button', 'toggle forecast-run-row' + (run.id === this.selectedRunId ? ' on' : ''));
       row.dataset.runId = run.id;
-      const status = this.isRunning(run) ? 'running' : run.state === 'failed' ? 'failed'
-        : run.state === 'stopped' ? 'stopped'
-        : run.stopped === 'cancelled' ? 'cancelled' : 'done';
+      const status = ['cancelled', 'stopped'].includes(run.state) || run.stopped === 'cancelled' ? 'stopped'
+        : this.isRunning(run) ? 'running' : run.state === 'failed' ? 'failed' : 'done';
       row.append(forecastNode('span', 'name', run.label || run.id.split('-').at(-1)));
       row.append(forecastNode('span', 'field-label forecast-run-status', status));
       row.append(forecastMetricLines(this.selectedMetrics(run), run, 'forecast-run-metrics'));
