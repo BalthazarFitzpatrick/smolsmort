@@ -7,6 +7,22 @@ const FORECAST_UNITS = ['day', 'week', 'month', 'quarter', 'year'];
 const FORECAST_PAGE_SIZE = 50;
 const FORECAST_BLEND_STRENGTHS = [1, 2, 4, 8];
 
+function forecastRunLocalTime(run) {
+  let date = Number.isFinite(run.started_at) ? new Date(run.started_at * 1000) : null;
+  if (!date) {
+    const match = String(run.id || '').match(/(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/);
+    if (!match) return '';
+    date = new Date(`${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6]}`);
+  }
+  if (!Number.isFinite(date.getTime())) return '';
+  const pad = value => String(value).padStart(2, '0');
+  return `${String(date.getFullYear()).padStart(4, '0')}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function forecastRunTime(run) {
+  return forecastRunLocalTime(run).slice(2, -3);
+}
+
 function forecastSearchProgress(run) {
   const progress = run.progress || {};
   const budget = run.budget || {};
@@ -2404,6 +2420,12 @@ class ForecastTopic {
       const status = ['cancelled', 'stopped'].includes(run.state) || run.stopped === 'cancelled' ? 'stopped'
         : this.isRunning(run) ? 'running' : run.state === 'failed' ? 'failed' : 'done';
       row.append(forecastNode('span', 'name', run.label || run.id.split('-').at(-1)));
+      const time = forecastRunTime(run);
+      if (time) {
+        const timestamp = forecastNode('span', 'forecast-run-time', time);
+        timestamp.title = forecastRunLocalTime(run);
+        row.append(timestamp);
+      }
       row.append(forecastNode('span', 'field-label forecast-run-status', status));
       row.append(forecastMetricLines(this.selectedMetrics(run), run, 'forecast-run-metrics'));
       if (this.isRunning(run) || run.progress) {
