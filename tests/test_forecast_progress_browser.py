@@ -275,6 +275,7 @@ def test_search_progress_used_nearest_stop_condition(tmp_path, progress, budget,
         ("done", "cancelled", 0.4, False, "cancelled"),
         ("cancelled", "cancelled", 0.4, False, "cancelled"),
         ("failed", None, 0.4, False, "failed"),
+        ("stopped", None, 0.4, False, "stopped"),
     ],
 )
 def test_search_progress_label_and_terminal_state(tmp_path, state, stopped, fill, done, suffix):
@@ -294,7 +295,7 @@ def test_search_progress_label_and_terminal_state(tmp_path, state, stopped, fill
         value = page.evaluate("run => forecastSearchProgress(run)", run)
         assert value["fill"] == pytest.approx(fill)
         assert value["done"] is done
-        label = "generation 3 - candidate 7 of 10 - 54s of 20 min - 2 of 5 flat generations"
+        label = "generation 3 - candidate 7 of 10 - 54s of 20 min - 2 of 5 quiet generations"
         assert value["label"] == label + (f" - {suffix}" if suffix else "")
 
 

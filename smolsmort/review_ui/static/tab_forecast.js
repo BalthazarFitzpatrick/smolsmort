@@ -27,7 +27,8 @@ function forecastSearchProgress(run) {
   }
   const fill = done ? 1 : Math.min(1, Math.max(0, elapsed / timeCap,
     (generation + candidate / population) / generations, flat / plateau));
-  let label = `generation ${generation} - candidate ${candidate} of ${population} - ${Math.floor(elapsed)}s of ${timeCap / 60} min - ${flat} of ${plateau} flat generations`;
+  let label = `generation ${generation} - candidate ${candidate} of ${population} - ${Math.floor(elapsed)}s of ${timeCap / 60} min - ${flat} of ${plateau} quiet generations`;
+  if (run.state === 'stopped') label += ' - stopped';
   if (done) label += ' - done';
   else if (run.state === 'failed' || run.state === 'cancelled' || run.stopped === 'cancelled') {
     label += run.state === 'failed' ? ' - failed' : ' - cancelled';
@@ -504,7 +505,7 @@ function forecastTileRoundChart(tile, metric, shared, width) {
   const series = forecastTileRoundSeries(tile, metric);
   const curves = (series?.curves || []).filter(curve => curve.values.some(Number.isFinite));
   if (!curves.length) {
-    wrap.append(forecastTileChartHead('forecast-tile-chart-label', `${metric.label} per round`, null,
+    wrap.append(forecastTileChartHead('forecast-tile-chart-label', `learning curve per round - ${metric.label}`, null,
       metric.explanation ? forecastMetricHelp(metric, 'validation') : FORECAST_LOSS_HELP),
       forecastNode('div', 'forecast-tile-placeholder', 'no round curve saved for this family'));
     return wrap;
@@ -520,8 +521,8 @@ function forecastTileRoundChart(tile, metric, shared, width) {
   const newest = curves.at(-1);
   const end = newest.values.filter(Number.isFinite).at(-1);
   const rounds = Math.max(...curves.map(curve => curve.values.length));
-  const title = !series.recorded ? `own loss, ${metric.label} not recorded`
-    : metric.id === 'validation_error' ? `validation error · ${shown.label} per round` : `${shown.label} per round`;
+  const title = `learning curve per round - ${metric.label}`
+    + (!series.recorded ? ` · own loss, ${metric.label} not recorded` : '');
   const explanation = metric.id !== 'validation_error' && series.recorded && metric.explanation
     ? forecastMetricHelp(metric, 'validation') : FORECAST_LOSS_HELP;
   wrap.append(forecastTileChartHead('forecast-tile-chart-label', title,
@@ -1617,7 +1618,7 @@ class ForecastTopic {
   mountSearch(panel) {
     const budgetRows = [
       {key: 'population', label: 'population', step: 2, min: 2, max: 400, value: this.searchValues.population},
-      {key: 'plateau', label: 'plateau generations', step: 1, min: 1, max: 100, value: this.searchValues.plateau},
+      {key: 'plateau', label: 'patience', step: 1, min: 1, max: 100, value: this.searchValues.plateau},
       {key: 'generations', label: 'max generations', step: 1, min: 1, max: 500, value: this.searchValues.generations},
       {key: 'minutes', label: 'time cap (minutes)', step: 1, min: 1, max: 240, value: this.searchValues.minutes},
     ];
@@ -1633,7 +1634,7 @@ class ForecastTopic {
             <div class="field-label">running</div>
             <div id="${this.topic}-running-list"></div>
           </section>
-          <section><div class="field-label">runs</div><div id="${this.topic}-runs-list"></div></section>
+          <section><div class="forecast-runs-header"><span class="field-label">runs</span><button type="button" class="toggle" id="${this.topic}-show-parts" aria-pressed="false">show parts</button></div><div id="${this.topic}-runs-list"></div></section>
         </aside>
         <div class="forecast-pane forecast-run-detail">
         <div class="panel-inline forecast-pane">
@@ -1666,6 +1667,7 @@ class ForecastTopic {
           <button type="button" class="toggle on" id="${this.topic}-run-view-tiles" aria-pressed="true">tiles</button>
           <button type="button" class="toggle" id="${this.topic}-run-view-tables" aria-pressed="false">tables</button>
         </div>
+        <div class="stat forecast-run-view-caption hidden" id="${this.topic}-run-view-caption">tiles: one card per model family. tables: every family as a row, plus the best ten recipes.</div>
         <section class="forecast-tiles hidden" id="${this.topic}-tiles" aria-label="model family candidates">
           <div class="forecast-tiles-bar">
             <div class="forecast-tiles-legend">
@@ -1712,6 +1714,13 @@ class ForecastTopic {
         </div>
       </div>`;
     forecastWireSteppers(panel, `${this.topic}-budget`, budgetRows, this.searchValues, () => {});
+    const showParts = document.getElementById(`${this.topic}-show-parts`);
+    showParts.onclick = () => {
+      this.showParts = !this.showParts;
+      showParts.classList.toggle('on', this.showParts);
+      showParts.setAttribute('aria-pressed', String(this.showParts));
+      this.paintRuns();
+    };
     for (const view of ['tiles', 'tables']) {
       document.getElementById(`${this.topic}-run-view-${view}`).onclick = () => {
         this.runView = view;
@@ -1897,6 +1906,7 @@ class ForecastTopic {
   }
 
   stopReason(run) {
+    if (run.state === 'stopped') return 'stopped';
     if (run.state === 'failed') return `failed: ${run.reason || 'unknown error'}`;
     const reason = run.stopped || run.latest?.stopped;
     if (reason === 'plateau') return `no gain larger than the noise for ${run.budget?.plateau ?? 5} generations in a row`;
@@ -1951,7 +1961,7 @@ class ForecastTopic {
     setText(`${this.topic}-run-stats`, stats);
     this.searchSay(this.isRunning(run)
       ? latest ? `generation ${latest.generation} - evaluated ${latest.evaluated} - elapsed ${latest.elapsed}s` : run.state
-      : run.state === 'failed' ? this.stopReason(run) : '');
+      : ['failed', 'stopped'].includes(run.state) ? this.stopReason(run) : '');
     const chartVersion = `${run.id}:${this.generationFamily}:${generations.length}:${run.cursor}`;
     if (this.paintedChartVersion !== chartVersion) {
       this.paintSearchChart(generations.map(entry => ({...entry, generation: entry.family_generation ?? entry.generation})));
@@ -1982,6 +1992,7 @@ class ForecastTopic {
       grid.replaceChildren();
     }
     document.getElementById(`${this.topic}-run-view`).classList.toggle('hidden', !run);
+    document.getElementById(`${this.topic}-run-view-caption`).classList.toggle('hidden', !run);
     document.getElementById(`${this.topic}-tiles`).classList.toggle('hidden', !run || this.runView !== 'tiles');
     document.getElementById(`${this.topic}-run-tables`).classList.toggle('hidden', !!run && this.runView !== 'tables');
     for (const view of ['tiles', 'tables']) {
@@ -2225,11 +2236,13 @@ class ForecastTopic {
       return b.id.localeCompare(a.id);
     });
     for (const run of runs) {
+      if (run.part_of && !this.showParts && run.id !== this.selectedRunId) continue;
       const row = forecastNode('button', 'toggle forecast-run-row' + (run.id === this.selectedRunId ? ' on' : ''));
       row.dataset.runId = run.id;
       const status = this.isRunning(run) ? 'running' : run.state === 'failed' ? 'failed'
+        : run.state === 'stopped' ? 'stopped'
         : run.stopped === 'cancelled' ? 'cancelled' : 'done';
-      row.append(forecastNode('span', 'name', run.id.split('-').at(-1)));
+      row.append(forecastNode('span', 'name', run.label || run.id.split('-').at(-1)));
       row.append(forecastNode('span', 'field-label forecast-run-status', status));
       row.append(forecastMetricLines(this.selectedMetrics(run), run, 'forecast-run-metrics'));
       if (this.isRunning(run) || run.progress) {
