@@ -123,6 +123,85 @@ def open_tiles(page) -> None:
     page.locator("#regression-tiles .forecast-tile").first.wait_for()
 
 
+def test_saved_tile_states_scores_and_token_colours(tmp_path):
+    cases = [
+        ("running", "running", None, "running", "--kingfisher-milk", "…"),
+        ("pending", "pending", None, "pending", "--grey-border", "…"),
+        ("better", "done", 0.8, "better", "--lichen", "+20%"),
+        ("worse", "done", 1.2, "worse", "--stone-red-lift", "−20%"),
+        ("identical", "done", 1.0, "identical", "--vanilla", "0%"),
+        ("near_lower", "done", 0.996, "identical", "--vanilla", "0%"),
+        ("near_upper", "done", 1.004, "identical", "--vanilla", "0%"),
+        ("unknown", "done", None, "unknown", "--grey-border", "-"),
+        ("stopped", "stopped", None, "unknown", "--grey-border", "-"),
+        ("cancelled", "cancelled", None, "unknown", "--grey-border", "-"),
+        ("starting", "starting", None, "running", "--kingfisher-milk", "…"),
+        ("queued", "queued", None, "running", "--kingfisher-milk", "…"),
+        ("paused", "paused", None, "running", "--kingfisher-milk", "…"),
+        ("pruned", "pruned", None, "worse", "--stone-red-lift", "-"),
+        ("failed", "failed", None, "worse", "--stone-red-lift", "-"),
+    ]
+    with session(tmp_path, port=8098) as (page, _base):
+        root = tmp_path / "forecast_root"
+        run_id = make_saved_tiles(root)
+        run = root / ".forecast-runs" / run_id
+        request = json.loads((run / "request.json").read_text())
+        request["families"] = [{"name": name} for name, *_ in cases]
+        write_json(run / "request.json", request)
+        families = {
+            name: {"state": state, "verdict": {"accuracy": {"ratio": ratio}}}
+            for name, state, ratio, *_ in cases
+        }
+        write_json(run / "status.json", {"state": "done", "families": families})
+        write_json(run / "result.json", {"families": families})
+        write_json(run / "recipe.json", {})
+        open_tiles(page)
+        assert page.locator('link[href="/ui/base.css"]').count() == 1
+        for name, _, _, state, token, score in cases:
+            tile = find_tile(page, name)
+            assert tile.get_attribute("data-state") == state
+            scores = tile.locator(".forecast-tile-score")
+            assert scores.all_text_contents() == [score, score]
+            if state == "identical":
+                assert scores.first.get_attribute("title") == "same as naive"
+            assert tile.evaluate(
+                """(tile, token) => {
+                    const root = getComputedStyle(document.documentElement);
+                    const value = root.getPropertyValue(token).trim();
+                    const probe = document.createElement('span');
+                    probe.style.color = value;
+                    document.body.append(probe);
+                    const colour = getComputedStyle(probe).color;
+                    probe.remove();
+                    return value.length > 0 && getComputedStyle(tile).getPropertyValue('--tile-tone').trim() === value
+                      && getComputedStyle(tile.querySelector('.forecast-tile-face')).borderTopColor === colour;
+                }""",
+                token,
+            )
+        pending = find_tile(page, "pending").locator(".forecast-tile-score").first
+        assert pending.evaluate(
+            "node => getComputedStyle(node).color === getComputedStyle(document.querySelector('.forecast-tile-dim')).color"
+        )
+        legend = page.locator("#regression-tiles .forecast-tiles-legend i")
+        assert legend.evaluate_all("nodes => nodes.map(node => node.dataset.state)") == [
+            "better",
+            "identical",
+            "running",
+            "worse",
+            "pending",
+        ]
+        assert legend.evaluate_all(
+            "nodes => nodes.map(node => node.parentElement.textContent)"
+        ) == ["better", "identical", "running", "worse", "pending or no test score"]
+        for square in legend.all():
+            state = square.get_attribute("data-state")
+            assert square.evaluate("node => getComputedStyle(node).backgroundColor") == (
+                find_tile(page, state)
+                .locator(".forecast-tile-face")
+                .first.evaluate("node => getComputedStyle(node).borderTopColor")
+            )
+
+
 def test_saved_run_start_times(tmp_path):
     with session(tmp_path, port=8098) as (page, _base):
         run_id = make_saved_tiles(tmp_path / "forecast_root")
