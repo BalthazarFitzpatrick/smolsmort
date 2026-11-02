@@ -178,7 +178,10 @@ def update_set(
             _read(source / "coordinator.json", {}).get("families", {}).get(family, progress[family])
         )
         part_result = _read(source / "result.json", {})
-        summaries[family] = part_result.get("families", {}).get(family, part_result)
+        summaries[family] = dict(part_result.get("families", {}).get(family, part_result))
+        for key in ("verdict", "model_error", "baseline_error", "val_error"):
+            if key in part_result:
+                summaries[family][key] = part_result[key]
         board.extend(_read(source / "leaderboard.json", []))
         event_path = source / "events.jsonl"
         if event_path.exists():

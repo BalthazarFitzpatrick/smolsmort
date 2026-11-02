@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from smolsmort.forecast import plan, plan_sets, runs
+from smolsmort.forecast import plan, plan_sets, runs, views
 from smolsmort.forecast.spec import Column, PrepSpec
 
 
@@ -282,6 +282,38 @@ def test_ensemble_recomputed_over_incremental_members(tmp_path, monkeypatch, con
     assert result["members"] == ["ridge", "lightgbm"]
     assert result["fitness"] == 0
     assert tables[str(folder / "ensemble_validation.parquet")]["prediction"].tolist() == [10]
+
+
+def test_set_kept_test_scores_for_both_families(tmp_path, config):
+    folder = plan_sets.create_set(
+        tmp_path, "set", "clients", config["sets"][0]["spec"], ["ridge", "lightgbm"]
+    )
+    for name, ratio in (("ridge", 0.8), ("lightgbm", 1.2)):
+        write_json(tmp_path / name / "request.json", {})
+        write_json(tmp_path / name / "status.json", {"state": "done"})
+        write_json(
+            tmp_path / name / "result.json",
+            {
+                "winner": {"family": name},
+                "families": {name: {"state": "done", "fitness": ratio, "kept": True}},
+                "verdict": {"accuracy": {"ratio": ratio, "val_error": ratio}},
+                "model_error": ratio,
+                "baseline_error": 1.0,
+                "val_error": ratio,
+            },
+        )
+    plan_sets.update_set(tmp_path, "set", {name: name for name in ("ridge", "lightgbm")})
+    result = read_json(folder / "result.json")
+    tiles = views.family_tiles(
+        folder, read_json(folder / "request.json"), read_json(folder / "status.json")
+    )
+    for name, ratio in (("ridge", 0.8), ("lightgbm", 1.2)):
+        assert np.isfinite(tiles[name]["test_ratio"])
+        assert tiles[name]["test_ratio"] == ratio
+        summary = result["families"][name]
+        assert summary["kept"] is True
+        assert summary["model_error"] == summary["val_error"] == ratio
+        assert summary["baseline_error"] == 1.0
 
 
 def test_start_launches_detached_and_reuses_live_pid(tmp_path, monkeypatch, config):

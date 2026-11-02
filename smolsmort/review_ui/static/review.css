@@ -219,9 +219,11 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-run-controls .toggle { padding-inline: 6px; }
 .forecast-run-detail { min-width: 0; }
 .forecast-tiles { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 13px; line-height: 1.4; color: var(--text); padding-bottom: 12px; }
-.forecast-tiles [data-state="better"] { --tile-tone: #c7ed5f; }
-.forecast-tiles [data-state="running"] { --tile-tone: #77b7c7; }
-.forecast-tiles [data-state="worse"] { --tile-tone: #ad796f; }
+.forecast-tiles [data-state="better"] { --tile-tone: var(--lichen); }
+.forecast-tiles [data-state="identical"] { --tile-tone: var(--vanilla); }
+.forecast-tiles [data-state="running"] { --tile-tone: var(--kingfisher-milk); }
+.forecast-tiles [data-state="worse"] { --tile-tone: var(--stone-red-lift); }
+.forecast-tiles [data-state="pending"] { --tile-tone: var(--grey-border); }
 .forecast-tiles [data-state="unknown"] { --tile-tone: var(--grey-border); }
 .forecast-tiles-bar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
 .forecast-tiles-legend { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; color: var(--text-dim); }
@@ -240,6 +242,7 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-tile-header { display: flex; justify-content: space-between; gap: 8px; }
 .forecast-tile-name { color: var(--cream); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .forecast-tile-score { color: var(--tile-tone); flex-shrink: 0; }
+.forecast-tile[data-state="pending"] .forecast-tile-score { color: var(--text-dim); }
 .forecast-tile-dim { color: var(--text-dim); }
 .forecast-tile-chart, .forecast-tile-rounds { display: block; flex: 0 0 auto; margin: 4px 0 2px; }
 .forecast-tile-chart-label { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; line-height: 14px; color: var(--text-dim); white-space: nowrap; }

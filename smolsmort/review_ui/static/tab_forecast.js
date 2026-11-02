@@ -340,10 +340,14 @@ function forecastTileEntries(run) {
 }
 
 function forecastTileState(tile) {
-  if (['starting', 'queued', 'pending', 'running', 'paused'].includes(tile.state)) return 'running';
+  if (['starting', 'queued', 'running', 'paused'].includes(tile.state)) return 'running';
+  if (tile.state === 'pending') return 'pending';
   if (['cancelled', 'stopped'].includes(tile.state)) return 'unknown';
   if (['pruned', 'failed'].includes(tile.state)) return 'worse';
-  if (Number.isFinite(tile.test_ratio)) return tile.test_ratio < 1 ? 'better' : 'worse';
+  if (Number.isFinite(tile.test_ratio)) {
+    if (Math.abs(tile.test_ratio - 1) < 0.005) return 'identical';
+    return tile.test_ratio < 1 ? 'better' : 'worse';
+  }
   return 'unknown';
 }
 
@@ -663,10 +667,12 @@ function forecastCreateTile(tile, index, metrics, scale, searchScale, rounds) {
     const face = forecastNode('div', `forecast-tile-face forecast-tile-${side}`);
     const header = forecastNode('div', 'forecast-tile-header');
     header.append(forecastNode('span', 'forecast-tile-name', `#${index + 1} ${tile.name}`));
-    const score = forecastTileState(tile) === 'running' ? '…' : Number.isFinite(tile.test_ratio)
-      ? `${tile.test_ratio <= 1 ? '+' : '−'}${Math.round(Math.abs(1 - tile.test_ratio) * 100)}%` : '-';
+    const state = forecastTileState(tile);
+    const identical = Number.isFinite(tile.test_ratio) && Math.abs(tile.test_ratio - 1) < 0.005;
+    const score = ['running', 'pending'].includes(state) ? '…' : identical ? '0%' : Number.isFinite(tile.test_ratio)
+      ? `${tile.test_ratio < 1 ? '+' : '−'}${Math.round(Math.abs(1 - tile.test_ratio) * 100)}%` : '-';
     const scoreNode = forecastNode('span', 'forecast-tile-score', score);
-    scoreNode.title = Number.isFinite(tile.test_ratio) ? `test ratio ${tile.test_ratio.toFixed(2)} vs naive`
+    scoreNode.title = identical ? 'same as naive' : Number.isFinite(tile.test_ratio) ? `test ratio ${tile.test_ratio.toFixed(2)} vs naive`
       : forecastTileState(tile) === 'running' ? 'test score pending' : 'test ratio not saved';
     header.append(scoreNode);
     const charts = side === 'front'
@@ -1877,8 +1883,10 @@ class ForecastTopic {
             <div class="forecast-tiles-legend">
               <span id="${this.topic}-tiles-count"></span>
               <span><i data-state="better"></i>better</span>
+              <span><i data-state="identical"></i>identical</span>
               <span><i data-state="running"></i>running</span>
               <span><i data-state="worse"></i>worse</span>
+              <span><i data-state="pending"></i>pending or no test score</span>
             </div>
             <div class="forecast-tiles-controls">
               <span id="${this.topic}-tiles-metric-slot"></span>
