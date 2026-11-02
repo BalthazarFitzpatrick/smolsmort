@@ -122,6 +122,51 @@ def open_tiles(page) -> None:
     page.locator("#regression-tiles .forecast-tile").first.wait_for()
 
 
+def test_saved_run_start_times(tmp_path):
+    with session(tmp_path, port=8098) as (page, _base):
+        run_id = make_saved_tiles(tmp_path / "forecast_root")
+        runs = [
+            {"id": run_id, "state": "done", "started_at": 1793627178.5},
+            {"id": "set-20261102-144637-8-weeks-client-groups-0", "state": "done"},
+            {"id": "combined-group-20261030-090825", "state": "running"},
+            {"id": "unknown-time", "state": "done"},
+        ]
+        run_root = tmp_path / "forecast_root" / ".forecast-runs"
+        running_dir = run_root / runs[2]["id"]
+        shutil.copytree(run_root / run_id, running_dir)
+
+        def serve_running_state(route):
+            response = route.fetch()
+            route.fulfill(response=response, json={**response.json(), "state": "running"})
+
+        page.route("**/api/forecast-run?**", serve_running_state)
+        page.route("**/api/forecast-runs", lambda route: route.fulfill(json={"runs": runs}))
+        open_tiles(page)
+        expected = page.evaluate(
+            """seconds => {
+                const date = new Date(seconds * 1000);
+                const pad = value => String(value).padStart(2, '0');
+                return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+            }""",
+            runs[0]["started_at"],
+        )
+        for run, full_time in zip(
+            runs[:3],
+            [expected, "2026-11-02 14:46:37", "2026-10-30 09:08:25"],
+            strict=True,
+        ):
+            row = page.locator(f'.forecast-run-row[data-run-id="{run["id"]}"]')
+            timestamp = row.locator(".forecast-run-time")
+            assert timestamp.inner_text() == full_time[2:-3]
+            assert timestamp.get_attribute("title") == full_time
+            assert row.evaluate("row => row.scrollWidth <= row.clientWidth")
+            assert page.evaluate("run => forecastRunTime(run)", run) == full_time[2:-3]
+        assert page.locator("#regression-running-list .forecast-run-time").count() == 1
+        assert page.locator('[data-run-id="unknown-time"] .forecast-run-time').count() == 0
+        for run in ({"id": "unknown-time"}, {"started_at": "invalid"}, {"id": "20269999-999999"}):
+            assert page.evaluate("run => forecastRunTime(run)", run) == ""
+
+
 def test_saved_run_labels_parts_stopped_and_view_caption(tmp_path):
     with session(tmp_path, port=8098) as (page, _base):
         root = tmp_path / "forecast_root"
