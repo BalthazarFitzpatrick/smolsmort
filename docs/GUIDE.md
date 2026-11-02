@@ -810,6 +810,34 @@ families overlap, so their summed wall time can exceed the run's elapsed time.
 if a crash loses a slice's stop timestamp, its `wall_s` and the family total are
 `null`; resume does not count downtime as fitting time.
 
+#### search plans
+
+`forecast-plan.json` in the forecast root holds the search plan: a deadline or hours,
+family budgets, patience and minimum generations, data sets and horizons, pass settings,
+and shared search options. the search tab's **search plan** section edits this file.
+budgets are shown in minutes and stored in seconds. spec paths stay unchanged.
+
+each set is one run for a data set and horizon. it appears in the run list before
+search starts; its family tiles fill as each family finishes. searches run one job
+at a time. an optional second pass warm-starts the selected families from their
+earlier results, keeping the chosen number of candidates and using its own
+minimum generations and patience. later passes continue while time remains.
+patience counts quiet generations, not minutes.
+
+**save** writes the plan. **start** runs it; **resume** continues saved progress.
+**stop** stops the plan and its current search. start and save are disabled while
+the plan runs. the status shows completed jobs, time left, the current job and warnings.
+resume keeps the saved deadline, so time spent stopped still counts.
+
+the same controls work from the cli; `--root` is the folder holding the plan:
+
+```sh
+uv run smolsmort forecast plan start --root forecast
+uv run smolsmort forecast plan status --root forecast
+uv run smolsmort forecast plan stop --root forecast
+uv run smolsmort forecast plan resume --root forecast
+```
+
 #### machine forecast config
 
 set `SMOLSMORT_FORECAST_CONFIG` to choose the file. otherwise macos/linux use

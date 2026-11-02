@@ -201,6 +201,14 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-model-family.unavailable > span { color: var(--text-dim); }
 .forecast-search-layout { display: grid; grid-template-columns: 360px minmax(0, 1fr); gap: 14px; min-height: 0; align-items: start; }
 .forecast-run-rail { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
+.forecast-plan > summary { cursor: pointer; }
+.forecast-plan > :not(summary) { margin-top: var(--gap); }
+.forecast-plan-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
+.forecast-plan-field { display: flex; align-items: center; justify-content: space-between; gap: var(--gap); margin-top: var(--gap); }
+.forecast-plan-field[hidden] { display: none; }
+.forecast-plan-field .text-field { width: 15ch; min-width: 0; }
+.forecast-plan-row { border-bottom: 1px solid var(--grey-border); padding-bottom: var(--gap); margin-bottom: var(--gap); }
+.forecast-plan-spec { overflow-wrap: anywhere; white-space: normal; }
 .forecast-run-rail section > .field-label { margin-bottom: var(--gap); }
 .forecast-run-rail .dropdown-head { width: 100%; }
 /* the rail wraps only when its three controls cannot fit */

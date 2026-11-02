@@ -8,7 +8,7 @@ import json
 import math
 from pathlib import Path
 
-from smolsmort.forecast import runs, views
+from smolsmort.forecast import plan, processes, runs, views
 from smolsmort.forecast.families import get_family
 from smolsmort.forecast.prep import Prepared, prepare
 from smolsmort.forecast.requests import parse_request
@@ -619,10 +619,60 @@ def _export(app, name: str) -> bytes | None:
         return None
 
 
+def _plan_running(root: Path) -> bool:
+    try:
+        pid = int((root / "forecast-plan.pid").read_text())
+    except (FileNotFoundError, ValueError):
+        return False
+    return pid > 0 and processes.is_process_alive(pid)
+
+
+def _get_plan(app, query: dict) -> dict:
+    root = _root(app)
+    result = {"plan": None, "status": plan.plan_status(root), "running": _plan_running(root)}
+    if (root / "forecast-plan.json").exists():
+        try:
+            result["plan"] = plan.load_plan(root)
+        except ValueError as exc:
+            result["error"] = str(exc)
+    return result
+
+
+def _save_plan(app, payload: dict) -> dict:
+    root = _root(app)
+    if _plan_running(root):
+        raise RequestError("stop the search plan before saving changes", 409)
+    try:
+        return {"plan": plan.save_plan(root, payload)}
+    except ValueError as exc:
+        raise RequestError(str(exc)) from exc
+
+
+def _start_plan(app, payload: dict) -> dict:
+    root = _root(app)
+    if _plan_running(root):
+        raise RequestError("search plan is already running", 409)
+    try:
+        return {"pid": plan.start_plan(root, _runs_root(app), _cache_root(app))}
+    except ValueError as exc:
+        raise RequestError(str(exc)) from exc
+
+
+def _stop_plan(app, payload: dict) -> dict:
+    try:
+        plan.stop_plan(_root(app))
+    except RunError as exc:
+        raise RequestError(str(exc), 409) from exc
+    except ValueError as exc:
+        raise RequestError(str(exc)) from exc
+    return {"ok": True}
+
+
 def forecast_tab() -> Tab:
     return Tab(
         name="forecast",
         get={
+            "/api/forecast-plan": _get_plan,
             "/api/forecast-families": _families,
             "/api/forecast-sources": _sources,
             "/api/forecast-runs": _list_runs,
@@ -631,6 +681,9 @@ def forecast_tab() -> Tab:
             "/api/forecast-table": _table,
         },
         post={
+            "/api/forecast-plan": _save_plan,
+            "/api/forecast-plan-start": _start_plan,
+            "/api/forecast-plan-stop": _stop_plan,
             "/api/forecast-columns": _columns,
             "/api/forecast-prep": _prep,
             "/api/forecast-runs": _start,
