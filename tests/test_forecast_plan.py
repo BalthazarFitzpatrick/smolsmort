@@ -161,7 +161,7 @@ def test_stop_cancels_current_and_preserves_resume(tmp_path, monkeypatch, config
 
     def stop(run_id):
         plan.stop_plan(tmp_path)
-        return {"state": "stopped"}
+        return {"state": "cancelled", "stopped": "cancelled"}
 
     calls, start, wait = fake_runner(monkeypatch, tmp_path, on_wait=stop)
     result = plan.run_plan(
@@ -173,7 +173,7 @@ def test_stop_cancels_current_and_preserves_resume(tmp_path, monkeypatch, config
     assert read_json(tmp_path / "forecast-plan-state.json")["finished"] == {}
     assert (
         next(item for item in runs.list_runs(tmp_path / "runs") if item["kind"] == "set")["state"]
-        == "stopped"
+        == "cancelled"
     )
 
 
@@ -232,7 +232,7 @@ def test_longer_horizon_uses_shorter_finished_population(tmp_path, monkeypatch, 
     ) == read_json(tmp_path / "runs" / "part-0" / "families" / "ridge" / "population.json")
 
 
-def test_cancelled_dead_worker_reports_stopped(tmp_path, monkeypatch, config):
+def test_cancelled_dead_worker_reports_cancelled(tmp_path, monkeypatch, config):
     folder = tmp_path / "part"
     write_json(
         folder / "request.json",
@@ -244,7 +244,7 @@ def test_cancelled_dead_worker_reports_stopped(tmp_path, monkeypatch, config):
     )
     runs.cancel_run(tmp_path, "part")
     state = runs.run_state(tmp_path, "part")
-    assert state["state"] == "stopped"
+    assert state["state"] == "cancelled"
     assert state["part_of"] == "set"
     assert state["label"] == "clients - ridge"
 
@@ -353,7 +353,7 @@ def test_resume_restarts_stopped_unfinished_job(tmp_path, monkeypatch, config):
         if not interrupted[0]:
             interrupted[0] = True
             plan.stop_plan(tmp_path)
-            return {"state": "stopped"}
+            return {"state": "cancelled", "stopped": "cancelled"}
         return {"state": "done"}
 
     calls, start, wait = fake_runner(monkeypatch, tmp_path, on_wait=finish)

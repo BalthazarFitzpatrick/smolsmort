@@ -226,7 +226,7 @@ def _resolve_status(folder: Path, request: dict, status: dict, alive: bool) -> d
         status["state"] in ("starting", "queued", "running", "failed")
         and (folder / "cancel").exists()
     ):
-        return {**status, "state": "stopped", "stopped": "cancelled"}
+        return {**status, "state": "cancelled", "stopped": "cancelled"}
     if (
         status["state"] in ("starting", "queued", "running")
         and not alive
@@ -362,9 +362,9 @@ def cancel_run(runs_root: Path, run_id: str) -> None:
     families = status.get("families", {})
     for state in families.values():
         if state.get("state") in ("running", "paused", "pending"):
-            state.update(state="stopped", reason="cancelled")
+            state.update(state="cancelled", reason="cancelled")
     tmp = folder / "status.json.tmp"
-    tmp.write_text(json.dumps({**status, "state": "stopped", "stopped": "cancelled"}))
+    tmp.write_text(json.dumps({**status, "state": "cancelled", "stopped": "cancelled"}))
     tmp.replace(folder / "status.json")
 
 
@@ -373,7 +373,7 @@ def wait_run(runs_root: Path, run_id: str, timeout: float = 600) -> dict:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         state = run_state(runs_root, run_id)
-        if state["state"] in ("done", "failed", "cancelled", "stopped") or not state["alive"]:
+        if state["state"] in ("done", "failed", "cancelled") or not state["alive"]:
             return run_state(runs_root, run_id)
         time.sleep(0.2)
     raise RunError(f"run {run_id} still going after {timeout}s")

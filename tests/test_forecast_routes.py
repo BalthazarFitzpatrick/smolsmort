@@ -593,7 +593,7 @@ def test_cancel_stops_a_run(app, tab):
     result = _post(app, tab, "/api/forecast-cancel", {"id": run_id})
     assert result == {"ok": True}
     state = _wait_done(app, tab, run_id)
-    assert state["state"] == "stopped"
+    assert state["state"] == "cancelled"
     assert state.get("stopped") == "cancelled"
 
 

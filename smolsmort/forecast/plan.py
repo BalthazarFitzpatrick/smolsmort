@@ -403,9 +403,10 @@ def run_plan(root, runs_root, cache_root, *, start_run=runs.start_run, wait_run=
                     state["current"] = {**current, "key": key, "run_id": run_id}
                     _write(path, state)
                 result = wait_run(runs_root, run_id, timeout=budget * 3 + 1800)
-                if (root / "forecast-plan.stop").exists() or result.get("state") in (
-                    "stopped",
-                    "cancelled",
+                if (
+                    (root / "forecast-plan.stop").exists()
+                    or result.get("state") == "cancelled"
+                    or result.get("stopped") == "cancelled"
                 ):
                     stopped = True
                     state.pop("current", None)
@@ -460,7 +461,7 @@ def run_plan(root, runs_root, cache_root, *, start_run=runs.start_run, wait_run=
             runs_root,
             run_id,
             state["members"][label],
-            state="stopped" if stopped else "done" if complete else "running",
+            state="cancelled" if stopped else "done" if complete else "running",
             family_states=family_states,
         )
     publish(jobs, status="stopped" if stopped else "done")

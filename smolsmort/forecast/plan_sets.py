@@ -220,8 +220,8 @@ def update_set(
         for part, table in parts.items():
             write_table(folder / f"ensemble_{part}.parquet", table)
     status.update(state=state, families=progress, elapsed=elapsed)
-    if state == "stopped":
-        status["reason"] = "stopped by the user"
+    if state == "cancelled":
+        status.update(reason="cancelled", stopped="cancelled")
     write_json_atomic(folder / "request.json", request)
     write_json_atomic(folder / "coordinator.json", {"families": {**progress, **coordinator}})
     write_json_atomic(folder / "result.json", result)
