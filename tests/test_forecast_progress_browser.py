@@ -468,6 +468,12 @@ def test_cancelled_run_displayed_as_stopped(tmp_path, version):
         show_tab(page, "regression-search")
         row = page.locator(f'#regression-runs-list [data-run-id="{run_id}"]')
         assert row.locator(".forecast-run-status").inner_text() == "stopped"
+        expected_name = "xgb search" if version == 1 else "3 models"
+        assert row.locator(".name").inner_text().endswith(f" | {expected_name}")
+        assert row.locator(".forecast-run-subtitle").inner_text() == page.evaluate(
+            "id => forecastRunTime({id})", run_id
+        )
+        assert run_id in row.get_attribute("title")
         row.click()
         page.wait_for_function(
             "document.getElementById('regression-search-status').textContent === 'stopped'"

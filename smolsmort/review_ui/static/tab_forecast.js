@@ -23,6 +23,34 @@ function forecastRunTime(run) {
   return forecastRunLocalTime(run).slice(2, -3);
 }
 
+function forecastRunCode(id) {
+  let hash = 2166136261;
+  for (const character of String(id || '')) {
+    hash = Math.imul(hash ^ character.codePointAt(0), 16777619) >>> 0;
+  }
+  return (hash % (36 ** 5)).toString(36).padStart(5, '0');
+}
+
+function forecastRunShortName(run) {
+  const shorten = value => String(value).toLowerCase()
+    .replace(/\blightgbm\b/g, 'lgbm').replace(/\bxgboost\b/g, 'xgb');
+  const label = shorten(run.label || '').replace(/\b(\d+)\s+weeks\b/g, '$1w')
+    .replace(/\bclient groups\b/g, 'groups').replace(/\s+-\s+/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+  if (label) return label;
+  const combined = String(run.id || '').toLowerCase().match(/^combined-(?:h(\d+)_)?([a-z0-9]+)(?:-|$)/);
+  if (combined) {
+    const [, horizon, token] = combined;
+    return horizon ? `${horizon}w ${token === 'group' ? 'groups' : token}` : token;
+  }
+  const families = Object.keys(run.families || {});
+  const model = families.length === 1 ? shorten(families[0])
+    : families.length > 1 ? `${families.length} models` : '';
+  const kind = {'warm start': 'warm', warm: 'warm', refit: 'refit', search: 'search'}[
+    String(run.kind || '').toLowerCase()];
+  return [model, kind].filter(Boolean).join(' ') || 'run';
+}
+
 function forecastSearchProgress(run) {
   const progress = run.progress || {};
   const budget = run.budget || {};
@@ -2412,14 +2440,14 @@ class ForecastTopic {
       row.dataset.runId = run.id;
       const status = ['cancelled', 'stopped'].includes(run.state) || run.stopped === 'cancelled' ? 'stopped'
         : this.isRunning(run) ? 'running' : run.state === 'failed' ? 'failed' : 'done';
-      row.append(forecastNode('span', 'name', run.label || run.id.split('-').at(-1)));
+      row.title = [run.id, forecastRunLocalTime(run)].filter(Boolean).join(' | ');
+      row.append(forecastNode('span', 'name', `${forecastRunCode(run.id)} | ${forecastRunShortName(run)}`));
+      row.append(forecastNode('span', 'field-label forecast-run-status', status));
       const time = forecastRunTime(run);
       if (time) {
-        const timestamp = forecastNode('span', 'forecast-run-time', time);
-        timestamp.title = forecastRunLocalTime(run);
+        const timestamp = forecastNode('span', 'forecast-run-subtitle', time);
         row.append(timestamp);
       }
-      row.append(forecastNode('span', 'field-label forecast-run-status', status));
       row.append(forecastMetricLines(this.selectedMetrics(run), run, 'forecast-run-metrics'));
       if (this.isRunning(run) || run.progress) {
         const progress = forecastSearchProgress(run);

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import shutil
 from itertools import pairwise
 from pathlib import Path
@@ -156,15 +157,73 @@ def test_saved_run_start_times(tmp_path):
             strict=True,
         ):
             row = page.locator(f'.forecast-run-row[data-run-id="{run["id"]}"]')
-            timestamp = row.locator(".forecast-run-time")
+            timestamp = row.locator(".forecast-run-subtitle")
             assert timestamp.inner_text() == full_time[2:-3]
-            assert timestamp.get_attribute("title") == full_time
+            assert row.get_attribute("title") == f"{run['id']} | {full_time}"
+            assert timestamp.bounding_box()["y"] > row.locator(".name").bounding_box()["y"]
+            assert timestamp.evaluate("node => getComputedStyle(node).fontVariantNumeric") == (
+                "tabular-nums"
+            )
             assert row.evaluate("row => row.scrollWidth <= row.clientWidth")
             assert page.evaluate("run => forecastRunTime(run)", run) == full_time[2:-3]
-        assert page.locator("#regression-running-list .forecast-run-time").count() == 1
-        assert page.locator('[data-run-id="unknown-time"] .forecast-run-time').count() == 0
+        assert page.locator("#regression-running-list .forecast-run-subtitle").count() == 1
+        assert page.locator('[data-run-id="unknown-time"] .forecast-run-subtitle').count() == 0
         for run in ({"id": "unknown-time"}, {"started_at": "invalid"}, {"id": "20269999-999999"}):
             assert page.evaluate("run => forecastRunTime(run)", run) == ""
+
+
+def test_saved_run_short_titles_stable_across_paints(tmp_path):
+    examples = [
+        ({"id": "label-groups", "label": "8 weeks - client groups"}, "8w groups"),
+        (
+            {"id": "label-family", "label": "8 weeks - client groups - lightgbm"},
+            "8w groups lgbm",
+        ),
+        ({"id": "label-total", "label": "12 weeks - total - XGBoost"}, "12w total xgb"),
+        ({"id": "combined-h8_group-20261102-120000"}, "8w groups"),
+        ({"id": "combined-h12_total-20261102-120000"}, "12w total"),
+        ({"id": "combined-group-20261102-120000"}, "group"),
+        ({"id": "combined-total-20261102-120000"}, "total"),
+        (
+            {"id": "warm-example", "families": {"lightgbm": {}}, "kind": "warm start"},
+            "lgbm warm",
+        ),
+        (
+            {"id": "many-models", "families": {"ridge": {}, "xgboost": {}}, "kind": "refit"},
+            "2 models refit",
+        ),
+        ({"id": "search-example", "families": {"ridge": {}}, "kind": "search"}, "ridge search"),
+        ({"id": "empty-example", "label": "   "}, "run"),
+    ]
+    with session(tmp_path, port=8098) as (page, _base):
+        make_saved_tiles(tmp_path / "forecast_root")
+        open_tiles(page)
+        page.evaluate("clearInterval(forecastTopics.get('regression').pollTimer)")
+        runs = [{**run, "state": "done"} for run, _name in examples]
+        page.evaluate(
+            """runs => {
+                const topic = forecastTopics.get('regression');
+                topic.runCache = new Map(runs.map(run => [run.id, run]));
+                topic.paintRuns();
+            }""",
+            runs,
+        )
+        titles = []
+        for run, name in examples:
+            row = page.locator(f'.forecast-run-row[data-run-id="{run["id"]}"]')
+            title = row.locator(".name").inner_text()
+            code, actual_name = title.split(" | ")
+            assert re.fullmatch("[0-9a-z]{5}", code)
+            assert actual_name == name
+            assert row.get_attribute("title").startswith(run["id"])
+            assert page.evaluate("id => forecastRunCode(id)", run["id"]) == code
+            titles.append(title)
+        assert len({title.split(" | ")[0] for title in titles}) == len(examples)
+        page.evaluate("forecastTopics.get('regression').paintRuns()")
+        for (run, _name), title in zip(examples, titles, strict=True):
+            row = page.locator(f'.forecast-run-row[data-run-id="{run["id"]}"]')
+            assert row.locator(".name").inner_text() == title
+        assert page.evaluate("forecastRunShortName({})") == "run"
 
 
 def test_saved_run_labels_parts_stopped_and_view_caption(tmp_path):
@@ -202,7 +261,7 @@ def test_saved_run_labels_parts_stopped_and_view_caption(tmp_path):
         open_tiles(page)
         rows = page.locator("#regression-runs-list .forecast-run-row")
         assert rows.count() == 1
-        assert rows.first.locator(".name").inner_text() == "8 weeks - client groups - lightgbm"
+        assert rows.first.locator(".name").inner_text().endswith(" | 8w groups lgbm")
         assert rows.first.locator(".forecast-run-status").inner_text() == "stopped"
         assert page.locator("#regression-search-status").inner_text() == "stopped"
         assert page.locator("#regression-run-stop").inner_text() == "stopped"
@@ -228,7 +287,7 @@ def test_saved_run_labels_parts_stopped_and_view_caption(tmp_path):
         assert part.count() == 0
         page.evaluate("id => forecastTopics.get('regression').selectRun(id)", part_id)
         assert rows.count() == 2
-        assert part.locator(".name").inner_text() == "part"
+        assert part.locator(".name").inner_text().endswith(" | 3 models")
         assert part.is_visible()
         page.locator(f'[data-run-id="{run_id}"]').click()
         assert rows.count() == 1
