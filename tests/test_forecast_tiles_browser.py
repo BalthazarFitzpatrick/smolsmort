@@ -222,18 +222,17 @@ def test_saved_run_labels_parts_stopped_and_view_caption(tmp_path):
                 "tiles: one card per model family. tables: every family as a row, "
                 "plus the best ten recipes."
             )
-        toggle = page.locator("#regression-show-parts")
-        toggle.click()
-        assert toggle.get_attribute("aria-pressed") == "true"
-        assert rows.count() == 2
+        removed_button_id = "-".join(("regression", "show", "parts"))
+        assert page.locator(f"#{removed_button_id}").count() == 0
         part = page.locator(f'[data-run-id="{part_id}"]')
-        assert part.locator(".name").inner_text() == "part"
-        part.click()
-        toggle.click()
+        assert part.count() == 0
+        page.evaluate("id => forecastTopics.get('regression').selectRun(id)", part_id)
         assert rows.count() == 2
+        assert part.locator(".name").inner_text() == "part"
         assert part.is_visible()
         page.locator(f'[data-run-id="{run_id}"]').click()
         assert rows.count() == 1
+        assert part.count() == 0
 
 
 def make_search_curve(values: list[float]) -> list[dict]:

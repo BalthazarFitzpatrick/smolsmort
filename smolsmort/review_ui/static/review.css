@@ -291,7 +291,6 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-run-bar .bar-fill { display: block; }
 .forecast-run-row .name { flex: 1 1 0; min-width: 0; text-align: left; }
 .forecast-run-time { flex: 0 0 14ch; width: 14ch; font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
-.forecast-runs-header { display: flex; align-items: center; justify-content: space-between; gap: var(--gap); }
 .forecast-run-view-caption { margin-top: 0; }
 .forecast-run-row .forecast-run-status { flex: 0 0 9ch; text-align: left; }
 .forecast-run-row .forecast-run-metrics { flex: 1 1 100%; text-align: left; font-size: 11px; }

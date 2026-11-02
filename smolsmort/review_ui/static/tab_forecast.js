@@ -1810,7 +1810,7 @@ class ForecastTopic {
             <div class="field-label">running</div>
             <div id="${this.topic}-running-list"></div>
           </section>
-          <section><div class="forecast-runs-header"><span class="field-label">runs</span><button type="button" class="toggle" id="${this.topic}-show-parts" aria-pressed="false">show parts</button></div><div id="${this.topic}-runs-list"></div></section>
+          <section><div class="field-label">runs</div><div id="${this.topic}-runs-list"></div></section>
         </aside>
         <div class="forecast-pane forecast-run-detail">
         <div class="panel-inline forecast-pane">
@@ -1891,13 +1891,6 @@ class ForecastTopic {
       </div>`;
     forecastMountPlan(panel.querySelector('.forecast-run-rail'));
     forecastWireSteppers(panel, `${this.topic}-budget`, budgetRows, this.searchValues, () => {});
-    const showParts = document.getElementById(`${this.topic}-show-parts`);
-    showParts.onclick = () => {
-      this.showParts = !this.showParts;
-      showParts.classList.toggle('on', this.showParts);
-      showParts.setAttribute('aria-pressed', String(this.showParts));
-      this.paintRuns();
-    };
     for (const view of ['tiles', 'tables']) {
       document.getElementById(`${this.topic}-run-view-${view}`).onclick = () => {
         this.runView = view;
@@ -2414,7 +2407,7 @@ class ForecastTopic {
       return b.id.localeCompare(a.id);
     });
     for (const run of runs) {
-      if (run.part_of && !this.showParts && run.id !== this.selectedRunId) continue;
+      if (run.part_of && run.id !== this.selectedRunId) continue;
       const row = forecastNode('button', 'toggle forecast-run-row' + (run.id === this.selectedRunId ? ' on' : ''));
       row.dataset.runId = run.id;
       const status = ['cancelled', 'stopped'].includes(run.state) || run.stopped === 'cancelled' ? 'stopped'
