@@ -7,6 +7,7 @@ hyperparams menu the standalone page used to be is the train tab's config menu.
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from smolsmort.forecast.tab import forecast_tab
@@ -56,6 +57,11 @@ def main(argv: list[str] | None = None) -> int:
         help="maximum useful parallel families (default 3: xgboost, lightgbm, ridge)",
     )
     calibrate.add_argument("--write", action="store_true", help="save the machine forecast config")
+    plan = forecast_commands.add_parser("plan", help="run a forecast search plan")
+    plan_commands = plan.add_subparsers(dest="plan_command", required=True)
+    for action in ("start", "status", "stop", "resume"):
+        action_parser = plan_commands.add_parser(action, help=f"{action} the search plan")
+        action_parser.add_argument("--root", required=True, type=Path)
     crops = commands.add_parser("crops", help="train and evaluate crop classifiers")
     crop_commands = crops.add_subparsers(dest="crops_command", required=True)
     train = crop_commands.add_parser("train", help="train crop classifier weights")
@@ -69,6 +75,23 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "forecast":
+        if args.forecast_command == "plan":
+            from smolsmort.forecast.plan import plan_status, start_plan, stop_plan
+
+            root = args.root.resolve()
+            try:
+                if args.plan_command in ("start", "resume"):
+                    pid = start_plan(root, root / ".forecast-runs", root / ".forecast-cache")
+                    print(f"started search plan: {pid}")
+                elif args.plan_command == "stop":
+                    stop_plan(root)
+                    print("stopped search plan")
+                else:
+                    print(json.dumps(plan_status(root), indent=2))
+            except (ValueError, OSError) as exc:
+                plan.error(str(exc))
+            return 0
+
         from smolsmort.forecast.calibration import run_calibration
 
         try:
