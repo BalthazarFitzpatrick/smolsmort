@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import shutil
 from itertools import pairwise
 from pathlib import Path
 
@@ -119,6 +120,75 @@ def open_tiles(page) -> None:
     page.select_option("#topic-flavour", "timeseries")
     show_tab(page, "regression-search")
     page.locator("#regression-tiles .forecast-tile").first.wait_for()
+
+
+def test_saved_run_labels_parts_stopped_and_view_caption(tmp_path):
+    with session(tmp_path, port=8098) as (page, _base):
+        root = tmp_path / "forecast_root"
+        run_id = make_saved_tiles(root)
+        part_id = "20261029-120000-part"
+        run_dir = root / ".forecast-runs" / run_id
+        shutil.copytree(run_dir, root / ".forecast-runs" / part_id)
+        (run_dir / "families/xgboost").mkdir(parents=True, exist_ok=True)
+        (run_dir / "families/xgboost/generation_curves.jsonl").write_text(
+            json.dumps({"generation": 0, "metric": "rmse", "validation": [0.4, 0.3]}),
+            encoding="utf-8",
+        )
+        status = json.loads((run_dir / "status.json").read_text())
+        status["state"] = "stopped"
+        status["families"]["xgboost"]["state"] = "stopped"
+        write_json(run_dir / "status.json", status)
+        page.route(
+            "**/api/forecast-runs",
+            lambda route: route.fulfill(
+                json={
+                    "runs": [
+                        {
+                            "id": run_id,
+                            "label": "8 weeks - client groups - lightgbm",
+                            "kind": "set",
+                            "state": "stopped",
+                        },
+                        {"id": part_id, "part_of": run_id, "state": "done"},
+                    ]
+                }
+            ),
+        )
+        open_tiles(page)
+        rows = page.locator("#regression-runs-list .forecast-run-row")
+        assert rows.count() == 1
+        assert rows.first.locator(".name").inner_text() == "8 weeks - client groups - lightgbm"
+        assert rows.first.locator(".forecast-run-status").inner_text() == "stopped"
+        assert page.locator("#regression-search-status").inner_text() == "stopped"
+        assert page.locator("#regression-run-stop").inner_text() == "stopped"
+        assert find_tile(page, "xgboost").get_attribute("data-state") == "unknown"
+        assert page.evaluate("forecastTileState({state: 'stopped'})") == "unknown"
+        assert (
+            find_tile(page, "xgboost")
+            .locator(".forecast-tile-rounds .forecast-tile-chart-label > span")
+            .first.inner_text()
+            == "learning curve per round - validation error"
+        )
+        caption = page.locator("#regression-run-view-caption")
+        for view in ("tables", "tiles"):
+            page.locator(f"#regression-run-view-{view}").click()
+            assert caption.is_visible()
+            assert caption.inner_text() == (
+                "tiles: one card per model family. tables: every family as a row, "
+                "plus the best ten recipes."
+            )
+        toggle = page.locator("#regression-show-parts")
+        toggle.click()
+        assert toggle.get_attribute("aria-pressed") == "true"
+        assert rows.count() == 2
+        part = page.locator(f'[data-run-id="{part_id}"]')
+        assert part.locator(".name").inner_text() == "part"
+        part.click()
+        toggle.click()
+        assert rows.count() == 2
+        assert part.is_visible()
+        page.locator(f'[data-run-id="{run_id}"]').click()
+        assert rows.count() == 1
 
 
 def make_search_curve(values: list[float]) -> list[dict]:
@@ -388,6 +458,9 @@ def test_y_metric_controls_both_charts_independently_of_error_metric_picker(tmp_
         assert rounds.get_attribute("data-chart-metric") == "rmse"
         assert rounds.get_attribute("data-recorded") == "true"
         assert "validation error" in rounds.locator(".forecast-tile-chart-label").inner_text()
+        assert rounds.locator(".forecast-tile-chart-label > span").first.inner_text() == (
+            "learning curve per round - validation error"
+        )
         assert rounds.locator(".forecast-tile-round-current").count() == 1
         assert rounds.locator(".forecast-tile-round-line").count() == 2
         assert (

@@ -272,9 +272,10 @@ def test_search_progress_used_nearest_stop_condition(tmp_path, progress, budget,
     [
         ("running", None, 0.4, False, ""),
         ("done", "plateau", 1, True, "done"),
-        ("done", "cancelled", 0.4, False, "cancelled"),
-        ("cancelled", "cancelled", 0.4, False, "cancelled"),
+        ("done", "cancelled", 0.4, False, "stopped"),
+        ("cancelled", "cancelled", 0.4, False, "stopped"),
         ("failed", None, 0.4, False, "failed"),
+        ("stopped", None, 0.4, False, "stopped"),
     ],
 )
 def test_search_progress_label_and_terminal_state(tmp_path, state, stopped, fill, done, suffix):
@@ -294,7 +295,7 @@ def test_search_progress_label_and_terminal_state(tmp_path, state, stopped, fill
         value = page.evaluate("run => forecastSearchProgress(run)", run)
         assert value["fill"] == pytest.approx(fill)
         assert value["done"] is done
-        label = "generation 3 - candidate 7 of 10 - 54s of 20 min - 2 of 5 flat generations"
+        label = "generation 3 - candidate 7 of 10 - 54s of 20 min - 2 of 5 quiet generations"
         assert value["label"] == label + (f" - {suffix}" if suffix else "")
 
 
@@ -451,6 +452,34 @@ def test_multifamily_progress_updated_counts_and_terminal_reasons(tmp_path):
         assert rows.nth(2).locator("td").nth(1).inner_text() == "failed (terminated)"
         assert rows.nth(2).locator("td").last.inner_text() == "synthetic worker stopped"
         assert_family_layout(page)
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_cancelled_run_displayed_as_stopped(tmp_path, version):
+    with session(tmp_path) as (page, _):
+        root = tmp_path / "forecast_root"
+        run_id = write_multifamily_run(root, version=version)
+        path = root / ".forecast-runs" / run_id / "status.json"
+        status = json.loads(path.read_text())
+        status.update(state="cancelled", stopped="cancelled")
+        path.write_text(json.dumps(status))
+        switch_to_regression(page)
+        page.select_option("#topic-flavour", "timeseries")
+        show_tab(page, "regression-search")
+        row = page.locator(f'#regression-runs-list [data-run-id="{run_id}"]')
+        assert row.locator(".forecast-run-status").inner_text() == "stopped"
+        row.click()
+        page.wait_for_function(
+            "document.getElementById('regression-search-status').textContent === 'stopped'"
+        )
+        assert page.locator("#regression-run-stop").inner_text() == "stopped"
+        assert "stopped" in page.locator("#regression-run-progress-label").inner_text()
+        assert "cancelled" not in page.locator("#regression-run-title").inner_text()
+        for state in ("cancelled", "stopped"):
+            assert (
+                page.evaluate("state => forecastTileState({state, test_ratio: 1.2})", state)
+                == "unknown"
+            )
 
 
 def test_multifamily_saved_run_named_models_and_explained_importance(tmp_path):
