@@ -28,6 +28,9 @@ def _check_aggregate_weight(request: dict, aggregate: str) -> None:
 
 def parse_request(request: dict) -> dict:
     request = normalize_saved_modes(request)
+    for field in ("part_of", "label"):
+        if field in request and not isinstance(request[field], str):
+            raise ValueError(f"{field} must be a string")
     aggregate = request.get("aggregate", "none")
     get_aggregator(aggregate)
     _check_aggregate_weight(request, aggregate)

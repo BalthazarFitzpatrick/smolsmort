@@ -72,6 +72,8 @@ def start_run(
     plateau: int = 5,
     min_generations: int = 0,
     prune_sigma: float = 1.0,
+    part_of: str | None = None,
+    label: str | None = None,
 ) -> str:
     """write the request and start the worker; returns the run id. `recipe` refits a saved
     winner without a search, `warm_from` seeds a search with an earlier run's population"""
@@ -89,6 +91,10 @@ def start_run(
         "aggregate": aggregate,
         "horizon_mode": horizon_mode,
     }
+    if part_of is not None:
+        request["part_of"] = part_of
+    if label is not None:
+        request["label"] = label
     if aggregate_weight is not None:
         request["aggregate_weight"] = aggregate_weight
     if version is not None or families is not None:
@@ -152,8 +158,7 @@ def run_state(
         from smolsmort.forecast.views import multi_run_state
 
         alive = _alive(folder)
-        if status["state"] in ("starting", "queued", "running") and not alive:
-            status = {**status, "state": "failed", "reason": "the worker exited without reporting"}
+        status = _resolve_status(folder, request, status, alive)
         return {
             **multi_run_state(
                 folder,
@@ -162,6 +167,7 @@ def run_state(
                 since_generation=since_generation,
                 since_events=since_events,
             ),
+            **{key: request[key] for key in ("part_of", "label", "kind") if key in request},
             "alive": alive,
         }
     events = []
@@ -198,8 +204,7 @@ def run_state(
             if curve["generation"] > cursor:
                 curves.append(curve)
     alive = _alive(folder)
-    if status["state"] in ("starting", "queued", "running") and not alive:
-        status = {"state": "failed", "reason": "the worker exited without reporting"}
+    status = _resolve_status(folder, request, status, alive)
     state = {
         **status,
         "alive": alive,
@@ -214,6 +219,21 @@ def run_state(
             json.loads(history_path.read_text()) if history_path.exists() else None
         )
     return state
+
+
+def _resolve_status(folder: Path, request: dict, status: dict, alive: bool) -> dict:
+    if (
+        status["state"] in ("starting", "queued", "running", "failed")
+        and (folder / "cancel").exists()
+    ):
+        return {**status, "state": "cancelled", "stopped": "cancelled"}
+    if (
+        status["state"] in ("starting", "queued", "running")
+        and not alive
+        and request.get("kind") != "set"
+    ):
+        return {**status, "state": "failed", "reason": "the worker exited without reporting"}
+    return status
 
 
 def _metadata(folder: Path, status: dict, generations: list[dict], events: list[dict]) -> dict:
@@ -253,7 +273,8 @@ def _metadata(folder: Path, status: dict, generations: list[dict], events: list[
             )
     progress.pop("updated_at", None)
     return {
-        "kind": kind,
+        "kind": request.get("kind", kind),
+        **{key: request[key] for key in ("part_of", "label") if key in request},
         "task": request.get("spec", {}).get("task"),
         "budget": request.get("budget", {}),
         "generation_count": len(generations),
