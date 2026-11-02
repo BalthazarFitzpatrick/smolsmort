@@ -881,6 +881,165 @@ function forecastWireSteppers(panel, prefix, rows, values, onChange) {
   });
 }
 
+function forecastMountPlan(rail) {
+  const section = forecastNode('details', 'forecast-plan');
+  section.append(forecastNode('summary', 'field-label', 'search plan'));
+  const statusLine = forecastNode('div', 'stat');
+  statusLine.dataset.planStatus = '';
+  const warnings = forecastNode('div', 'stat');
+  const message = forecastNode('div', 'stat');
+  const controls = forecastNode('div', 'run-controls');
+  const buttons = {};
+  for (const name of ['start', 'stop', 'save']) {
+    const button = forecastNode('button', 'toggle', name);
+    button.type = 'button';
+    button.dataset.planAction = name;
+    controls.append(button);
+    buttons[name] = button;
+  }
+  const form = forecastNode('fieldset', 'forecast-plan-fields');
+  section.append(statusLine, warnings, controls, message, form);
+  rail.prepend(section);
+  let saved = null, running = false, timer = null, loading = false, busy = false;
+  let readFields = null;
+
+  function field(parent, label, value, type = 'number', choices = null) {
+    const row = forecastNode('label', 'forecast-plan-field');
+    row.append(forecastNode('span', 'field-label', label));
+    const input = forecastNode(choices ? 'select' : 'input', 'text-field');
+    input.dataset.planField = label;
+    if (choices) choices.forEach(choice => {
+      const option = forecastNode('option', '', choice);
+      option.value = choice;
+      input.append(option);
+    });
+    else input.type = type;
+    if (type === 'checkbox') input.checked = value;
+    else input.value = value;
+    if (type === 'number') input.step = 'any';
+    row.append(input);
+    parent.append(row);
+    return () => type === 'checkbox' ? input.checked : type === 'number' ? Number(input.value) : input.value;
+  }
+
+  function buildForm(plan) {
+    form.replaceChildren();
+    const mode = field(form, 'time limit', 'deadline' in plan ? 'deadline' : 'hours', 'text', ['deadline', 'hours']);
+    const deadline = field(form, 'deadline', plan.deadline || '', 'text');
+    const hours = field(form, 'hours', plan.hours ?? 24);
+    const timeInputs = form.querySelectorAll('label');
+    const showTime = () => {
+      timeInputs[1].hidden = mode() !== 'deadline';
+      timeInputs[2].hidden = mode() !== 'hours';
+    };
+    timeInputs[0].querySelector('select').onchange = showTime;
+    timeInputs[1].querySelector('input').placeholder = 'yyyy-mm-dd hh:mm';
+    showTime();
+    form.append(forecastNode('div', 'field-label', 'families'));
+    const families = plan.families.map(family => {
+      const row = forecastNode('div', 'forecast-plan-row');
+      form.append(row);
+      return {
+        name: field(row, 'name', family.name, 'text'),
+        budget: field(row, 'budget (minutes)', family.budget_s / 60),
+        patience: field(row, 'patience', family.patience ?? 6),
+        min: field(row, 'min generations', family.min_generations ?? 0),
+      };
+    });
+    form.append(forecastNode('div', 'field-label', 'sets'));
+    const sets = plan.sets.map(item => {
+      const row = forecastNode('div', 'forecast-plan-row');
+      form.append(row);
+      const label = field(row, 'label', item.label, 'text');
+      const horizon = field(row, 'horizon', item.horizon);
+      row.append(forecastNode('div', 'stat forecast-plan-spec', typeof item.spec === 'string' ? item.spec : JSON.stringify(item.spec)));
+      return {label, horizon};
+    });
+    form.append(forecastNode('div', 'field-label', 'passes'));
+    const passes = plan.passes || {};
+    const second = field(form, 'second pass', passes.second_pass || false, 'checkbox');
+    const keep = field(form, 'keep', passes.keep ?? 8);
+    const minimum = field(form, 'min generations', passes.min_generations ?? 8);
+    const patience = field(form, 'patience', passes.patience ?? 6);
+    const selected = plan.families.map(family => field(form, `second pass ${family.name}`,
+      (passes.families || plan.families.map(f => f.name)).includes(family.name), 'checkbox'));
+    const sigma = field(form, 'prune sigma', plan.prune_sigma ?? 2);
+    const transform = field(form, 'transform', plan.transform ?? 'log1p', 'text', ['none', 'log1p', 'logdiff']);
+    const holdout = field(form, 'holdout', plan.holdout ?? 'seasonal', 'text', ['block', 'seasonal']);
+    readFields = () => {
+      const data = structuredClone(saved);
+      delete data.deadline;
+      delete data.hours;
+      data[mode()] = mode() === 'deadline' ? deadline() : hours();
+      data.families = families.map((row, i) => ({...data.families[i], name: row.name(),
+        budget_s: row.budget() * 60, patience: row.patience(), min_generations: row.min()}));
+      data.sets = sets.map((row, i) => ({...data.sets[i], label: row.label(), horizon: row.horizon()}));
+      data.passes = {...data.passes, second_pass: second(), keep: keep(), min_generations: minimum(),
+        patience: patience(), families: data.families.filter((_, i) => selected[i]()).map(f => f.name)};
+      data.prune_sigma = sigma();
+      data.transform = transform();
+      data.holdout = holdout();
+      return data;
+    };
+  }
+
+  function enableButtons() {
+    buttons.start.disabled = busy || running || !saved;
+    buttons.save.disabled = busy || running || !saved;
+    buttons.stop.disabled = busy || !running;
+    form.disabled = running || busy;
+  }
+
+  function schedule() {
+    clearTimeout(timer);
+    if (section.isConnected && (section.open || running)) timer = setTimeout(refresh, 5000);
+  }
+
+  async function refresh() {
+    if (loading) return;
+    loading = true;
+    try {
+      const data = await api('/api/forecast-plan');
+      running = data.running;
+      const status = data.status || {};
+      const minutes = Math.max(0, Math.floor((status.seconds_left || 0) / 60));
+      const current = status.current;
+      statusLine.textContent = `${running ? 'running' : status.state || 'idle'} · ${status.jobs_done || 0} of ${status.jobs_total || 0} jobs · ${Math.floor(minutes / 60)} h ${minutes % 60} min left` +
+        (current ? ` · ${current.set} · ${current.family} · pass ${current.pass}` : '');
+      warnings.textContent = (status.warnings || []).join(' · ');
+      buttons.start.textContent = status.jobs_done > 0 ? 'resume' : 'start';
+      if (!saved && data.plan) {
+        saved = data.plan;
+        buildForm(saved);
+      }
+      if (data.error) message.textContent = data.error;
+      else if (!data.plan) message.textContent = 'no forecast-plan.json found';
+      enableButtons();
+    } catch (err) { message.textContent = err.message; }
+    finally { loading = false; schedule(); }
+  }
+
+  for (const name of ['start', 'stop', 'save']) buttons[name].onclick = async () => {
+    busy = true;
+    enableButtons();
+    try {
+      if (name === 'save') {
+        const result = await api('/api/forecast-plan', readFields());
+        saved = result.plan;
+        message.textContent = 'saved';
+      } else {
+        await api(`/api/forecast-plan-${name}`, {});
+        message.textContent = name === 'start' ? 'started' : 'stop requested';
+      }
+      await refresh();
+    } catch (err) { message.textContent = err.message; }
+    finally { busy = false; enableButtons(); }
+  };
+  section.ontoggle = () => section.open ? refresh() : schedule();
+  enableButtons();
+  refresh();
+}
+
 class ForecastTopic {
   constructor(topic, task) {
     this.topic = topic;
@@ -1714,6 +1873,7 @@ class ForecastTopic {
         </div>
         </div>
       </div>`;
+    forecastMountPlan(panel.querySelector('.forecast-run-rail'));
     forecastWireSteppers(panel, `${this.topic}-budget`, budgetRows, this.searchValues, () => {});
     const showParts = document.getElementById(`${this.topic}-show-parts`);
     showParts.onclick = () => {
