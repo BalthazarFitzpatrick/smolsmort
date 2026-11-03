@@ -2434,10 +2434,15 @@ class ForecastTopic {
     const running = document.getElementById(`${this.topic}-running-list`);
     box.replaceChildren();
     running.replaceChildren();
-    const runs = [...this.runCache.values()].sort((a, b) => {
-      if (this.runOrder === 'best performance') {
-        const left = Number.isFinite(a.test_error) ? a.test_error : Infinity;
-        const right = Number.isFinite(b.test_error) ? b.test_error : Infinity;
+    const byRatio = this.runOrder === 'best performance';
+    const ratioOf = run => run.error_metrics?.test_ratio?.value;
+    // runs won by the naive baseline are only a yardstick, so the ratio sort leaves them out
+    const runs = [...this.runCache.values()].filter(
+      run => !(byRatio && run.winner_family === 'snaive' && run.id !== this.selectedRunId),
+    ).sort((a, b) => {
+      if (byRatio) {
+        const left = Number.isFinite(ratioOf(a)) ? ratioOf(a) : Infinity;
+        const right = Number.isFinite(ratioOf(b)) ? ratioOf(b) : Infinity;
         if (left !== right) return left - right;
       }
       return b.id.localeCompare(a.id);
