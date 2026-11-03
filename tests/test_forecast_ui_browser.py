@@ -1186,6 +1186,7 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
     best = "20261001-120000-best01"
     recent = "20261003-120000-later1"
     missing = "20261004-120000-noerr1"
+    naive = "20261002-120000-naive1"
     live = "20261005-120000-live01"
     snapshot = {"count": 1, "state": "running"}
     board_cursors = []
@@ -1196,14 +1197,24 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
                 "kind": "search",
                 "state": "done",
                 "stopped": "plateau",
-                "test_error": 0.1,
+                "test_error": 0.3,
+                "verdict": {"accuracy": {"ratio": 0.8}},
             },
             {
                 "id": recent,
                 "kind": "warm start",
                 "state": "done",
                 "stopped": "time cap",
-                "test_error": 0.3,
+                "test_error": 0.1,
+                "verdict": {"accuracy": {"ratio": 1.2}},
+            },
+            {
+                "id": naive,
+                "kind": "search",
+                "state": "done",
+                "winner_family": "snaive",
+                "test_error": 0.2,
+                "verdict": {"accuracy": {"ratio": 1.0}},
             },
             {
                 "id": missing,
@@ -1312,12 +1323,13 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
         assert running.locator(".forecast-run-row").count() == 1
         assert rail.locator(".forecast-run-row").evaluate_all(
             "rows => rows.map(row => row.dataset.runId)"
-        ) == [missing, recent, best]
+        ) == [missing, recent, naive, best]
         assert running.locator(
             ".forecast-run-row > span:not(.forecast-run-bar, .forecast-run-metrics)"
         ).all_text_contents() == [
-            "live01",
+            "6j7hj | search",
             "running",
+            "26-10-05 12:00",
         ]
         assert (
             running.locator('[data-metric-id="validation_error"]').inner_text()
@@ -1326,7 +1338,7 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
         for row in page.locator(".forecast-run-row").all():
             assert (
                 row.locator(":scope > span:not(.forecast-run-bar, .forecast-run-metrics)").count()
-                == 2
+                == 3
             )
             assert row.evaluate("node => getComputedStyle(node).flexDirection") == "row"
         assert running.locator(".forecast-run-row.on .name").evaluate(
@@ -1341,6 +1353,14 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
         assert rail.locator(".forecast-run-row").evaluate_all(
             "rows => rows.map(row => row.dataset.runId)"
         ) == [best, recent, missing]
+        # the naive winner is only a yardstick: gone from this sort, back under date
+        page.locator(f"#{TOPIC}-run-sort .dropdown-head").click()
+        page.locator('.menu-panel .menu-item[data-id="date, newest first"]').click()
+        assert naive in rail.locator(".forecast-run-row").evaluate_all(
+            "rows => rows.map(row => row.dataset.runId)"
+        )
+        page.locator(f"#{TOPIC}-run-sort .dropdown-head").click()
+        page.locator('.menu-panel .menu-item[data-id="best performance"]').click()
 
         rail.locator(f'[data-run-id="{recent}"]').click()
         page.click(f"#{TOPIC}-run-view-tables")
@@ -1390,7 +1410,7 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
         assert running.locator(".forecast-run-row").count() == 0
         assert rail.locator(".forecast-run-row").evaluate_all(
             "rows => rows.map(row => row.dataset.runId)"
-        ) == [live, best, recent, missing]
+        ) == [best, live, recent, missing]
         assert (
             page.locator(f"#{TOPIC}-run-stop").inner_text()
             == "no gain larger than the noise for 2 generations in a row"
@@ -1407,7 +1427,7 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
         page.locator('.menu-panel .menu-item[data-id="date, newest first"]').click()
         assert rail.locator(".forecast-run-row").evaluate_all(
             "rows => rows.map(row => row.dataset.runId)"
-        ) == [live, missing, recent, best]
+        ) == [live, missing, recent, naive, best]
         rail.locator(f'[data-run-id="{missing}"]').click()
         page.wait_for_function(
             "id => document.getElementById(id).innerText === 'failed: too few usable rows'",
