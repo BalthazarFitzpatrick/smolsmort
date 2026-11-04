@@ -295,7 +295,7 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-run-tile-chart svg { width: 100%; height: calc(100% - 28px); display: block; border-left: 1px solid var(--grey-border); border-bottom: 1px solid var(--grey-border); }
 .forecast-tile .forecast-run-tile-chart polyline { stroke-width: .008; fill: none; }
 .forecast-run-tile .forecast-tile-menus { flex: 0 0 auto; }
-#regression-tiles-metric-slot { display: flex; gap: 12px; }
+.forecast-tile-selectors { display: flex; gap: 12px; }
 .forecast-tile .forecast-metric-lines { margin-top: auto; padding-top: 8px; font-size: 11px; line-height: 18px; }
 @media (prefers-reduced-motion: reduce) { .forecast-tile-inner { transition: none; } }
 @media (max-width: 760px) { .forecast-search-layout { grid-template-columns: minmax(0, 1fr); } }

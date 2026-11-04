@@ -83,7 +83,9 @@ def read_table(path: Path, order_by: str | None = None) -> dict[str, np.ndarray]
     import duckdb
 
     order = f" ORDER BY {order_by}" if order_by else ""
-    columns = duckdb.sql(f"SELECT * FROM read_parquet('{path}'){order}").fetchnumpy()
+    # route threads must not share duckdb's default connection and result cursor
+    with duckdb.connect() as connection:
+        columns = connection.sql(f"SELECT * FROM read_parquet('{path}'){order}").fetchnumpy()
     return {name: _unmask(values) for name, values in columns.items()}
 
 

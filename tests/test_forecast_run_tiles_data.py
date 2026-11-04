@@ -33,6 +33,46 @@ def save_model(folder, family, prediction):
     return genome
 
 
+def test_tile_results_resolved_family_and_aligned_ensemble_predictions(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from smolsmort.forecast import views
+    from smolsmort.forecast.tables import read_table
+
+    save_json(
+        tmp_path / "request.json",
+        {"version": 2, "families": [{"name": "ridge"}, {"name": "snaive"}]},
+    )
+    save_json(tmp_path / "status.json", {"state": "done"})
+    save_json(tmp_path / "result.json", {"winner": {"family": "ridge"}})
+    save_model(tmp_path, "ridge", [8, 18])
+    save_model(tmp_path, "snaive", [10, 20])
+    saved = tiles.read_tiles(tmp_path)
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        snapshots = list(pool.map(lambda _: tiles.read_tiles(tmp_path), range(24)))
+    assert all(
+        [item["tile_id"] for item in snapshot] == [item["tile_id"] for item in saved]
+        for snapshot in snapshots
+    )
+    for tile in saved:
+        query = {"model": tile["tile_id"]}
+        selected = views._select_model(tmp_path, {"winner": {"family": "ridge"}}, query)
+        assert selected["family"] == tile["family"]
+        for split in ("validation", "test", "forecast"):
+            table = read_table(views._prediction_path(tmp_path, query, split))
+            expected = (
+                [9, 19]
+                if tile["kind"] == "ensemble"
+                else [8, 18]
+                if tile["family"] == "ridge"
+                else [10, 20]
+            )
+            np.testing.assert_allclose(table["prediction"], expected)
+        assert views._optional_prediction_path(tmp_path, query, "curve") is None
+    with pytest.raises(views.ViewError, match="tile in this run"):
+        views._prediction_path(tmp_path, {"model": "model:ridge:unknown"}, "test")
+
+
 def test_tiles_stable_ids_full_scores_legacy_curves_and_top_five(tmp_path):
     families = ["ridge", "lightgbm", "xgboost", "snaive"]
     save_json(

@@ -364,7 +364,7 @@ function forecastRunTileChart(tile, tiles, metric, training) {
   svg.setAttribute('viewBox', '-0.03 -0.03 1.06 1.06');
   svg.setAttribute('preserveAspectRatio', 'none');
   svg.setAttribute('aria-label', training ? 'train loss by round' : `validation ${metric} by round`);
-  const palette = ['--lichen', '--vanilla', '--stone-red-lift', '--kingfisher-milk', '--text-dim'];
+  const palette = ['--lichen-milk', '--vanilla', '--stone-red-lift', '--kingfisher-milk', '--muted-on'];
   const members = tile.kind === 'ensemble'
     ? (tile.members || []).map(id => tiles.find(member => member.tile_id === id)).filter(Boolean) : [tile];
   let recorded = false;
@@ -2005,7 +2005,7 @@ class ForecastTopic {
               <span><i data-state="pending"></i>pending or no test score</span>
             </div>
             <div class="forecast-tiles-controls">
-              <span id="${this.topic}-tiles-metric-slot"></span>
+              <span class="forecast-tile-selectors" id="${this.topic}-tiles-metric-slot"></span>
               <button type="button" class="toggle" id="${this.topic}-tiles-flip" aria-pressed="false">flip all: folds</button>
             </div>
           </div>
@@ -2398,10 +2398,6 @@ class ForecastTopic {
 
   paintContractTiles(run, grid) {
     const tiles = run.runTiles;
-    if (this.tileMetric === 'validation_error') {
-      this.tileMetric = 'wape';
-      setHead(document.getElementById(`${this.topic}-tiles-metric`), 'y metric: wape');
-    }
     const names = new Set(['ape', 'mape', 'wape', 'ae', 'mae', 'wae']);
     tiles.forEach(tile => {
       Object.keys(tile.metrics || {}).forEach(name => names.add(name));
@@ -2411,6 +2407,10 @@ class ForecastTopic {
       });
     });
     this.tileMetricOptions.splice(0, this.tileMetricOptions.length, ...names);
+    if (!names.has(this.tileMetric)) this.tileMetric = 'wape';
+    const metricHead = document.getElementById(`${this.topic}-tiles-metric`);
+    metricHead.dataset.value = this.tileMetric;
+    setHead(metricHead, `y metric: ${this.tileMetric}`);
     const valueFor = tile => Number.isFinite(tile.metrics?.[this.tileMetric]?.validation)
       ? tile.metrics[this.tileMetric].validation
       : Number.isFinite(tile.curves?.[tile.best_generation]?.validation?.[this.tileMetric]?.at(-1))
@@ -2422,6 +2422,7 @@ class ForecastTopic {
     const flip = document.getElementById(`${this.topic}-tiles-flip`);
     flip.classList.add('hidden');
     document.getElementById(`${this.topic}-tiles`).classList.remove('flipped');
+    setText(`${this.topic}-run-view-caption`, 'tiles: ranked models and ensembles. tables: every family as a row, plus the best ten recipes.');
     const legacy = forecastTileEntries(run);
     const existing = new Map([...grid.children].map(node => [node.dataset.tileId, node]));
     entries.forEach((tile, index) => {
@@ -2430,10 +2431,12 @@ class ForecastTopic {
       let node = old;
       if (!node || node.dataset.signature !== signature) {
         const open = [...(node?.querySelectorAll('details[open]') || [])].map(item => item.dataset.menu);
+        const focusedMenu = node?.contains(document.activeElement) ? document.activeElement.closest('details')?.dataset.menu : null;
         node = forecastCreateRunTile(tile, index, tiles, this.tileMetric, legacy.find(item => item.name === tile.family));
         node.dataset.signature = signature;
         open.forEach(key => { const menu = node.querySelector(`details[data-menu="${key}"]`); if (menu) menu.open = true; });
         if (old) old.replaceWith(node); else grid.append(node);
+        if (focusedMenu) node.querySelector(`details[data-menu="${focusedMenu}"] summary`)?.focus({preventScroll: true});
       }
       if (grid.children[index] !== node) grid.insertBefore(node, grid.children[index] || null);
       existing.delete(tile.tile_id);
@@ -2815,10 +2818,14 @@ class ForecastTopic {
     document.getElementById(`${this.topic}-page-next`).onclick = () => this.changePage(1);
     document.getElementById(`${this.topic}-results-model`).onclick = evt => {
       if (!this.resultsView) return;
-      listMenu('forecast', [
+      const tiles = this.resultsView.run_tiles;
+      const options = tiles?.length ? tiles.map(tile => ({
+        id: tile.tile_id, label: forecastRunTileLabel(tile, tiles), on: this.resultsModel === tile.tile_id,
+      })) : [
         {id: 'winner', label: this.resultsView.winner_family || 'xgboost', on: this.resultsModel === 'winner'},
         {id: 'ensemble', label: `ensemble of ${(this.resultsView.ensemble?.members || []).join(', ')}`, on: this.resultsModel === 'ensemble'},
-      ], async item => {
+      ];
+      listMenu('forecast', options, async item => {
         this.resultsModel = item.id;
         this.importanceFamily = null;
         this.tableRequest++;
@@ -3126,9 +3133,10 @@ class ForecastTopic {
     this.resultsModel = view.model || this.resultsModel || 'winner';
     this.importanceFamily = view.importance_family || null;
     const modelHead = document.getElementById(`${this.topic}-results-model`);
-    modelHead.classList.toggle('hidden', !view.ensemble);
-    setHead(modelHead, forecastModelLabel(view));
-    const exportSuffix = view.ensemble ? `/${this.resultsModel}` : '';
+    modelHead.classList.toggle('hidden', !view.ensemble && !view.run_tiles?.length);
+    const selectedTile = view.run_tiles?.find(tile => tile.tile_id === this.resultsModel);
+    setHead(modelHead, selectedTile ? forecastRunTileLabel(selectedTile, view.run_tiles) : forecastModelLabel(view));
+    const exportSuffix = view.ensemble || selectedTile ? `/${encodeURIComponent(this.resultsModel)}` : '';
     document.getElementById(`${this.topic}-export`).href = `/api/forecast-export/${encodeURIComponent(this.resultsRunId)}${exportSuffix}.csv`;
     const families = Object.entries(view.families || {});
     document.getElementById(`${this.topic}-results-models`).classList.remove('hidden');
@@ -3146,6 +3154,16 @@ class ForecastTopic {
     ]);
     forecastFillTable(document.getElementById(`${this.topic}-family-comparison`),
       ['family', 'state', ...metrics.map(forecastMetricHeader), 'candidates', 'reason'], rows);
+    if (view.run_tiles?.length) {
+      const modelTiles = view.run_tiles.filter(tile => tile.kind === 'model');
+      document.getElementById(`${this.topic}-family-comparison-wrap`).classList.remove('hidden');
+      forecastFillTable(document.getElementById(`${this.topic}-family-comparison`),
+        ['family', 'state', ...metrics.map(forecastMetricHeader), 'best recipe', 'features'], modelTiles.map(tile => [
+          tile.family, tile.state,
+          ...metrics.map(metric => forecastMetricValue(metric, view.families?.[tile.family] || {})),
+          JSON.stringify(tile.recipe?.params || {}), (tile.recipe?.families || []).join(', ') || '-',
+        ]));
+    }
     const importanceHead = document.getElementById(`${this.topic}-importance-family`);
     importanceHead.disabled = !view.importance_families?.length;
     setHead(importanceHead, this.importanceFamily || 'none');
