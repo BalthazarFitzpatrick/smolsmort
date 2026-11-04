@@ -798,7 +798,14 @@ def run_metric_payload(run_dir, request, status=None, *, result=None, recipe=Non
     if model.startswith(("model:", "ensemble:")):
         tile, _ = _select_tile(run_dir, model)
         path = _tile_prediction_path(run_dir, model, "test")
-        summary = {"fitness": tile["metrics"]["wape"]["validation"]}
+        saved = tile.get("error_metrics", {})
+        fitness = saved.get("validation_error", {}).get("value")
+        summary = {
+            "fitness": fitness
+            if _finite_number(fitness) is not None
+            else tile["metrics"]["wape"]["validation"],
+            "verdict": {"accuracy": {"ratio": saved.get("test_ratio", {}).get("value")}},
+        }
     if not path.exists() and model == default_model:
         path = run_dir / "test.parquet"
     fitness = next(
@@ -893,13 +900,29 @@ def _select_model(run_dir: Path, result: dict, query: dict) -> dict:
     }
 
 
+def _model_prediction_path(run_dir, family, kind, winner_family, default_model):
+    path = run_dir / "families" / family / f"{kind}.parquet"
+    if path.exists() or family != winner_family:
+        return path
+    saved = run_dir / f"winner_{kind}.parquet"
+    if saved.exists():
+        return saved
+    return run_dir / f"{kind}.parquet" if default_model == "winner" else path
+
+
 def _mark_viewable(run_dir: Path, tiles: list[dict], winner_family: str) -> list[dict]:
     """flag tiles whose predictions are saved, so the model dropdown only offers what can open"""
     ok = {}
+    recipe = _read_json(run_dir / "recipe.json", {})
+    default_model = "ensemble" if recipe.get("family") == "ensemble" else "winner"
     for tile in tiles:
         if tile["kind"] == "model":
-            saved = (run_dir / "families" / tile["family"] / "validation.parquet").exists()
-            ok[tile["tile_id"]] = saved or tile["family"] == winner_family
+            ok[tile["tile_id"]] = all(
+                _model_prediction_path(
+                    run_dir, tile["family"], kind, winner_family, default_model
+                ).exists()
+                for kind in ("validation", "test", "forecast")
+            )
     for tile in tiles:
         if tile["kind"] == "ensemble":
             ok[tile["tile_id"]] = all(ok.get(member, False) for member in tile.get("members", []))
@@ -923,17 +946,10 @@ def _tile_prediction_path(run_dir: Path, model: str, kind: str) -> Path:
 
     tile, tiles = _select_tile(run_dir, model)
     if tile["kind"] == "model":
-        path = run_dir / "families" / tile["family"] / f"{kind}.parquet"
-        if path.exists():
-            return path
         winner = _select_model(run_dir, _require_done(run_dir), {"model": "winner"})
-        if tile["family"] == winner["family"]:
-            saved = run_dir / f"winner_{kind}.parquet"
-            if saved.exists():
-                return saved
-            if winner["default_model"] == "winner":
-                return run_dir / f"{kind}.parquet"
-        return path
+        return _model_prediction_path(
+            run_dir, tile["family"], kind, winner["family"], winner["default_model"]
+        )
     members = [item for item in tiles if item["tile_id"] in tile["members"]]
     paths = [_tile_prediction_path(run_dir, item["tile_id"], kind) for item in members]
     target = run_dir / "tile_views" / tile["recipe_key"] / f"{kind}.parquet"
@@ -1490,8 +1506,9 @@ def _horizon_result_metrics(run_dir, request, query, details, selection):
         if entry is not None:
             metrics = selected_metrics if name == model else unavailable
             entry["error_metrics"] = {**entry["error_metrics"], **metrics}
+    selected_family = details["family"] if model.startswith("model:") else details["winner_family"]
     for family, entry in details["families"].items():
-        selected = model == "winner" and family == details["winner_family"]
+        selected = (model == "winner" or model.startswith("model:")) and family == selected_family
         if selected:
             metrics = selected_metrics
         else:

@@ -3,6 +3,7 @@
 read_tiles(folder) returns [{tile_id, kind, family, recipe_key, recipe, metrics,
 curves, state, best_generation, running_generation, members (ensemble only)}]
 metrics maps ape/mape/wape/ae/mae/wae to {validation, test}; missing values are null
+model error_metrics keeps saved search fitness, test values and verdict metadata for the picker
 curves maps generation to {train_loss: [], validation: {metric: []}, loss: {}}
 one-shot curves contain one value; legacy files may omit metrics and training
 model ids use the saved genome key; ensemble ids hash sorted member tile ids
@@ -18,7 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
-from smolsmort.forecast.metrics import CURVE_METRICS, prediction_metrics
+from smolsmort.forecast.metrics import CURVE_METRICS, error_metrics, prediction_metrics
 from smolsmort.forecast.tables import read_table
 
 
@@ -159,13 +160,20 @@ def read_tiles(folder: Path, *, include_ensembles=True):
     request = read_json(folder / "request.json", {})
     status = read_json(folder / "status.json", {})
     saved_recipe = read_json(folder / "recipe.json", {})
+    result = read_json(folder / "result.json", {})
+    winner = result.get("winner") or {}
     names = [item["name"] for item in request.get("families", [])]
     if not names:
         names = [(saved_recipe.get("genome") or {}).get("family", "xgboost")]
+    winner_family = winner.get("family") or (saved_recipe.get("genome") or {}).get("family")
+    if not winner_family and saved_recipe.get("family") != "ensemble":
+        winner_family = saved_recipe.get("family") or (names[0] if len(names) == 1 else None)
     models, tables = [], {}
     for family in names:
         target = folder / "families" / family
         board = read_json(target / "leaderboard.json", [])
+        if not board and request.get("version") != 2:
+            board = read_json(folder / "leaderboard.json", [])
         best = min(
             (entry for entry in board if entry.get("fitness") is not None),
             key=lambda entry: entry["fitness"],
@@ -206,13 +214,14 @@ def read_tiles(folder: Path, *, include_ensembles=True):
                 "validation": validation,
                 "loss": candidate.get("loss", {}),
             }
-        split_tables = {}
+        split_tables, split_paths = {}, {}
         for split in ("validation", "test"):
             path = target / f"{split}.parquet"
-            if not path.exists() and len(names) == 1:
+            if not path.exists() and family == winner_family:
                 path = folder / f"winner_{split}.parquet"
-                if not path.exists():
+                if not path.exists() and saved_recipe.get("family") != "ensemble":
                     path = folder / f"{split}.parquet"
+            split_paths[split] = path
             split_tables[split] = read_predictions(path)
         scores = {split: table_metrics(table) for split, table in split_tables.items()}
         metrics = {
@@ -232,6 +241,12 @@ def read_tiles(folder: Path, *, include_ensembles=True):
             and progress.get("state", status.get("state"))
             in ("pending", "starting", "running", "paused", "queued")
         )
+        summary = result.get("families", {}).get(family, {})
+        if family == winner_family:
+            summary = {**result, **winner} if saved_recipe.get("family") != "ensemble" else winner
+        fitness = best.get(
+            "fitness", summary.get("fitness", progress.get("best_error", summary.get("val_error")))
+        )
         models.append(
             {
                 "tile_id": tile_id,
@@ -240,6 +255,12 @@ def read_tiles(folder: Path, *, include_ensembles=True):
                 "recipe_key": key,
                 "recipe": recipe,
                 "metrics": metrics,
+                "error_metrics": error_metrics(
+                    request.get("spec", {}),
+                    fitness=fitness,
+                    verdict=summary.get("verdict"),
+                    path=split_paths["test"],
+                ),
                 "curves": curves,
                 "state": "running" if running else "done",
                 "best_generation": best.get("generation", min(generations, default=None)),
