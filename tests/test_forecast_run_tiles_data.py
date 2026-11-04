@@ -33,6 +33,79 @@ def save_model(folder, family, prediction):
     return genome
 
 
+def test_picker_metrics_keep_saved_search_score_and_each_models_verdict(tmp_path):
+    from smolsmort.forecast import views
+
+    save_json(
+        tmp_path / "request.json",
+        {
+            "version": 2,
+            "spec": {"task": "regression", "mode": "timeseries"},
+            "families": [{"name": "ridge"}, {"name": "snaive"}],
+        },
+    )
+    save_json(tmp_path / "status.json", {"state": "done"})
+    save_json(
+        tmp_path / "result.json",
+        {
+            "winner": {"family": "ridge", "verdict": {"accuracy": {"ratio": 0.7}}},
+            "verdict": {"accuracy": {"ratio": 0.1}},
+        },
+    )
+    save_model(tmp_path, "ridge", [8, 18])
+    save_model(tmp_path, "snaive", [10, 20])
+    models = {tile["family"]: tile for tile in tiles.read_tiles(tmp_path, include_ensembles=False)}
+    ridge = models["ridge"]["error_metrics"]
+    assert ridge["validation_error"]["value"] == 0.2
+    assert ridge["wape"]["value"] == pytest.approx(4 / 30)
+    assert ridge["mae"]["value"] == 2
+    assert ridge["mape"]["value"] == pytest.approx(0.15)
+    assert ridge["test_ratio"]["value"] == 0.7
+    assert models["snaive"]["error_metrics"]["test_ratio"]["value"] is None
+    assert models["snaive"]["error_metrics"]["wape"]["value"] == 0
+    request = tiles.read_json(tmp_path / "request.json", {})
+    for tile in models.values():
+        payload = views.run_metric_payload(tmp_path, request, model=tile["tile_id"])
+        assert payload["error_metrics"] == tile["error_metrics"]
+
+
+def test_legacy_tile_picker_metrics_read_root_artifacts(tmp_path):
+    save_json(tmp_path / "request.json", {"spec": {"task": "regression"}})
+    save_json(tmp_path / "status.json", {"state": "done"})
+    genome = {"family": "ridge", "params": {"alpha": 1}}
+    save_json(tmp_path / "recipe.json", {"genome": genome})
+    save_json(tmp_path / "leaderboard.json", [{"genome": genome, "fitness": 0.42}])
+    save_json(tmp_path / "result.json", {"verdict": {"accuracy": {"ratio": 0.8}}})
+    write_table(
+        tmp_path / "test.parquet",
+        {"actual": np.array([0.0, 4.0, -2.0]), "prediction": np.array([1.0, 3.0, -1.0])},
+    )
+    tile = tiles.read_tiles(tmp_path)[0]
+    assert tile["error_metrics"]["validation_error"]["value"] == 0.42
+    assert tile["error_metrics"]["test_ratio"]["value"] == 0.8
+    assert tile["error_metrics"]["mape"]["value"] == 0.25
+    assert tile["error_metrics"]["mape"]["excluded_rows"] == 2
+
+
+@pytest.mark.parametrize("missing", ["validation", "test", "forecast"])
+def test_results_only_offer_tiles_with_every_required_prediction_split(tmp_path, missing):
+    from smolsmort.forecast import views
+
+    save_json(
+        tmp_path / "request.json",
+        {"version": 2, "families": [{"name": "ridge"}, {"name": "snaive"}]},
+    )
+    save_model(tmp_path, "ridge", [8, 18])
+    save_model(tmp_path, "snaive", [10, 20])
+    saved = tiles.read_tiles(tmp_path)
+    (tmp_path / "families/ridge/forecast.parquet").replace(tmp_path / "winner_forecast.parquet")
+    (tmp_path / "families/snaive" / f"{missing}.parquet").replace(
+        tmp_path / f"unused_{missing}.parquet"
+    )
+    marked = views._mark_viewable(tmp_path, saved, "ridge")
+    assert all(tile["viewable"] == (tile["family"] == "ridge") for tile in marked)
+
+
 def test_tile_results_resolved_family_and_aligned_ensemble_predictions(tmp_path):
     from concurrent.futures import ThreadPoolExecutor
 
@@ -255,7 +328,9 @@ def test_mark_viewable_flags_only_tiles_with_saved_predictions(tmp_path):
     from smolsmort.forecast.views import _mark_viewable
 
     (tmp_path / "families" / "xgboost").mkdir(parents=True)
-    (tmp_path / "families" / "xgboost" / "validation.parquet").write_bytes(b"")
+    for kind in ("validation", "test", "forecast"):
+        (tmp_path / "families" / "xgboost" / f"{kind}.parquet").write_bytes(b"")
+        (tmp_path / f"winner_{kind}.parquet").write_bytes(b"")
     tiles = [
         {"tile_id": "model:xgboost:a", "kind": "model", "family": "xgboost"},
         {"tile_id": "model:ridge:b", "kind": "model", "family": "ridge"},
@@ -270,7 +345,7 @@ def test_mark_viewable_flags_only_tiles_with_saved_predictions(tmp_path):
     flags = {
         tile["tile_id"]: tile["viewable"] for tile in _mark_viewable(tmp_path, tiles, "lightgbm")
     }
-    # saved predictions or the run winner open; an ensemble needs all of its members
+    # complete family or winner predictions open; an ensemble needs all of its members
     assert flags == {
         "model:xgboost:a": True,
         "model:ridge:b": False,

@@ -162,16 +162,16 @@ def test_error_metric_selection_updates_every_display_from_saved_predictions(tmp
         save_metrics(page, "tables")
 
         page.locator("#regression-run-view-tiles").click()
-        for face in (".forecast-tile-front", ".forecast-tile-back"):
-            assert_metric_lines(tile.locator(face), METRICS)
-            for metric, value in values.items():
-                assert (
-                    tile.locator(f'{face} [data-metric-id="{metric}"]').inner_text().endswith(value)
-                )
+        front = tile.locator(".forecast-tile-front")
+        assert_metric_lines(front, METRICS)
+        for metric, value in values.items():
+            assert front.locator(f'[data-metric-id="{metric}"]').inner_text().endswith(value)
+        for tile_front in page.locator("#regression-tiles .forecast-tile-front").all():
+            assert_metric_lines(tile_front, METRICS)
         assert_metric_lines(run_row, METRICS)
         save_metrics(page, "tiles-front")
-        page.locator("#regression-tiles-flip").click()
-        save_metrics(page, "tiles-back")
+        assert not page.locator("#regression-tiles-flip").is_visible()
+        assert tile.locator("svg").count() == 2
 
         page.locator("#regression-run-open").click()
         page.locator("#regression-family-comparison tbody tr").first.wait_for()
@@ -191,7 +191,6 @@ def test_error_metric_selection_updates_every_display_from_saved_predictions(tmp
         assert page.locator(f".forecast-run-controls {PICKER}").count() == 1
         assert page.locator(PICKER).evaluate("(node, original) => node === original", picker)
         assert_metric_lines(tile.locator(".forecast-tile-front"), selected)
-        assert_metric_lines(tile.locator(".forecast-tile-back"), selected)
         assert_metric_lines(run_row, selected)
         page.locator("#regression-run-view-tables").click()
         for selector in ("#regression-family-progress", "#regression-leaderboard-table"):
@@ -283,9 +282,7 @@ def test_error_metric_picker_keeps_phone_document_within_viewport(tmp_path):
 
         assert_width()
         save_metrics(page, "phone-tiles-front")
-        page.locator("#regression-tiles-flip").click()
-        assert_width()
-        save_metrics(page, "phone-tiles-back")
+        assert not page.locator("#regression-tiles-flip").is_visible()
         page.locator("#regression-run-view-tables").click()
         assert_width()
         save_metrics(page, "phone-tables")
@@ -298,3 +295,46 @@ def test_error_metric_picker_keeps_phone_document_within_viewport(tmp_path):
         menu = page.locator(MENU).bounding_box()
         assert menu and menu["x"] >= 0 and menu["x"] + menu["width"] <= 390
         save_metrics(page, "phone-picker")
+
+
+def test_square_tile_picker_uses_each_models_and_ensembles_saved_metrics(tmp_path):
+    from test_forecast_tiles_browser import make_contract_tiles
+
+    with session(tmp_path, port=0) as (page, base):
+        run_id = make_contract_tiles(tmp_path / "forecast_root")
+        switch_to_regression(page)
+        page.select_option("#topic-flavour", "timeseries")
+        show_tab(page, "regression-search")
+        page.locator("#regression-tiles .forecast-run-tile").first.wait_for()
+        select_metrics(page, METRICS)
+        response = page.request.get(base + "/api/forecast-run-tiles", params={"run": run_id})
+        assert response.status == 200
+        tiles = response.json()["tiles"]
+        assert any(tile["kind"] == "ensemble" for tile in tiles)
+        for tile in tiles:
+            card = page.locator(f'.forecast-run-tile[data-tile-id="{tile["tile_id"]}"]')
+            front = card.locator(".forecast-tile-front")
+            assert_metric_lines(front, METRICS)
+            for metric in METRICS:
+                saved = tile.get("error_metrics", {}).get(metric)
+                name = "wape" if metric == "validation_error" else metric
+                split = "validation" if metric == "validation_error" else "test"
+                value = saved["value"] if saved else tile["metrics"].get(name, {}).get(split)
+                expected = (
+                    "-"
+                    if value is None
+                    else f"{value:.2f}"
+                    if metric == "test_ratio"
+                    else f"{value * 100:.1f}%"
+                    if metric != "mae"
+                    else f"{value:.4g}"
+                )
+                line = front.locator(f'[data-metric-id="{metric}"]')
+                assert line.inner_text().endswith(": " + expected), (tile["tile_id"], metric)
+                if tile["kind"] == "ensemble" and metric == "test_ratio":
+                    assert "metric not saved for this row" in line.get_attribute("title")
+            box = card.bounding_box()
+            assert abs(box["width"] - box["height"]) <= 1
+            assert card.locator("svg").count() == 2
+            for chart in card.locator("svg").all():
+                assert chart.bounding_box()["height"] > 0

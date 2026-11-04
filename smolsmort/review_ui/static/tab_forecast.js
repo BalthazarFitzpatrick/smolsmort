@@ -427,7 +427,21 @@ function forecastRunTileChart(tile, tiles, metric, training) {
   return chart;
 }
 
-function forecastCreateRunTile(tile, index, tiles, metric, legacy) {
+function forecastRunTileMetricRow(tile, metrics) {
+  const error_metrics = {...tile.error_metrics};
+  metrics.forEach(metric => {
+    const saved = error_metrics[metric.id];
+    if (saved && (metric.id !== 'validation_error' || Number.isFinite(saved.value))) return;
+    const name = metric.id === 'validation_error' ? 'wape' : metric.id;
+    const value = metric.id === 'test_ratio' ? tile.verdict?.accuracy?.ratio ?? tile.metrics?.test_ratio?.test
+      : tile.metrics?.[metric.id]?.[metric.scope] ?? tile.metrics?.[name]?.[metric.scope]
+        ?? (metric.scope === 'validation' ? tile.curves?.[tile.best_generation]?.validation?.[name]?.at(-1) : null);
+    if (Number.isFinite(value)) error_metrics[metric.id] = {value, scope: metric.scope};
+  });
+  return {error_metrics};
+}
+
+function forecastCreateRunTile(tile, index, tiles, metric, legacy, metrics) {
   const wrap = forecastNode('article', 'forecast-tile forecast-run-tile');
   wrap.dataset.family = tile.family;
   wrap.dataset.tileId = tile.tile_id;
@@ -460,6 +474,7 @@ function forecastCreateRunTile(tile, index, tiles, metric, legacy) {
     details.append(menu);
     face.append(details);
   } else face.append(forecastTileMenus({...legacy, genome: tile.recipe}));
+  face.append(forecastMetricLines(metrics, forecastRunTileMetricRow(tile, metrics)));
   inner.append(face);
   wrap.append(inner);
   return wrap;
@@ -2398,6 +2413,7 @@ class ForecastTopic {
 
   paintContractTiles(run, grid) {
     const tiles = run.runTiles;
+    const metrics = this.selectedMetrics(run);
     const names = new Set(['ape', 'mape', 'wape', 'ae', 'mae', 'wae']);
     tiles.forEach(tile => {
       Object.keys(tile.metrics || {}).forEach(name => names.add(name));
@@ -2427,12 +2443,12 @@ class ForecastTopic {
     const existing = new Map([...grid.children].map(node => [node.dataset.tileId, node]));
     entries.forEach((tile, index) => {
       const old = existing.get(tile.tile_id);
-      const signature = JSON.stringify([tile, index, this.tileMetric, tiles]);
+      const signature = JSON.stringify([tile, index, this.tileMetric, tiles, metrics]);
       let node = old;
       if (!node || node.dataset.signature !== signature) {
         const open = [...(node?.querySelectorAll('details[open]') || [])].map(item => item.dataset.menu);
         const focusedMenu = node?.contains(document.activeElement) ? document.activeElement.closest('details')?.dataset.menu : null;
-        node = forecastCreateRunTile(tile, index, tiles, this.tileMetric, legacy.find(item => item.name === tile.family));
+        node = forecastCreateRunTile(tile, index, tiles, this.tileMetric, legacy.find(item => item.name === tile.family), metrics);
         node.dataset.signature = signature;
         open.forEach(key => { const menu = node.querySelector(`details[data-menu="${key}"]`); if (menu) menu.open = true; });
         if (old) old.replaceWith(node); else grid.append(node);
@@ -2824,6 +2840,7 @@ class ForecastTopic {
       const options = shown.map(tile => ({
         id: tile.tile_id, label: forecastRunTileLabel(tile, tiles), on: this.resultsModel === tile.tile_id,
       }));
+      if (!tiles?.length) options.push({id: 'winner', label: this.resultsView.winner_family || 'xgboost', on: this.resultsModel === 'winner'});
       if (!shown.some(tile => tile.kind === 'ensemble') && this.resultsView.ensemble) {
         options.push({id: 'ensemble', label: `ensemble of ${(this.resultsView.ensemble.members || []).join(', ')}`, on: this.resultsModel === 'ensemble'});
       }
@@ -3158,11 +3175,13 @@ class ForecastTopic {
     forecastFillTable(document.getElementById(`${this.topic}-family-comparison`),
       ['family', 'state', ...metrics.map(forecastMetricHeader), 'candidates', 'reason'], rows);
     if (view.run_tiles?.length) {
-      const modelTiles = view.run_tiles.filter(tile => tile.kind === 'model');
+      const familyOrder = families.map(([name]) => name);
+      const modelTiles = view.run_tiles.filter(tile => tile.kind === 'model')
+        .sort((a, b) => familyOrder.indexOf(a.family) - familyOrder.indexOf(b.family));
       document.getElementById(`${this.topic}-family-comparison-wrap`).classList.remove('hidden');
       forecastFillTable(document.getElementById(`${this.topic}-family-comparison`),
         ['family', 'state', ...metrics.map(forecastMetricHeader), 'best recipe', 'features'], modelTiles.map(tile => [
-          tile.family, tile.state,
+          tile.family, view.families?.[tile.family]?.state || tile.state,
           ...metrics.map(metric => forecastMetricValue(metric, view.families?.[tile.family] || {})),
           JSON.stringify(tile.recipe?.params || {}), (tile.recipe?.families || []).join(', ') || '-',
         ]));
