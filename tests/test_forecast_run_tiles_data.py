@@ -90,6 +90,7 @@ def test_tile_route_full_read_and_new_curves(tmp_path):
         "train_loss": [3, 2],
         "curves": {name: [2, 1] for name in tiles.CURVE_METRICS},
         "loss": {"name": "rmse", "validation": [3, 2]},
+        "candidates": [{"key": tiles.recipe_key(genome), "validation_metrics": {"mae": 1}}],
     }
     path = folder / "families/ridge/generation_curves.jsonl"
     path.write_text(json.dumps(record) + "\n", encoding="utf-8")
@@ -98,6 +99,12 @@ def test_tile_route_full_read_and_new_curves(tmp_path):
     result = get(app, {"run": "saved", "since_generation": "999"})
     assert result == get(app, {"run": "saved"})
     assert result["tiles"][0]["curves"]["2"]["train_loss"] == [3, 2]
+    assert result["tiles"][0]["curves"]["2"]["validation"]["mae"] == [2, 1]
+    record["key"] = "another-leader"
+    path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    candidate_curve = get(app, {"run": "saved"})["tiles"][0]["curves"]["2"]
+    assert candidate_curve["train_loss"] == []
+    assert candidate_curve["validation"]["mae"] == [1]
     for family in ("snaive", "xgboost", "lightgbm"):
         save_model(folder, family, [11, 21])
     save_json(

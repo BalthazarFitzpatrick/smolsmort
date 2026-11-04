@@ -770,24 +770,21 @@ def search(
                     "candidates": [
                         {
                             "key": entry.genome.key(),
-                            "metrics": entry.metrics,
                             "validation_metrics": entry.metrics.get(
                                 "validation_metrics", entry.metrics
                             ),
-                            **(entry.eval_history or {}),
-                            "train_loss": (entry.eval_history or {}).get("training", []),
-                            "loss": {
-                                "objective": entry.genome.objective,
-                                "name": (entry.eval_history or {}).get("metric"),
-                                "training": (entry.eval_history or {}).get("training", []),
-                                "validation": (entry.eval_history or {}).get("validation", []),
-                            },
                         }
                         for entry in entries
                         if np.isfinite(entry.fitness)
                     ],
                 }
             )
+        for entry in scored.values():
+            if entry is not best and entry.eval_history:
+                # cached candidates can lead later generations; retain their validation curves
+                entry.eval_history = {
+                    key: value for key, value in entry.eval_history.items() if key != "training"
+                }
         if not (stop and stop()):
             quiet = 0 if gained else quiet + 1
         elapsed = prior_elapsed + time.monotonic() - started

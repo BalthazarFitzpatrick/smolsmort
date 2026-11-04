@@ -186,7 +186,11 @@ def read_tiles(folder: Path, *, include_ensembles=True):
         curves = {}
         for record in records:
             candidates = record.get("candidates", [record])
-            candidate = next((item for item in candidates if item.get("key", key) == key), None)
+            candidate = (
+                record
+                if record.get("key") == key
+                else next((item for item in candidates if item.get("key", key) == key), None)
+            )
             if candidate is None:
                 continue
             validation = dict(candidate.get("curves") or {})

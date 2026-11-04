@@ -975,6 +975,8 @@ bucket's inner round-picking tail, not test rows. native losses retain their tra
 error curves use the original target scale. `loss.objective` names the model objective;
 `loss.name` names its logged native metric. one-shot families save scalar candidate metrics
 once per generation in `validation_metrics`, preserving legacy fold-weighted `metrics.wape`;
+only the generation leader carries per-round curves in each generation record. candidate
+entries contain only their key and scalar `validation_metrics`.
 the tile adapter wraps each value in a one-point curve. unavailable native
 training losses are empty arrays; statistical providers also leave `loss.name` null because
 they expose no native fit history. old curves without the new fields remain readable.

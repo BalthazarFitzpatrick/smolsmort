@@ -13,11 +13,11 @@ CURVE_METRICS = ("ape", "mape", "wape", "ae", "mae", "wae")
 
 def prediction_metrics(actual, prediction):
     """ape = abs(actual - prediction) / actual for actual > 0, averaged for curves
-    mape = mean(ape) over finite pairs with actual > 0
+    ape and mape curves are the same number: mean per-row ape for finite pairs with actual > 0
     wape = sum(abs(actual - prediction)) / sum(abs(actual)) over finite pairs
     ae = abs(actual - prediction), averaged for curves
     mae = mean(ae) over finite pairs
-    wae = sum(ae) over finite pairs, in target units
+    wae = sum of absolute errors over finite pairs, in target units
     """
     import numpy as np
 

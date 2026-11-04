@@ -442,15 +442,18 @@ def test_generation_curves_use_the_generation_winner_even_without_a_new_best(mon
             "training": [float(depth)],
             "validation": [depth + 0.5],
         }
-        return Scored(float(depth), np.array([float(depth)]), {}, history)
+        return Scored(
+            float(depth), np.array([float(depth)]), {"validation_metrics": {"mae": depth}}, history
+        )
 
     monkeypatch.setattr(search_module, "score", fake_score)
-    curves, events = [], []
+    curves, events, checkpoints = [], [], []
     search(
         ws,
         Budget(population=4, max_generations=3, plateau=2),
         on_generation=curves.append,
         on_event=events.append,
+        on_checkpoint=checkpoints.append,
     )
     assert [event["best"] for event in events if event["event"] == "generation"] == [6.0] * 3
     assert [
@@ -471,6 +474,18 @@ def test_generation_curves_use_the_generation_winner_even_without_a_new_best(mon
         genome.key() for genome in genomes[:4]
     }
     assert curves[0]["loss"]["name"] == "rmse"
+    assert all(
+        set(candidate) == {"key", "validation_metrics"}
+        and isinstance(candidate["validation_metrics"]["mae"], int)
+        for curve in curves
+        for candidate in curve["candidates"]
+    )
+    checkpoint = checkpoints[-1]
+    assert checkpoint["generation"] == 2
+    for entry in checkpoint["entries"]:
+        history = entry["eval_history"]
+        assert bool(history.get("training")) == (entry["key"] == checkpoint["best_key"])
+        assert history["validation"]
 
 
 def test_cached_generation_winners_keep_their_validation_curves(series_ws):
