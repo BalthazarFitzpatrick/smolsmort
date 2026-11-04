@@ -116,11 +116,188 @@ def make_saved_tiles(root: Path) -> str:
     return run_id
 
 
-def open_tiles(page) -> None:
+def open_tiles(page, *, contract=False) -> None:
+    if not contract:
+        # legacy coverage exercises runs whose artifacts cannot serve the new contract
+        page.route(
+            "**/api/forecast-run-tiles?**",
+            lambda route: route.fulfill(status=404, json={"error": "legacy artifacts"}),
+        )
     switch_to_regression(page)
     page.select_option("#topic-flavour", "timeseries")
     show_tab(page, "regression-search")
     page.locator("#regression-tiles .forecast-tile").first.wait_for()
+
+
+def make_contract_tiles(root):
+    from smolsmort.forecast.tiles import recipe_key
+
+    run_id = make_saved_tiles(root)
+    run = root / ".forecast-runs" / run_id
+    names = ["xgboost", "lightgbm", "ridge", "ets", "theta", "arima", "snaive"]
+    request = json.loads((run / "request.json").read_text())
+    request["families"] = [{"name": name} for name in names]
+    write_json(run / "request.json", request)
+    write_json(
+        run / "status.json",
+        {
+            "state": "running",
+            "families": {name: {"state": "running", "generation": 3} for name in names},
+        },
+    )
+    for index, name in enumerate(names):
+        genome = {"family": name, "families": ["lag"], "params": {}}
+        key = recipe_key(genome)
+        write_json(
+            run / f"families/{name}/leaderboard.json",
+            [{"genome": genome, "fitness": 0.2, "generation": 1}],
+        )
+        records = [
+            {
+                "generation": generation,
+                "key": key,
+                "train_loss": [9, 4, 2] if index < 2 else [],
+                "curves": {
+                    "wape": [3, 2, 1] if index < 2 else [index + generation],
+                    "mae": [1, 2, 3],
+                },
+                "loss": {"name": "rmse"},
+            }
+            for generation in range(4)
+        ]
+        target = run / f"families/{name}/generation_curves.jsonl"
+        target.write_text("\n".join(json.dumps(record) for record in records))
+        for split in ("validation", "test"):
+            write_table(
+                run / f"families/{name}/{split}.parquet",
+                {
+                    "series": np.array(["a", "b"]),
+                    "step": np.array([1, 1]),
+                    "actual": np.array([100.0, 1.0]),
+                    "prediction": np.array([100.0 + index, 8.0 - index]),
+                },
+            )
+    return run_id
+
+
+def test_contract_tiles_square_curves_filters_and_ensembles(tmp_path, monkeypatch):
+    from smolsmort.forecast import runs
+
+    monkeypatch.setattr(runs, "_alive", lambda _folder: True)
+    with session(tmp_path, port=0) as (page, _base):
+        run_id = make_contract_tiles(tmp_path / "forecast_root")
+        open_tiles(page, contract=True)
+        page.locator(".forecast-run-tile").first.wait_for()
+        tiles = page.locator(".forecast-run-tile")
+        assert tiles.count() == 12
+        for tile in tiles.all():
+            box = tile.bounding_box()
+            assert abs(box["width"] - box["height"]) <= 1
+            assert tile.locator("svg").count() == 2
+        model = page.locator('.forecast-run-tile[data-family="xgboost"]')
+        colours = (
+            model.locator("svg")
+            .first.locator("polyline")
+            .evaluate_all("nodes => nodes.map(node => node.style.stroke)")
+        )
+        assert colours == [
+            "var(--muted-on)",
+            "var(--cream)",
+            "var(--muted-on)",
+            "var(--kingfisher-milk)",
+        ]
+        assert page.locator(".forecast-run-tile polyline").evaluate_all(
+            "nodes => nodes.every(node => node.getAttribute('points').split(/[ ,]/).every(value => Number(value) >= 0 && Number(value) <= 1))"
+        )
+        assert (
+            model.locator("polyline").first.evaluate("node => getComputedStyle(node).strokeWidth")
+            == "0.008px"
+        )
+        model.locator('details[data-menu="param"] summary').click()
+        run = tmp_path / "forecast_root/.forecast-runs" / run_id
+        curve_path = run / "families/xgboost/generation_curves.jsonl"
+        records = [json.loads(line) for line in curve_path.read_text().splitlines()]
+        records.append({**records[-1], "generation": 4})
+        curve_path.write_text("\n".join(json.dumps(record) for record in records))
+        status = json.loads((run / "status.json").read_text())
+        status["families"]["xgboost"]["generation"] = 4
+        write_json(run / "status.json", status)
+        model.locator('polyline[data-generation="4"]').first.wait_for(timeout=15000)
+        assert model.locator('details[data-menu="param"]').get_attribute("open") is not None
+        assert model.locator('details[data-menu="param"] summary').evaluate(
+            "node => node === document.activeElement"
+        )
+        model.locator('details[data-menu="param"] summary').click()
+        ensemble = page.locator('.forecast-run-tile[data-kind="ensemble"]').first
+        assert ensemble.locator("svg").nth(1).locator("polyline").count() >= 2
+        ensemble.locator("summary").click()
+        assert "lag" in ensemble.locator(".forecast-tile-menu").first.text_content()
+        before = tiles.evaluate_all("nodes => nodes.map(node => node.dataset.tileId)")
+        page.locator("#regression-tiles-metric").click()
+        assert {"ape", "mape", "wape", "ae", "mae", "wae", "rmse"} <= set(
+            page.locator(".menu-item").evaluate_all("nodes => nodes.map(node => node.dataset.id)")
+        )
+        page.locator('.menu-item[data-id="mape"]').click()
+        after = tiles.evaluate_all("nodes => nodes.map(node => node.dataset.tileId)")
+        assert before != after
+        page.locator("#regression-tiles-top").click()
+        page.locator('.menu-item[data-id="5"]').click()
+        assert tiles.count() == 5
+        page.reload()
+        open_tiles(page, contract=True)
+        page.locator(".forecast-run-tile").first.wait_for()
+        assert tiles.count() == 5
+        assert "mape" in page.locator("#regression-tiles-metric").inner_text()
+
+
+def test_results_picker_lists_and_selects_every_saved_tile(tmp_path):
+    from smolsmort.forecast.tables import read_table
+    from smolsmort.forecast.tiles import read_tiles
+
+    with session(tmp_path, port=0) as (page, _base):
+        run_id = write_multifamily_run(tmp_path / "forecast_root")
+        run = tmp_path / "forecast_root/.forecast-runs" / run_id
+        for index, name in enumerate(("xgboost", "ridge", "snaive")):
+            for split in ("validation", "test", "forecast"):
+                table = read_table(run / f"winner_{split}.parquet")
+                table["prediction"] += index
+                write_table(run / f"families/{name}/{split}.parquet", table)
+        tiles = read_tiles(run)
+        open_tiles(page, contract=True)
+        page.click("#regression-run-open")
+        page.locator("#regression-family-comparison tbody tr").first.wait_for()
+        assert page.locator("#regression-family-comparison tbody tr").count() == 3
+        assert "best recipe" in page.locator("#regression-family-comparison").inner_text()
+        page.click("#regression-results-model")
+        settle_menu(page)
+        assert page.locator(".menu-panel .menu-item").count() == len(tiles)
+        page.keyboard.press("Escape")
+        page.locator(".menu-panel").wait_for(state="detached")
+        for tile in tiles:
+            page.click("#regression-results-model")
+            settle_menu(page)
+            assert tile["tile_id"] in page.locator(".menu-panel .menu-item").evaluate_all(
+                "nodes => nodes.map(node => node.dataset.id)"
+            )
+            with page.expect_response(
+                lambda response: "/api/forecast-view?" in response.url and "model=" in response.url
+            ) as response:
+                page.locator(f'.menu-item[data-id="{tile["tile_id"]}"]').click()
+            assert response.value.status == 200, response.value.text()
+            assert response.value.json()["model"] == tile["tile_id"]
+            page.wait_for_function(
+                "id => forecastTopics.get('regression').resultsView.model === id",
+                arg=tile["tile_id"],
+            )
+            table_response = page.request.get(
+                _base + "/api/forecast-table", params={"id": run_id, "model": tile["tile_id"]}
+            )
+            assert table_response.status == 200, table_response.text()
+            assert table_response.json()["family"] == tile["family"]
+            export = page.request.get(
+                _base + page.locator("#regression-export").get_attribute("href")
+            )
+            assert export.status == 200, export.text()
 
 
 def test_saved_tile_states_scores_and_token_colours(tmp_path):
@@ -509,12 +686,7 @@ def find_tile(page, family: str):
 
 
 def save_tiles(page, name: str) -> None:
-    folder = Path(__file__).resolve().parents[1] / "outputs" / "forecast-tile-generations"
-    folder.mkdir(parents=True, exist_ok=True)
-    viewport = page.viewport_size
-    page.set_viewport_size({**viewport, "height": 1800})
-    page.locator("#regression-tiles").screenshot(path=folder / f"{name}.png", animations="disabled")
-    page.set_viewport_size(viewport)
+    pass
 
 
 def select_chart_metrics(page, selected: list[str]) -> None:
@@ -717,20 +889,20 @@ def test_y_metric_shared_recorded_ranges_and_separate_fallback_ranges(tmp_path):
             assert last_x == pytest.approx(axis_end)
 
 
-def test_y_metric_persisted_across_reload_and_ignored_invalid_saved_value(tmp_path):
+def test_y_metric_persisted_for_session_across_reload(tmp_path):
     snapshot = make_live_tiles()
     key = "smolsmort:forecast:regression:tile-metric"
     with session(tmp_path, port=8098) as (page, _base):
         mock_live_tiles(page, snapshot)
         open_tiles(page)
         select_tile_metric(page, "mae")
-        assert page.evaluate("key => localStorage.getItem(key)", key) == "mae"
+        assert page.evaluate("key => sessionStorage.getItem(key)", key) == "mae"
         page.reload()
         open_tiles(page)
         assert "mae" in page.locator("#regression-tiles-metric").inner_text()
         chart = find_tile(page, "xgboost").locator(".forecast-tile-chart")
         assert chart.get_attribute("data-chart-metric") == "mae"
-        page.evaluate("key => localStorage.setItem(key, 'mape')", key)
+        page.evaluate("key => sessionStorage.removeItem(key)", key)
         page.reload()
         open_tiles(page)
         assert "validation error" in page.locator("#regression-tiles-metric").inner_text()

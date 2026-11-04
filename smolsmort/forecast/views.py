@@ -777,6 +777,10 @@ def run_metric_payload(run_dir, request, status=None, *, result=None, recipe=Non
     if model == default_model:
         summary = {**result, **summary}
     path = run_dir / f"{model}_test.parquet"
+    if model.startswith(("model:", "ensemble:")):
+        tile, _ = _select_tile(run_dir, model)
+        path = _tile_prediction_path(run_dir, model, "test")
+        summary = {"fitness": tile["metrics"]["wape"]["validation"]}
     if not path.exists() and model == default_model:
         path = run_dir / "test.parquet"
     fitness = next(
@@ -844,6 +848,18 @@ def _select_model(run_dir: Path, result: dict, query: dict) -> dict:
     ensemble = result.get("ensemble")
     default_model = "ensemble" if recipe.get("family") == "ensemble" else "winner"
     model = query.get("model") or default_model
+    if model.startswith(("model:", "ensemble:")):
+        tile, tiles = _select_tile(run_dir, model)
+        return {
+            "model": model,
+            "family": tile["family"],
+            "members": [
+                item["family"] for item in tiles if item["tile_id"] in tile.get("members", [])
+            ],
+            "winner_family": winner_family,
+            "verdict": None,
+            "default_model": default_model,
+        }
     if model not in ("winner", "ensemble"):
         raise ViewError("model must be winner or ensemble")
     if model == "ensemble" and not ensemble:
@@ -859,7 +875,67 @@ def _select_model(run_dir: Path, result: dict, query: dict) -> dict:
     }
 
 
+def _select_tile(run_dir: Path, model: str):
+    from smolsmort.forecast.tiles import read_tiles
+
+    tiles = read_tiles(run_dir)
+    tile = next((tile for tile in tiles if tile["tile_id"] == model), None)
+    if tile is None:
+        raise ViewError("model must name a tile in this run")
+    return tile, tiles
+
+
+def _tile_prediction_path(run_dir: Path, model: str, kind: str) -> Path:
+    from smolsmort.forecast.tables import read_table, write_table
+    from smolsmort.forecast.tiles import align_tables
+
+    tile, tiles = _select_tile(run_dir, model)
+    if tile["kind"] == "model":
+        path = run_dir / "families" / tile["family"] / f"{kind}.parquet"
+        if path.exists():
+            return path
+        winner = _select_model(run_dir, _require_done(run_dir), {"model": "winner"})
+        if tile["family"] == winner["family"]:
+            saved = run_dir / f"winner_{kind}.parquet"
+            if saved.exists():
+                return saved
+            if winner["default_model"] == "winner":
+                return run_dir / f"{kind}.parquet"
+        return path
+    members = [item for item in tiles if item["tile_id"] in tile["members"]]
+    paths = [_tile_prediction_path(run_dir, item["tile_id"], kind) for item in members]
+    target = run_dir / "tile_views" / tile["recipe_key"] / f"{kind}.parquet"
+    if any(not path.exists() for path in paths):
+        return target
+    with _POLL_LOCK:
+        if target.exists() and all(
+            target.stat().st_mtime_ns >= path.stat().st_mtime_ns for path in paths
+        ):
+            return target
+        tables = align_tables([read_table(path) for path in paths])
+        columns = dict(tables[0])
+        for name in ("actual", "truth"):
+            if name in columns and not all(
+                np.array_equal(columns[name], table[name], equal_nan=True) for table in tables
+            ):
+                raise ViewError("ensemble members disagree on actuals")
+        columns["prediction"] = np.mean([table["prediction"] for table in tables], axis=0)
+        # member bands are not calibrated for this new combination
+        for name in ("lower", "upper"):
+            columns[name] = np.full(len(columns["prediction"]), np.nan)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_suffix(".tmp.parquet")
+        write_table(temporary, columns)
+        temporary.replace(target)
+    return target
+
+
 def _prediction_path(run_dir: Path, query: dict, kind: str) -> Path:
+    if str(query.get("model", "")).startswith(("model:", "ensemble:")):
+        path = _tile_prediction_path(run_dir, query["model"], kind)
+        if not path.exists():
+            raise ViewError(f"tile has no saved {kind}")
+        return path
     selected = _select_model(run_dir, _require_done(run_dir), query)
     path = run_dir / f"{selected['model']}_{kind}.parquet"
     if path.exists():
@@ -870,6 +946,9 @@ def _prediction_path(run_dir: Path, query: dict, kind: str) -> Path:
 
 
 def _optional_prediction_path(run_dir: Path, query: dict, kind: str) -> Path | None:
+    if str(query.get("model", "")).startswith(("model:", "ensemble:")):
+        path = _tile_prediction_path(run_dir, query["model"], kind)
+        return path if path.exists() else None
     selected = _select_model(run_dir, _require_done(run_dir), query)
     path = run_dir / f"{selected['model']}_{kind}.parquet"
     if not path.exists() and selected["model"] == selected["default_model"]:
@@ -949,7 +1028,10 @@ def result_details(run_dir: Path, request: dict, query: dict) -> dict:
                 "error_metrics"
             ],
         }
-    return {
+    from smolsmort.forecast.tiles import read_tiles
+
+    run_tiles = read_tiles(run_dir)
+    payload = {
         **selected,
         "families": families,
         "winner": winner,
@@ -958,8 +1040,12 @@ def result_details(run_dir: Path, request: dict, query: dict) -> dict:
         "importance_family": importance_family,
         "importance": saved_importance.get(importance_family),
         "tiles": tiles,
+        "run_tiles": run_tiles,
         **run_metric_payload(run_dir, request, result=result, model=selected["model"]),
     }
+    if selected["model"].startswith(("model:", "ensemble:")):
+        payload[selected["model"]] = {"error_metrics": payload["error_metrics"]}
+    return payload
 
 
 def _parse_filters(raw: str | None) -> dict:
@@ -1315,6 +1401,8 @@ def _horizon_result_metrics(run_dir, request, query, details, selection):
         selected = model == "winner" and family == details["winner_family"]
         metrics = selected_metrics if selected else unavailable
         entry["error_metrics"] = {**entry["error_metrics"], **metrics}
+    if model.startswith(("model:", "ensemble:")):
+        details[model]["error_metrics"].update(selected_metrics)
     details["error_metrics"] = dict(details[model]["error_metrics"])
     for metric in details["metric_registry"]:
         if metric["scope"] == "test":
@@ -2047,12 +2135,12 @@ def export_csv(run_dir: Path, request: dict, query: dict | None = None) -> bytes
     """the full forecast table (page 0, everything) as csv, with the error ratio on every row"""
     result = _require_done(run_dir)
     query = query or {}
-    verdict = _select_model(run_dir, result, query)["verdict"]
+    verdict = _select_model(run_dir, result, query)["verdict"] or {}
     payload = table(run_dir, request, {**query, "size": 10**9})
-    ratio = verdict["accuracy"]["ratio"]
+    ratio = verdict.get("accuracy", {}).get("ratio")
 
     buf = io.StringIO()
-    buf.write(f"# verdict: {verdict['summary']}\n")
+    buf.write(f"# verdict: {verdict.get('summary', 'no saved verdict')}\n")
     writer = csv.writer(buf)
     writer.writerow([*payload["columns"], "ratio"])
     for row in payload["rows"]:

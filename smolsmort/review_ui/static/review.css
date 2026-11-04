@@ -286,6 +286,16 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-tile-bar-value { min-width: 48px; flex: 0 0 auto; text-align: right; color: var(--tile-tone); }
 .forecast-tile-bar[data-state="unknown"] .forecast-tile-bar-value { color: var(--text-dim); }
 .forecast-tile-note { font-size: 10px; margin-top: 5px; }
+.forecast-run-tile { aspect-ratio: 1; }
+.forecast-run-tile .forecast-tile-inner { height: 100%; }
+.forecast-run-tile .forecast-tile-face { height: 100%; min-height: 0; gap: 4px; }
+.forecast-run-tile[data-kind="ensemble"] .forecast-tile-face { border-style: dashed; }
+.forecast-run-tile .forecast-tile-score { font-size: 10px; }
+.forecast-run-tile-chart { flex: 1 1 0; min-height: 0; position: relative; margin: 0; }
+.forecast-run-tile-chart svg { width: 100%; height: calc(100% - 28px); display: block; border-left: 1px solid var(--grey-border); border-bottom: 1px solid var(--grey-border); }
+.forecast-tile .forecast-run-tile-chart polyline { stroke-width: .008; fill: none; }
+.forecast-run-tile .forecast-tile-menus { flex: 0 0 auto; }
+.forecast-tile-selectors { display: flex; gap: 12px; }
 .forecast-tile .forecast-metric-lines { margin-top: auto; padding-top: 8px; font-size: 11px; line-height: 18px; }
 @media (prefers-reduced-motion: reduce) { .forecast-tile-inner { transition: none; } }
 @media (max-width: 760px) { .forecast-search-layout { grid-template-columns: minmax(0, 1fr); } }

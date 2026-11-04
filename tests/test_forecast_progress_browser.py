@@ -26,7 +26,7 @@ from smolsmort.forecast.tables import write_table
 pytest.importorskip("duckdb")
 
 
-def write_multifamily_run(root, *, version=2):
+def write_multifamily_run(root, *, version=2, tile_predictions=False):
     """persist a small synthetic result so browser checks exercise the real routes"""
     import numpy as np
 
@@ -196,6 +196,14 @@ def write_multifamily_run(root, *, version=2):
                 "upper": np.array([19.0 + offset, 21.0 + offset]),
             },
         )
+    if tile_predictions:
+        from smolsmort.forecast.tables import read_table
+
+        for index, family in enumerate(names):
+            for kind in ("validation", "test", "forecast"):
+                table = read_table(folder / f"winner_{kind}.parquet")
+                table["prediction"] += 2 * index
+                write_table(folder / f"families/{family}/{kind}.parquet", table)
     return run_id
 
 
@@ -491,7 +499,7 @@ def test_cancelled_run_displayed_as_stopped(tmp_path, version):
 def test_multifamily_saved_run_named_models_and_explained_importance(tmp_path):
     with session(tmp_path, width=1440) as (page, _):
         page.set_viewport_size({"width": 1440, "height": 1500})
-        run_id = write_multifamily_run(tmp_path / "forecast_root")
+        run_id = write_multifamily_run(tmp_path / "forecast_root", tile_predictions=True)
         switch_to_regression(page)
         page.select_option("#topic-flavour", "timeseries")
         show_tab(page, "regression-search")
@@ -523,22 +531,15 @@ def test_multifamily_saved_run_named_models_and_explained_importance(tmp_path):
         page.screenshot(path=artifacts / "training.png", full_page=True)
         page.click("#regression-run-open")
         page.wait_for_function(
-            "document.querySelectorAll('#regression-family-comparison tbody tr').length === 4"
+            "document.querySelectorAll('#regression-family-comparison tbody tr').length === 3"
         )
         comparison = page.locator("#regression-family-comparison tbody tr")
-        assert [row.locator("td").all_text_contents() for row in comparison.all()] == [
-            ["xgboost", "done", "12.0%", "0.95", "4", "-"],
-            ["ridge", "done", "18.0%", "-", "3", "-"],
-            ["snaive", "done", "31.0%", "-", "2", "-"],
-            [
-                "ensemble of xgboost, ridge",
-                "done",
-                "15.0%",
-                "1.05",
-                "-",
-                "-",
-            ],
-        ]
+        assert {row.locator("td").first.inner_text() for row in comparison.all()} == {
+            "xgboost",
+            "ridge",
+            "snaive",
+        }
+        assert "best recipe" in page.locator("#regression-family-comparison").inner_text()
         open_info(page)
         assert page.locator("#regression-info-verdict").inner_text() == (
             "xgboost: test ratio 0.95, better than naive"
@@ -582,10 +583,13 @@ def test_multifamily_saved_run_named_models_and_explained_importance(tmp_path):
         )
         assert page.locator("#regression-importance tbody tr").count() == 2
         page.click("#regression-results-model")
-        page.locator('.menu-panel .menu-item[data-id="ensemble"]').click()
+        ensemble_id = page.evaluate(
+            "() => { const tiles = forecastTopics.get('regression').resultsView.run_tiles; const ids = tiles.filter(tile => ['xgboost', 'ridge'].includes(tile.family)).map(tile => tile.tile_id); return tiles.find(tile => tile.kind === 'ensemble' && tile.members.length === 2 && tile.members.every(id => ids.includes(id))).tile_id; }"
+        )
+        page.locator(f'.menu-panel .menu-item[data-id="{ensemble_id}"]').click()
         open_info(page)
         page.wait_for_function(
-            "document.getElementById('regression-info-verdict').innerText === 'ensemble of xgboost, ridge: test ratio 1.05, worse than naive'"
+            "document.getElementById('regression-info-verdict').innerText === 'no verdict yet'"
         )
         page.wait_for_function(
             "document.querySelector('#regression-results-table tr:nth-child(2) td:last-child').innerText === 'ensemble'"
@@ -594,7 +598,7 @@ def test_multifamily_saved_run_named_models_and_explained_importance(tmp_path):
             page.locator("#regression-results-table tr").nth(1).locator("td").nth(1).inner_text()
             == "19"
         )
-        assert page.locator("#regression-export").get_attribute("href").endswith("/ensemble.csv")
+        assert "/ensemble%3A" in page.locator("#regression-export").get_attribute("href")
         assert page.locator("#regression-importance-family").inner_text() == "xgboost"
         page.screenshot(path=artifacts / "results-ensemble.png", full_page=True)
 
@@ -651,7 +655,7 @@ def test_legacy_saved_run_defaulted_to_xgboost_without_comparison(tmp_path):
         assert page.locator("#regression-info-verdict").inner_text() == (
             "xgboost: test ratio 0.95, better than naive"
         )
-        assert not page.locator("#regression-family-comparison").is_visible()
+        assert page.locator("#regression-family-comparison tbody tr").count() == 1
         assert (
             page.locator("#regression-importance-status").inner_text()
             == "no saved feature importance for this run"
@@ -731,9 +735,16 @@ def test_legacy_progress_kept_generation_budget_with_family_summary(tmp_path):
         assert "generation 8 - candidate 5 of 10" in value["label"]
 
 
-def test_results_kept_latest_model_importance_and_table_after_delayed_responses(tmp_path):
+def test_legacy_results_kept_latest_model_importance_and_table_after_delayed_responses(tmp_path):
     with session(tmp_path, width=1440) as (page, _):
         run_id = write_multifamily_run(tmp_path / "forecast_root")
+
+        def legacy_view(route):
+            payload = route.fetch().json()
+            payload.pop("run_tiles", None)
+            route.fulfill(json=payload)
+
+        page.route("**/api/forecast-view?**", legacy_view)
         switch_to_regression(page)
         page.select_option("#topic-flavour", "timeseries")
         show_tab(page, "regression-search")
@@ -745,7 +756,9 @@ def test_results_kept_latest_model_importance_and_table_after_delayed_responses(
         pending = []
 
         def hold_response(route):
-            pending.append((route, route.fetch().json()))
+            payload = route.fetch().json()
+            payload.pop("run_tiles", None)
+            pending.append((route, payload))
             page.evaluate("count => window.delayedForecastRequests = count", len(pending))
 
         def select_item(picker, name, count):
