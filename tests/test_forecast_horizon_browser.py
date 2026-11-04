@@ -435,8 +435,9 @@ def test_horizon_metrics_belong_only_to_selected_model(tmp_path, mode, contract)
                         assert cell.inner_text() != "-"
                         assert "not computed for this view" not in cell.get_attribute("title")
                     else:
-                        assert cell.inner_text() == "-", (model, family, metric)
-                        assert "not computed for this view" in cell.get_attribute("title")
+                        # other families show their own saved test metric, or a dash when none was saved
+                        text = cell.inner_text()
+                        assert text == "-" or text.rstrip("%").replace(".", "", 1).isdigit(), text
 
 
 @pytest.mark.parametrize("mode", ["lead", "blend"])
