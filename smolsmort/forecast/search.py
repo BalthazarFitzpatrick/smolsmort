@@ -752,20 +752,36 @@ def search(
                 history = best.eval_history
                 on_best({**history, "key": best.genome.key()} if history else None)
         history = leader.eval_history
-        if on_generation and history and history.get("validation"):
+        if on_generation:
             on_generation(
                 {
                     "generation": generation,
                     "key": leader.genome.key(),
-                    "metric": history["metric"],
-                    "bucket": history.get("bucket"),
-                    "validation": history["validation"],
-                    **({"curves": history["curves"]} if history.get("curves") else {}),
+                    **{key: value for key, value in (history or {}).items() if key != "training"},
+                    "train_loss": (history or {}).get("training", []),
+                    "loss": {
+                        "name": (history or {}).get("metric"),
+                        "objective": leader.genome.objective,
+                        "training": (history or {}).get("training", []),
+                        "validation": (history or {}).get("validation", []),
+                    },
+                    "metrics": leader.metrics,
+                    "validation_metrics": leader.metrics.get("validation_metrics", leader.metrics),
+                    "candidates": [
+                        {
+                            "key": entry.genome.key(),
+                            "validation_metrics": entry.metrics.get(
+                                "validation_metrics", entry.metrics
+                            ),
+                        }
+                        for entry in entries
+                        if np.isfinite(entry.fitness)
+                    ],
                 }
             )
         for entry in scored.values():
             if entry is not best and entry.eval_history:
-                # cached candidates can lead later generations; retain only their validation curve
+                # cached candidates can lead later generations; retain their validation curves
                 entry.eval_history = {
                     key: value for key, value in entry.eval_history.items() if key != "training"
                 }

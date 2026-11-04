@@ -442,18 +442,24 @@ def test_generation_curves_use_the_generation_winner_even_without_a_new_best(mon
             "training": [float(depth)],
             "validation": [depth + 0.5],
         }
-        return Scored(float(depth), np.array([float(depth)]), {}, history)
+        return Scored(
+            float(depth), np.array([float(depth)]), {"validation_metrics": {"mae": depth}}, history
+        )
 
     monkeypatch.setattr(search_module, "score", fake_score)
-    curves, events = [], []
+    curves, events, checkpoints = [], [], []
     search(
         ws,
         Budget(population=4, max_generations=3, plateau=2),
         on_generation=curves.append,
         on_event=events.append,
+        on_checkpoint=checkpoints.append,
     )
     assert [event["best"] for event in events if event["event"] == "generation"] == [6.0] * 3
-    assert curves == [
+    assert [
+        {key: curve[key] for key in ("generation", "key", "metric", "bucket", "validation")}
+        for curve in curves
+    ] == [
         {
             "generation": generation,
             "key": genomes[index].key(),
@@ -463,6 +469,23 @@ def test_generation_curves_use_the_generation_winner_even_without_a_new_best(mon
         }
         for generation, index, value in [(0, 0, 6.5), (1, 4, 10.5), (2, 4, 10.5)]
     ]
+    assert curves[0]["train_loss"] == [6.0]
+    assert {candidate["key"] for candidate in curves[0]["candidates"]} == {
+        genome.key() for genome in genomes[:4]
+    }
+    assert curves[0]["loss"]["name"] == "rmse"
+    assert all(
+        set(candidate) == {"key", "validation_metrics"}
+        and isinstance(candidate["validation_metrics"]["mae"], int)
+        for curve in curves
+        for candidate in curve["candidates"]
+    )
+    checkpoint = checkpoints[-1]
+    assert checkpoint["generation"] == 2
+    for entry in checkpoint["entries"]:
+        history = entry["eval_history"]
+        assert bool(history.get("training")) == (entry["key"] == checkpoint["best_key"])
+        assert history["validation"]
 
 
 def test_cached_generation_winners_keep_their_validation_curves(series_ws):
@@ -510,7 +533,7 @@ def test_worker_records_generation_curves_once_and_polling_returns_only_unseen(
     )
 
 
-def test_search_does_not_record_generations_without_validation_history(series_ws, monkeypatch):
+def test_search_records_scalar_metrics_without_round_history(series_ws, monkeypatch):
     import importlib
 
     search_module = importlib.import_module("smolsmort.forecast.search")
@@ -519,7 +542,8 @@ def test_search_does_not_record_generations_without_validation_history(series_ws
     )
     curves = []
     search(series_ws[0], Budget(**TINY), on_generation=curves.append)
-    assert curves == []
+    assert curves
+    assert all(curve["metrics"] == {} and curve["train_loss"] == [] for curve in curves)
 
 
 def test_worker_publishes_bounded_atomic_leaderboards_before_generation_events(

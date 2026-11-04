@@ -1,4 +1,4 @@
-"""finish only the single winner and the average of distinct family winners"""
+"""finish family winners and the average of distinct family winners"""
 
 from __future__ import annotations
 
@@ -142,6 +142,20 @@ def run(folder, parent_pid):
         if name not in states:
             continue
         member = genome_from_dict(entry["genome"])
+        if ws.mode == "timeseries":
+            family_final = (
+                final
+                if name == winner["family"]
+                else finish(
+                    ws,
+                    member,
+                    nthread=nthread,
+                    validation=entry.get("prediction"),
+                    prediction_cache=prediction_cache,
+                    importance_cache=importance_cache,
+                )
+            )
+            _write_tables(folder / "families" / name, spec, family_final)
         if ws.mode == "entity":
             importance = final.get("importance")
         else:

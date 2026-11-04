@@ -24,6 +24,7 @@ RUN_FILES = (
     "progress.json",
     "eval_history.json",
     "generation_curves.jsonl",
+    "ensembles.json",
     "worker.log",
     "profile.json",
     "screen.json",
@@ -155,6 +156,7 @@ def run_state(
     request_path = folder / "request.json"
     request = json.loads(request_path.read_text()) if request_path.exists() else {}
     if request.get("version") == 2:
+        from smolsmort.forecast.tiles import read_tiles
         from smolsmort.forecast.views import multi_run_state
 
         alive = _alive(folder)
@@ -169,6 +171,11 @@ def run_state(
             ),
             **{key: request[key] for key in ("part_of", "label", "kind") if key in request},
             "alive": alive,
+            **(
+                {"tiles": read_tiles(folder, include_ensembles=False)}
+                if since_generation is None
+                else {}
+            ),
         }
     events = []
     path = folder / "events.jsonl"

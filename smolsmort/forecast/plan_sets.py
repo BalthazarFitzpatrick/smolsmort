@@ -68,6 +68,8 @@ def _wape(prediction, actual):
 
 def pick_ensemble(runs_root: Path, members: dict[str, str]):
     """choose the equal-weight subset with the lowest aligned validation wape"""
+    from smolsmort.forecast.tiles import align_tables
+
     parts = {}
     stacks = {}
     for part in ("validation", "test", "forecast"):
@@ -75,32 +77,16 @@ def pick_ensemble(runs_root: Path, members: dict[str, str]):
             family: read_table(Path(runs_root) / run_id / f"winner_{part}.parquet")
             for family, run_id in members.items()
         }
-        first = next(iter(tables.values()))
-        keys = [name for name in ("series", "step", "weeks_ahead") if name in first]
-        indexes = {
-            family: {
-                tuple(str(table[key][i]) for key in keys): i
-                for i in range(len(table["prediction"]))
-            }
-            for family, table in tables.items()
-        }
-        ordered = [
-            key
-            for key in next(iter(indexes.values()))
-            if all(key in index for index in indexes.values())
-        ]
-        if not ordered:
+        aligned_tables = dict(zip(tables, align_tables(list(tables.values())), strict=True))
+        first = next(iter(aligned_tables.values()))
+        if not len(first["prediction"]):
             raise ValueError(f"ensemble {part} tables have no matching rows")
         aligned = {
-            family: np.asarray(
-                [table["prediction"][indexes[family][key]] for key in ordered], dtype=float
-            )
-            for family, table in tables.items()
+            family: np.asarray(table["prediction"], dtype=float)
+            for family, table in aligned_tables.items()
         }
         finite = np.all(np.isfinite(np.column_stack(list(aligned.values()))), axis=1)
-        first_index = next(iter(indexes.values()))
-        rows = [first_index[key] for key in ordered]
-        parts[part] = {name: values[rows][finite].copy() for name, values in first.items()}
+        parts[part] = {name: values[finite].copy() for name, values in first.items()}
         stacks[part] = {family: values[finite] for family, values in aligned.items()}
     actual = parts["validation"]["actual"]
     best = min(
@@ -233,4 +219,97 @@ def update_set(
         "\n".join(events) + ("\n" if events else ""), encoding="utf-8"
     )
     write_json_atomic(folder / "status.json", status)
+    from smolsmort.forecast.tiles import ensemble_rows
+
+    write_json_atomic(folder / "ensembles.json", ensemble_rows(folder))
     return folder
+
+
+def build_refit_run(
+    runs_root,
+    spec,
+    prepared,
+    family_recipes,
+    *,
+    run_id=None,
+    label="refit",
+    nthread=1,
+    transform=None,
+    holdout="block",
+    horizon_mode="single",
+    start_run=None,
+    wait_run=None,
+):
+    """synchronously refit saved genomes, publishing each tile before the next family
+
+    call from a background job; returns the set run id; no family search is launched
+    recipes accept saved recipe.json wrappers or plain genomes
+    """
+    import uuid
+    from dataclasses import asdict
+
+    from smolsmort.forecast import runs
+
+    runs_root = Path(runs_root)
+    run_id = run_id or time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
+    genomes = {}
+    for name, recipe in family_recipes.items():
+        genome = dict(recipe.get("genome", recipe))
+        genome.setdefault("family", name)
+        genome.setdefault("transform", recipe.get("transform", "none"))
+        if transform is not None and genome["transform"] != transform:
+            raise ValueError("refit recipe transform differs from requested transform")
+        genomes[name] = genome
+    if not genomes or any(genome["family"] != name for name, genome in genomes.items()):
+        raise ValueError("refit recipes must match their family")
+    folder = create_set(runs_root, run_id, label, asdict(spec), list(genomes))
+    for family, genome in genomes.items():
+        target = folder / "families" / family
+        target.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(target / "winner.json", genome)
+    start_run = start_run or runs.start_run
+    members, states = {}, {}
+    state = "done"
+    for family, genome in genomes.items():
+        if (folder / "cancel").exists():
+            state = "cancelled"
+            break
+        states[family] = "running"
+        update_set(runs_root, run_id, members, family_states=states)
+        part_id = start_run(
+            runs_root,
+            spec,
+            prepared,
+            recipe=genome,
+            version=2,
+            families=[{"name": family}],
+            time_budget_s=1,
+            nthread=nthread,
+            transform=genome["transform"],
+            holdout=holdout,
+            horizon_mode=horizon_mode,
+            ensemble={"enabled": False},
+            part_of=run_id,
+            label=f"{label} - {family}",
+        )
+        if wait_run is not None:
+            status = wait_run(runs_root, part_id)
+        else:
+            while True:
+                if (folder / "cancel").exists():
+                    runs.cancel_run(runs_root, part_id)
+                status = runs.run_state(runs_root, part_id)
+                if status["state"] in ("done", "failed", "cancelled"):
+                    break
+                time.sleep(0.2)
+        states[family] = status["state"]
+        if status["state"] == "done":
+            members[family] = part_id
+        elif status["state"] == "cancelled":
+            state = "cancelled"
+            break
+        else:
+            state = "failed"
+        update_set(runs_root, run_id, members, family_states=states)
+    update_set(runs_root, run_id, members, state=state, family_states=states)
+    return run_id

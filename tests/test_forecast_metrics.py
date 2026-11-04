@@ -2,7 +2,49 @@
 
 import json
 
+import pytest
+
 from smolsmort.forecast.metrics import error_metrics, metric_registry, read_test_metrics
+
+
+def test_prediction_metric_formulas_and_undefined_values():
+    from smolsmort.forecast.metrics import prediction_metrics
+
+    values = prediction_metrics([2, 4, 0, -2, float("nan")], [3, 2, 3, 0, 9])
+    assert values == pytest.approx(
+        {"ape": 0.5, "mape": 0.5, "wape": 1, "ae": 2, "mae": 2, "wae": 8}
+    )
+    assert prediction_metrics([0], [3])["wape"] is None
+    assert prediction_metrics([0, -1], [3, 1])["mape"] is None
+    assert all(value is None for value in prediction_metrics([], []).values())
+
+
+def test_round_errors_save_every_metric_and_null_for_undefined_percentages():
+    from smolsmort.forecast.model import RoundErrors
+
+    errors = RoundErrors([0, 0])
+    errors.add([1, 2])
+    curves = errors.curves(1)
+    assert curves == {
+        "ape": [None],
+        "mape": [None],
+        "wape": [None],
+        "ae": [1.5],
+        "mae": [1.5],
+        "wae": [3],
+    }
+    json.dumps(curves, allow_nan=False)
+
+
+def test_round_errors_restore_target_scale_without_failing_on_transient_overflow():
+    import numpy as np
+
+    from smolsmort.forecast.model import RoundErrors
+
+    errors = RoundErrors(np.log1p([2.0, 4.0]), "log1p")
+    errors.add(np.log1p([3.0, 2.0]))
+    errors.add([1000.0, 1000.0])
+    assert errors.curves(2)["wae"] == pytest.approx([3, None])
 
 
 def test_regression_registry_defines_one_consistent_metric_set():

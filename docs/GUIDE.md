@@ -935,3 +935,76 @@ groups by a dimension with each group's earliest and latest predicted date.
 **on disk**, under the forecast root: `.forecast-cache/<spec>-<file>/` (prep.sql, prep.json, the
 parquet tables) and `.forecast-runs/<run>/` (request, status, events, profile, leaderboard, recipe,
 result, and the forecast / validation / test parquet files).
+
+### forecast run tiles data
+
+`GET /api/forecast-run-tiles?run=<id>` returns `{"tiles": [...], "ensembles": [...]}`, with no
+cursor; `ensembles` holds every scored ensemble row using the same tile shape.
+`read_tiles(run_folder)` returns the same list. initial v2 run-state reads also include model
+tiles; summary and cursor polls keep their existing payloads. each tile has this shape:
+
+```json
+{
+  "tile_id": "model:xgboost:recipe-key",
+  "kind": "model",
+  "family": "xgboost",
+  "recipe_key": "recipe-key",
+  "recipe": {"families": ["target:lag"], "objective": "squared", "params": {"max_depth": 3}},
+  "metrics": {
+    "ape": {"validation": 0.1, "test": 0.2},
+    "mape": {"validation": 0.1, "test": 0.2},
+    "wape": {"validation": 0.1, "test": 0.2},
+    "ae": {"validation": 1, "test": 2},
+    "mae": {"validation": 1, "test": 2},
+    "wae": {"validation": 10, "test": 20}
+  },
+  "curves": {"0": {"train_loss": [3, 2], "validation": {"ape": [0.2, 0.1], "mape": [0.2, 0.1], "wape": [0.2, 0.1], "ae": [2, 1], "mae": [2, 1], "wae": [20, 10]}, "loss": {"name": "rmse", "objective": "squared", "training": [3, 2], "validation": [4, 3]}}},
+  "state": "done",
+  "best_generation": 0,
+  "running_generation": null
+}
+```
+
+values stay raw; normalization belongs to the ui. percentage metrics are fractions. ape is
+`abs(actual - prediction) / actual` on positive actuals; its curve uses the row mean, as does
+mape. ae is row absolute error; its curve uses the mean, as does mae. wape is total absolute
+error divided by total absolute actuals; wae is total absolute error. finite pairs only;
+undefined or unavailable values are `null`. tile metrics pool saved validation/test rows;
+search fitness keeps its existing fold weighting. boosting curves describe the first fitted
+bucket's inner round-picking tail, not test rows. native losses retain their training scale;
+error curves use the original target scale. `loss.objective` names the model objective;
+`loss.name` names its logged native metric. one-shot families save scalar candidate metrics
+once per generation in `validation_metrics`, preserving legacy fold-weighted `metrics.wape`;
+only the generation leader carries per-round curves in each generation record. candidate
+entries contain only their key and scalar `validation_metrics`.
+the tile adapter wraps each value in a one-point curve. unavailable native
+training losses are empty arrays; statistical providers also leave `loss.name` null because
+they expose no native fit history. old curves without the new fields remain readable.
+
+model ids combine family and genome key. ensembles have `kind`/`family` = `"ensemble"`, a
+`members` list of model tile ids, `recipe: {"weight": "equal", "members": [...]}`, empty
+curves and null generation fields. their ids hash sorted member ids. every subset of at least
+two available family winners is scored with equal weights on aligned validation rows; test
+scores never select members. models and the five best ensembles rank together by validation
+wape, then id. `ensembles.json` retains every scored subset for a later table view.
+
+`build_refit_run(runs_root, spec, prepared, family_recipes, ...)` runs synchronously in a job,
+using plain genomes or saved recipe wrappers. it starts recipe-only workers, publishes each
+completed family through the existing set combiner, and returns the set id. internal parts
+retain `part_of`; existing list filtering still hides them. run cancellation stays `cancelled`.
+
+production caller check; existing signatures and legacy payload keys stay supported:
+
+| changed path | callers / consumers |
+|---|---|
+| `RoundErrors` | `model.fit_model`, `LightgbmFamily.fit` |
+| `model.fit_model` | `XgboostFamily.fit`, `pipeline._entity_fit` |
+| ridge/lightgbm family fits | `pipeline._timeseries_fit` through the family registry |
+| `pipeline._timeseries_fit` | `_timeseries_predict`, `fit_importance` |
+| `pipeline._timeseries_predict` | `_timeseries_phase`, `_timeseries_finish` |
+| `pipeline.score` | `search.evaluate`, `candidate_worker.score_candidates` via `CandidateScorer`, `worker.run` |
+| `search.search` / generation callbacks | `worker.run`, `family_worker.run`; files read by `runs`, `views`, existing forecast js |
+| `ensemble.run` | coordinator's finalizer subprocess |
+| `create_set`, `update_set` / `pick_ensemble` | `plan.run_plan`, `build_refit_run` / `update_set` |
+| `runs.run_state` | `tab._run`, `runs.list_runs`, `runs.wait_run`, `build_refit_run` |
+| `forecast_tab` | review route registry; only the new get route is added |

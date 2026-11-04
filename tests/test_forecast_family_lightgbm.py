@@ -246,3 +246,8 @@ def test_round_curves_match_each_rounds_tail_prediction_without_changing_the_fit
     for round_index, wape in enumerate(curves["wape"]):
         errors = np.abs(probe.predict(x[340:], num_iteration=round_index + 1) - truth)
         assert wape == pytest.approx(errors.sum() / truth.sum(), rel=1e-6)
+        assert curves["ae"][round_index] == pytest.approx(errors.mean(), rel=1e-6)
+        assert curves["mae"][round_index] == curves["ae"][round_index]
+        assert curves["wae"][round_index] == pytest.approx(errors.sum(), rel=1e-6)
+        assert curves["ape"][round_index] == pytest.approx((errors / truth).mean(), rel=1e-6)
+        assert curves["mape"][round_index] == curves["ape"][round_index]

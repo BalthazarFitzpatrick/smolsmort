@@ -99,6 +99,10 @@ def test_round_curves_match_each_rounds_own_tail_prediction(objective, monkeypat
         errors = np.abs(booster.predict(tail, iteration_range=(0, round_index + 1)) - truth)
         assert round_wape == pytest.approx(errors.sum() / np.abs(truth).sum(), rel=1e-6)
         assert round_mae == pytest.approx(errors.mean(), rel=1e-6)
+        assert curves["ae"][round_index] == pytest.approx(errors.mean(), rel=1e-6)
+        assert curves["wae"][round_index] == pytest.approx(errors.sum(), rel=1e-6)
+        assert curves["ape"][round_index] == pytest.approx((errors / truth).mean(), rel=1e-6)
+        assert curves["mape"][round_index] == curves["ape"][round_index]
 
 
 def test_round_curves_off_leaves_the_fit_unchanged():

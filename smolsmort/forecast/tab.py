@@ -515,6 +515,15 @@ def _list_runs(app, query: dict) -> dict:
     return {"runs": runs.list_runs(_runs_root(app))}
 
 
+def _run_tiles(app, query: dict) -> dict:
+    from smolsmort.forecast.tiles import ensemble_rows, rank_tile, read_tiles
+
+    folder = _run_dir(app, query.get("run", ""))
+    models = read_tiles(folder, include_ensembles=False)
+    ensembles = ensemble_rows(folder)
+    return {"tiles": sorted(models + ensembles[:5], key=rank_tile), "ensembles": ensembles}
+
+
 def _run(app, query: dict) -> dict:
     run_id = query.get("id", "")
     run_dir = _run_dir(app, run_id)
@@ -677,6 +686,7 @@ def forecast_tab() -> Tab:
             "/api/forecast-sources": _sources,
             "/api/forecast-runs": _list_runs,
             "/api/forecast-run": _run,
+            "/api/forecast-run-tiles": _run_tiles,
             "/api/forecast-view": _view,
             "/api/forecast-table": _table,
         },

@@ -140,4 +140,7 @@ class RidgeFamily:
             except np.linalg.LinAlgError as exc:
                 raise ModelError("ridge could not solve the regularised system") from exc
             fitted.intercept = target_mean - float(center @ fitted.coefficients)
+        residual = fitted.predict(values) - target
+        loss = float(residual @ residual + alpha * (fitted.coefficients @ fitted.coefficients))
+        fitted.eval_history = {"metric": "penalized_squared_error", "training": [loss]}
         return fitted
