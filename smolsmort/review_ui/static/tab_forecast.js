@@ -10,7 +10,7 @@ const FORECAST_BLEND_STRENGTHS = [1, 2, 4, 8];
 function forecastRangeChart(el) {
   let bands = [];
   let pointCount = 0;
-  const chart = timeChart(el, {height: 220, onHover: point => {
+  const chart = timeChart(el, {height: 440, onHover: point => {
     if (!point) return;
     const labels = bands.filter(band => band.lo?.[point.index] != null && band.hi?.[point.index] != null)
       .map(band => `${band.level}% range`);
@@ -2861,12 +2861,15 @@ class ForecastTopic {
     document.getElementById(`${this.topic}-results-model`).onclick = evt => {
       if (!this.resultsView) return;
       const tiles = this.resultsView.run_tiles;
-      const options = tiles?.length ? tiles.map(tile => ({
+      // only tiles with saved predictions can open; older runs keep their saved ensemble entry
+      const shown = (tiles || []).filter(tile => tile.viewable !== false);
+      const options = shown.map(tile => ({
         id: tile.tile_id, label: forecastRunTileLabel(tile, tiles), on: this.resultsModel === tile.tile_id,
-      })) : [
-        {id: 'winner', label: this.resultsView.winner_family || 'xgboost', on: this.resultsModel === 'winner'},
-        {id: 'ensemble', label: `ensemble of ${(this.resultsView.ensemble?.members || []).join(', ')}`, on: this.resultsModel === 'ensemble'},
-      ];
+      }));
+      if (!shown.some(tile => tile.kind === 'ensemble') && this.resultsView.ensemble) {
+        options.push({id: 'ensemble', label: `ensemble of ${(this.resultsView.ensemble.members || []).join(', ')}`, on: this.resultsModel === 'ensemble'});
+      }
+      if (!options.length) options.push({id: 'winner', label: this.resultsView.winner_family || 'xgboost', on: this.resultsModel === 'winner'});
       listMenu('forecast', options, async item => {
         this.resultsModel = item.id;
         this.importanceFamily = null;

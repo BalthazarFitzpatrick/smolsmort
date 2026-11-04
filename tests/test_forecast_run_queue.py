@@ -61,7 +61,13 @@ worker.read_priors = lambda *args: None
 worker.read_top_families = lambda *args: None
 worker.search = search
 launcher.launch_families = search
-worker.genome_from_dict = lambda data, *, spec: SimpleNamespace(to_dict=lambda: data)
+worker.genome_from_dict = lambda data, *, spec: SimpleNamespace(
+    to_dict=lambda: data, family="snaive", objective="wape", key=lambda: "stub"
+)
+worker.score = lambda ws, genome, **kwargs: SimpleNamespace(
+    eval_history={}, metrics={}, fitness=0.0
+)
+worker._write_tables = lambda *args, **kwargs: None
 worker.finish = finish
 worker._write_result = write_result
 raise SystemExit(worker.run(folder))
