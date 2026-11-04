@@ -532,8 +532,9 @@ def test_horizon_controls_select_rows_metrics_and_bands(tmp_path):
         assert blend["view"] == blend_view()
         bounds = read_bounds(blend)
         assert bounds["2026-01-12"] == (None, None)
-        assert bounds["2026-01-19"] == pytest.approx((56.75, 60.21))
-        assert bounds["2026-02-09"] == pytest.approx((89.75, 93.21))
+        # chart totals subtract root-sum-of-squares distances, even for positive offsets
+        assert bounds["2026-01-19"] == pytest.approx((39.25, 60.21))
+        assert bounds["2026-02-09"] == pytest.approx((72.25, 93.21))
         assert blend["blend_band"]["test_coverage"] == pytest.approx(2 / 3)
         predictions = read_forecasts(blend)
         assert [predictions[step] for step in ("2026-01-19", "2026-01-26", "2026-02-02")] == [
@@ -562,8 +563,8 @@ def test_horizon_controls_select_rows_metrics_and_bands(tmp_path):
         weighted = choose_blend_weights(page, {2: 4})
         assert weighted["view"] == blend_view({2: 4})
         bounds = read_bounds(weighted)
-        assert bounds["2026-01-19"] == pytest.approx((57.2, 60.51))
-        assert bounds["2026-02-09"] == pytest.approx((90.2, 93.51))
+        assert bounds["2026-01-19"] == pytest.approx((38.8, 60.51))
+        assert bounds["2026-02-09"] == pytest.approx((71.8, 93.51))
         assert weighted["blend_band"]["test_coverage"] == pytest.approx(1 / 3)
         coverage = "blend band test coverage: 33.3% against the 80% target."
         assert coverage in page.locator("#regression-chart-caption").inner_text()
