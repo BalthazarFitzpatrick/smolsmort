@@ -875,6 +875,20 @@ def _select_model(run_dir: Path, result: dict, query: dict) -> dict:
     }
 
 
+def _mark_viewable(run_dir: Path, tiles: list[dict], winner_family: str) -> list[dict]:
+    """flag tiles whose predictions are saved, so the model dropdown only offers what can open"""
+    ok = {}
+    for tile in tiles:
+        if tile["kind"] == "model":
+            saved = (run_dir / "families" / tile["family"] / "validation.parquet").exists()
+            ok[tile["tile_id"]] = saved or tile["family"] == winner_family
+    for tile in tiles:
+        if tile["kind"] == "ensemble":
+            ok[tile["tile_id"]] = all(ok.get(member, False) for member in tile.get("members", []))
+        tile["viewable"] = ok.get(tile["tile_id"], False)
+    return tiles
+
+
 def _select_tile(run_dir: Path, model: str):
     from smolsmort.forecast.tiles import read_tiles
 
@@ -1030,7 +1044,7 @@ def result_details(run_dir: Path, request: dict, query: dict) -> dict:
         }
     from smolsmort.forecast.tiles import read_tiles
 
-    run_tiles = read_tiles(run_dir)
+    run_tiles = _mark_viewable(run_dir, read_tiles(run_dir), selected["winner_family"])
     payload = {
         **selected,
         "families": families,
