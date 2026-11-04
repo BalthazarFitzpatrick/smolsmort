@@ -433,7 +433,8 @@ def assert_final_artifacts(run, names):
     result = read_json(run / "result.json")
     assert set(result["families"]) == set(names)
     for name, family in result["families"].items():
-        assert "verdict" not in family, name
+        # finished families keep their held-out verdict for the family table; pruned ones may lack it
+        assert "accuracy" in family.get("verdict", {"accuracy": {}}), name
         assert "test" not in family, name
         assert {"fitness", "candidates", "state", "pruned_reason"} <= family.keys()
     assert result["winner"]["family"] in names
