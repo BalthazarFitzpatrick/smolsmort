@@ -19,7 +19,7 @@ from test_forecast_ui_browser import open_info, show_tab, switch_to_regression
 
 from smolsmort.forecast import runs
 from smolsmort.forecast.tab import forecast_tab
-from smolsmort.forecast.tables import write_table
+from smolsmort.forecast.tables import read_table, write_table
 from smolsmort.review.server import build_app, serve
 from smolsmort.review_ui.server import STATIC
 
@@ -360,8 +360,22 @@ def save_blend_menu(page, name: str) -> None:
 
 
 @pytest.mark.parametrize("mode", ["lead", "blend"])
-def test_horizon_metrics_belong_only_to_selected_model(tmp_path, mode):
+@pytest.mark.parametrize("contract", [False, True], ids=["legacy", "tiles"])
+def test_horizon_metrics_belong_only_to_selected_model(tmp_path, mode, contract):
     with horizon_session(tmp_path) as (page, run_id):
+        if contract:
+            folder = tmp_path / "forecast_root/.forecast-runs" / run_id
+            future = read_table(folder / "winner_forecast.parquet")
+            for family in ("xgboost", "ridge", "snaive"):
+                write_table(folder / "families" / family / "forecast.parquet", future)
+        else:
+
+            def legacy_view(route):
+                payload = route.fetch().json()
+                payload.pop("run_tiles", None)
+                route.fulfill(json=payload)
+
+            page.route("**/api/forecast-view?**", legacy_view)
         open_horizon_run(page, run_id)
         page.locator("#regression-error-metrics").click()
         settle_menu(page)
@@ -380,18 +394,35 @@ def test_horizon_metrics_belong_only_to_selected_model(tmp_path, mode):
         }
         assert validation["xgboost"] == "12.0%"
         assert validation["ridge"] == "18.0%"
-        for model in ("winner", "ensemble", "winner"):
+        choices = [("winner", "xgboost"), ("ensemble", "ensemble of xgboost, ridge")]
+        if contract:
+            tiles = page.evaluate("forecastTopics.get('regression').resultsView.run_tiles")
+            winner = next(tile for tile in tiles if tile["family"] == "xgboost")
+            members = {tile["tile_id"] for tile in tiles if tile["family"] in {"xgboost", "ridge"}}
+            ensemble = next(
+                tile
+                for tile in tiles
+                if tile["kind"] == "ensemble" and set(tile["members"]) == members
+            )
+            choices = [(winner["tile_id"], "xgboost"), (ensemble["tile_id"], None)]
+        for model, selected in [*choices, choices[0]]:
             if page.evaluate("forecastTopics.get('regression').resultsView.model") != model:
                 page.locator("#regression-results-model").click()
                 settle_menu(page)
-                with page.expect_response("**/api/forecast-view?**"):
+                with page.expect_response("**/api/forecast-view?**") as response:
                     page.locator(f'.menu-panel .menu-item[data-id="{model}"]').click()
+                assert response.value.status == 200, response.value.text()
                 page.wait_for_function(
                     "model => forecastTopics.get('regression').resultsView.model === model",
                     arg=model,
                 )
-            selected = "xgboost" if model == "winner" else "ensemble of xgboost, ridge"
-            assert rows.count() == 4
+            assert rows.count() == (3 if contract else 4)
+            for metric in ("wape", "mae", "mape", "test_ratio"):
+                assert (
+                    not page.locator(f'#regression-view-metrics [data-metric-id="{metric}"]')
+                    .inner_text()
+                    .endswith(": -")
+                )
             for row in rows.all():
                 family = row.locator("td").first.inner_text()
                 assert (
