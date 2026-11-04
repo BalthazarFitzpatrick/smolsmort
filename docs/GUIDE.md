@@ -818,6 +818,30 @@ family budgets, patience and minimum generations, data sets and horizons, pass s
 and shared search options. the search tab's **search plan** section edits this file.
 budgets are shown in minutes and stored in seconds. spec paths stay unchanged.
 
+use a grid instead of `sets` to search every horizon and grouping pair:
+
+```json
+{
+  "hours": 4,
+  "families": [{"name": "ridge", "budget_s": 600}],
+  "grid": {
+    "horizon": [8, 12],
+    "grouping": {
+      "client groups": "requests/clients.json",
+      "total": "requests/total.json"
+    }
+  }
+}
+```
+
+this makes four runs, including `8 weeks - client groups`. each grouping points
+to a saved request containing `spec`, or holds an inline spec object. the horizon
+overrides that spec's horizon. the panel selects from these axes and saves the
+chosen subset under `grid.selected`, for example
+`{"horizon": [8], "grouping": ["total"]}`. omitted selection means all values;
+unselected sources stay in the file. use explicit `sets` for per-set budgets or
+other set options. cli status lists the expanded permutation labels.
+
 each set is one run for a data set and horizon. it appears in the run list before
 search starts; its family tiles fill as each family finishes. searches run one job
 at a time. an optional second pass warm-starts the selected families from their

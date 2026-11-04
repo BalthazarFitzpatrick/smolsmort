@@ -76,7 +76,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "forecast":
         if args.forecast_command == "plan":
-            from smolsmort.forecast.plan import plan_status, start_plan, stop_plan
+            from smolsmort.forecast.plan import (
+                expand_sets,
+                load_plan,
+                plan_status,
+                start_plan,
+                stop_plan,
+            )
 
             root = args.root.resolve()
             try:
@@ -87,7 +93,12 @@ def main(argv: list[str] | None = None) -> int:
                     stop_plan(root)
                     print("stopped search plan")
                 else:
-                    print(json.dumps(plan_status(root), indent=2))
+                    status = plan_status(root)
+                    if (root / "forecast-plan.json").exists():
+                        status["permutations"] = [
+                            item["label"] for item in expand_sets(load_plan(root))
+                        ]
+                    print(json.dumps(status, indent=2))
             except (ValueError, OSError) as exc:
                 plan.error(str(exc))
             return 0

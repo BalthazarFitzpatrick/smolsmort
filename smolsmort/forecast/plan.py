@@ -66,6 +66,45 @@ def _spec(root, item):
         raise ValueError(f"invalid set spec: {exc}") from exc
 
 
+def expand_sets(data):
+    """expand selected grid axes without changing the saved plan"""
+    if "grid" not in data:
+        return data.get("sets")
+    grid = data["grid"]
+    if not isinstance(grid, dict):
+        raise ValueError("grid must be an object")
+    horizons = grid.get("horizon")
+    groups = grid.get("grouping")
+    if not isinstance(horizons, list) or not horizons:
+        raise ValueError("grid horizon must be a non-empty list")
+    if any(type(value) is not int or value < 1 for value in horizons):
+        raise ValueError("grid horizon must be a positive integer")
+    if not isinstance(groups, dict) or not groups:
+        raise ValueError("grid grouping must be a non-empty object of names to spec sources")
+    if any(not isinstance(name, str) or not name.strip() for name in groups):
+        raise ValueError("grid grouping names must not be empty")
+    if len(set(horizons)) != len(horizons):
+        raise ValueError("grid horizons must be unique")
+    selected = grid.get("selected", {"horizon": horizons, "grouping": list(groups)})
+    if not isinstance(selected, dict):
+        raise ValueError("grid selected must be an object")
+    for axis, choices in (("horizon", horizons), ("grouping", groups)):
+        values = selected.get(axis)
+        if not isinstance(values, list) or not values:
+            raise ValueError(f"grid selected {axis} must be a non-empty list")
+        if any(type(value) is not (int if axis == "horizon" else str) for value in values):
+            raise ValueError(f"grid selected {axis} must use values from its axis")
+        if any(value not in choices for value in values) or len(set(values)) != len(values):
+            raise ValueError(f"grid selected {axis} must use unique values from its axis")
+    return [
+        {"label": f"{horizon} weeks - {name}", "horizon": horizon, "spec": groups[name]}
+        for horizon in horizons
+        if horizon in selected["horizon"]
+        for name in groups
+        if name in selected["grouping"]
+    ]
+
+
 def _validate(root, data):
     if not isinstance(data, dict):
         raise ValueError("plan must be an object")
@@ -79,7 +118,15 @@ def _validate(root, data):
         except (TypeError, ValueError) as exc:
             raise ValueError("deadline must be yyyy-mm-dd hh:mm") from exc
     families = data.get("families")
-    sets = data.get("sets")
+    if "grid" in data and "sets" in data:
+        raise ValueError("choose grid or sets, not both")
+    sets = expand_sets(data)
+    if "grid" in data:
+        for name, source in data["grid"]["grouping"].items():
+            try:
+                _spec(root, {"spec": source, "horizon": data["grid"]["horizon"][0]})
+            except (ValueError, TypeError, AttributeError, OSError) as exc:
+                raise ValueError(f"invalid spec source for grouping {name}: {exc}") from exc
     if (
         not isinstance(families, list)
         or not families
@@ -266,6 +313,7 @@ def run_plan(root, runs_root, cache_root, *, start_run=runs.start_run, wait_run=
 
     root, runs_root, cache_root = Path(root), Path(runs_root), Path(cache_root)
     plan = load_plan(root)
+    plan = {**plan, "sets": expand_sets(plan)}
     path = root / "forecast-plan-state.json"
     state = _read(path)
     deadline = state.get("deadline") or (

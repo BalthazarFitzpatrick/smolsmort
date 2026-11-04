@@ -1167,8 +1167,35 @@ function forecastMountPlan(rail) {
         min: field(row, 'min generations', family.min_generations ?? 0),
       };
     });
-    form.append(forecastNode('div', 'field-label', 'sets'));
-    const sets = plan.sets.map(item => {
+    let readGrid = null;
+    if (plan.grid) {
+      const row = forecastNode('div', 'forecast-plan-row');
+      const count = forecastNode('span', 'stat');
+      count.dataset.planRuns = '';
+      form.append(row);
+      const axes = {};
+      const updateCount = () => {
+        const runs = axes.horizon().length * axes.grouping().length;
+        count.textContent = `${runs} ${runs === 1 ? 'run' : 'runs'}`;
+      };
+      for (const [axis, label, choices] of [
+        ['horizon', 'horizons', plan.grid.horizon],
+        ['grouping', 'groupings', Object.keys(plan.grid.grouping)],
+      ]) {
+        field(row, label, '', 'text', choices);
+        const select = row.querySelector(`[data-plan-field="${label}"]`);
+        select.multiple = true;
+        select.size = Math.min(4, choices.length);
+        const selected = plan.grid.selected ? plan.grid.selected[axis] : choices;
+        for (const option of select.options) option.selected = selected.some(value => String(value) === option.value);
+        axes[axis] = () => Array.from(select.selectedOptions, option => axis === 'horizon' ? Number(option.value) : option.value);
+        select.onchange = updateCount;
+      }
+      readGrid = () => ({...plan.grid, selected: {horizon: axes.horizon(), grouping: axes.grouping()}});
+      updateCount();
+      row.append(count);
+    } else form.append(forecastNode('div', 'field-label', 'sets'));
+    const sets = (plan.sets || []).map(item => {
       const row = forecastNode('div', 'forecast-plan-row');
       form.append(row);
       const label = field(row, 'label', item.label, 'text');
@@ -1194,7 +1221,8 @@ function forecastMountPlan(rail) {
       data[mode()] = mode() === 'deadline' ? deadline() : hours();
       data.families = families.map((row, i) => ({...data.families[i], name: row.name(),
         budget_s: row.budget() * 60, patience: row.patience(), min_generations: row.min()}));
-      data.sets = sets.map((row, i) => ({...data.sets[i], label: row.label(), horizon: row.horizon()}));
+      if (readGrid) data.grid = readGrid();
+      else data.sets = sets.map((row, i) => ({...data.sets[i], label: row.label(), horizon: row.horizon()}));
       data.passes = {...data.passes, second_pass: second(), keep: keep(), min_generations: minimum(),
         patience: patience(), families: data.families.filter((_, i) => selected[i]()).map(f => f.name)};
       data.prune_sigma = sigma();
