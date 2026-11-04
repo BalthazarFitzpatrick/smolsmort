@@ -40,24 +40,34 @@ class Fitted:
 
 
 class RoundErrors:
-    """wape and mae of each boosting round on the round-picking tail, for the generation curves"""
+    """target-scale errors on the round-picking tail; native loss stays on fit scale"""
 
-    def __init__(self, truth):
-        self.truth = np.asarray(truth, dtype=float)
-        self.scale = float(np.abs(self.truth).sum())
-        self.wape: list[float] = []
-        self.mae: list[float] = []
+    def __init__(self, truth, transform="none", base=None):
+        from smolsmort.forecast.transform import get_transform
+
+        self.transform = get_transform(transform)
+        self.base = base
+        self.truth = self.transform.inv(np.asarray(truth, dtype=float), base)
+        self.values = {name: [] for name in ("ape", "mape", "wape", "ae", "mae", "wae")}
 
     def add(self, prediction) -> None:
-        errors = np.abs(np.asarray(prediction, dtype=float) - self.truth)
-        self.wape.append(float(errors.sum() / self.scale) if self.scale > 0 else float("nan"))
-        self.mae.append(float(errors.mean()))
+        from smolsmort.forecast.metrics import prediction_metrics
+        from smolsmort.forecast.transform import TransformError
+
+        try:
+            prediction = self.transform.inv(np.asarray(prediction, dtype=float), self.base)
+            values = prediction_metrics(self.truth, prediction)
+        except TransformError:
+            # logging an unusable intermediate prediction must not alter model selection
+            values = dict.fromkeys(self.values)
+        for name, value in values.items():
+            self.values[name].append(value)
 
     def curves(self, rounds: int) -> dict | None:
-        """None unless every round is recorded and finite [saved json refuses nan]"""
-        if len(self.wape) != rounds or not np.isfinite([self.wape, self.mae]).all():
+        """return complete curves; undefined metric values are json null"""
+        if len(self.values["wape"]) != rounds:
             return None
-        return {"wape": self.wape, "mae": self.mae}
+        return self.values
 
 
 def _xgb():
@@ -131,10 +141,12 @@ def fit_model(
     seed: int = 0,
     nthread: int = 1,
     round_errors: bool = True,
+    metric_transform: str = "none",
+    metric_base=None,
 ) -> Fitted:
     """fit one model on rows sorted oldest first; the newest `inner` share picks the rounds, then
     everything is refit with them. nthread stays 1 unless the caller runs in the search worker.
-    round_errors=False when y is on a transformed scale, where wape per round would mislead"""
+    metric_transform restores descriptive error curves to target units; round_errors disables them"""
     if objective not in OBJECTIVES:
         raise ModelError(f"no objective called {objective!r} - known: {', '.join(OBJECTIVES)}")
     xgb = _xgb()
@@ -168,7 +180,13 @@ def fit_model(
     if patience and len(tail) >= 10 and len(head) >= 10:
         evals_result = {}
         train, check = pick(head), pick(tail)
-        errors = RoundErrors(y[tail]) if round_errors and objective in TARGET_VALUED else None
+        errors = (
+            RoundErrors(
+                y[tail], metric_transform, None if metric_base is None else metric_base[tail]
+            )
+            if round_errors and objective in TARGET_VALUED
+            else None
+        )
         probe = xgb.train(
             config,
             train,

@@ -453,7 +453,10 @@ def test_generation_curves_use_the_generation_winner_even_without_a_new_best(mon
         on_event=events.append,
     )
     assert [event["best"] for event in events if event["event"] == "generation"] == [6.0] * 3
-    assert curves == [
+    assert [
+        {key: curve[key] for key in ("generation", "key", "metric", "bucket", "validation")}
+        for curve in curves
+    ] == [
         {
             "generation": generation,
             "key": genomes[index].key(),
@@ -463,6 +466,11 @@ def test_generation_curves_use_the_generation_winner_even_without_a_new_best(mon
         }
         for generation, index, value in [(0, 0, 6.5), (1, 4, 10.5), (2, 4, 10.5)]
     ]
+    assert curves[0]["train_loss"] == [6.0]
+    assert {candidate["key"] for candidate in curves[0]["candidates"]} == {
+        genome.key() for genome in genomes[:4]
+    }
+    assert curves[0]["loss"]["name"] == "rmse"
 
 
 def test_cached_generation_winners_keep_their_validation_curves(series_ws):
@@ -510,7 +518,7 @@ def test_worker_records_generation_curves_once_and_polling_returns_only_unseen(
     )
 
 
-def test_search_does_not_record_generations_without_validation_history(series_ws, monkeypatch):
+def test_search_records_scalar_metrics_without_round_history(series_ws, monkeypatch):
     import importlib
 
     search_module = importlib.import_module("smolsmort.forecast.search")
@@ -519,7 +527,8 @@ def test_search_does_not_record_generations_without_validation_history(series_ws
     )
     curves = []
     search(series_ws[0], Budget(**TINY), on_generation=curves.append)
-    assert curves == []
+    assert curves
+    assert all(curve["metrics"] == {} and curve["train_loss"] == [] for curve in curves)
 
 
 def test_worker_publishes_bounded_atomic_leaderboards_before_generation_events(

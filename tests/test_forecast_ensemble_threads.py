@@ -100,6 +100,10 @@ def test_finish_and_importance_use_resolved_threads(
 
     ensemble.run(tmp_path, 123)
 
-    assert fit_calls == [("winner", expected_threads), ("ensemble", expected_threads)]
+    assert fit_calls == [
+        ("winner", expected_threads),
+        ("ensemble", expected_threads),
+        ("winner", expected_threads),
+    ]
     assert importance_calls == [("xgboost", expected_threads), ("lightgbm", expected_threads)]
     assert json.loads((tmp_path / "finish_complete.json").read_text()) == {"family": "ensemble"}

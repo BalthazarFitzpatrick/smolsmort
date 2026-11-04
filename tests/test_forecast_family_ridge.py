@@ -109,7 +109,8 @@ def test_deterministic_with_missing_categories_and_row_order(family):
     np.testing.assert_array_equal(values, second.predict(x))
     order = np.random.default_rng(4).permutation(len(x))
     np.testing.assert_array_equal(first.predict(x[order]), values[order])
-    assert first.eval_history is None
+    assert first.eval_history["metric"] == "penalized_squared_error"
+    assert first.eval_history["training"][0] >= 0
     predicted = first.predict(np.array([[99, np.nan], [np.nan, np.nan]], dtype="float32"))
     assert np.isfinite(predicted).all()
     encoded = first.transform([[99, np.nan], [np.nan, np.nan]])[:, -4:]

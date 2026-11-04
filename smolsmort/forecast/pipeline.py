@@ -394,11 +394,22 @@ def score(
         pred, truth, periods = _timeseries_phase(ws, genome, "val", nthread, sample, histories)
     result = _fitness(ws, pred, truth, periods)
     result.prediction = pred
+    if ws.spec.task == "regression":
+        from smolsmort.forecast.metrics import prediction_metrics
+
+        # descriptive metrics never replace the search fitness or fold-weighted wape
+        validation_metrics = prediction_metrics(truth, pred)
+        result.metrics.update(
+            {k: v for k, v in validation_metrics.items() if k not in result.metrics}
+        )
+        result.metrics["validation_metrics"] = validation_metrics
     if ws.mode == "timeseries" and get_family(genome.family).needs == "raw_series":
         from smolsmort.forecast.families.stats import season_length
 
         result.metrics["season_length"] = season_length(ws.profile)
     result.eval_history = histories[0] if histories else None
+    if result.eval_history and not result.eval_history.get("validation"):
+        result.eval_history["validation"] = []
     return result
 
 
@@ -714,7 +725,12 @@ def _timeseries_fit(ws, genome, frame, rows, nthread):
         feature_types=types,
         params=dict(genome.params),
         nthread=nthread,
-        round_errors=genome.transform == "none",
+        round_errors=True,
+        **(
+            {"metric_transform": genome.transform, "metric_base": base}
+            if genome.family in ("xgboost", "lightgbm")
+            else {}
+        ),
     )
     return fitted, x
 
@@ -775,7 +791,15 @@ def _timeseries_predict(
                 measure_importance(genome.family, fitted, names, x[fit_rows & np.isfinite(frame.y)])
             )
         base = frame.base[eval_rows] if genome.transform == "logdiff" else None
-        prediction = transform.inv(fitted.predict(x[eval_rows]), base)
+        native_prediction = fitted.predict(x[eval_rows])
+        prediction = transform.inv(native_prediction, base)
+        if genome.family == "ridge" and histories is not None and not histories:
+            actual = transform.fwd(frame.y[eval_rows], base)
+            residual = native_prediction - actual
+            penalty = float(dict(genome.params).get("alpha", 1.0)) * float(
+                fitted.coefficients @ fitted.coefficients
+            )
+            fitted.eval_history["validation"] = [float(residual @ residual + penalty)]
     # one actual fit, never a blend of curves from different horizon buckets
     if histories is not None and not histories:
         history = fitted.eval_history

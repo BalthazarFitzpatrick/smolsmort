@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 
 from smolsmort.forecast.aggregate import get_aggregator
-from smolsmort.forecast.pipeline import finish, genome_from_dict, load_workspace
+from smolsmort.forecast.pipeline import finish, genome_from_dict, load_workspace, score
 from smolsmort.forecast.requests import parse_request
 from smolsmort.forecast.run_lock import RunLock
 from smolsmort.forecast.screen import read_priors, read_top_families, screen_families
@@ -169,6 +169,39 @@ def run(folder: Path) -> int:
         warm = _warm_start(request.get("warm_from"))
         if request.get("recipe"):
             # a refit: the saved recipe, no search
+            genome = genome_from_dict(request["recipe"], spec=spec)
+            scored = score(ws, genome, nthread=nthread)
+            history = scored.eval_history or {}
+            curve = {
+                "generation": 0,
+                "key": genome.key(),
+                "metrics": scored.metrics,
+                "validation_metrics": scored.metrics.get("validation_metrics", scored.metrics),
+                **{key: value for key, value in history.items() if key != "training"},
+                "train_loss": history.get("training", []),
+                "loss": {
+                    "name": history.get("metric"),
+                    "objective": genome.objective,
+                    "training": history.get("training", []),
+                    "validation": history.get("validation", []),
+                },
+            }
+            target = folder / "families" / genome.family
+            target.mkdir(parents=True, exist_ok=True)
+            family_job = _Run(target)
+            family_job.record_generation(curve)
+            family_job.save("winner.json", genome.to_dict())
+            family_job.save(
+                "leaderboard.json",
+                [
+                    {
+                        "genome": genome.to_dict(),
+                        "fitness": scored.fitness,
+                        "metrics": scored.metrics,
+                        "generation": 0,
+                    }
+                ],
+            )
             result = {
                 "leaderboard": [],
                 "best": request["recipe"],
@@ -239,6 +272,17 @@ def run(folder: Path) -> int:
                     job.save("coordinator.json", coordinator)
             result["aggregate"] = request.get("aggregate", "none")
             _write_result(folder, spec, result, final)
+            if request.get("recipe"):
+                _write_tables(folder, spec, final, prefix="winner")
+                _write_tables(target, spec, final)
+                family_job.status("done", generation=0, best_error=scored.fitness)
+                result["families"] = {
+                    genome.family: {"state": "done", "generation": 0, "fitness": scored.fitness}
+                }
+        if spec.mode == "timeseries" and spec.task == "regression":
+            from smolsmort.forecast.tiles import ensemble_rows
+
+            job.save("ensembles.json", ensemble_rows(folder))
         if request.get("version") == 2 and not result.get("finalized"):
             recipe = json.loads((folder / "recipe.json").read_text())
             job.save(

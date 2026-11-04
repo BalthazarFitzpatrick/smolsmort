@@ -95,13 +95,24 @@ def test_worker_persists_threads_before_screen_and_recipe_refit(
     monkeypatch.setattr(worker, "load_workspace", load_workspace)
     monkeypatch.setattr(worker, "screen_families", screen_families)
     monkeypatch.setattr(
-        worker, "genome_from_dict", lambda data, **kwargs: SimpleNamespace(to_dict=lambda: data)
+        worker,
+        "genome_from_dict",
+        lambda data, **kwargs: SimpleNamespace(
+            to_dict=lambda: data, key=lambda: "ridge-key", family="ridge", objective="squared"
+        ),
     )
+
+    def score_recipe(ws, genome, *, nthread):
+        assert ws is workspace and nthread == expected_threads
+        calls.append("score")
+        return SimpleNamespace(eval_history=None, metrics={"mae": 1}, fitness=0.2)
+
+    monkeypatch.setattr(worker, "score", score_recipe)
     monkeypatch.setattr(worker, "finish", finish_recipe)
 
     assert worker.run(tmp_path) == 0
 
-    assert calls == ["load", "screen", "finish", "closed"]
+    assert calls == ["load", "screen", "score", "finish", "closed"]
     assert len(cpu_calls) == int(stored_threads is None and request_threads is None)
     assert json.loads((tmp_path / "status.json").read_text())["state"] == "done"
     assert json.loads((tmp_path / "recipe.json").read_text())["family"] == "ridge"

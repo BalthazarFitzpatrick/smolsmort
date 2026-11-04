@@ -83,6 +83,8 @@ class LightgbmFamily:
         max_rounds: int = 2000,
         patience: int = 50,
         round_errors: bool = True,
+        metric_transform: str = "none",
+        metric_base=None,
     ) -> LightgbmFitted:
         if objective not in OBJECTIVES:
             raise ModelError(f"no lightgbm objective called {objective!r}")
@@ -126,7 +128,13 @@ class LightgbmFamily:
             results = {}
             train = pick(head)
             check = pick(tail, train)
-            errors = RoundErrors(y[tail]) if round_errors else None
+            errors = (
+                RoundErrors(
+                    y[tail], metric_transform, None if metric_base is None else metric_base[tail]
+                )
+                if round_errors
+                else None
+            )
 
             def round_feval(predictions, data):
                 # lightgbm hands the cached tail predictions; the training set is skipped

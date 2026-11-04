@@ -8,6 +8,38 @@ from pathlib import Path
 
 from smolsmort.forecast.tables import connect
 
+CURVE_METRICS = ("ape", "mape", "wape", "ae", "mae", "wae")
+
+
+def prediction_metrics(actual, prediction):
+    """ape = abs(actual - prediction) / actual for actual > 0, averaged for curves
+    mape = mean(ape) over finite pairs with actual > 0
+    wape = sum(abs(actual - prediction)) / sum(abs(actual)) over finite pairs
+    ae = abs(actual - prediction), averaged for curves
+    mae = mean(ae) over finite pairs
+    wae = sum(ae) over finite pairs, in target units
+    """
+    import numpy as np
+
+    actual, prediction = np.asarray(actual, dtype=float), np.asarray(prediction, dtype=float)
+    keep = np.isfinite(actual) & np.isfinite(prediction)
+    actual, prediction = actual[keep], prediction[keep]
+    errors = np.abs(actual - prediction)
+    positive = actual > 0
+    absolute = float(errors.sum()) if len(errors) else None
+    mean = float(errors.mean()) if len(errors) else None
+    percentage = float(np.mean(errors[positive] / actual[positive])) if positive.any() else None
+    denominator = float(np.abs(actual).sum())
+    return {
+        "ape": percentage,
+        "mape": percentage,
+        "wape": absolute / denominator if denominator else None,
+        "ae": mean,
+        "mae": mean,
+        "wae": absolute,
+    }
+
+
 _DEFINITIONS = (
     {
         "id": "validation_error",
