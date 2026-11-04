@@ -1135,6 +1135,8 @@ def _finish_timeseries(
     profile = ws.profile
     period = profile["genes"].get("period")
     bands, val_rows, test_rows, forecast = {}, [], [], []
+    bands_50, series_bands, series_bands_50 = {}, {}, {}
+    test_lo_50, test_hi_50 = [], []
     test_pred_all, test_truth_all, base_all, val_base = [], [], [], []
     test_lo, test_hi = [], []
     offset = 0
@@ -1174,35 +1176,37 @@ def _finish_timeseries(
         )
         offset += count
         stacked = frame.weeks_ahead is not None
-        if stacked:
-            lead_bands = ev.fit_lead_bands(
-                frame.y[masks["val"]], val_pred, frame.weeks_ahead[masks["val"]]
-            )
-            bands.update(
-                {
-                    str(lead): None if band is None else band.__dict__
-                    for lead, band in lead_bands.items()
-                }
-            )
-        else:
-            band = ev.fit_band(frame.y[masks["val"]], val_pred)
-            bands[f"{bucket[0]}-{bucket[1]}"] = None if band is None else band.__dict__
-
-        def apply_bands(
-            prediction,
-            rows,
-            stacked=stacked,
-            frame=frame,
-            lead_bands=lead_bands if stacked else None,
-            band=None if stacked else band,
+        leads = frame.weeks_ahead if stacked else np.full(len(frame.y), bucket[1])
+        lead_bands = ev.fit_lead_bands(
+            frame.y[masks["val"]], val_pred, leads[masks["val"]], frame.series[masks["val"]]
+        )
+        inner_bands = ev.fit_lead_bands(
+            frame.y[masks["val"]],
+            val_pred,
+            leads[masks["val"]],
+            frame.series[masks["val"]],
+            level=0.5,
+        )
+        for fitted, pooled, per_series in (
+            (lead_bands, bands, series_bands),
+            (inner_bands, bands_50, series_bands_50),
         ):
-            if stacked:
-                return ev.apply_lead_bands(lead_bands, prediction, frame.weeks_ahead[rows])
-            return ev.apply_band(band, prediction, nonnegative=True)
+            for lead, band in fitted.items():
+                if lead != "series":
+                    key = str(lead) if stacked else f"{bucket[0]}-{bucket[1]}"
+                    pooled[key] = None if band is None else band.__dict__
+            for series, own in fitted.get("series", {}).items():
+                saved = per_series.setdefault(series, {})
+                for lead, band in own.items():
+                    key = str(lead) if stacked else f"{bucket[0]}-{bucket[1]}"
+                    saved[key] = None if band is None else band.__dict__
+
+        def apply_bands(prediction, rows, fitted=lead_bands, leads=leads, frame=frame):
+            return ev.apply_lead_bands(fitted, prediction, leads[rows], frame.series[rows])
 
         rows = _timeseries_rows(frame, masks["val"], val_pred, bucket)
-        if stacked:
-            rows["lower"], rows["upper"] = apply_bands(val_pred, masks["val"])
+        rows["lower"], rows["upper"] = apply_bands(val_pred, masks["val"])
+        rows["lower_50"], rows["upper_50"] = apply_bands(val_pred, masks["val"], inner_bands)
         val_rows.append(rows)
         val_base.append(_timeseries_baseline(frame, masks["val"], bucket, period))
         test_pred = _timeseries_test(
@@ -1215,11 +1219,14 @@ def _finish_timeseries(
         lo, hi = apply_bands(test_pred, masks["test"])
         test_pred_all.append(test_pred)
         test_truth_all.append(frame.y[masks["test"]])
+        lo_50, hi_50 = apply_bands(test_pred, masks["test"], inner_bands)
+        test_lo_50.append(lo_50)
+        test_hi_50.append(hi_50)
         test_lo.append(lo)
         test_hi.append(hi)
         base_all.append(_timeseries_baseline(frame, masks["test"], bucket, period))
         rows = _timeseries_rows(frame, masks["test"], test_pred, bucket)
-        rows.update(lower=lo, upper=hi)
+        rows.update(lower=lo, upper=hi, lower_50=lo_50, upper_50=hi_50)
         test_rows.append(rows)
         future_pred = predict_members(
             frame,
@@ -1230,6 +1237,7 @@ def _finish_timeseries(
         )
         lo, hi = apply_bands(future_pred, masks["future"])
         rows = _timeseries_rows(frame, masks["future"], future_pred, bucket)
+        rows["lower_50"], rows["upper_50"] = apply_bands(future_pred, masks["future"], inner_bands)
         rows.update(lower=lo, upper=hi, band_width_pct=_row_width_pct(future_pred, lo, hi))
         forecast.append(rows)
     truth, pred = np.concatenate(test_truth_all), np.concatenate(test_pred_all)
@@ -1248,6 +1256,7 @@ def _finish_timeseries(
         model_error=model_error,
         baseline_error=baseline_error,
         band_coverage=ev.coverage(truth, np.concatenate(test_lo), np.concatenate(test_hi)),
+        band_coverage_50=ev.coverage(truth, np.concatenate(test_lo_50), np.concatenate(test_hi_50)),
         test_rows=len(truth),
         test_steps=ws.test_steps,
         band_width=_median_width(np.concatenate(test_lo), np.concatenate(test_hi)),
@@ -1293,6 +1302,24 @@ def _finish_timeseries(
         "excluded_series": ws.excluded_series,
         "verdict": verdict,
         "bands": bands,
+        "bands_50": bands_50,
+        "series_bands": series_bands,
+        "series_bands_50": series_bands_50,
+        "series_coverage": {
+            str(key): {
+                "80": ev.coverage(
+                    truth[test_table["series"] == key],
+                    test_lo_all[test_table["series"] == key],
+                    test_hi_all[test_table["series"] == key],
+                ),
+                "50": ev.coverage(
+                    truth[test_table["series"] == key],
+                    np.concatenate(test_lo_50)[test_table["series"] == key],
+                    np.concatenate(test_hi_50)[test_table["series"] == key],
+                ),
+            }
+            for key in np.unique(test_table["series"])
+        },
         "validation": validation_rows,
         "fold_scores": validation_score.metrics.get("fold_scores", [validation_score.fitness]),
         "fold_count": validation_score.metrics.get("fold_count", 1),

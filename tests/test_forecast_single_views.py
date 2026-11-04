@@ -90,7 +90,7 @@ def test_chart_keeps_largest_historical_lead_and_all_future_weeks(single_run):
     assert values["2025-03-31"] == 32
 
 
-def test_chart_bands_use_each_future_leads_own_validation_residuals(single_run):
+def test_chart_bands_combine_saved_series_widths_by_root_sum_squares(single_run):
     folder, request = single_run
     path = folder / "validation.parquet"
     source = read_table(path)
@@ -103,10 +103,10 @@ def test_chart_bands_use_each_future_leads_own_validation_residuals(single_run):
     band = payload["bands"][0]
     lower = dict(zip(payload["x"], band["lo"], strict=True))
     upper = dict(zip(payload["x"], band["hi"], strict=True))
-    assert lower["2025-02-10"] == pytest.approx(30 * (1 - 2 / 28))
-    assert upper["2025-02-10"] == pytest.approx(30 * (1 + 2 / 28))
-    assert lower["2025-03-31"] == 16
-    assert upper["2025-03-31"] == 48
+    assert lower["2025-02-10"] == pytest.approx(30 - np.sqrt(2))
+    assert upper["2025-02-10"] == pytest.approx(30 + np.sqrt(2))
+    assert lower["2025-03-31"] == pytest.approx(32 - np.sqrt(2))
+    assert upper["2025-03-31"] == pytest.approx(32 + np.sqrt(2))
 
 
 def test_table_preserves_selected_origins_and_all_future_leads(single_run):
@@ -116,6 +116,27 @@ def test_table_preserves_selected_origins_and_all_future_leads(single_run):
     assert payload["total"] == 8
     assert sum(row[-1] == 1 for row in payload["rows"]) == 2
     assert sum(row[-1] == 8 for row in payload["rows"]) == 6
+
+
+def test_chart_and_table_pass_both_ranges_and_old_tables_have_no_inner_band(single_run):
+    folder, request = single_run
+    assert "lo_50" not in views.timeseries_view(folder, request, {})["bands"][0]
+    path = folder / "forecast.parquet"
+    table = read_table(path)
+    width = np.array([3.0, 3.0, 4.0, 4.0])
+    table["lower"] = table["prediction"] - width
+    table["upper"] = table["prediction"] + width
+    table["lower_50"] = table["prediction"] - width / 2
+    table["upper_50"] = table["prediction"] + width / 2
+    write_table(path, table)
+    payload = views.timeseries_view(folder, request, {})
+    band = payload["bands"][0]
+    index = payload["x"].index("2025-02-10")
+    assert (band["lo"][index], band["hi"][index]) == (25, 35)
+    assert (band["lo_50"][index], band["hi_50"][index]) == (27.5, 32.5)
+    exported = views.timeseries_table(folder, request, {})
+    assert "lower_50" in exported["columns"]
+    assert "upper_50" in exported["columns"]
 
 
 @pytest.mark.parametrize(

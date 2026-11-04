@@ -228,16 +228,30 @@ def test_saved_outputs_preserve_rows_leads_and_band_arithmetic(monkeypatch, tmp_
     assert saved["horizon_mode"] == "single" and saved["horizon"] == 8
     assert set(saved["lead_errors"]) == {str(lead) for lead in range(1, 9)}
     assert saved["band_summary"]["test"]["all"]["rows"] == len(final["test"]["actual"])
+    assert set(saved["series_coverage"]) == set(final["test"]["series"])
+    assert all(set(value) == {"80", "50"} for value in saved["series_coverage"].values())
     for name in ("validation", "test", "forecast"):
         table = read_table(tmp_path / f"{name}.parquet")
         assert len(table["prediction"]) == len(final[name]["prediction"])
-        assert {"origin", "weeks_ahead", "bucket"} <= table.keys()
+        assert {"origin", "weeks_ahead", "bucket", "lower_50", "upper_50"} <= table.keys()
         for lead in range(1, 9):
             rows = table["weeks_ahead"] == lead
-            band = ev.Band(**saved["bands"][str(lead)])
-            lower, upper = ev.apply_band(band, table["prediction"][rows], nonnegative=True)
+            lower, upper = ev.apply_lead_bands(
+                {**saved["bands"], "series": saved["series_bands"]},
+                table["prediction"][rows],
+                table["weeks_ahead"][rows],
+                table["series"][rows],
+            )
             np.testing.assert_allclose(table["lower"][rows], lower)
             np.testing.assert_allclose(table["upper"][rows], upper)
+            lower_50, upper_50 = ev.apply_lead_bands(
+                {**saved["bands_50"], "series": saved["series_bands_50"]},
+                table["prediction"][rows],
+                table["weeks_ahead"][rows],
+                table["series"][rows],
+            )
+            np.testing.assert_allclose(table["lower_50"][rows], lower_50)
+            np.testing.assert_allclose(table["upper_50"][rows], upper_50)
     errors = read_table(tmp_path / "lead_errors.parquet")
     assert len(errors["weeks_ahead"]) == 16
     assert set(errors["phase"]) == {"validation", "test"}

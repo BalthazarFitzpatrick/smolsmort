@@ -233,19 +233,45 @@ def apply_band(band: Band | None, p, nonnegative: bool = False):
     return lo, hi
 
 
-def fit_lead_bands(actual, prediction, leads) -> dict[int, Band | None]:
-    """calibrate each lead on its own validation residuals"""
-    return {
-        int(lead): fit_band(actual[leads == lead], prediction[leads == lead])
+def fit_lead_bands(actual, prediction, leads, series=None, *, level=0.8) -> dict:
+    """keep pooled lead keys for old readers; optional series overrides need 20 finite
+    validation residuals at that lead. absent overrides fall back to the pooled band
+    """
+    actual, prediction, leads = map(np.asarray, (actual, prediction, leads))
+    bands = {
+        int(lead): fit_band(actual[leads == lead], prediction[leads == lead], level=level)
         for lead in np.unique(leads)
     }
+    if series is not None:
+        series = np.asarray(series)
+        overrides = {}
+        for key in np.unique(series):
+            own = {}
+            for lead in np.unique(leads[series == key]):
+                rows = (series == key) & (leads == lead)
+                known = rows & np.isfinite(actual) & np.isfinite(prediction)
+                if known.sum() >= 20:
+                    own[int(lead)] = fit_band(actual[known], prediction[known], level=level)
+            if own:
+                overrides[str(key)] = own
+        bands["series"] = overrides
+    return bands
 
 
-def apply_lead_bands(bands, prediction, leads, *, nonnegative=True):
+def apply_lead_bands(bands, prediction, leads, series=None, *, nonnegative=True):
+    """apply live or json bands, including old pooled-only results"""
+    prediction, leads = np.asarray(prediction), np.asarray(leads)
     lower, upper = np.full(len(prediction), np.nan), np.full(len(prediction), np.nan)
-    for lead in np.unique(leads):
-        rows = leads == lead
-        lower[rows], upper[rows] = apply_band(bands.get(int(lead)), prediction[rows], nonnegative)
+    series = np.asarray(series) if series is not None else np.full(len(leads), "")
+    for key in np.unique(series):
+        own = bands.get("series", {}).get(str(key), {})
+        for lead in np.unique(leads[series == key]):
+            rows = (leads == lead) & (series == key)
+            lead_key = str(int(lead))
+            band = own.get(int(lead), own.get(lead_key, bands.get(int(lead), bands.get(lead_key))))
+            if isinstance(band, dict):
+                band = Band(**band)
+            lower[rows], upper[rows] = apply_band(band, prediction[rows], nonnegative)
     return lower, upper
 
 
@@ -381,6 +407,7 @@ def judge(
     metric: str = "wape",
     val_error: float | None = None,
     width_pcts: tuple[float, float] | None = None,
+    band_coverage_50: float | None = None,
 ) -> dict:
     """compare untouched test error with naive and report band and history facts"""
     checks = []
@@ -418,6 +445,14 @@ def judge(
                 "check": "band coverage",
                 "group": "band",
                 "detail": f"80% band covered {band_coverage:.0%} of test rows",
+            }
+        )
+    if needs_band and band_coverage_50 is not None and np.isfinite(band_coverage_50):
+        checks.append(
+            {
+                "check": "50% band coverage",
+                "group": "band",
+                "detail": f"50% band covered {band_coverage_50:.0%} of test rows",
             }
         )
     if needs_band and band_width is not None and spread is not None:

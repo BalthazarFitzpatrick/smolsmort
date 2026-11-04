@@ -205,7 +205,7 @@ def test_legacy_blend_strength_migrates_to_weights_and_labels(horizon_run, stren
 
 @pytest.mark.parametrize("model", ["winner", "ensemble"])
 @pytest.mark.parametrize("selection", [{"lead": "1"}, {"blend": "2", "strength": "4"}])
-def test_horizon_metrics_belong_only_to_the_selected_model(horizon_run, model, selection):
+def test_horizon_metrics_include_each_family_on_the_selected_lead(horizon_run, model, selection):
     run, _, _ = horizon_run
     result = json.loads((run / "result.json").read_text(encoding="utf-8"))
     result["families"]["ridge"]["fitness"] = 0.27
@@ -223,6 +223,12 @@ def test_horizon_metrics_belong_only_to_the_selected_model(horizon_run, model, s
             saved = entry["error_metrics"][metric]
             if selected:
                 assert saved == payload["error_metrics"][metric]
+            elif name in payload["families"]:
+                assert saved["value"] is not None
+                if metric == "wape" and name == "ridge":
+                    assert saved["value"] == pytest.approx(wape["winner"])
+                if metric == "test_ratio" and name == "snaive":
+                    assert saved["value"] == 1
             else:
                 assert saved["value"] is None
                 assert saved["reason"] == "not computed for this view"
@@ -448,7 +454,9 @@ def test_naive_seasonal_fallback_matches_the_selected_model(horizon_run):
     payload = fetch_view(horizon_run, lead="1")
     # annual lags hold 6, 8, 10: baseline errors 4 + 12 + 20 for the selected model
     assert metric_values(payload)["test_ratio"] == pytest.approx(12 / 36)
-    assert payload["families"]["snaive"]["error_metrics"]["test_ratio"]["value"] is None
+    assert payload["families"]["snaive"]["error_metrics"]["test_ratio"]["value"] == pytest.approx(
+        12 / 36
+    )
 
 
 def test_filtered_metrics_and_chart_share_the_selected_series(horizon_run):
@@ -538,8 +546,54 @@ def test_upstream_lead_error_shapes_show_test_phase(horizon_run, source):
 
 def test_selected_family_metrics_do_not_mutate_tile_metrics(horizon_run):
     payload = fetch_view(horizon_run, lead="1")
-    assert payload["families"]["snaive"]["error_metrics"]["wape"]["value"] is None
+    assert payload["families"]["snaive"]["error_metrics"]["wape"]["value"] == 0.2
     assert payload["tiles"]["snaive"]["error_metrics"]["wape"]["value"] == 0.3
+
+
+def test_family_without_test_table_uses_saved_lead_errors(horizon_run):
+    run, _, _ = horizon_run
+    (run / "families" / "snaive" / "test.parquet").unlink()
+    result = json.loads((run / "result.json").read_text())
+    result["families"]["snaive"]["lead_errors"] = {"1": {"model": 0.2, "naive": 0.4}}
+    write_json(run / "result.json", result)
+    metrics = fetch_view(horizon_run, lead="1")["families"]["snaive"]["error_metrics"]
+    assert metrics["wape"]["value"] == 0.2
+    assert metrics["test_ratio"]["value"] == 0.5
+
+
+def test_blend_bands_use_own_series_after_twenty_validation_weeks():
+    days = np.arange(
+        np.datetime64("2025-01-06"), np.datetime64("2025-06-30"), np.timedelta64(7, "D")
+    )
+    long = make_predictions(days, [1] * len(days), [10] * len(days), actual=[11] * len(days))
+    short = make_predictions(days[:10], [1] * 10, [10] * 10, actual=[100] * 10)
+    long["series"] = np.full(len(days), "long")
+    short["series"] = np.full(10, "short")
+    validation = {name: np.concatenate([values, short[name]]) for name, values in long.items()}
+    bands = views._fit_blend_series_bands(validation, {1: 1})
+    for suffix in ("", "_50"):
+        assert bands[suffix]["long"].lo == pytest.approx(1)
+        assert "short" not in bands[suffix]
+        assert bands[suffix][None].hi > bands[suffix]["long"].hi
+
+
+def test_legacy_blend_has_no_inner_band(horizon_run):
+    payload = fetch_view(horizon_run, blend="2")
+    assert all("lo_50" not in band for band in payload["bands"])
+    assert "test_coverage_50" not in payload["blend_band"]
+
+
+def test_blend_passes_saved_inner_band_support_and_coverage(calibrated_run):
+    run, _, _ = calibrated_run
+    for kind in ("validation", "test", "forecast"):
+        path = run / f"winner_{kind}.parquet"
+        table = read_table(path)
+        table["lower_50"] = table["prediction"] - 1
+        table["upper_50"] = table["prediction"] + 1
+        write_table(path, table)
+    payload = fetch_view(calibrated_run, blend="2")
+    assert "lo_50" in payload["bands"][0]
+    assert "test_coverage_50" in payload["blend_band"]
 
 
 def test_blended_test_metrics_include_validation_forecasts_of_test_targets(horizon_run):
@@ -680,7 +734,7 @@ def test_blend_band_coverage_uses_chart_predictions_at_validation_test_overlap(c
     assert payload["blend_band"]["test_coverage"] == 2 / 3
 
 
-@pytest.mark.parametrize("nonnegative,expected_lower", [(True, 0), (False, -0.7)])
+@pytest.mark.parametrize("nonnegative,expected_lower", [(True, 0), (False, 0)])
 def test_blend_band_respects_target_sign_in_chart_and_table(
     calibrated_run, nonnegative, expected_lower
 ):
@@ -698,7 +752,7 @@ def test_blend_band_respects_target_sign_in_chart_and_table(
     assert read_bounds(payload)["2025-02-24"] == pytest.approx((expected_lower, 5.7))
     table = views.timeseries_table(run, request, {"blend_weights": "{}"})
     row = next(row for row in table["rows"] if row[0] == "2025-02-24")
-    assert row[table["columns"].index("lower")] == pytest.approx(expected_lower)
+    assert row[table["columns"].index("lower")] == pytest.approx(0 if nonnegative else -0.7)
 
 
 def test_blend_band_coverage_respects_filters_and_breakdown(calibrated_run):

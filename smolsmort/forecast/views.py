@@ -672,6 +672,13 @@ def family_tiles(
             if not path.exists() and recipe.get("family") != "ensemble":
                 path = run_dir / "test.parquet"
         accuracy = (summary.get("verdict") or {}).get("accuracy") or {}
+        if not accuracy and summary.get("model_error") is not None:
+            baseline = _finite_number(summary.get("baseline_error"))
+            accuracy = {
+                "model_error": summary["model_error"],
+                "baseline_error": baseline,
+                "ratio": summary["model_error"] / baseline if baseline else None,
+            }
         importance = _read_family_importance(
             run_dir, result, recipe, name, winner_family, legacy=legacy
         )
@@ -761,9 +768,20 @@ def family_tiles(
         tiles[name]["error_metrics"] = fm.error_metrics(
             request.get("spec", {}),
             fitness=tiles[name]["validation_error"],
-            verdict=summary.get("verdict"),
+            verdict={"accuracy": accuracy},
             path=path,
         )
+        if (
+            tiles[name]["error_metrics"].get("wape", {}).get("value") is None
+            and test_metric == "wape"
+        ):
+            tiles[name]["error_metrics"]["wape"] = {
+                "value": _finite_number(test_error),
+                "scope": "test",
+                "reason": None
+                if _finite_number(test_error) is not None
+                else "test error not saved",
+            }
     return tiles
 
 
@@ -921,7 +939,7 @@ def _tile_prediction_path(run_dir: Path, model: str, kind: str) -> Path:
                 raise ViewError("ensemble members disagree on actuals")
         columns["prediction"] = np.mean([table["prediction"] for table in tables], axis=0)
         # member bands are not calibrated for this new combination
-        for name in ("lower", "upper"):
+        for name in ("lower", "upper", "lower_50", "upper_50"):
             columns[name] = np.full(len(columns["prediction"]), np.nan)
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_suffix(".tmp.parquet")
@@ -957,7 +975,7 @@ def _optional_prediction_path(run_dir: Path, query: dict, kind: str) -> Path | N
 
 
 def result_details(run_dir: Path, request: dict, query: dict) -> dict:
-    """comparison uses validation scores; only the winner and ensemble have test verdicts"""
+    """compare saved validation scores and each family's available held-out test metrics"""
     result = _require_done(run_dir)
     selected = _select_model(run_dir, result, query)
     selected.pop("default_model")
@@ -985,6 +1003,8 @@ def result_details(run_dir: Path, request: dict, query: dict) -> dict:
                 "reason": progress.get("reason"),
                 "terminated": progress.get("terminated", False),
             }
+            if progress.get("verdict"):
+                row["verdict"] = progress["verdict"]
             if name == selected["winner_family"]:
                 row["verdict"] = result.get("winner", {}).get("verdict") or result.get("verdict")
             row["error_metrics"] = tiles.get(name, {}).get("error_metrics") or fm.error_metrics(
@@ -1165,6 +1185,27 @@ def _horizon_history_source(validation, test):
     )
 
 
+def _fit_blend_series_bands(validation, weights):
+    """use each group's blended residuals after 20 finite weeks, pooled offsets otherwise"""
+    blended = blend_rows(validation, weights)
+    fitted = {}
+    for level, suffix in ((0.8, ""), (0.5, "_50")):
+        groups = {None: fit_blend_band(validation, weights, level=level)}
+        for series in np.unique(blended["series"]):
+            selected = blended["series"] == series
+            finite = selected & np.isfinite(blended["actual"]) & np.isfinite(blended["prediction"])
+            if np.count_nonzero(finite) < 20:
+                continue
+            source_rows = validation["series"] == series
+            groups[str(series)] = fit_blend_band(
+                {name: values[source_rows] for name, values in validation.items()},
+                weights,
+                level=level,
+            )
+        fitted[suffix] = groups
+    return fitted
+
+
 def _horizon_sources(con, request, query, validation, test, forecast):
     sources = {
         name: f"read_parquet({_lit(path)})"
@@ -1173,11 +1214,37 @@ def _horizon_sources(con, request, query, validation, test, forecast):
     table = _read_view_rows(con, sources["test"])
     selection = _horizon_selection(request, query, table)
     if selection is None:
+        for name, source in sources.items():
+            rows = _read_view_rows(con, source)
+            for column in ("lower", "upper", "lower_50", "upper_50"):
+                rows.setdefault(column, np.full(len(rows["step"]), np.nan))
+            con.register(
+                f"horizon_{name}",
+                {
+                    column: values.astype("datetime64[ns]")
+                    if np.issubdtype(values.dtype, np.datetime64)
+                    else values
+                    for column, values in rows.items()
+                },
+            )
+            sources[name] = f"horizon_{name}"
+        sources["history"] = (
+            "(SELECT series, step, AVG(prediction) AS prediction, AVG(lower) AS lower, "
+            "AVG(upper) AS upper, AVG(lower_50) AS lower_50, AVG(upper_50) AS upper_50 "
+            f"FROM (SELECT * FROM {sources['validation']} UNION BY NAME "
+            f"SELECT * FROM {sources['test']}) GROUP BY series, step)"
+        )
         return None, sources, None
     band = None
     if selection["mode"] == "blend":
         validation_rows = _read_view_rows(con, sources["validation"])
         band = fit_blend_band(validation_rows, selection["weights"])
+        blend_bands = _fit_blend_series_bands(validation_rows, selection["weights"])
+        if not all(
+            {"lower_50", "upper_50"} <= set(_read_view_rows(con, source))
+            for source in sources.values()
+        ):
+            blend_bands.pop("_50")
         panel = Path(request["prepared"]) / "panel.parquet"
         target = _quote(_spec_target(request["spec"]))
         nonnegative = bool(
@@ -1191,7 +1258,17 @@ def _horizon_sources(con, request, query, validation, test, forecast):
             rows = _select_horizon_rows(rows, selection)
         count = len(rows["step"])
         if selection["mode"] == "blend":
-            rows["lower"], rows["upper"] = ev.apply_band(band, rows["prediction"], nonnegative)
+            for suffix, fitted in blend_bands.items():
+                rows[f"lower{suffix}"], rows[f"upper{suffix}"] = ev.apply_band(
+                    fitted[None], rows["prediction"], nonnegative
+                )
+                for series, group_band in fitted.items():
+                    if series is None:
+                        continue
+                    selected = rows["series"].astype(str) == series
+                    rows[f"lower{suffix}"][selected], rows[f"upper{suffix}"][selected] = (
+                        ev.apply_band(group_band, rows["prediction"][selected], nonnegative)
+                    )
             if name in ("validation", "history"):
                 # only held-out test targets get historical bounds, using the chart's blend
                 keep = np.asarray(
@@ -1202,7 +1279,9 @@ def _horizon_sources(con, request, query, validation, test, forecast):
                     dtype=bool,
                 )
                 rows["lower"][~keep] = rows["upper"][~keep] = np.nan
-        for column in ("lower", "upper"):
+                if "_50" in blend_bands:
+                    rows["lower_50"][~keep] = rows["upper_50"][~keep] = np.nan
+        for column in ("lower", "upper", "lower_50", "upper_50"):
             rows.setdefault(column, np.full(count, np.nan))
         registered = {
             column: values.astype("datetime64[ns]")
@@ -1399,7 +1478,40 @@ def _horizon_result_metrics(run_dir, request, query, details, selection):
             entry["error_metrics"] = {**entry["error_metrics"], **metrics}
     for family, entry in details["families"].items():
         selected = model == "winner" and family == details["winner_family"]
-        metrics = selected_metrics if selected else unavailable
+        if selected:
+            metrics = selected_metrics
+        else:
+            path = run_dir / "families" / family / "test.parquet"
+            if not path.exists() and family == details["winner_family"]:
+                path = _optional_prediction_path(run_dir, {**query, "model": "winner"}, "test")
+            with connect() as con:
+                metrics = _horizon_metrics(con, run_dir, request, query, path, selection)
+            if path is None or not path.exists():
+                saved = _require_done(run_dir).get("families", {}).get(family, {})
+                lead_errors = saved.get("lead_errors") or {}
+                lead = selection.get("n")
+                if isinstance(lead_errors, dict):
+                    lead_error = lead_errors.get(str(lead), lead_errors.get(lead, {}))
+                else:
+                    lead_error = next(
+                        (row for row in lead_errors if row.get("weeks_ahead") == lead), {}
+                    )
+                model_error = lead_error.get("model_wape", lead_error.get("model"))
+                baseline = lead_error.get("naive_wape", lead_error.get("naive"))
+                for metric_name, value in (
+                    ("wape", model_error),
+                    (
+                        "test_ratio",
+                        model_error / baseline if model_error is not None and baseline else None,
+                    ),
+                ):
+                    if _finite_number(value) is not None:
+                        metrics[metric_name] = {
+                            "value": value,
+                            "scope": "test",
+                            "note": scope,
+                            "reason": None,
+                        }
         entry["error_metrics"] = {**entry["error_metrics"], **metrics}
     if model.startswith(("model:", "ensemble:")):
         details[model]["error_metrics"].update(selected_metrics)
@@ -1471,11 +1583,6 @@ def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
         combos = combos[:MAX_LINES]
         note = f"capped at {MAX_LINES} of {len(combos)} lines"
 
-    nonnegative = bool(
-        con.execute(
-            f"SELECT MIN({_quote(target)}) >= 0 FROM read_parquet({_lit(str(panel))})"
-        ).fetchone()[0]
-    )
     keymap_sql = (
         'SELECT DISTINCT "__series" AS series'
         + (f", {', '.join(_quote(d) for d in dims)}" if dims else "")
@@ -1536,22 +1643,10 @@ def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
         series_lines.append((actual_id, actual_label, actual, False))
         series_lines.append((forecast_id, forecast_label, forecast_series, True))
 
-        if selection is None:
-            lo_by_step, hi_by_step = _timeseries_band(
-                con, keymap_sql, validation, forecast, combo_where, future_rows, nonnegative
-            )
-        elif selection["mode"] == "lead":
-            lo_by_step, hi_by_step = _horizon_band(con, keymap_sql, sources, combo_where)
-            future_lo, future_hi = _timeseries_band(
-                con, keymap_sql, validation, forecast, combo_where, future_rows, nonnegative, True
-            )
-            lo_by_step.update(future_lo)
-            hi_by_step.update(future_hi)
-        elif blend_band is not None:
-            lo_by_step, hi_by_step = _horizon_band(con, keymap_sql, sources, combo_where)
-        else:
-            continue
-        bands.append((f"band:{forecast_id}", forecast_id, lo_by_step, hi_by_step))
+        lo_by_step, hi_by_step = _horizon_band(con, keymap_sql, sources, combo_where)
+        lo_50, hi_50 = _horizon_band(con, keymap_sql, sources, combo_where, "_50")
+        if any(value is not None for value in lo_by_step.values()):
+            bands.append((f"band:{forecast_id}", forecast_id, lo_by_step, hi_by_step, lo_50, hi_50))
 
     x = sorted(x_set)
     series_payload = [
@@ -1559,8 +1654,18 @@ def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
         for sid, label, values, dashed in series_lines
     ]
     bands_payload = [
-        {"id": bid, "series": sid, "lo": _align(lo, x), "hi": _align(hi, x)}
-        for bid, sid, lo, hi in bands
+        {
+            "id": bid,
+            "series": sid,
+            "lo": _align(lo, x),
+            "hi": _align(hi, x),
+            **(
+                {"lo_50": _align(lo_50, x), "hi_50": _align(hi_50, x)}
+                if any(value is not None for value in lo_50.values())
+                else {}
+            ),
+        }
+        for bid, sid, lo, hi, lo_50, hi_50 in bands
     ]
     markers = _timeseries_markers(con, validation, test, forecast)
 
@@ -1597,29 +1702,34 @@ def _blend_band_summary(con, keymap_sql, sources, where, band):
         WITH keymap AS ({keymap_sql}), targets AS (
             SELECT DISTINCT series, step FROM {sources["test"]}
         )
-        SELECT h.actual, h.lower, h.upper FROM {sources["history"]} h
+        SELECT h.actual, h.lower, h.upper, h.lower_50, h.upper_50 FROM {sources["history"]} h
         JOIN targets USING (series, step) JOIN keymap USING (series) WHERE {where}
     """).fetchall()
-    values = np.asarray(rows, dtype=float).reshape(-1, 3)
-    summary["test_coverage"] = _finite_number(ev.coverage(*values.T))
+    values = np.asarray(rows, dtype=float).reshape(-1, 5)
+    summary["test_coverage"] = _finite_number(ev.coverage(*values[:, :3].T))
+    if np.isfinite(values[:, 3:]).any():
+        summary["test_coverage_50"] = _finite_number(
+            ev.coverage(values[:, 0], values[:, 3], values[:, 4])
+        )
     if summary["test_coverage"] is None:
         summary["reason"] = "no test rows with finite actuals and bounds"
     return summary
 
 
-def _horizon_band(con, keymap_sql, sources, where):
+def _horizon_band(con, keymap_sql, sources, where, suffix=""):
+    # independent group misses partly cancel, so combine squared widths rather than edges
     rows = con.execute(f"""
         WITH keymap AS ({keymap_sql}), predictions AS (
-            SELECT series, step, lower, upper FROM {sources["history"]}
-            UNION ALL SELECT series, step, lower, upper FROM {sources["forecast"]}
-        ), joined AS (SELECT p.step, p.lower, p.upper, k.* FROM predictions p JOIN keymap k USING (series))
+            SELECT series, step, prediction, lower{suffix} AS lower, upper{suffix} AS upper FROM {sources["history"]}
+            UNION ALL SELECT series, step, prediction, lower{suffix}, upper{suffix} FROM {sources["forecast"]}
+        ), joined AS (SELECT p.step, p.prediction, p.lower, p.upper, k.* FROM predictions p JOIN keymap k USING (series))
         SELECT step,
-            CASE WHEN COUNT(lower) = COUNT(*) THEN SUM(lower) END,
-            CASE WHEN COUNT(upper) = COUNT(*) THEN SUM(upper) END
+            CASE WHEN COUNT(lower) = COUNT(*) THEN GREATEST(0, SUM(prediction) - SQRT(SUM(POWER(prediction - lower, 2)))) END,
+            CASE WHEN COUNT(upper) = COUNT(*) THEN SUM(prediction) + SQRT(SUM(POWER(upper - prediction, 2))) END
         FROM joined WHERE {where} GROUP BY step ORDER BY step
     """).fetchall()
-    lo = {_iso(step): float(low) if low is not None else None for step, low, _ in rows}
-    hi = {_iso(step): float(high) if high is not None else None for step, _, high in rows}
+    lo = {_iso(step): _finite_number(low) for step, low, _ in rows}
+    hi = {_iso(step): _finite_number(high) for step, _, high in rows}
     return lo, hi
 
 
@@ -1982,19 +2092,19 @@ def timeseries_table(run_dir: Path, request: dict, query: dict) -> dict:
     dims_sel = ", ".join(f"k.{_quote(d)}" for d in dims)
     hist_sql = f"""
         WITH keymap AS ({keymap_sql})
-        SELECT h.step, {dims_sel + "," if dims else ""} h.prediction, NULL AS lower, NULL AS upper,
+        SELECT h.step, {dims_sel + "," if dims else ""} h.prediction, h.lower, h.upper, h.lower_50, h.upper_50,
                h.actual, FALSE AS future{hist_leads}
-        FROM read_parquet({_lit(str(validation))}) h
+        FROM {sources["validation"]} h
         JOIN keymap k USING (series)
         UNION ALL
-        SELECT h.step, {dims_sel + "," if dims else ""} h.prediction, NULL AS lower, NULL AS upper,
+        SELECT h.step, {dims_sel + "," if dims else ""} h.prediction, h.lower, h.upper, h.lower_50, h.upper_50,
                h.actual, FALSE AS future{hist_leads}
-        FROM read_parquet({_lit(str(test))}) h
+        FROM {sources["test"]} h
         JOIN keymap k USING (series)
         UNION ALL
-        SELECT f.step, {dims_sel + "," if dims else ""} f.prediction, f.lower, f.upper,
+        SELECT f.step, {dims_sel + "," if dims else ""} f.prediction, f.lower, f.upper, f.lower_50, f.upper_50,
                CAST(NULL AS DOUBLE) AS actual, TRUE AS future{future_leads}
-        FROM read_parquet({_lit(str(forecast))}) f
+        FROM {sources["forecast"]} f
         JOIN keymap k USING (series)
     """
     if selection:
@@ -2003,11 +2113,11 @@ def timeseries_table(run_dir: Path, request: dict, query: dict) -> dict:
         )
         hist_sql = f"""
             WITH keymap AS ({keymap_sql})
-            SELECT h.step, {dims_sel + "," if dims else ""} h.prediction, h.lower, h.upper,
+            SELECT h.step, {dims_sel + "," if dims else ""} h.prediction, h.lower, h.upper, h.lower_50, h.upper_50,
                    h.actual, FALSE AS future{selected_leads}
             FROM {sources["history"]} h JOIN keymap k USING (series)
             UNION ALL
-            SELECT f.step, {dims_sel + "," if dims else ""} f.prediction, f.lower, f.upper,
+            SELECT f.step, {dims_sel + "," if dims else ""} f.prediction, f.lower, f.upper, f.lower_50, f.upper_50,
                    CAST(NULL AS DOUBLE) AS actual, TRUE AS future{future_leads}
             FROM {sources["forecast"]} f JOIN keymap k USING (series)
         """
@@ -2018,7 +2128,17 @@ def timeseries_table(run_dir: Path, request: dict, query: dict) -> dict:
     order = "DESC" if sort == "future" or query.get("desc") == "1" else "ASC"
     full_sql += f" ORDER BY {_quote(sort) if sort != 'future' else 'future'} {order}, step ASC"
     rows = con.execute(full_sql).fetchall()
-    columns = ["step", *dims, "prediction", "lower", "upper", "actual", "future"]
+    columns = [
+        "step",
+        *dims,
+        "prediction",
+        "lower",
+        "upper",
+        "lower_50",
+        "upper_50",
+        "actual",
+        "future",
+    ]
     if single:
         columns += ["origin", "weeks_ahead"]
     page = int(query.get("page", 0))

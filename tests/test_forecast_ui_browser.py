@@ -151,7 +151,7 @@ def open_info(page: Page, topic: str = TOPIC):
 
 
 @contextmanager
-def session(tmp_path: Path, *, width: int = 1280, numeric: bool = False, port: int = 8110):
+def session(tmp_path: Path, *, width: int = 1280, numeric: bool = False, port: int = 0):
     """the real review server, its forecast root holding the synthetic rows fixture, and a
     headless page on it"""
     errors: list[str] = []
@@ -564,6 +564,60 @@ def test_forecast_regression_entity_flow(tmp_path):
             csv_bytes = response.read()
         first_line = csv_bytes.decode().splitlines()[0]
         assert first_line.startswith("# verdict:"), first_line
+
+
+def test_results_chart_showed_both_ranges(tmp_path):
+    """saved-view payloads draw nested shades and name each range on hover"""
+    with session(tmp_path, port=0) as (page, _base):
+        page.evaluate("""() => {
+          const el = document.createElement('div');
+          el.id = 'synthetic-range-chart';
+          el.className = 'forecast-chart';
+          el.style.width = '600px';
+          document.body.appendChild(el);
+          window.syntheticRangeChart = forecastRangeChart(el);
+          window.syntheticRangeChart.update({
+            x: ['2026-11-01', '2026-11-08'],
+            series: [{id: 'forecast', label: 'forecast', values: [10, 12]}],
+            bands: [{series: 'forecast', lo: [6, 8], hi: [14, 16],
+              lo_50: [8, 10], hi_50: [12, 14]}],
+          });
+        }""")
+        chart = page.locator("#synthetic-range-chart")
+        assert chart.locator(".chart-band").count() == 2
+        assert chart.locator(".forecast-band-inner").count() == 1
+        shades = chart.locator(".chart-band").evaluate_all(
+            "nodes => nodes.map(node => ({color: getComputedStyle(node).fill, "
+            "opacity: Number(getComputedStyle(node).fillOpacity)}))"
+        )
+        assert shades[0]["color"] == shades[1]["color"]
+        assert shades[1]["opacity"] > shades[0]["opacity"]
+        chart.locator(".chart-overlay").hover(position={"x": 10, "y": 10})
+        assert "80% range" in chart.locator(".chart-tooltip").inner_text()
+        assert "50% range" in chart.locator(".chart-tooltip").inner_text()
+        page.evaluate("""() => ForecastTopic.prototype.paintChart.call({
+          topic: 'regression', chart: window.syntheticRangeChart, setResultsNotes() {},
+        }, {
+          x: ['2026-11-01', '2026-11-08'], series: [],
+          bands: [{series: 'forecast', lo: [6, 8], hi: [14, 16],
+            lo_50: [8, 10], hi_50: [12, 14]}],
+        })""")
+        assert page.locator("#regression-chart-caption").inner_text() == (
+            "dark: half of past weeks landed here, light: 8 of 10 landed here"
+        )
+        page.evaluate("""() => window.syntheticRangeChart.update({
+          x: ['2026-11-01', '2026-11-08'],
+          series: [{id: 'forecast', values: [10, 12]}],
+          bands: [{series: 'forecast', lo: [6, 8], hi: [14, 16]}],
+        })""")
+        assert chart.locator(".chart-band").count() == 1
+        assert chart.locator(".forecast-band-inner").count() == 0
+        assert page.evaluate("""() => forecastBlendBandText({
+          view: {mode: 'blend'}, blend_band: {test_coverage: .8, test_coverage_50: .5},
+        })""") == (
+            "blend band test coverage: 80.0% against the 80% target. "
+            "blend band test coverage: 50.0% against the 50% target."
+        )
 
 
 def test_stored_filters_with_quotes_fill_their_fields_intact(tmp_path):

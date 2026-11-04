@@ -7,6 +7,45 @@ const FORECAST_UNITS = ['day', 'week', 'month', 'quarter', 'year'];
 const FORECAST_PAGE_SIZE = 50;
 const FORECAST_BLEND_STRENGTHS = [1, 2, 4, 8];
 
+function forecastRangeChart(el) {
+  let bands = [];
+  let pointCount = 0;
+  const chart = timeChart(el, {height: 220, onHover: point => {
+    if (!point) return;
+    const labels = bands.filter(band => band.lo?.[point.index] != null && band.hi?.[point.index] != null)
+      .map(band => `${band.level}% range`);
+    if (!labels.length) return;
+    const names = [...el.querySelectorAll('.chart-tooltip > span')]
+      .filter(node => !node.className);
+    names.slice(-labels.length).forEach((node, index) => { node.textContent = labels[index]; });
+  }});
+  const shadeBands = () => {
+    const paths = [...el.querySelectorAll('.chart-band')];
+    let index = 0;
+    bands.forEach(band => {
+      const segments = chartBandSegments(band.lo || [], band.hi || [], pointCount);
+      segments.filter(segment => segment.length >= 2).forEach(() => {
+        paths[index++]?.classList.toggle('forecast-band-inner', band.level === 50);
+      });
+    });
+  };
+  // the shared chart redraws on resize; retain the shade on every new path
+  const observer = new MutationObserver(shadeBands);
+  observer.observe(el, {childList: true, subtree: true});
+  return {
+    update(data) {
+      pointCount = data.x?.length || 0;
+      bands = (data.bands || []).flatMap(band => [
+        {...band, level: 80},
+        ...(band.lo_50 && band.hi_50 ? [{...band, lo: band.lo_50, hi: band.hi_50, level: 50}] : []),
+      ]);
+      chart.update({...data, bands});
+      shadeBands();
+    },
+    destroy() { observer.disconnect(); chart.destroy(); },
+  };
+}
+
 function forecastRunLocalTime(run) {
   let date = Number.isFinite(run.started_at) ? new Date(run.started_at * 1000) : null;
   if (!date) {
@@ -250,7 +289,10 @@ function forecastBlendBandText(view) {
   if (view?.view?.mode !== 'blend') return null;
   const band = view.blend_band;
   if (Number.isFinite(band?.test_coverage)) {
-    return `blend band test coverage: ${(band.test_coverage * 100).toFixed(1)}% against the 80% target.`;
+    const outer = `blend band test coverage: ${(band.test_coverage * 100).toFixed(1)}% against the 80% target.`;
+    return Number.isFinite(band.test_coverage_50)
+      ? `${outer} blend band test coverage: ${(band.test_coverage_50 * 100).toFixed(1)}% against the 50% target.`
+      : outer;
   }
   if (band?.reason === 'no test rows with finite actuals and bounds') {
     return `blend band test coverage unavailable against the 80% target: ${band.reason}.`;
@@ -3214,7 +3256,7 @@ class ForecastTopic {
     status.classList.toggle('hidden', !status.textContent);
     el.classList.toggle('hidden', hazard && !aggregate);
     if (hazard && !aggregate) return;
-    if (!this.chart) this.chart = timeChart(el, {height: 220});
+    if (!this.chart) this.chart = forecastRangeChart(el);
     this.chart.update({x: view.x, series: view.series, bands: view.bands, markers: view.markers});
     const caption = document.getElementById(`${this.topic}-chart-caption`);
     const weighted = forecastWeightedWeeks(view.view?.weights);
@@ -3224,6 +3266,9 @@ class ForecastTopic {
     caption.textContent = !view.view ? '' : view.view.mode === 'lead'
       ? `each week shows the forecast made ${view.view.n} weeks before that week.`
       : `each week shows the weighted average of all its forecasts: ${weightDetails}. not a forecast the model made. ${forecastBlendBandText(view)}`;
+    if ((view.bands || []).some(band => band.lo_50 && band.hi_50)) {
+      caption.textContent += `${caption.textContent ? ' ' : ''}dark: half of past weeks landed here, light: 8 of 10 landed here`;
+    }
     caption.classList.toggle('hidden', !caption.textContent);
   }
 
