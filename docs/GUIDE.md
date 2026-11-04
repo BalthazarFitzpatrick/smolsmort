@@ -746,9 +746,10 @@ future line keeps all future weeks. tables and exports preserve every origin and
 `result.json` saves test wape by lead in `lead_errors` and validation wape in
 `validation_lead_errors`; each lead maps to `model`, `naive` and `rows`. `lead_errors.parquet`
 includes `phase` (`validation` or `test`), `weeks_ahead`, `rows`, `model_wape`, `naive_wape`,
-`ratio` and `mae`. the 80% band is fitted separately for each lead from its validation
-residuals and applied to test and future rows with that lead. saved `bands` keys are the leads
-`"1"` through `"horizon"`; mixed-mode keys remain horizon groups.
+`ratio` and `mae`. the 80% and 50% bands are fitted for each group and lead from validation
+residuals, falling back to the pooled lead when fewer than 20 valid residuals exist.
+saved `bands` keys remain the leads `"1"` through `"horizon"`; mixed-mode keys remain horizon
+groups. `series_bands` saves group bands; `bands_50` and `series_bands_50` save the inner bands.
 
 `band.parquet` adds `phase` and `weeks_ahead`, retaining its existing columns and both series
 and `all` rows. lead 0 means pooled rows; leads 1 through `horizon` carry their own coverage
@@ -909,7 +910,12 @@ with low coverage claims more than the model knows. `band_width_pct` is the summ
 over the summed actuals, so 0.5 means the band is as wide as half the volume. the median per row
 is `(upper - lower) / actual` over rows with an actual above zero.
 
-time series runs save `lower` and `upper` next to `prediction` in `test.parquet` (the band fitted
+the band is the forecast plus the typical miss measured on validation weeks, per group. the
+dark shade covers half of past weeks; the light shade covers 8 of 10. a total combines group
+ranges by the square root of their squared widths, so misses partly cancel. this assumes group
+errors are independent; groups that move together can make the total range too narrow.
+
+time series runs save `lower` and `upper`, plus `lower_50` and `upper_50`, next to `prediction` in `test.parquet` (the band fitted
 on validation residuals, applied to the held-out weeks), so a chart can show band against actual.
 `forecast.parquet` also carries `band_width_pct` per row, relative to its prediction.
 `band.parquet` has one row per series plus `all`: `rows`, `coverage`, `band_width_pct`,
@@ -929,7 +935,7 @@ a long horizon widens the spacing so windows never overlap. short history uses f
 the results banner shows the ratio and better/worse reading above the chart. the csv export
 carries the accuracy summary in its first line and the ratio on every row.
 the chart shows the total, narrowed by dimension filters and split by up to three dimensions,
-with the band recomputed at the aggregate on screen; the table below pages, sorts and, per row,
+with group ranges combined at the aggregate on screen; the table below pages, sorts and, per row,
 groups by a dimension with each group's earliest and latest predicted date.
 
 **on disk**, under the forecast root: `.forecast-cache/<spec>-<file>/` (prep.sql, prep.json, the

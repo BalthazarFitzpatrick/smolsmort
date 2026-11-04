@@ -63,7 +63,15 @@ def test_finish_and_importance_use_resolved_threads(
     def finish_candidate(ws, genome, **kwargs):
         assert ws is workspace
         fit_calls.append(("ensemble" if kwargs.get("members") else "winner", kwargs["nthread"]))
-        return {"model_error": 0.2}
+        return {
+            "model_error": 0.2,
+            "baseline_error": 0.4,
+            "val_error": 0.15,
+            "lead_errors": {"1": {"model": 0.2, "naive": 0.4, "rows": 2}},
+            "series_bands": {"a": {"1": None}},
+            "bands_50": {"1": None},
+            "series_coverage": {"a": {"80": 0.8, "50": 0.5}},
+        }
 
     def fit_family_importance(ws, genome, *, nthread):
         assert ws is workspace
@@ -107,3 +115,11 @@ def test_finish_and_importance_use_resolved_threads(
     ]
     assert importance_calls == [("xgboost", expected_threads), ("lightgbm", expected_threads)]
     assert json.loads((tmp_path / "finish_complete.json").read_text()) == {"family": "ensemble"}
+    saved = json.loads((tmp_path / "result.json").read_text())
+    for family in coordinator["families"]:
+        metrics = saved["families"][family]
+        assert metrics["model_error"] == 0.2
+        assert metrics["baseline_error"] == 0.4
+        assert metrics["val_error"] == 0.15
+        assert metrics["lead_errors"]["1"]["model"] == 0.2
+        assert metrics["series_coverage"]["a"] == {"80": 0.8, "50": 0.5}

@@ -336,6 +336,10 @@ def _write_result(folder, spec, result, final):
         "baseline_error": final["baseline_error"],
         "band": final.get("band"),
         "bands": final.get("bands"),
+        "series_bands": final.get("series_bands"),
+        "bands_50": final.get("bands_50"),
+        "series_bands_50": final.get("series_bands_50"),
+        "series_coverage": final.get("series_coverage"),
         "importance": final.get("importance"),
     }
     coordinator_path = folder / "coordinator.json"

@@ -103,13 +103,28 @@ def pick_ensemble(runs_root: Path, members: dict[str, str]):
         table["prediction"] = np.mean([stacks[part][name] for name in best], axis=0)
     validation = parts["validation"]
     if "weeks_ahead" in validation:
+        leads = {part: table["weeks_ahead"] for part, table in parts.items()}
+    elif "bucket" in validation:
+        buckets = {value: index + 1 for index, value in enumerate(np.unique(validation["bucket"]))}
+        leads = {
+            part: np.asarray([buckets[value] for value in table["bucket"]])
+            for part, table in parts.items()
+        }
+    else:
+        leads = {
+            part: np.ones(len(table["prediction"]), dtype=int) for part, table in parts.items()
+        }
+    for level, suffix in ((0.8, ""), (0.5, "_50")):
         bands = fit_lead_bands(
-            validation["actual"], validation["prediction"], validation["weeks_ahead"]
+            validation["actual"],
+            validation["prediction"],
+            leads["validation"],
+            validation["series"],
+            level=level,
         )
-        for part in ("test", "forecast"):
-            table = parts[part]
-            table["lower"], table["upper"] = apply_lead_bands(
-                bands, table["prediction"], table["weeks_ahead"]
+        for part, table in parts.items():
+            table[f"lower{suffix}"], table[f"upper{suffix}"] = apply_lead_bands(
+                bands, table["prediction"], leads[part], table["series"]
             )
     return best, parts
 

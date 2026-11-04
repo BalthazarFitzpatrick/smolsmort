@@ -1,6 +1,7 @@
 """raw tile contract and incremental recipe refits on synthetic rows"""
 
 import json
+import sys
 from dataclasses import asdict
 from types import SimpleNamespace
 
@@ -232,6 +233,8 @@ def test_tile_route_full_read_and_new_curves(tmp_path):
 
 
 def test_refit_run_real_worker_incremental_no_search(tmp_path, monkeypatch):
+    # other test files import torch, and the real worker refuses to share a process with it
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
     from test_forecast_single import build_workspace, candidate
 
     from smolsmort.forecast import worker

@@ -80,7 +80,7 @@ def blend_rows(
         groups.setdefault(target, []).append(index)
     first_rows = np.asarray([indices[0] for indices in groups.values()], dtype=int)
     # lead bands cannot be averaged; fit the blend's band on its own validation residuals
-    omitted = {"origin", "weeks_ahead", "bucket", "lower", "upper"}
+    omitted = {"origin", "weeks_ahead", "bucket", "lower", "upper", "lower_50", "upper_50"}
     result = {name: values[first_rows] for name, values in columns.items() if name not in omitted}
     averaged = [name for name in ("prediction", "naive_prediction") if name in result]
     for name in averaged:
@@ -107,7 +107,7 @@ def blend_rows(
 
 
 def fit_blend_band(
-    validation: dict[str, np.ndarray], weights: dict[int, float] | None = None
+    validation: dict[str, np.ndarray], weights: dict[int, float] | None = None, *, level=0.8
 ) -> Band | None:
     """fit additive q10/q90 offsets from at least four finite blended validation residuals"""
     blended = blend_rows(validation, weights)
@@ -119,5 +119,6 @@ def fit_blend_band(
     residuals = residuals[np.isfinite(residuals)]
     if len(residuals) < MIN_BLEND_RESIDUALS:
         return None
-    lower, upper = np.quantile(residuals, [0.1, 0.9])
+    tail = (1 - level) / 2
+    lower, upper = np.quantile(residuals, [tail, 1 - tail])
     return Band(float(lower), float(upper), relative=False, floor=1.0, n=len(residuals))

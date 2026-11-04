@@ -161,7 +161,8 @@ def test_results_compare_validation_scores_without_loser_test_verdicts(app, comp
     assert [row["fitness"] for row in payload["families"].values()] == [0.2, 0.3, 0.5]
     assert payload["families"]["xgboost"]["verdict"] == payload["winner"]["verdict"]
     assert "verdict" not in payload["families"]["ridge"]
-    assert "verdict" not in payload["families"]["snaive"]
+    # a family keeps its own saved held-out verdict for the family table
+    assert payload["families"]["snaive"]["verdict"]["accuracy"]["ratio"] == 0.8
     assert (
         payload["families"]["snaive"]["pruned_reason"] == "paired validation error behind xgboost"
     )

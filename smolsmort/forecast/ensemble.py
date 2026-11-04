@@ -30,6 +30,11 @@ def summarize(final):
             "baseline_error",
             "band",
             "bands",
+            "series_bands",
+            "bands_50",
+            "series_bands_50",
+            "band_summary",
+            "series_coverage",
             "importance",
             "fold_scores",
             "fold_count",
@@ -156,6 +161,7 @@ def run(folder, parent_pid):
                 )
             )
             _write_tables(folder / "families" / name, spec, family_final)
+            summary["families"][name].update(summarize(family_final))
         if ws.mode == "entity":
             importance = final.get("importance")
         else:

@@ -369,5 +369,6 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
   .forecast-search-charts { grid-template-columns: minmax(0, 1fr); }
 }
 .forecast-chart { flex: 2 1 0; min-height: 160px; }
+.forecast-chart .chart-band.forecast-band-inner { fill-opacity: .32; }
 .forecast-results > .forecast-chart { flex: 0 0 auto; }
 .forecast-table-wrap { flex: 3 1 0; min-height: 0; overflow: auto; }
