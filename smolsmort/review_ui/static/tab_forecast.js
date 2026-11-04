@@ -2819,12 +2819,15 @@ class ForecastTopic {
     document.getElementById(`${this.topic}-results-model`).onclick = evt => {
       if (!this.resultsView) return;
       const tiles = this.resultsView.run_tiles;
-      const options = tiles?.length ? tiles.map(tile => ({
+      // only tiles with saved predictions can open; older runs keep their saved ensemble entry
+      const shown = (tiles || []).filter(tile => tile.viewable !== false);
+      const options = shown.map(tile => ({
         id: tile.tile_id, label: forecastRunTileLabel(tile, tiles), on: this.resultsModel === tile.tile_id,
-      })) : [
-        {id: 'winner', label: this.resultsView.winner_family || 'xgboost', on: this.resultsModel === 'winner'},
-        {id: 'ensemble', label: `ensemble of ${(this.resultsView.ensemble?.members || []).join(', ')}`, on: this.resultsModel === 'ensemble'},
-      ];
+      }));
+      if (!shown.some(tile => tile.kind === 'ensemble') && this.resultsView.ensemble) {
+        options.push({id: 'ensemble', label: `ensemble of ${(this.resultsView.ensemble.members || []).join(', ')}`, on: this.resultsModel === 'ensemble'});
+      }
+      if (!options.length) options.push({id: 'winner', label: this.resultsView.winner_family || 'xgboost', on: this.resultsModel === 'winner'});
       listMenu('forecast', options, async item => {
         this.resultsModel = item.id;
         this.importanceFamily = null;
@@ -3214,7 +3217,7 @@ class ForecastTopic {
     status.classList.toggle('hidden', !status.textContent);
     el.classList.toggle('hidden', hazard && !aggregate);
     if (hazard && !aggregate) return;
-    if (!this.chart) this.chart = timeChart(el, {height: 220});
+    if (!this.chart) this.chart = timeChart(el, {height: 440});
     this.chart.update({x: view.x, series: view.series, bands: view.bands, markers: view.markers});
     const caption = document.getElementById(`${this.topic}-chart-caption`);
     const weighted = forecastWeightedWeeks(view.view?.weights);

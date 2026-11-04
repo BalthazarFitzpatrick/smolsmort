@@ -249,3 +249,32 @@ def test_refit_cancelled_state_stays_cancelled(tmp_path):
     )
     assert json.loads((tmp_path / run_id / "status.json").read_text())["state"] == "cancelled"
     assert tiles.read_tiles(tmp_path / run_id)[0]["state"] == "done"
+
+
+def test_mark_viewable_flags_only_tiles_with_saved_predictions(tmp_path):
+    from smolsmort.forecast.views import _mark_viewable
+
+    (tmp_path / "families" / "xgboost").mkdir(parents=True)
+    (tmp_path / "families" / "xgboost" / "validation.parquet").write_bytes(b"")
+    tiles = [
+        {"tile_id": "model:xgboost:a", "kind": "model", "family": "xgboost"},
+        {"tile_id": "model:ridge:b", "kind": "model", "family": "ridge"},
+        {"tile_id": "model:lightgbm:c", "kind": "model", "family": "lightgbm"},
+        {"tile_id": "ensemble:d", "kind": "ensemble", "members": ["model:xgboost:a"]},
+        {
+            "tile_id": "ensemble:e",
+            "kind": "ensemble",
+            "members": ["model:xgboost:a", "model:ridge:b"],
+        },
+    ]
+    flags = {
+        tile["tile_id"]: tile["viewable"] for tile in _mark_viewable(tmp_path, tiles, "lightgbm")
+    }
+    # saved predictions or the run winner open; an ensemble needs all of its members
+    assert flags == {
+        "model:xgboost:a": True,
+        "model:ridge:b": False,
+        "model:lightgbm:c": True,
+        "ensemble:d": True,
+        "ensemble:e": False,
+    }
