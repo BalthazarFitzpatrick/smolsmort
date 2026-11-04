@@ -1748,15 +1748,16 @@ def _blend_band_summary(con, keymap_sql, sources, where, band):
 
 
 def _horizon_band(con, keymap_sql, sources, where, suffix=""):
-    # independent group misses partly cancel, so combine squared widths rather than edges
+    # independent group misses partly cancel, so combine squared widths rather than edges;
+    # the sign of the summed offsets is kept so one series returns its stored band unchanged
     rows = con.execute(f"""
         WITH keymap AS ({keymap_sql}), predictions AS (
             SELECT series, step, prediction, lower{suffix} AS lower, upper{suffix} AS upper FROM {sources["history"]}
             UNION ALL SELECT series, step, prediction, lower{suffix}, upper{suffix} FROM {sources["forecast"]}
         ), joined AS (SELECT p.step, p.prediction, p.lower, p.upper, k.* FROM predictions p JOIN keymap k USING (series))
         SELECT step,
-            CASE WHEN COUNT(lower) = COUNT(*) THEN GREATEST(0, SUM(prediction) - SQRT(SUM(POWER(prediction - lower, 2)))) END,
-            CASE WHEN COUNT(upper) = COUNT(*) THEN SUM(prediction) + SQRT(SUM(POWER(upper - prediction, 2))) END
+            CASE WHEN COUNT(lower) = COUNT(*) THEN GREATEST(0, SUM(prediction) - CASE WHEN SUM(prediction - lower) < 0 THEN -1 ELSE 1 END * SQRT(SUM(POWER(prediction - lower, 2)))) END,
+            CASE WHEN COUNT(upper) = COUNT(*) THEN SUM(prediction) + CASE WHEN SUM(upper - prediction) < 0 THEN -1 ELSE 1 END * SQRT(SUM(POWER(upper - prediction, 2))) END
         FROM joined WHERE {where} GROUP BY step ORDER BY step
     """).fetchall()
     lo = {_iso(step): _finite_number(low) for step, low, _ in rows}
