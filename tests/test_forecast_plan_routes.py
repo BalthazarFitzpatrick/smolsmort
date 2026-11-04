@@ -50,6 +50,19 @@ def test_save_and_get_plan_with_status(app, tmp_path, config):
     assert plan.load_plan(tmp_path) == config
 
 
+def test_grid_route_preserves_full_axes_and_selection(app, tmp_path, config):
+    source = config.pop("sets")[0]["spec"]
+    config["grid"] = {
+        "horizon": [8, 12],
+        "grouping": {"clients": source, "total": source},
+        "selected": {"horizon": [12], "grouping": ["total"]},
+    }
+    tab = forecast_tab()
+    assert tab.post["/api/forecast-plan"](app, config) == {"plan": config}
+    assert tab.get["/api/forecast-plan"](app, {})["plan"] == config
+    assert json.loads((tmp_path / "forecast-plan.json").read_text()) == config
+
+
 @pytest.mark.parametrize("route", ["/api/forecast-plan", "/api/forecast-plan-start"])
 def test_invalid_plan_has_plain_message(app, route):
     with pytest.raises(RequestError) as caught:

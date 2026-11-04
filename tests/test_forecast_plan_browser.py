@@ -11,6 +11,45 @@ from playwright.sync_api import expect
 from test_forecast_ui_browser import session, show_tab, switch_to_regression
 
 
+def test_grid_controls_save_selected_axes_and_keep_sources(tmp_path):
+    from smolsmort.forecast import plan
+
+    spec = {
+        "source": "source.csv",
+        "mode": "timeseries",
+        "task": "regression",
+        "columns": [
+            {"name": "day", "role": "time"},
+            {"name": "value", "role": "target", "aggregation": "sum"},
+        ],
+    }
+    with session(tmp_path, port=0) as (page, _base):
+        root = tmp_path / "forecast_root"
+        (root / "request.json").write_text(json.dumps({"spec": spec}))
+        grid = {"horizon": [8, 12], "grouping": {"client groups": spec, "total": "request.json"}}
+        plan.save_plan(
+            root, {"hours": 4, "families": [{"name": "ridge", "budget_s": 600}], "grid": grid}
+        )
+        switch_to_regression(page)
+        show_tab(page, "regression-search")
+        section = page.locator(".forecast-plan:visible")
+        section.locator("summary").click()
+        expect(section.locator("[data-plan-runs]")).to_have_text("4 runs")
+        section.locator('[data-plan-field="horizons"]').select_option(["12"])
+        section.locator('[data-plan-field="groupings"]').select_option(["total"])
+        expect(section.locator("[data-plan-runs]")).to_have_text("1 run")
+        section.locator('[data-plan-action="save"]').click()
+        expect(section).to_contain_text("saved")
+        saved = json.loads((root / "forecast-plan.json").read_text())
+        assert saved["grid"] == {**grid, "selected": {"horizon": [12], "grouping": ["total"]}}
+        assert "sets" not in saved
+        page.reload()
+        show_tab(page, "regression-search")
+        section = page.locator(".forecast-plan:visible")
+        section.locator("summary").click()
+        expect(section.locator("[data-plan-runs]")).to_have_text("1 run")
+
+
 def test_plan_controls_saved_edits_and_polled_without_replacing_form(tmp_path):
     snapshot = {
         "plan": {

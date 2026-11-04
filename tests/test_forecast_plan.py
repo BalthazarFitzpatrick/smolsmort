@@ -68,6 +68,105 @@ def test_saved_spec_and_horizon(tmp_path, config):
     assert plan._spec(tmp_path, config["sets"][0]).horizon == 16
 
 
+def make_grid(config):
+    source = json.loads(json.dumps(config.pop("sets")[0]["spec"]))
+    config["grid"] = {"horizon": [8, 12], "grouping": {"client groups": source, "total": source}}
+    return config
+
+
+def test_grid_expansion_and_saved_sources(tmp_path, config):
+    make_grid(config)
+    write_json(tmp_path / "request.json", {"spec": config["grid"]["grouping"]["total"]})
+    config["grid"]["grouping"]["total"] = "request.json"
+    assert plan.save_plan(tmp_path, config) == config
+    assert read_json(tmp_path / "forecast-plan.json") == config
+    items = plan.expand_sets(plan.load_plan(tmp_path))
+    assert [item["label"] for item in items] == [
+        "8 weeks - client groups",
+        "8 weeks - total",
+        "12 weeks - client groups",
+        "12 weeks - total",
+    ]
+    assert [plan._spec(tmp_path, item).horizon for item in items] == [8, 8, 12, 12]
+    config["grid"]["selected"] = {"horizon": [12], "grouping": ["total"]}
+    plan.save_plan(tmp_path, config)
+    assert plan.expand_sets(plan.load_plan(tmp_path)) == [items[-1]]
+    assert len(plan.load_plan(tmp_path)["grid"]["grouping"]) == 2
+
+
+@pytest.mark.parametrize(
+    "grid, message",
+    [
+        ({"horizon": [], "grouping": {}}, "horizon"),
+        ({"horizon": [True], "grouping": {}}, "positive integer"),
+        ({"horizon": [1.5], "grouping": {}}, "positive integer"),
+        ({"horizon": [0], "grouping": {}}, "positive integer"),
+        ({"horizon": [8], "grouping": []}, "object"),
+        ({"horizon": [8], "grouping": {}}, "non-empty"),
+        ({"horizon": [8], "grouping": {" ": {}}}, "names"),
+        ({"horizon": [8], "grouping": {"total": 3}}, "spec"),
+    ],
+)
+def test_invalid_grid(tmp_path, config, grid, message):
+    config.pop("sets")
+    config["grid"] = grid
+    with pytest.raises(ValueError, match=message):
+        plan.save_plan(tmp_path, config)
+
+
+def test_grid_and_sets_rejected(tmp_path, config):
+    config["grid"] = {}
+    with pytest.raises(ValueError, match="not both"):
+        plan.save_plan(tmp_path, config)
+
+
+def test_grid_validates_unselected_sources(tmp_path, config):
+    make_grid(config)["grid"]["selected"] = {"horizon": [8], "grouping": ["total"]}
+    config["grid"]["grouping"]["client groups"] = {"source": "bad.csv"}
+    with pytest.raises(ValueError, match="invalid spec source for grouping client groups"):
+        plan.save_plan(tmp_path, config)
+
+
+def test_grid_rejects_saved_request_without_object(tmp_path, config):
+    make_grid(config)["grid"]["grouping"]["total"] = "bad.json"
+    write_json(tmp_path / "bad.json", [])
+    with pytest.raises(ValueError, match="invalid spec source for grouping total"):
+        plan.save_plan(tmp_path, config)
+
+
+@pytest.mark.parametrize(
+    "selected",
+    [
+        None,
+        {},
+        {"horizon": [], "grouping": ["total"]},
+        {"horizon": [8], "grouping": ["unknown"]},
+        {"horizon": [True], "grouping": ["total"]},
+    ],
+)
+def test_invalid_grid_selection(tmp_path, config, selected):
+    make_grid(config)["grid"]["selected"] = selected
+    with pytest.raises(ValueError, match="selected"):
+        plan.save_plan(tmp_path, config)
+
+
+def test_sets_only_unchanged(tmp_path, config):
+    config = json.loads(json.dumps(config))
+    assert plan.save_plan(tmp_path, config) == config
+    assert plan.load_plan(tmp_path) == config
+    assert plan.expand_sets(config) == config["sets"]
+
+
+def test_grid_cli_status(tmp_path, config, capsys):
+    from smolsmort.cli import main
+
+    plan.save_plan(tmp_path, make_grid(config))
+    assert main(["forecast", "plan", "status", "--root", str(tmp_path)]) == 0
+    assert json.loads(capsys.readouterr().out)["permutations"] == [
+        item["label"] for item in plan.expand_sets(config)
+    ]
+
+
 def fake_runner(monkeypatch, root, *, on_start=None, on_wait=None):
     calls = []
     monkeypatch.setattr(plan, "prepare", lambda spec, cache: SimpleNamespace(folder=cache))
@@ -344,8 +443,11 @@ def test_start_launches_detached_and_reuses_live_pid(tmp_path, monkeypatch, conf
     assert len(launched) == 1
 
 
-def test_resume_reattaches_persisted_current_run(tmp_path, monkeypatch, config):
+@pytest.mark.parametrize("grid", [False, True])
+def test_resume_reattaches_persisted_current_run(tmp_path, monkeypatch, config, grid):
     config["families"] = config["families"][:1]
+    if grid:
+        make_grid(config)["grid"]["selected"] = {"horizon": [8], "grouping": ["total"]}
     plan.save_plan(tmp_path, config)
 
     def interrupt(run_id):
