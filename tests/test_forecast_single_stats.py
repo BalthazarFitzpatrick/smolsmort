@@ -105,7 +105,7 @@ def test_single_stats_transforms_never_validate_post_origin_targets(transform):
     task = make_task(origins=(70,))
     workspace = SimpleNamespace(
         panel=task.panel,
-        spec=SimpleNamespace(named=lambda _role: ["y"]),
+        spec=SimpleNamespace(named=lambda _role: ["y"], history_fill=None),
         unit=task.unit,
         profile={"genes": {"period": task.season_length}},
         horizon_mode="single",
