@@ -425,6 +425,7 @@ function forecastRunTileChart(tile, tiles, metric, training) {
   const palette = ['--lichen-milk', '--vanilla', '--stone-red-lift', '--kingfisher-milk', '--muted-on'];
   const members = tile.kind === 'ensemble'
     ? (tile.members || []).map(id => tiles.find(member => member.tile_id === id)).filter(Boolean) : [tile];
+  const singleValues = new Map();
   let recorded = false;
   members.forEach((member, memberIndex) => {
     let generations = Object.entries(member.curves || {}).sort(([a], [b]) => Number(a) - Number(b));
@@ -454,6 +455,11 @@ function forecastRunTileChart(tile, tiles, metric, training) {
       const drawSegment = () => {
         if (!segment.length) return;
         if (segment.length === 1) {
+          if (tile.kind === 'ensemble') {
+            singleValues.set(member, Number(values.find(Number.isFinite).toPrecision(4)));
+            segment = [];
+            return;
+          }
           const marker = forecastNode('span', 'forecast-run-tile-single');
           const dotSvg = document.createElementNS(svg.namespaceURI, 'svg');
           dotSvg.setAttribute('viewBox', '0 0 12 12');
@@ -479,13 +485,15 @@ function forecastRunTileChart(tile, tiles, metric, training) {
       drawSegment();
     });
   });
-  if (svg.childElementCount) chart.append(svg);
+  if (svg.childElementCount || tile.kind === 'ensemble') chart.append(svg);
   else chart.classList.add('forecast-run-tile-chart-compact');
   if (!recorded) chart.append(forecastNode('span', 'forecast-tile-chart-note', 'no curve saved'));
   if (tile.kind === 'ensemble') {
-    const legend = forecastNode('div', 'forecast-tile-chart-note');
+    const legend = forecastNode('div', 'forecast-tile-chart-note forecast-run-tile-legend');
     members.forEach((member, index) => {
-      const label = forecastNode('span', '', `${member.family} `);
+      const value = singleValues.has(member) ? ` ${singleValues.get(member)}` : '';
+      const label = forecastNode('span', '', `${member.family}${value} `);
+      if (singleValues.has(member)) label.dataset.value = singleValues.get(member);
       label.style.color = `var(${palette[index % palette.length]})`;
       legend.append(label);
     });

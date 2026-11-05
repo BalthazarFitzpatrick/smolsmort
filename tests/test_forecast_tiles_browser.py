@@ -230,7 +230,9 @@ def test_contract_tiles_square_curves_filters_and_ensembles(tmp_path, monkeypatc
         model.locator('details[data-menu="param"] summary').click()
         ensemble = page.locator('.forecast-run-tile[data-kind="ensemble"]').first
         assert (
-            ensemble.locator(".forecast-run-tile-chart").last.locator("polyline, circle").count()
+            ensemble.locator(".forecast-run-tile-chart")
+            .last.locator("polyline, .forecast-run-tile-legend [data-value]")
+            .count()
             >= 2
         )
         ensemble.locator("summary").click()
@@ -349,6 +351,62 @@ def test_contract_curve_drawing_and_loading(tmp_path):
             "no curve saved"
         ]
         assert empty_tile.locator(".forecast-run-tile-chart, svg").count() == 0
+
+
+def test_ensemble_single_values_kept_chart_height_and_legend_clear(tmp_path):
+    with session(tmp_path, port=0) as (page, _base):
+        page.wait_for_function("() => typeof forecastCreateRunTile === 'function'")
+        page.evaluate(
+            """() => {
+              const curve = {train_loss: [8, 5, 3], validation: {wape: [0.4, 0.3, 0.2]}};
+              const members = ['lightgbm', 'xgboost', 'snaive', 'ridge', 'arima', 'ets', 'theta']
+                .map((family, index) => ({tile_id: family, family, kind: 'model', best_generation: 0,
+                  curves: {0: index < 2 ? curve : {train_loss: [1685],
+                    loss: {name: 'penalized_squared_error'}, validation: {wape: [0.1917]}}}}));
+              const ensembles = [members.slice(0, 2), members].map((items, index) => ({
+                tile_id: `comparison-${index}`, family: 'ensemble', kind: 'ensemble',
+                members: items.map(item => item.tile_id), metrics: {}}));
+              const grid = document.createElement('div');
+              grid.className = 'forecast-tiles-grid';
+              grid.id = 'ensemble-layout-test';
+              ensembles.forEach(tile => grid.append(forecastCreateRunTile(
+                tile, 0, members, 'wape', null, [])));
+              document.body.append(grid);
+            }"""
+        )
+        tiles = page.locator("#ensemble-layout-test .forecast-run-tile")
+        mixed = tiles.nth(1)
+        assert mixed.locator(".forecast-run-tile-single").count() == 0
+        for index, value in ((0, "1685"), (1, "0.1917")):
+            chart = mixed.locator(".forecast-run-tile-chart").nth(index)
+            legend = chart.locator(".forecast-run-tile-legend")
+            assert f"snaive {value}" in legend.inner_text()
+            assert legend.locator("span").nth(2).evaluate("node => node.style.color") == (
+                "var(--stone-red-lift)"
+            )
+            svg_box = chart.locator(":scope > svg").bounding_box()
+            reference = (
+                tiles.first.locator(".forecast-run-tile-chart")
+                .nth(index)
+                .locator(":scope > svg")
+                .bounding_box()
+            )
+            assert svg_box["height"] > 0
+            assert svg_box["height"] == pytest.approx(reference["height"], abs=1)
+            legend_box = legend.bounding_box()
+            label_box = chart.locator(".forecast-tile-chart-label").bounding_box()
+            assert label_box["y"] + label_box["height"] <= svg_box["y"] + 1
+            assert svg_box["y"] + svg_box["height"] <= legend_box["y"] + 1
+        legend_box = mixed.locator(".forecast-run-tile-legend").first.bounding_box()
+        next_label = mixed.locator(".forecast-tile-chart-label").last.bounding_box()
+        assert legend_box["y"] + legend_box["height"] <= next_label["y"] + 1
+        last_svg = mixed.locator(".forecast-run-tile-chart > svg").last.bounding_box()
+        menu_box = mixed.locator("summary").bounding_box()
+        assert last_svg["y"] + last_svg["height"] <= menu_box["y"] + 1
+        assert mixed.locator(".forecast-run-tile-legend").first.evaluate(
+            "node => getComputedStyle(node).whiteSpace === 'nowrap' && "
+            "getComputedStyle(node).textOverflow === 'ellipsis'"
+        )
 
 
 def test_results_picker_lists_and_selects_every_saved_tile(tmp_path):
