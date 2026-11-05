@@ -399,6 +399,22 @@ function forecastRunTileLabel(tile, tiles) {
     : tile.family;
 }
 
+function forecastReduceTilePoints(points) {
+  if (points.length <= 150) return points;
+  const kept = new Set([0, points.length - 1]);
+  const size = Math.ceil((points.length - 2) / 37);
+  for (let start = 1; start < points.length - 1; start += size) {
+    const end = Math.min(start + size, points.length - 1);
+    let low = start, high = start;
+    for (let index = start; index < end; index++) {
+      if (points[index][1] < points[low][1]) low = index;
+      if (points[index][1] > points[high][1]) high = index;
+    }
+    [start, end - 1, low, high].forEach(index => kept.add(index));
+  }
+  return [...kept].sort((a, b) => a - b).map(index => points[index]);
+}
+
 function forecastRunTileChart(tile, tiles, metric, training) {
   const chart = forecastNode('div', 'forecast-tile-chart forecast-run-tile-chart');
   chart.append(forecastNode('div', 'forecast-tile-chart-label', training ? 'train loss' : `validation ${metric}`));
@@ -413,7 +429,7 @@ function forecastRunTileChart(tile, tiles, metric, training) {
   members.forEach((member, memberIndex) => {
     let generations = Object.entries(member.curves || {}).sort(([a], [b]) => Number(a) - Number(b));
     if (tile.kind === 'ensemble') generations = generations.filter(([generation]) => Number(generation) === member.best_generation);
-    const valuesFor = curve => (training ? curve.train_loss : curve.validation?.[metric] || []).map(value => Number.isFinite(value) ? value : null);
+    const valuesFor = curve => (training ? curve.train_loss || [] : curve.validation?.[metric] || []).map(value => Number.isFinite(value) ? value : null);
     const oneShot = generations.length && generations.every(([, curve]) => valuesFor(curve).length <= 1);
     const allValues = generations.flatMap(([, curve]) => valuesFor(curve)).filter(Number.isFinite);
     if (!allValues.length) return;
@@ -437,26 +453,35 @@ function forecastRunTileChart(tile, tiles, metric, training) {
       let segment = [];
       const drawSegment = () => {
         if (!segment.length) return;
+        if (segment.length === 1) {
+          const marker = forecastNode('span', 'forecast-run-tile-single');
+          const dotSvg = document.createElementNS(svg.namespaceURI, 'svg');
+          dotSvg.setAttribute('viewBox', '0 0 12 12');
+          const dot = document.createElementNS(svg.namespaceURI, 'circle');
+          dot.setAttribute('cx', '6'); dot.setAttribute('cy', '6'); dot.setAttribute('r', '3');
+          dot.style.fill = `var(${colour})`;
+          dotSvg.append(dot);
+          marker.append(dotSvg, document.createTextNode(`${training ? curve.loss?.name || 'loss' : metric} ${Number(values.find(Number.isFinite).toPrecision(4))}`));
+          chart.append(marker);
+          segment = [];
+          return;
+        }
         const line = document.createElementNS(svg.namespaceURI, 'polyline');
-        line.setAttribute('points', segment.map(point => point.join(',')).join(' '));
+        line.setAttribute('points', forecastReduceTilePoints(segment).map(point => point.join(',')).join(' '));
+        line.setAttribute('vector-effect', 'non-scaling-stroke');
         line.style.stroke = `var(${colour})`;
         line.dataset.generation = generation;
         line.dataset.member = member.family;
         svg.append(line);
-        segment.forEach(([x, y]) => {
-          const dot = document.createElementNS(svg.namespaceURI, 'circle');
-          dot.setAttribute('cx', x); dot.setAttribute('cy', y); dot.setAttribute('r', '.012');
-          dot.style.fill = `var(${colour})`;
-          svg.append(dot);
-        });
         segment = [];
       };
       points.forEach(point => { if (point) segment.push(point); else drawSegment(); });
       drawSegment();
     });
   });
-  chart.append(svg);
-  if (!recorded) chart.append(forecastNode('span', 'forecast-tile-chart-note', training ? 'no training rounds' : 'no saved validation curve'));
+  if (svg.childElementCount) chart.append(svg);
+  else chart.classList.add('forecast-run-tile-chart-compact');
+  if (!recorded) chart.append(forecastNode('span', 'forecast-tile-chart-note', 'no curve saved'));
   if (tile.kind === 'ensemble') {
     const legend = forecastNode('div', 'forecast-tile-chart-note');
     members.forEach((member, index) => {
@@ -499,8 +524,11 @@ function forecastCreateRunTile(tile, index, tiles, metric, legacy, metrics) {
   const format = value => Number.isFinite(value) ? Number(value.toPrecision(4)) : '-';
   title.append(forecastNode('span', 'forecast-tile-name', `#${index + 1} ${forecastRunTileLabel(tile, tiles)}`));
   title.title = forecastRunTileLabel(tile, tiles);
-  face.append(title, forecastNode('div', 'forecast-tile-score', `${metric} · validation ${format(score.validation)} · test ${format(score.test)}`),
-    forecastRunTileChart(tile, tiles, metric, true), forecastRunTileChart(tile, tiles, metric, false));
+  face.append(title, forecastNode('div', 'forecast-tile-score', `${metric} · validation ${format(score.validation)} · test ${format(score.test)}`));
+  const charts = [forecastRunTileChart(tile, tiles, metric, true), forecastRunTileChart(tile, tiles, metric, false)];
+  if (charts.every(chart => !chart.querySelector('svg'))) {
+    face.append(forecastNode('div', 'forecast-tile-chart-note', 'no curve saved'));
+  } else face.append(...charts);
   if (tile.kind === 'ensemble') {
     const details = forecastNode('details');
     details.dataset.menu = 'members';
@@ -2285,7 +2313,7 @@ class ForecastTopic {
     if (this.currentRunId === run.id && !this.isRunning(run)) this.currentRunId = null;
     this.paintRuns();
     if (this.selectedRunId === run.id) this.paintRunDetail(run);
-    this.readLegacyTiles(run);
+    if (!run.runTiles) this.readLegacyTiles(run);
     if (this.resultsRunId === run.id && !this.resultsLoading
         && document.getElementById(`${this.topic}-info`)?.getClientRects().length) {
       if (!this.resultsSpec || this.resultsNotes.load?.length) {
@@ -2299,7 +2327,7 @@ class ForecastTopic {
   }
 
   async readLegacyTiles(run) {
-    if (run.version !== 1 || run.state !== 'done' || this.selectedRunId !== run.id
+    if (run.runTiles || run.version !== 1 || run.state !== 'done' || this.selectedRunId !== run.id
         || run.tiles || run.tilesRequested) return;
     run.tilesRequested = true;
     try {
@@ -2433,6 +2461,11 @@ class ForecastTopic {
       this.paintContractTiles(run, grid);
       return;
     }
+    if (run && !run.runTilesError) {
+      grid.replaceChildren(forecastNode('div', 'forecast-tiles-loading', 'loading tiles'));
+      return;
+    }
+    grid.querySelectorAll('.forecast-tiles-loading').forEach(node => node.remove());
     const entries = forecastTileEntries(run);
     const scale = forecastTileWapeScale(entries);
     const metrics = this.selectedMetrics(run);
@@ -2483,6 +2516,7 @@ class ForecastTopic {
 
   paintContractTiles(run, grid) {
     const tiles = run.runTiles;
+    grid.querySelectorAll(':scope > :not(.forecast-run-tile)').forEach(node => node.remove());
     const metrics = this.selectedMetrics(run);
     const names = new Set(['ape', 'mape', 'wape', 'ae', 'mae', 'wae']);
     tiles.forEach(tile => {
@@ -2510,6 +2544,18 @@ class ForecastTopic {
     document.getElementById(`${this.topic}-tiles`).classList.remove('flipped');
     setText(`${this.topic}-run-view-caption`, 'tiles: ranked models and ensembles. tables: every family as a row, plus the best ten recipes.');
     const legacy = forecastTileEntries(run);
+    const baseline = legacy.map(item => item.test_naive_wape
+      ?? item.verdict?.accuracy?.baseline_error).find(value => Number.isFinite(value) && value > 0)
+      ?? run.verdict?.accuracy?.baseline_error ?? tiles.map(item => {
+      const ratio = item.error_metrics?.test_ratio?.value;
+      return ratio > 0 ? item.metrics?.wape?.test / ratio : null;
+    }).find(value => Number.isFinite(value) && value > 0);
+    tiles.filter(tile => tile.kind === 'ensemble').forEach(tile => {
+      const value = tile.metrics?.wape?.test;
+      if (Number.isFinite(value) && Number.isFinite(baseline) && baseline > 0) {
+        tile.metrics.test_ratio = {test: value / baseline};
+      }
+    });
     const existing = new Map([...grid.children].map(node => [node.dataset.tileId, node]));
     entries.forEach((tile, index) => {
       const old = existing.get(tile.tile_id);

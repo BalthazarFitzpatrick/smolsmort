@@ -171,7 +171,8 @@ def test_error_metric_selection_updates_every_display_from_saved_predictions(tmp
         assert_metric_lines(run_row, METRICS)
         save_metrics(page, "tiles-front")
         assert not page.locator("#regression-tiles-flip").is_visible()
-        assert tile.locator("svg").count() == 2
+        assert tile.locator("svg").count() == 0
+        assert tile.locator(".forecast-tile-chart-note").inner_text() == "no curve saved"
 
         page.locator("#regression-run-open").click()
         page.locator("#regression-family-comparison tbody tr").first.wait_for()
@@ -320,6 +321,11 @@ def test_square_tile_picker_uses_each_models_and_ensembles_saved_metrics(tmp_pat
                 name = "wape" if metric == "validation_error" else metric
                 split = "validation" if metric == "validation_error" else "test"
                 value = saved["value"] if saved else tile["metrics"].get(name, {}).get(split)
+                if metric == "test_ratio" and tile["kind"] == "ensemble":
+                    result_path = tmp_path / "forecast_root/.forecast-runs" / run_id / "result.json"
+                    result = json.loads(result_path.read_text())
+                    baseline = result["winner"]["verdict"]["accuracy"]["baseline_error"]
+                    value = tile["metrics"]["wape"]["test"] / baseline
                 expected = (
                     "-"
                     if value is None
@@ -332,9 +338,9 @@ def test_square_tile_picker_uses_each_models_and_ensembles_saved_metrics(tmp_pat
                 line = front.locator(f'[data-metric-id="{metric}"]')
                 assert line.inner_text().endswith(": " + expected), (tile["tile_id"], metric)
                 if tile["kind"] == "ensemble" and metric == "test_ratio":
-                    assert "metric not saved for this row" in line.get_attribute("title")
+                    assert "model error / naive error" in line.get_attribute("title")
             box = card.bounding_box()
             assert abs(box["width"] - box["height"]) <= 1
-            assert card.locator("svg").count() == 2
+            assert card.locator("svg").count() >= 1
             for chart in card.locator("svg").all():
                 assert chart.bounding_box()["height"] > 0
