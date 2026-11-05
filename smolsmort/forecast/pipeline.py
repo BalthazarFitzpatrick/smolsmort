@@ -747,6 +747,15 @@ def _timeseries_raw_fit(ws, genome, frame, rows, bucket, nthread):
     )
     panel = {name: values[keep] for name, values in ws.panel.items()}
     target = ws.spec.named("target")[0]
+    if ws.spec.history_fill is not None:
+        from smolsmort.forecast.features import fill_shutdown_weeks
+
+        filled = np.asarray(panel[target], dtype=float).copy()
+        for key in np.unique(panel[SERIES]):
+            mine = np.flatnonzero(panel[SERIES] == key)
+            mine = mine[np.argsort(panel[STEP][mine])]
+            filled[mine], _ = fill_shutdown_weeks(filled[mine], **ws.spec.history_fill)
+        panel = {**panel, target: filled}
     if genome.transform != "none":
         transform = get_transform(genome.transform)
         transform.validate_target(panel[target])
