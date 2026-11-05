@@ -950,6 +950,9 @@ def _tile_prediction_path(run_dir: Path, model: str, kind: str) -> Path:
         return _model_prediction_path(
             run_dir, tile["family"], kind, winner["family"], winner["default_model"]
         )
+    target = run_dir / "tile_views" / tile["recipe_key"] / f"{kind}.parquet"
+    if target.exists():
+        return target
     members = [item for item in tiles if item["tile_id"] in tile["members"]]
     paths = [_tile_prediction_path(run_dir, item["tile_id"], kind) for item in members]
     target = run_dir / "tile_views" / tile["recipe_key"] / f"{kind}.parquet"

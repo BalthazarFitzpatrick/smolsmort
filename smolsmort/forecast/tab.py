@@ -516,11 +516,11 @@ def _list_runs(app, query: dict) -> dict:
 
 
 def _run_tiles(app, query: dict) -> dict:
-    from smolsmort.forecast.tiles import ensemble_rows, rank_tile, read_tiles
+    from smolsmort.forecast.tiles import rank_tile, read_ensemble_rows, read_tiles
 
     folder = _run_dir(app, query.get("run", ""))
     models = read_tiles(folder, include_ensembles=False)
-    ensembles = ensemble_rows(folder)
+    ensembles = read_ensemble_rows(folder)
     return {"tiles": sorted(models + ensembles[:5], key=rank_tile), "ensembles": ensembles}
 
 
