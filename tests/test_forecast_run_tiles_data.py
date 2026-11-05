@@ -1,8 +1,10 @@
 """raw tile contract and incremental recipe refits on synthetic rows"""
 
 import json
+import os
 import sys
 from dataclasses import asdict
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -10,6 +12,181 @@ import pytest
 
 from smolsmort.forecast import plan_sets, runs, tiles
 from smolsmort.forecast.tables import write_table
+
+
+@pytest.mark.parametrize("cache", ["missing", "fresh", "stale"])
+def test_ensemble_scores_reused_until_member_changes(tmp_path, monkeypatch, cache):
+    save_json(
+        tmp_path / "request.json",
+        {"version": 2, "families": [{"name": name} for name in ("ridge", "snaive")]},
+    )
+    for name in ("ridge", "snaive"):
+        save_model(tmp_path, name, [9, 19])
+    expected = tiles.ensemble_rows(tmp_path)
+    path = tmp_path / "ensembles.json"
+    if cache != "missing":
+        save_json(path, expected)
+    if cache == "stale":
+        member = tmp_path / "families/ridge/test.parquet"
+        os.utime(path, ns=(member.stat().st_mtime_ns - 1, member.stat().st_mtime_ns - 1))
+    calls = []
+    original = tiles.score_ensembles
+
+    def score(*args):
+        calls.append(True)
+        return original(*args)
+
+    monkeypatch.setattr(tiles, "score_ensembles", score)
+    first = tiles.read_tiles(tmp_path)
+    assert len(calls) == (0 if cache == "fresh" else 1)
+    assert json.loads(path.read_text()) == expected
+
+    def reject(*args):
+        pytest.fail("saved ensemble scores must be reused")
+
+    monkeypatch.setattr(tiles, "score_ensembles", reject)
+    assert tiles.read_tiles(tmp_path) == first
+    from smolsmort.forecast import tab
+
+    monkeypatch.setattr(tab, "_run_dir", lambda *_args: tmp_path)
+    assert tab._run_tiles(None, {"run": "saved"}) == {"tiles": first, "ensembles": expected}
+
+
+def test_legacy_missing_family_predictions_has_no_ensembles(tmp_path):
+    save_json(
+        tmp_path / "request.json",
+        {"version": 2, "families": [{"name": "ridge"}, {"name": "snaive"}]},
+    )
+    assert all(row["kind"] == "model" for row in tiles.read_tiles(tmp_path))
+    assert json.loads((tmp_path / "ensembles.json").read_text()) == []
+
+
+def test_saved_ensemble_views_have_calibrated_bands(tmp_path, monkeypatch):
+    from smolsmort.forecast import views
+    from smolsmort.forecast.tables import read_table
+
+    save_json(
+        tmp_path / "request.json",
+        {"version": 2, "families": [{"name": name} for name in ("ridge", "snaive")]},
+    )
+    save_model(tmp_path, "ridge", [8, 18])
+    save_model(tmp_path, "snaive", [10, 20])
+    for family, prediction in (("ridge", 8.0), ("snaive", 10.0)):
+        for split in ("validation", "test", "forecast"):
+            write_table(
+                tmp_path / "families" / family / f"{split}.parquet",
+                {
+                    "series": np.repeat(["a", "b"], 30),
+                    "step": np.tile(np.arange(30), 2),
+                    "weeks_ahead": np.ones(60, dtype=int),
+                    "actual": np.repeat([10.0, 20.0], 30),
+                    "prediction": np.full(60, prediction),
+                },
+            )
+    rows = tiles.ensemble_rows(tmp_path)
+    save_json(tmp_path / "ensembles.json", rows)
+    tiles.write_ensemble_views(tmp_path, rows)
+
+    def reject(*args):
+        pytest.fail("saved ensemble predictions must not be rebuilt")
+
+    monkeypatch.setattr(tiles, "align_tables", reject)
+    for split in ("validation", "test", "forecast"):
+        path = views._tile_prediction_path(tmp_path, rows[0]["tile_id"], split)
+        table = read_table(path)
+        np.testing.assert_array_equal(table["prediction"], np.full(60, 9.0))
+        np.testing.assert_allclose(table["upper"], np.repeat([10.0, 20.0], 30))
+        for name in ("lower", "upper", "lower_50", "upper_50"):
+            assert np.all(np.isfinite(table[name]))
+        assert np.all(table["lower"] <= table["lower_50"])
+        assert np.all(table["upper"] >= table["upper_50"])
+
+
+def test_real_ensemble_scores_match_original_golden():
+    folder = (
+        Path.home()
+        / "Documents/dev/ai_lab/forecast_workspace/.forecast-runs/20261104-140018-573593"
+    )
+    if not folder.exists():
+        pytest.skip("real run fixture is local")
+    golden = json.loads(
+        (Path(__file__).parent / "fixtures/ensemble_scores_golden.json").read_text()
+    )
+    rows = tiles.ensemble_rows(folder)
+    assert [row["tile_id"] for row in rows] == [row["tile_id"] for row in golden]
+    for row, expected in zip(rows, golden, strict=True):
+        for metric in ("wape", "mae", "mape"):
+            for split in ("validation", "test"):
+                assert row["metrics"][metric][split] == pytest.approx(
+                    expected["metrics"][metric][split], abs=1e-12, rel=0
+                )
+
+
+def test_ensemble_join_keeps_subset_rows_shared_keys_and_duplicate_order():
+    import itertools
+
+    tables = {}
+    for name, steps in (("a", [3, 1, 3, 2]), ("b", [2, 1, 3]), ("c", [1, 2])):
+        table = {
+            "series": np.full(len(steps), "s"),
+            "step": np.asarray(steps),
+            "actual": np.asarray(steps, dtype=float),
+            "prediction": np.asarray(steps, dtype=float) + ord(name) / 100,
+        }
+        if name != "c":
+            table["weeks_ahead"] = np.ones(len(steps), dtype=int)
+        tables[name] = {"validation": table, "test": table}
+    rows = tiles.score_ensembles([{"tile_id": name} for name in tables], tables)
+    for count in (2, 3):
+        for members in itertools.combinations(tables, count):
+            parts = [tables[name]["validation"] for name in members]
+            keys = [
+                key
+                for key in ("series", "step", "weeks_ahead")
+                if all(key in part for part in parts)
+            ]
+            indexes = [
+                {
+                    tuple(str(part[key][i]) for key in keys): i
+                    for i in range(len(part["prediction"]))
+                }
+                for part in parts
+            ]
+            common = [key for key in indexes[0] if all(key in index for index in indexes)]
+            expected = [
+                {name: values[[index[key] for key in common]] for name, values in part.items()}
+                for part, index in zip(parts, indexes, strict=True)
+            ]
+            aligned = tiles.align_tables(parts)
+            for actual, reference in zip(aligned, expected, strict=True):
+                for key in actual:
+                    np.testing.assert_array_equal(actual[key], reference[key])
+            metrics = tiles.prediction_metrics(
+                expected[0]["actual"], np.mean([part["prediction"] for part in expected], axis=0)
+            )
+            row = next(row for row in rows if row["members"] == list(members))
+            assert {key: value["validation"] for key, value in row["metrics"].items()} == metrics
+
+
+def test_ensemble_scoring_joins_only_once_per_split(tmp_path, monkeypatch):
+    names = ("ridge", "snaive", "xgboost", "lightgbm")
+    save_json(
+        tmp_path / "request.json", {"version": 2, "families": [{"name": name} for name in names]}
+    )
+    for name in names:
+        save_model(tmp_path, name, [9, 19])
+    original = tiles._join_indexes
+    calls = []
+
+    def join(*args):
+        calls.append(True)
+        return original(*args)
+
+    monkeypatch.setattr(tiles, "_join_indexes", join)
+    assert len(tiles.ensemble_rows(tmp_path)) == 11
+    assert len(calls) == 2
+    tiles.write_ensemble_views(tmp_path, tiles.ensemble_rows(tmp_path))
+    assert len(list((tmp_path / "tile_views").glob("*/forecast.parquet"))) == 5
 
 
 def save_json(path, value):
@@ -296,6 +473,14 @@ def test_refit_run_real_worker_incremental_no_search(tmp_path, monkeypatch):
     assert record["loss"]["name"] == "penalized_squared_error"
     assert record["loss"]["objective"] == "squared"
     assert len([tile for tile in result if tile["kind"] == "ensemble"]) == 1
+    ensemble = next(tile for tile in result if tile["kind"] == "ensemble")
+    from smolsmort.forecast.tables import read_table
+
+    for split in ("validation", "test", "forecast"):
+        table = read_table(
+            tmp_path / run_id / "tile_views" / ensemble["recipe_key"] / f"{split}.parquet"
+        )
+        assert {"lower", "upper", "lower_50", "upper_50"} <= table.keys()
     assert json.loads((tmp_path / "part-1/request.json").read_text())["part_of"] == run_id
     assert runs.run_state(tmp_path, run_id)["state"] == "done"
 

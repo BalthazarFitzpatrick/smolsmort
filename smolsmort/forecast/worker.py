@@ -280,9 +280,11 @@ def run(folder: Path) -> int:
                     genome.family: {"state": "done", "generation": 0, "fitness": scored.fitness}
                 }
         if spec.mode == "timeseries" and spec.task == "regression":
-            from smolsmort.forecast.tiles import ensemble_rows
+            from smolsmort.forecast.tiles import ensemble_rows, write_ensemble_views
 
-            job.save("ensembles.json", ensemble_rows(folder))
+            rows = ensemble_rows(folder)
+            job.save("ensembles.json", rows)
+            write_ensemble_views(folder, rows)
         if request.get("version") == 2 and not result.get("finalized"):
             recipe = json.loads((folder / "recipe.json").read_text())
             job.save(

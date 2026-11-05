@@ -234,9 +234,11 @@ def update_set(
         "\n".join(events) + ("\n" if events else ""), encoding="utf-8"
     )
     write_json_atomic(folder / "status.json", status)
-    from smolsmort.forecast.tiles import ensemble_rows
+    from smolsmort.forecast.tiles import ensemble_rows, write_ensemble_views
 
-    write_json_atomic(folder / "ensembles.json", ensemble_rows(folder))
+    rows = ensemble_rows(folder)
+    write_json_atomic(folder / "ensembles.json", rows)
+    write_ensemble_views(folder, rows)
     return folder
 
 
