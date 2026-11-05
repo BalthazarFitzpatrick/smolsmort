@@ -322,6 +322,26 @@ def _extend(values: np.ndarray, length: int, aggregation) -> np.ndarray:
     return out
 
 
+def fill_shutdown_weeks(values, below, median_weeks, min_level):
+    """fill low weeks from prior normal weeks, requiring four finite observations"""
+    values = np.asarray(values, dtype=float)
+    filled = values.copy()
+    mask = np.zeros(len(values), dtype=bool)
+    for position, value in enumerate(values):
+        if not np.isfinite(value):
+            continue
+        start = max(0, position - median_weeks)
+        prior = values[start:position]
+        normal = prior[np.isfinite(prior) & ~mask[start:position]]
+        if len(normal) < 4:
+            continue
+        median = np.median(normal)
+        if median >= min_level and value < below * median:
+            filled[position] = median
+            mask[position] = True
+    return filled, mask
+
+
 def _window_sum(values: np.ndarray, window: int) -> np.ndarray:
     total = np.concatenate(([0], np.cumsum(values)))
     end = np.arange(1, len(values) + 1)
@@ -532,6 +552,10 @@ def timeseries_features(
             name: _extend(panel[name][mine], length, aggregation.get(name))
             for name in [target, *measures]
         }
+        if spec.history_fill is not None:
+            series_values[target], _ = fill_shutdown_weeks(
+                series_values[target], **spec.history_fill
+            )
         base = _timeseries_base(
             series_values,
             target,
@@ -637,6 +661,8 @@ def stacked_timeseries_features(
             name: _extend(panel[name][mine], length, aggregation.get(name))
             for name in [target, *measures]
         }
+        if spec.history_fill is not None:
+            values[target], _ = fill_shutdown_weeks(values[target], **spec.history_fill)
         base = _timeseries_base(
             values,
             target,

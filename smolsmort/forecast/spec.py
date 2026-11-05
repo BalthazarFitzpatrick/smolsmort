@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import asdict, dataclass
 from typing import Literal, cast
 
@@ -117,9 +118,23 @@ class PrepSpec:
     # time series mode: the export date; steps from the one holding it onward are scheduled, not history
     as_of: str | None = None
     holidays_country: str | None = None
+    history_fill: dict[str, float | int] | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "mode", normalize_mode(self.mode))
+        if self.history_fill is not None:
+            if self.mode != "timeseries":
+                raise SpecError("history_fill is only supported in time series mode")
+            fill = self.history_fill
+            if not isinstance(fill, dict) or set(fill) != {"below", "median_weeks", "min_level"}:
+                raise SpecError("history_fill needs below, median_weeks and min_level")
+            below, weeks, level = fill["below"], fill["median_weeks"], fill["min_level"]
+            if type(below) not in (int, float) or not 0 < below < 1:
+                raise SpecError("history_fill.below must be in (0, 1)")
+            if type(weeks) is not int or weeks < 4:
+                raise SpecError("history_fill.median_weeks must be an integer at least 4")
+            if type(level) not in (int, float) or not math.isfinite(level) or level < 0:
+                raise SpecError("history_fill.min_level must be finite and at least 0")
         roles = [c.role for c in self.columns]
         names = [c.name for c in self.columns]
         if len(set(names)) != len(names):
@@ -169,6 +184,8 @@ class PrepSpec:
                 column.pop("pin")
         if self.holidays_country is None:
             data.pop("holidays_country")
+        if self.history_fill is None:
+            data.pop("history_fill")
         if self.censor and self.censor.event is None:
             data["censor"].pop("event")
         text = json.dumps(data, sort_keys=True, default=str)

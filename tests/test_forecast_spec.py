@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import json
+from dataclasses import asdict, replace
 
 import pytest
 from forecast_fixtures import write_panel, write_rows
@@ -89,3 +92,62 @@ def test_the_panel_fixture_has_its_gap_and_its_ended_project(tmp_path):
     assert len(weeks_a_p2) == 2 * (truth.weeks - 3)
     ended = {r["day"] for r in rows if r["project"] == "C"}
     assert len(ended) == 2 * truth.ended_week
+
+
+def _fill_spec(**changes):
+    return PrepSpec(
+        "panel.csv",
+        "timeseries",
+        "regression",
+        (Column("day", "time"), Column("units", "target", "sum")),
+        **changes,
+    )
+
+
+def test_history_fill_digest_and_saved_request_round_trip(tmp_path):
+    spec = _fill_spec()
+    legacy = asdict(spec)
+    legacy.pop("history_fill")
+    legacy.pop("holidays_country")
+    legacy["mode"] = "series"
+    for column in legacy["columns"]:
+        column.pop("skip_missing")
+        column.pop("pin")
+    digest = hashlib.sha256(json.dumps(legacy, sort_keys=True, default=str).encode()).hexdigest()[
+        :16
+    ]
+    assert spec.digest() == digest == spec_from_dict(legacy).digest()
+    filled = replace(spec, history_fill={"below": 0.5, "median_weeks": 13, "min_level": 10})
+    assert filled.digest() != digest
+    request = tmp_path / "request.json"
+    request.write_text(json.dumps({"spec": asdict(filled)}))
+    assert spec_from_dict(json.loads(request.read_text())["spec"]) == filled
+    assert replace(filled, horizon=12).history_fill == filled.history_fill
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("below", 0),
+        ("below", 1),
+        ("below", float("nan")),
+        ("below", "0.5"),
+        ("median_weeks", 3),
+        ("median_weeks", 4.0),
+        ("median_weeks", True),
+        ("min_level", -1),
+        ("min_level", float("inf")),
+        ("min_level", None),
+    ],
+)
+def test_history_fill_rejects_invalid_options(field, value):
+    fill = {"below": 0.5, "median_weeks": 13, "min_level": 10, field: value}
+    with pytest.raises(SpecError, match=f"history_fill.{field}"):
+        _fill_spec(history_fill=fill)
+
+
+def test_history_fill_requires_timeseries_and_complete_options():
+    with pytest.raises(SpecError, match="time series mode"):
+        _entity_spec(history_fill={"below": 0.5, "median_weeks": 13, "min_level": 10})
+    with pytest.raises(SpecError, match="needs below"):
+        _fill_spec(history_fill={"below": 0.5})
