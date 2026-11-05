@@ -193,7 +193,7 @@ def test_contract_tiles_square_curves_filters_and_ensembles(tmp_path, monkeypatc
         for tile in tiles.all():
             box = tile.bounding_box()
             assert abs(box["width"] - box["height"]) <= 1
-            assert tile.locator("svg").count() == 2
+            assert tile.locator("svg").count() >= 1
         model = page.locator('.forecast-run-tile[data-family="xgboost"]')
         colours = (
             model.locator("svg")
@@ -211,7 +211,7 @@ def test_contract_tiles_square_curves_filters_and_ensembles(tmp_path, monkeypatc
         )
         assert (
             model.locator("polyline").first.evaluate("node => getComputedStyle(node).strokeWidth")
-            == "0.008px"
+            == "1.5px"
         )
         model.locator('details[data-menu="param"] summary').click()
         run = tmp_path / "forecast_root/.forecast-runs" / run_id
@@ -229,7 +229,12 @@ def test_contract_tiles_square_curves_filters_and_ensembles(tmp_path, monkeypatc
         )
         model.locator('details[data-menu="param"] summary').click()
         ensemble = page.locator('.forecast-run-tile[data-kind="ensemble"]').first
-        assert ensemble.locator("svg").nth(1).locator("polyline").count() >= 2
+        assert (
+            ensemble.locator(".forecast-run-tile-chart")
+            .last.locator("polyline, .forecast-run-tile-legend [data-value]")
+            .count()
+            >= 2
+        )
         ensemble.locator("summary").click()
         assert "lag" in ensemble.locator(".forecast-tile-menu").first.text_content()
         before = tiles.evaluate_all("nodes => nodes.map(node => node.dataset.tileId)")
@@ -248,6 +253,160 @@ def test_contract_tiles_square_curves_filters_and_ensembles(tmp_path, monkeypatc
         page.locator(".forecast-run-tile").first.wait_for()
         assert tiles.count() == 5
         assert "mape" in page.locator("#regression-tiles-metric").inner_text()
+
+
+def test_contract_curve_drawing_and_loading(tmp_path):
+    with session(tmp_path, port=0) as (page, _base):
+        run_id = make_saved_tiles(tmp_path / "forecast_root")
+        run_path = tmp_path / "forecast_root/.forecast-runs" / run_id
+        result = json.loads((run_path / "result.json").read_text())
+        result["winner"]["verdict"]["accuracy"].pop("baseline_error")
+        write_json(run_path / "result.json", result)
+        page.wait_for_function("() => typeof forecastRunTileChart === 'function'")
+        for count in (500, 2000):
+            result = page.evaluate(
+                """count => {
+                  const values = Array.from({length: count}, (_, i) => i % 17 + i / count);
+                  const tile = {family: 'ridge', curves: {0: {validation: {wape: values}}}};
+                  const chart = forecastRunTileChart(tile, [tile], 'wape', false);
+                  const wrap = document.createElement('div');
+                  wrap.className = 'forecast-tile';
+                  wrap.append(chart); document.body.append(wrap);
+                  const line = chart.querySelector('polyline');
+                  const points = line.getAttribute('points').split(' ');
+                  const result = {lines: chart.querySelectorAll('polyline').length,
+                    circles: chart.querySelectorAll('circle').length, points: points.length,
+                    first: Number(points[0].split(',')[0]), last: Number(points.at(-1).split(',')[0]),
+                    effect: line.getAttribute('vector-effect'), width: getComputedStyle(line).strokeWidth};
+                  wrap.remove(); return result;
+                }""",
+                count,
+            )
+            assert result == {
+                "lines": 1,
+                "circles": 0,
+                "points": result["points"],
+                "first": 0,
+                "last": 1,
+                "effect": "non-scaling-stroke",
+                "width": "1.5px",
+            }
+            assert result["points"] <= 150
+        model = {
+            "tile_id": "ridge",
+            "family": "ridge",
+            "kind": "model",
+            "state": "done",
+            "metrics": {"wape": {"test": 0.2}},
+            "error_metrics": {"test_ratio": {"value": 0.5, "scope": "test"}},
+            "curves": {"0": {"validation": {"wape": [0.1633]}}},
+        }
+        ensemble = {
+            "tile_id": "ensemble",
+            "family": "ensemble",
+            "kind": "ensemble",
+            "members": ["ridge"],
+            "metrics": {"wape": {"test": 0.1}},
+        }
+        empty = {"tile_id": "empty", "family": "empty", "kind": "model", "metrics": {}}
+        payload = {"tiles": [model, ensemble, empty]}
+        loading_checks = []
+
+        def serve_tiles(route):
+            page.wait_for_timeout(300)
+            assert page.locator("#regression-tiles-grid").inner_text() == "loading tiles"
+            assert page.locator("#regression-tiles-grid .forecast-tile").count() == 0
+            loading_checks.append(True)
+            route.fulfill(json=payload)
+
+        page.route("**/api/forecast-run-tiles?**", serve_tiles)
+        switch_to_regression(page)
+        page.select_option("#topic-flavour", "timeseries")
+        show_tab(page, "regression-search")
+        page.locator(".forecast-run-tile").first.wait_for()
+        assert loading_checks
+        assert (
+            page.locator("#regression-tiles-grid .forecast-tile:not(.forecast-run-tile)").count()
+            == 0
+        )
+        assert page.locator(".forecast-tiles-loading").count() == 0
+        tile = page.locator('.forecast-run-tile[data-family="ridge"]')
+        dot = tile.locator(".forecast-run-tile-single circle")
+        assert dot.count() == 1
+        box = dot.bounding_box()
+        assert box["width"] == pytest.approx(box["height"], abs=0.1)
+        assert box["width"] == pytest.approx(6, abs=0.1)
+        assert "wape 0.1633" in tile.inner_text()
+        assert (
+            tile.locator(
+                ".forecast-run-tile-chart-compact svg:not(.forecast-run-tile-single svg)"
+            ).count()
+            == 0
+        )
+        assert "no curve saved" in tile.inner_text()
+        assert tile.locator(".forecast-run-tile-chart").first.locator("svg").count() == 0
+        assert "test ratio: 0.25" in page.locator('[data-tile-id="ensemble"]').inner_text()
+        empty_tile = page.locator('[data-tile-id="empty"]')
+        assert empty_tile.locator(".forecast-tile-chart-note").all_text_contents() == [
+            "no curve saved"
+        ]
+        assert empty_tile.locator(".forecast-run-tile-chart, svg").count() == 0
+
+
+def test_ensemble_single_values_kept_chart_height_and_legend_clear(tmp_path):
+    with session(tmp_path, port=0) as (page, _base):
+        page.wait_for_function("() => typeof forecastCreateRunTile === 'function'")
+        page.evaluate(
+            """() => {
+              const curve = {train_loss: [8, 5, 3], validation: {wape: [0.4, 0.3, 0.2]}};
+              const members = ['lightgbm', 'xgboost', 'snaive', 'ridge', 'arima', 'ets', 'theta']
+                .map((family, index) => ({tile_id: family, family, kind: 'model', best_generation: 0,
+                  curves: {0: index < 2 ? curve : {train_loss: [1685],
+                    loss: {name: 'penalized_squared_error'}, validation: {wape: [0.1917]}}}}));
+              const ensembles = [members.slice(0, 2), members].map((items, index) => ({
+                tile_id: `comparison-${index}`, family: 'ensemble', kind: 'ensemble',
+                members: items.map(item => item.tile_id), metrics: {}}));
+              const grid = document.createElement('div');
+              grid.className = 'forecast-tiles-grid';
+              grid.id = 'ensemble-layout-test';
+              ensembles.forEach(tile => grid.append(forecastCreateRunTile(
+                tile, 0, members, 'wape', null, [])));
+              document.body.append(grid);
+            }"""
+        )
+        tiles = page.locator("#ensemble-layout-test .forecast-run-tile")
+        mixed = tiles.nth(1)
+        assert mixed.locator(".forecast-run-tile-single").count() == 0
+        for index, value in ((0, "1685"), (1, "0.1917")):
+            chart = mixed.locator(".forecast-run-tile-chart").nth(index)
+            legend = chart.locator(".forecast-run-tile-legend")
+            assert f"snaive {value}" in legend.inner_text()
+            assert legend.locator("span").nth(2).evaluate("node => node.style.color") == (
+                "var(--stone-red-lift)"
+            )
+            svg_box = chart.locator(":scope > svg").bounding_box()
+            reference = (
+                tiles.first.locator(".forecast-run-tile-chart")
+                .nth(index)
+                .locator(":scope > svg")
+                .bounding_box()
+            )
+            assert svg_box["height"] > 0
+            assert svg_box["height"] == pytest.approx(reference["height"], abs=1)
+            legend_box = legend.bounding_box()
+            label_box = chart.locator(".forecast-tile-chart-label").bounding_box()
+            assert label_box["y"] + label_box["height"] <= svg_box["y"] + 1
+            assert svg_box["y"] + svg_box["height"] <= legend_box["y"] + 1
+        legend_box = mixed.locator(".forecast-run-tile-legend").first.bounding_box()
+        next_label = mixed.locator(".forecast-tile-chart-label").last.bounding_box()
+        assert legend_box["y"] + legend_box["height"] <= next_label["y"] + 1
+        last_svg = mixed.locator(".forecast-run-tile-chart > svg").last.bounding_box()
+        menu_box = mixed.locator("summary").bounding_box()
+        assert last_svg["y"] + last_svg["height"] <= menu_box["y"] + 1
+        assert mixed.locator(".forecast-run-tile-legend").first.evaluate(
+            "node => getComputedStyle(node).whiteSpace === 'nowrap' && "
+            "getComputedStyle(node).textOverflow === 'ellipsis'"
+        )
 
 
 def test_results_picker_lists_and_selects_every_saved_tile(tmp_path):
