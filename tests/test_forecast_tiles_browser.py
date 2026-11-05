@@ -353,6 +353,44 @@ def test_contract_curve_drawing_and_loading(tmp_path):
         assert empty_tile.locator(".forecast-run-tile-chart, svg").count() == 0
 
 
+def test_ensemble_ratio_states_and_repaint(tmp_path):
+    with session(tmp_path, port=0) as (page, _base):
+        page.wait_for_function("() => typeof forecastCreateRunTile === 'function'")
+        for ratio, baseline in ((0.81, True), (1.2, True), (1.0, True), (None, False)):
+            result = page.evaluate(
+                """({ratio, baseline}) => {
+                  const grid = document.getElementById('regression-tiles-grid');
+                  const model = {tile_id: 'model', family: 'ridge', kind: 'model',
+                    state: 'done', test_ratio: ratio, metrics: {}};
+                  const ensemble = {tile_id: 'ensemble', family: 'ensemble', kind: 'ensemble',
+                    state: 'done', members: ['model'], metrics: {wape: {test: ratio ?? 0.81}}};
+                  const run = {runTiles: [model, ensemble],
+                    verdict: {accuracy: {baseline_error: baseline ? 1 : null}}};
+                  const context = {topic: 'regression', tileMetric: 'wape', tileTop: 'all',
+                    tileMetricOptions: [], selectedMetrics: () => [{id: 'test_ratio', scope: 'test',
+                      label: 'test ratio', unit: 'ratio'}]};
+                  ForecastTopic.prototype.paintContractTiles.call(context, run, grid);
+                  const tile = grid.querySelector('[data-kind="ensemble"]');
+                  const reference = grid.querySelector('[data-kind="model"]');
+                  const face = tile.querySelector('.forecast-tile-face');
+                  return {state: tile.dataset.state, modelState: reference.dataset.state,
+                    ratio: tile.textContent, style: getComputedStyle(face).borderTopStyle,
+                    colour: getComputedStyle(face).borderTopColor,
+                    modelColour: getComputedStyle(reference.querySelector('.forecast-tile-face')).borderTopColor,
+                    tone: getComputedStyle(tile).getPropertyValue('--tile-tone'),
+                    modelTone: getComputedStyle(reference).getPropertyValue('--tile-tone')};
+                }""",
+                {"ratio": ratio, "baseline": baseline},
+            )
+            expected = {0.81: "better", 1.2: "worse", 1.0: "identical"}
+            assert result["state"] == expected.get(ratio, result["modelState"])
+            assert result["style"] == "dashed"
+            if ratio is not None:
+                assert f"test ratio: {ratio:.2f}" in result["ratio"]
+                assert result["colour"] == result["modelColour"]
+                assert result["tone"] == result["modelTone"]
+
+
 def test_ensemble_single_values_kept_chart_height_and_legend_clear(tmp_path):
     with session(tmp_path, port=0) as (page, _base):
         page.wait_for_function("() => typeof forecastCreateRunTile === 'function'")

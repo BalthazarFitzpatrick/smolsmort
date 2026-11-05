@@ -2560,9 +2560,9 @@ class ForecastTopic {
     }).find(value => Number.isFinite(value) && value > 0);
     tiles.filter(tile => tile.kind === 'ensemble').forEach(tile => {
       const value = tile.metrics?.wape?.test;
-      if (Number.isFinite(value) && Number.isFinite(baseline) && baseline > 0) {
-        tile.metrics.test_ratio = {test: value / baseline};
-      }
+      tile.test_ratio = Number.isFinite(value) && Number.isFinite(baseline) && baseline > 0
+        ? value / baseline : undefined;
+      if (tile.metrics) tile.metrics.test_ratio = {test: tile.test_ratio};
     });
     const existing = new Map([...grid.children].map(node => [node.dataset.tileId, node]));
     entries.forEach((tile, index) => {
