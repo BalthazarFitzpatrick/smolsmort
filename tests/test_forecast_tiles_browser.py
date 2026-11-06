@@ -1305,6 +1305,49 @@ def test_chart_missing_latest_metric_did_not_highlight_older_generation(tmp_path
             assert chart.locator(".forecast-tile-search-point").count() > 0
 
 
+def test_run_panels_fit_config_and_keep_layout_across_views(tmp_path):
+    with session(tmp_path, width=1600, port=0) as (page, _base):
+        make_saved_tiles(tmp_path / "forecast_root")
+        open_tiles(page)
+        progress = page.locator(".forecast-run-progress-panel:has(#regression-run-title)")
+        config = page.locator(".forecast-run-config:has(#regression-warm-budget)")
+        config.wait_for()
+        family_table = progress.locator("#regression-family-progress")
+        assert family_table.is_visible()
+        assert family_table.locator("tbody tr").count() == 3
+        progress_box = progress.bounding_box()
+        config_box = config.bounding_box()
+        assert abs(progress_box["y"] - config_box["y"]) <= 2
+        assert config_box["x"] >= progress_box["x"] + progress_box["width"]
+        assert config_box["width"] < 420
+        assert progress_box["width"] > config_box["width"]
+        for row in config.locator(".stepper-row").all():
+            label = row.locator(".field-label").bounding_box()
+            minus = row.locator('[data-step^="-"]').bounding_box()
+            assert 0 <= minus["x"] - label["x"] - label["width"] < 120
+        for view in ("tables", "tiles"):
+            page.locator(f"#regression-run-view-{view}").click()
+            assert family_table.is_visible()
+            for panel, before in ((progress, progress_box), (config, config_box)):
+                after = panel.bounding_box()
+                for dimension in ("x", "y", "width", "height"):
+                    assert after[dimension] == pytest.approx(before[dimension], abs=2)
+        page.set_viewport_size({"width": 800, "height": 1000})
+        progress_box = progress.bounding_box()
+        config_box = config.bounding_box()
+        assert config_box["y"] >= progress_box["y"] + progress_box["height"]
+        assert config_box["x"] == pytest.approx(progress_box["x"], abs=2)
+        page.evaluate("forecastTopics.get('regression').paintRunDetail(null)")
+        assert not page.locator("#regression-warm-budget").is_visible()
+        assert not page.locator("#regression-run-actions").is_visible()
+        assert not config.is_visible()
+        page.set_viewport_size({"width": 1600, "height": 1000})
+        assert progress.bounding_box()["width"] == pytest.approx(
+            page.locator(".forecast-run-panels:has(#regression-run-title)").bounding_box()["width"],
+            abs=2,
+        )
+
+
 def test_tiles_read_saved_winner_artifacts_and_kept_tables(tmp_path):
     with session(tmp_path, port=8098) as (page, _base):
         make_saved_tiles(tmp_path / "forecast_root")
@@ -1316,7 +1359,7 @@ def test_tiles_read_saved_winner_artifacts_and_kept_tables(tmp_path):
         assert "chart" not in tile_data
         assert page.locator("#regression-run-view-tiles").get_attribute("aria-pressed") == "true"
         assert page.locator("#regression-tiles .forecast-tile").count() == 3
-        assert not page.locator("#regression-family-progress").is_visible()
+        assert page.locator("#regression-family-progress").is_visible()
         save_tiles(page, "saved-charts")
         ridge = find_tile(page, "ridge")
         front = ridge.locator(".forecast-tile-front")
