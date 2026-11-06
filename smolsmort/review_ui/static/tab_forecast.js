@@ -2098,9 +2098,6 @@ class ForecastTopic {
           </div>
           <div class="field-label" id="${this.topic}-run-stop"></div>
           <div class="field-value" id="${this.topic}-run-stats"></div>
-          <div class="forecast-leaderboard-wrap hidden" id="${this.topic}-family-progress-wrap">
-            <table class="forecast-column-grid" id="${this.topic}-family-progress"></table>
-          </div>
         </div>
         <div class="panel-inline forecast-pane forecast-run-config">
           <div class="hidden" id="${this.topic}-warm-budget">
@@ -2137,6 +2134,9 @@ class ForecastTopic {
           <div class="forecast-tiles-grid" id="${this.topic}-tiles-grid"></div>
         </section>
         <div class="forecast-pane" id="${this.topic}-run-tables">
+        <div class="forecast-leaderboard-wrap hidden" id="${this.topic}-family-progress-wrap">
+          <table class="forecast-column-grid" id="${this.topic}-family-progress"></table>
+        </div>
         <div class="run-controls hidden" id="${this.topic}-generation-family-wrap">
           <span class="field-label">model family</span>
           <button class="toggle dropdown-head" id="${this.topic}-generation-family"><span>xgboost</span></button>
