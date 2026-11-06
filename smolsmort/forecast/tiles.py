@@ -3,7 +3,7 @@
 read_tiles(folder) returns [{tile_id, kind, family, recipe_key, recipe, metrics,
 curves, state, best_generation, running_generation, members (ensemble only)}]
 metrics maps ape/mape/wape/ae/mae/wae to {validation, test}; missing values are null
-model error_metrics keeps saved search fitness, test values and verdict metadata for the picker
+error_metrics keeps model search fitness or pooled ensemble validation wape for the picker
 curves maps generation to {train_loss: [], validation: {metric: []}, loss: {}}
 one-shot curves contain one value; legacy files may omit metrics and training
 model ids use the saved genome key; ensemble ids hash sorted member tile ids
@@ -199,7 +199,18 @@ def score_ensembles(models, tables):
                     "running_generation": None,
                 }
             )
-    return sorted(rows, key=rank_tile)
+    return _set_ensemble_error_metrics(sorted(rows, key=rank_tile))
+
+
+def _set_ensemble_error_metrics(rows):
+    for tile in rows:
+        # derive picker fitness on read so older ensemble files remain usable
+        metrics = tile.setdefault("error_metrics", {})
+        metrics.setdefault(
+            "validation_error",
+            error_metrics({}, fitness=tile["metrics"]["wape"]["validation"])["validation_error"],
+        )
+    return rows
 
 
 def rank_tile(tile):
@@ -238,7 +249,7 @@ def read_ensemble_rows(folder):
         ):
             saved = read_json(path, None)
             if isinstance(saved, list):
-                return sorted(saved, key=rank_tile)
+                return _set_ensemble_error_metrics(sorted(saved, key=rank_tile))
         rows = ensemble_rows(folder)
         write_json_atomic(path, rows)
         return rows

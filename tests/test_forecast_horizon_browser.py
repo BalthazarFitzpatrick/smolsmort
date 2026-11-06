@@ -196,6 +196,34 @@ def open_horizon_run(page, run_id: str) -> None:
     page.locator("#regression-family-comparison tbody tr").first.wait_for()
 
 
+def test_results_dropdown_ranks_best_ensemble_by_validation_error(tmp_path):
+    from smolsmort.forecast.tiles import ensemble_rows, write_ensemble_views
+
+    with horizon_session(tmp_path) as (page, run_id):
+        folder = tmp_path / "forecast_root/.forecast-runs" / run_id
+        future = read_table(folder / "winner_forecast.parquet")
+        for family, error in (("xgboost", -10), ("ridge", 10), ("snaive", 20)):
+            for split in ("validation", "test"):
+                path = folder / "families" / family / f"{split}.parquet"
+                table = read_table(path)
+                table["prediction"] = table["actual"] + error
+                write_table(path, table)
+            write_table(folder / "families" / family / "forecast.parquet", future)
+        ensembles = ensemble_rows(folder)
+        assert ensembles[0]["metrics"]["wape"]["validation"] == 0
+        write_json(folder / "ensembles.json", ensembles)
+        write_ensemble_views(folder, ensembles)
+        open_horizon_run(page, run_id)
+        assert page.evaluate("forecastTopics.get('regression').selectedMetricIds[0]") == (
+            "validation_error"
+        )
+        page.locator("#regression-results-model").click()
+        settle_menu(page)
+        first = page.locator(".menu-panel .menu-item[data-id]").first
+        assert first.get_attribute("data-id") == ensembles[0]["tile_id"]
+        assert first.get_attribute("title").startswith("validation_error ")
+
+
 def test_results_dropdown_ranked_first_metric_and_current_lead(tmp_path):
     with horizon_session(tmp_path) as (page, run_id):
         folder = tmp_path / "forecast_root/.forecast-runs" / run_id
