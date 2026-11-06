@@ -42,6 +42,7 @@ class BoxBackend:
         optimizer: str = "adamw",
         momentum: float = 0.9,
         weight_decay: float = 1e-4,
+        cache_mb: int | None = None,
     ):
         self.epochs = epochs
         self.device = device
@@ -54,6 +55,7 @@ class BoxBackend:
         self.optimizer = optimizer
         self.momentum = momentum
         self.weight_decay = weight_decay
+        self.cache_mb = cache_mb
 
     def train(self, examples, *, classes, on_progress=None) -> BoxWeights:
         model, _ = box_train.train(
@@ -68,6 +70,7 @@ class BoxBackend:
             optimizer=self.optimizer,
             momentum=self.momentum,
             weight_decay=self.weight_decay,
+            cache_mb=self.cache_mb,
             on_progress=(lambda p: on_progress(p.epoch, p.epochs)) if on_progress else None,
         )
         return BoxWeights(model=model, classes=dict(classes), long_side=self.long_side)

@@ -12,6 +12,9 @@ from __future__ import annotations
 import math
 import os
 import random
+from collections import OrderedDict
+from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -53,6 +56,12 @@ class BoxTrainError(Exception):
 def load_input(path: Path, long_side: int = WORK_LONG_SIDE) -> tuple[np.ndarray, float]:
     """a frame as the net sees it - scaled to the working long side, rgb, channels-first, 0..1 -
     and the scale that maps capture px to input px"""
+    image, scale = load_input_uint8(path, long_side)
+    return image.astype(np.float32) / 255.0, scale
+
+
+def load_input_uint8(path: Path, long_side: int = WORK_LONG_SIDE) -> tuple[np.ndarray, float]:
+    """the same resized rgb input, stored as channels-first bytes"""
     from PIL import Image
 
     with Image.open(path) as handle:
@@ -60,7 +69,89 @@ def load_input(path: Path, long_side: int = WORK_LONG_SIDE) -> tuple[np.ndarray,
         scale = scale_for(image.width, image.height, long_side)
         size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
         image = image.resize(size, Image.BILINEAR)
-    return np.asarray(image, dtype=np.float32).transpose(2, 0, 1) / 255.0, scale
+    return np.asarray(image, dtype=np.uint8).transpose(2, 0, 1), scale
+
+
+class InputCache:
+    """header scales and a byte-bounded lru of uint8 frames; float inputs live with the caller"""
+
+    def __init__(
+        self, paths: Iterable[Path], long_side: int, budget_mb: int | None, *, workers: int = 8
+    ):
+        from PIL import Image
+
+        if budget_mb is not None and budget_mb < 0:
+            raise ValueError("cache budget must be nonnegative")
+        if workers < 1:
+            raise ValueError("cache workers must be positive")
+        self.long_side = long_side
+        self.workers = workers
+        self.scales = {}
+        self.estimated_bytes = 0
+        for path in dict.fromkeys(paths):
+            with Image.open(path) as handle:
+                width, height = handle.size
+            scale = scale_for(width, height, long_side)
+            self.scales[path] = scale
+            self.estimated_bytes += 3 * max(1, round(width * scale)) * max(1, round(height * scale))
+        auto_bytes = 2048 * 1024 * 1024
+        if budget_mb is None:
+            self.budget_bytes = 0 if self.estimated_bytes <= auto_bytes else auto_bytes
+        else:
+            self.budget_bytes = budget_mb * 1024 * 1024
+        self.stored_bytes = 0
+        self.peak_stored_bytes = 0
+        self._frames: OrderedDict[Path, tuple[np.ndarray, float]] = OrderedDict()
+
+    def scale_of(self, path: Path) -> float:
+        return self.scales[path]
+
+    def _store_frame(self, path: Path, frame: tuple[np.ndarray, float]) -> None:
+        size = frame[0].nbytes
+        if self.budget_bytes and size > self.budget_bytes:
+            return
+        while self.budget_bytes and self.stored_bytes + size > self.budget_bytes:
+            _, oldest = self._frames.popitem(last=False)
+            self.stored_bytes -= oldest[0].nbytes
+        self._frames[path] = frame
+        self.stored_bytes += size
+        self.peak_stored_bytes = max(self.peak_stored_bytes, self.stored_bytes)
+
+    def get(self, path: Path) -> tuple[np.ndarray, float]:
+        if path not in self._frames:
+            frame = load_input_uint8(path, self.long_side)
+            self._store_frame(path, frame)
+        else:
+            frame = self._frames[path]
+            self._frames.move_to_end(path)
+        image, scale = frame
+        return image.astype(np.float32) / 255.0, scale
+
+    def get_many(self, paths: Iterable[Path]) -> list[tuple[np.ndarray, float]]:
+        """decode bounded groups of misses in parallel, returning inputs in request order"""
+        paths = list(paths)
+        output = []
+        with ThreadPoolExecutor(max_workers=self.workers) as pool:
+            for start in range(0, len(paths), self.workers):
+                group = paths[start : start + self.workers]
+                pending = {
+                    path: pool.submit(load_input_uint8, path, self.long_side)
+                    for path in dict.fromkeys(group)
+                    if path not in self._frames
+                }
+                for path in group:
+                    if path in self._frames:
+                        output.append(self.get(path))
+                    elif path in pending:
+                        frame = pending[path].result()
+                        self._store_frame(path, frame)
+                        image, scale = frame
+                        output.append((image.astype(np.float32) / 255.0, scale))
+                    else:
+                        output.append(self.get(path))
+                # completed futures must not keep the preceding group's decoded frames alive
+                pending.clear()
+        return output
 
 
 def _sizes_of(example: Example) -> list[tuple[float, float]]:
@@ -118,6 +209,7 @@ def train(
     crop: int = CROP,
     long_side: int = WORK_LONG_SIDE,
     steps_per_epoch: int | None = None,
+    cache_mb: int | None = None,
     widths: tuple[int, int, int, int, int] | None = None,
     optimizer: str = "adamw",
     momentum: float = 0.9,
@@ -147,8 +239,8 @@ def train(
     if widths is not None:
         model_kwargs["widths"] = widths
     model = build_model(**model_kwargs)
-    cache = {e.path: load_input(e.path, long_side) for e in usable}
-    _refuse_out_of_reach(usable, cache, receptive_field(model))
+    cache = InputCache((e.path for e in usable), long_side, cache_mb)
+    _refuse_out_of_reach(usable, cache.scale_of, receptive_field(model))
     model = model.to(device)
     optimiser = build_optimizer(
         model.parameters(),
@@ -170,12 +262,13 @@ def train(
         total = 0.0
         for _ in range(steps):
             windows, targets = [], []
-            for _ in range(batch):
-                example = rng.choice(usable)
-                image, scale = cache[example.path]
+            chosen = [rng.choice(usable) for _ in range(batch)]
+            inputs = cache.get_many(example.path for example in chosen)
+            for example, (image, scale) in zip(chosen, inputs, strict=True):
                 window, target = _window(example, image, scale, rng, classes, crop)
-                windows.append(window)
+                windows.append(window.copy())
                 targets.append(target)
+            del inputs, image, window
             x = torch.from_numpy(np.ascontiguousarray(np.stack(windows))).to(device)
 
             def stacked(name, targets=targets):
@@ -230,7 +323,9 @@ def evaluate(
     return sum(losses) / len(losses) if losses else 0.0
 
 
-def _refuse_out_of_reach(usable: list[Example], cache: dict, reach: int) -> None:
+def _refuse_out_of_reach(
+    usable: list[Example], scale_of: Callable[[Path], float], reach: int
+) -> None:
     """an object bigger than what one cell can see cannot be sized, so say so before training.
 
     this fails loudly on purpose: the alternative is a loss that plateaus and boxes that come out
@@ -238,7 +333,7 @@ def _refuse_out_of_reach(usable: list[Example], cache: dict, reach: int) -> None
     """
     limit = reach / REACH_MARGIN
     for example in usable:
-        _, scale = cache[example.path]
+        scale = scale_of(example.path)
         for box_w, box_h in _sizes_of(example):
             longest = max(box_w, box_h) * scale
             if longest > limit:

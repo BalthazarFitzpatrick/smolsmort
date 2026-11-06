@@ -291,6 +291,15 @@ the cell. Every frame is scaled to one working long side (768 px) first, so reso
 encoder to stride 32 gives each cell a view of about 440 px; training refuses an object larger than
 it can see rather than sizing it wrong. Measured weak spot: objects that overlap.
 
+`BoxBackend(cache_mb=None)` and `boxes.train.train(cache_mb=None)` keep resized frames as uint8
+in memory, converting to float32 for each batch. the default reads image headers to estimate the
+set: up to 2048 mb stays resident as it is visited; larger sets use a 2048 mb lru. a positive
+`cache_mb` sets that lru budget in mib; `0` allows unbounded storage. batch inputs and decode
+workers need extra working memory. `long_side` controls frame resolution; `epochs`, `learning_rate`,
+`widths`, `optimizer`, `momentum`, and `weight_decay` control training. direct callers can set
+`steps_per_epoch` to cap work per epoch on large sets. batch choices now precede window draws:
+fixed seeds remain repeatable, but numeric results differ from older versions.
+
 **xgboost.** The same seam over rows of features (one json per example) instead of frames. A
 mechanics check today; the real forecast data is still to come.
 
