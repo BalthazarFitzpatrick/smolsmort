@@ -1250,6 +1250,8 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
                 "id": best,
                 "kind": "search",
                 "state": "done",
+                "winner_family": "snaive",
+                "selected_family": "ensemble",
                 "stopped": "plateau",
                 "test_error": 0.3,
                 "verdict": {"accuracy": {"ratio": 0.8}},
@@ -1267,6 +1269,7 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
                 "kind": "search",
                 "state": "done",
                 "winner_family": "snaive",
+                "selected_family": "snaive",
                 "test_error": 0.2,
                 "verdict": {"accuracy": {"ratio": 1.0}},
             },
@@ -1406,13 +1409,17 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
         page.locator('.menu-panel .menu-item[data-id="best performance"]').click()
         assert rail.locator(".forecast-run-row").evaluate_all(
             "rows => rows.map(row => row.dataset.runId)"
-        ) == [best, recent, missing]
-        # the naive winner is only a yardstick: gone from this sort, back under date
-        page.locator(f"#{TOPIC}-run-sort .dropdown-head").click()
-        page.locator('.menu-panel .menu-item[data-id="date, newest first"]').click()
-        assert naive in rail.locator(".forecast-run-row").evaluate_all(
+        ) == [best, recent, missing, naive]
+        performance_ids = rail.locator(".forecast-run-row").evaluate_all(
             "rows => rows.map(row => row.dataset.runId)"
         )
+        page.locator(f"#{TOPIC}-run-sort .dropdown-head").click()
+        page.locator('.menu-panel .menu-item[data-id="date, newest first"]').click()
+        date_ids = rail.locator(".forecast-run-row").evaluate_all(
+            "rows => rows.map(row => row.dataset.runId)"
+        )
+        assert date_ids == [missing, recent, naive, best]
+        assert set(date_ids) == set(performance_ids)
         page.locator(f"#{TOPIC}-run-sort .dropdown-head").click()
         page.locator('.menu-panel .menu-item[data-id="best performance"]').click()
 
@@ -1464,7 +1471,7 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
         assert running.locator(".forecast-run-row").count() == 0
         assert rail.locator(".forecast-run-row").evaluate_all(
             "rows => rows.map(row => row.dataset.runId)"
-        ) == [best, live, recent, missing]
+        ) == [best, live, recent, missing, naive]
         assert (
             page.locator(f"#{TOPIC}-run-stop").inner_text()
             == "no gain larger than the noise for 2 generations in a row"
