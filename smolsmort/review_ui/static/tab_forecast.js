@@ -2084,7 +2084,8 @@ class ForecastTopic {
           <section><div class="field-label">runs</div><div id="${this.topic}-runs-list"></div></section>
         </aside>
         <div class="forecast-pane forecast-run-detail">
-        <div class="panel-inline forecast-pane">
+        <div class="forecast-run-panels">
+        <div class="panel-inline forecast-pane forecast-run-progress-panel">
           <div class="run-controls">
             <span class="field-value" id="${this.topic}-run-title">pick a run or start one on models</span>
             <span class="forecast-verdict hidden" id="${this.topic}-run-verdict"></span>
@@ -2100,6 +2101,8 @@ class ForecastTopic {
           <div class="forecast-leaderboard-wrap hidden" id="${this.topic}-family-progress-wrap">
             <table class="forecast-column-grid" id="${this.topic}-family-progress"></table>
           </div>
+        </div>
+        <div class="panel-inline forecast-pane forecast-run-config">
           <div class="hidden" id="${this.topic}-warm-budget">
             <div class="field-label">warm start · budget</div>
             <div id="${this.topic}-budget">${budgetRows.map(r => forecastStepperRow(`${this.topic}-budget`, r)).join('')}</div>
@@ -2109,6 +2112,7 @@ class ForecastTopic {
             <button class="toggle" id="${this.topic}-run-refit">refit</button>
             <button class="toggle" id="${this.topic}-run-open">open</button>
           </div>
+        </div>
         </div>
         <div class="run-controls hidden" id="${this.topic}-run-view" role="group" aria-label="candidate view">
           <button type="button" class="toggle on" id="${this.topic}-run-view-tiles" aria-pressed="true">tiles</button>
@@ -2601,7 +2605,8 @@ class ForecastTopic {
   paintFamilyProgress(run) {
     const families = run?.version === 1 ? [] : Object.entries(run?.families || {});
     const metrics = this.selectedMetrics(run);
-    document.getElementById(`${this.topic}-family-progress-wrap`).classList.toggle('hidden', !families.length || this.runView !== 'tables');
+    const familyProgress = document.getElementById(`${this.topic}-family-progress-wrap`);
+    familyProgress.classList.toggle('hidden', !families.length);
     forecastFillTable(document.getElementById(`${this.topic}-family-progress`),
       ['family', 'state', 'phase', 'candidates done', 'expected remaining', ...metrics.map(forecastMetricHeader), 'reason'],
       families.map(([name, status]) => [name, status.terminated ? `${status.state} (terminated)` : status.state,
