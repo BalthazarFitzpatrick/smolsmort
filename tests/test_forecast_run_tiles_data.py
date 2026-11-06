@@ -211,6 +211,81 @@ def save_model(folder, family, prediction):
     return genome
 
 
+def test_selection_metrics_follow_saved_tile_leads_and_blends(tmp_path, monkeypatch):
+    from smolsmort.forecast import metrics, views
+
+    request = {
+        "version": 2,
+        "spec": {"task": "regression", "mode": "timeseries", "horizon": 2},
+        "families": [{"name": name} for name in ("ridge", "snaive")],
+    }
+    save_json(tmp_path / "request.json", request)
+    save_json(tmp_path / "status.json", {"state": "done"})
+    save_json(tmp_path / "result.json", {"winner": {"family": "ridge"}})
+    for family, prediction in (("ridge", [9, 4]), ("snaive", [6, 9])):
+        save_model(tmp_path, family, prediction)
+        table = {
+            "series": np.array(["a", "a"]),
+            "step": np.array(["2026-01-19"] * 2, dtype="datetime64[D]"),
+            "origin": np.array(["2026-01-12", "2026-01-05"], dtype="datetime64[D]"),
+            "weeks_ahead": np.array([1, 2]),
+            "actual": np.array([10.0, 10.0]),
+            "prediction": np.array(prediction, dtype=float),
+            "naive_prediction": np.array([5.0, 5.0]),
+        }
+        for split in ("validation", "test", "forecast"):
+            write_table(tmp_path / "families" / family / f"{split}.parquet", table)
+    ensembles = tiles.ensemble_rows(tmp_path)
+    save_json(tmp_path / "ensembles.json", ensembles)
+    tiles.write_ensemble_views(tmp_path, ensembles)
+    saved = tiles.read_tiles(tmp_path)
+
+    def reject(*args, **kwargs):
+        pytest.fail("selection metrics must only read saved predictions")
+
+    monkeypatch.setattr(tiles, "align_tables", reject)
+    monkeypatch.setattr(tiles, "score_ensembles", reject)
+    results = []
+    for selection in (
+        {"mode": "lead", "n": 1},
+        {"mode": "lead", "n": 2},
+        {"mode": "blend", "weights": {1: 1, 2: 1}},
+    ):
+        details = {"run_tiles": views._mark_viewable(tmp_path, saved, "ridge")}
+        views._set_selection_metrics(tmp_path, request, {}, details, selection)
+        values = {tile["family"]: dict(tile["selection_metrics"]) for tile in saved}
+        assert all(
+            set(value) == {item["id"] for item in metrics.metric_registry(request["spec"])}
+            for value in values.values()
+        )
+        assert values["ridge"]["validation_error"] == 0.2
+        results.append(values)
+    for values, expected in zip(
+        results, ((0.1, 0.4, 0.25), (0.6, 0.1, 0.35), (0.35, 0.25, 0.3)), strict=True
+    ):
+        for family, error in zip(("ridge", "snaive", "ensemble"), expected, strict=True):
+            assert values[family]["wape"] == pytest.approx(error)
+            assert values[family]["mae"] == pytest.approx(error * 10)
+            assert values[family]["mape"] == pytest.approx(error)
+            assert values[family]["test_ratio"] == pytest.approx(error * 2)
+    assert sorted(results[0], key=lambda name: results[0][name]["wape"]) == [
+        "ridge",
+        "ensemble",
+        "snaive",
+    ]
+    assert sorted(results[1], key=lambda name: results[1][name]["wape"]) == [
+        "snaive",
+        "ensemble",
+        "ridge",
+    ]
+    ensemble = next(tile for tile in saved if tile["kind"] == "ensemble")
+    path = tmp_path / "tile_views" / ensemble["recipe_key"] / "test.parquet"
+    path.unlink()
+    views._set_selection_metrics(tmp_path, request, {}, details, {"mode": "lead", "n": 1})
+    assert ensemble["selection_metrics"]["wape"] is None
+    assert not path.exists()
+
+
 def test_picker_metrics_keep_saved_search_score_and_each_models_verdict(tmp_path):
     from smolsmort.forecast import views
 

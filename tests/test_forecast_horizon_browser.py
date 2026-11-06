@@ -196,6 +196,105 @@ def open_horizon_run(page, run_id: str) -> None:
     page.locator("#regression-family-comparison tbody tr").first.wait_for()
 
 
+def test_results_dropdown_ranked_first_metric_and_current_lead(tmp_path):
+    with horizon_session(tmp_path) as (page, run_id):
+        folder = tmp_path / "forecast_root/.forecast-runs" / run_id
+        future = read_table(folder / "winner_forecast.parquet")
+        for family, errors in (
+            ("xgboost", {1: 1, 2: 20, 3: 30}),
+            ("ridge", {1: 10, 2: 2, 3: 5}),
+            ("snaive", {1: 15, 2: 15, 3: 15}),
+        ):
+            for split in ("validation", "test"):
+                path = folder / "families" / family / f"{split}.parquet"
+                table = read_table(path)
+                table["prediction"] = table["actual"] - np.array(
+                    [errors[int(lead)] for lead in table["weeks_ahead"]]
+                )
+                write_table(path, table)
+            write_table(folder / "families" / family / "forecast.parquet", future)
+        from smolsmort.forecast.tiles import ensemble_rows, write_ensemble_views
+
+        ensembles = ensemble_rows(folder)
+        write_json(folder / "ensembles.json", ensembles)
+        write_ensemble_views(folder, ensembles)
+        open_horizon_run(page, run_id)
+
+        def check_order(metric):
+            expected = page.evaluate(
+                """metric => forecastTopics.get('regression').resultsView.run_tiles
+                  .filter(tile => tile.viewable !== false)
+                  .sort((a, b) => (a.selection_metrics[metric] ?? Infinity)
+                    - (b.selection_metrics[metric] ?? Infinity)).map(tile => tile.tile_id)""",
+                metric,
+            )
+            page.locator("#regression-results-model").click()
+            settle_menu(page)
+            options = page.locator(".menu-panel .menu-item[data-id]")
+            assert options.evaluate_all("rows => rows.map(row => row.dataset.id)") == expected
+            selected = page.evaluate("forecastTopics.get('regression').resultsModel")
+            if selected.startswith(("model:", "ensemble:")):
+                assert options.nth(expected.index(selected)).get_attribute("data-id") == selected
+            title = options.first.get_attribute("title")
+            assert title.startswith(f"{metric} ")
+            selection = page.evaluate("forecastTopics.get('regression').resultsView.view")
+            if selection["mode"] == "lead":
+                assert title.endswith(f"at lead {selection['n']}")
+            page.keyboard.press("Escape")
+            return expected
+
+        def tick_first(metric):
+            page.locator("#regression-error-metrics").click()
+            settle_menu(page)
+            picker = page.locator("#regression-error-metrics-menu")
+            current = page.evaluate("forecastTopics.get('regression').selectedMetricIds")
+            for name in current:
+                picker.locator(f'.menu-item[data-id="{name}"]').click()
+            for name in (metric, "validation_error" if metric == "wape" else "wape"):
+                picker.locator(f'.menu-item[data-id="{name}"]').click()
+            page.keyboard.press("Escape")
+
+        choose_horizon(page, "lead", 1)
+        tick_first("wape")
+        first = check_order("wape")
+        assert first[0].startswith("model:xgboost:")
+        choose_horizon(page, "lead", 2)
+        second = check_order("wape")
+        assert second[0].startswith("model:ridge:")
+        assert first != second
+        tick_first("validation_error")
+        assert check_order("validation_error") != second
+        tick_first("wape")
+        assert check_order("wape") == second
+        page.locator("#regression-results-model").click()
+        settle_menu(page)
+        with page.expect_response("**/api/forecast-view?**"):
+            page.locator(f'.menu-panel .menu-item[data-id="{second[-1]}"]').click()
+        page.wait_for_function(
+            "model => forecastTopics.get('regression').resultsView.model === model", arg=second[-1]
+        )
+        assert check_order("wape")[-1] == second[-1]
+        choose_horizon(page, "blend", 1)
+        check_order("wape")
+        page.evaluate(
+            """() => {
+              const topic = forecastTopics.get('regression');
+              topic.resultsView.run_tiles = [
+                {tile_id: 'missing', kind: 'model', family: 'ridge', selection_metrics: {wape: null}},
+                {tile_id: 'tie-a', kind: 'model', family: 'ridge', selection_metrics: {wape: 0.2}},
+                {tile_id: 'tie-b', kind: 'model', family: 'ridge', selection_metrics: {wape: 0.2}},
+              ];
+              topic.resultsView.ensemble = {members: ['ridge'], selection_metrics: {wape: null}};
+            }"""
+        )
+        page.locator("#regression-results-model").click()
+        settle_menu(page)
+        assert page.locator(".menu-panel .menu-item[data-id]").evaluate_all(
+            "rows => rows.map(row => row.dataset.id)"
+        ) == ["ensemble", "tie-a", "tie-b", "missing"]
+        page.keyboard.press("Escape")
+
+
 def choose_horizon(page, mode: str, value: int | str):
     page.locator(f"#regression-{mode}").click()
     settle_menu(page)
