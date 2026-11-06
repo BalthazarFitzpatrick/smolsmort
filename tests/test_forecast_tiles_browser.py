@@ -447,6 +447,45 @@ def test_ensemble_single_values_kept_chart_height_and_legend_clear(tmp_path):
         )
 
 
+@pytest.mark.parametrize("tile_state", ["matching", "different", "hidden", "absent"])
+def test_results_picker_saved_ensemble_has_one_selected_option(tmp_path, tile_state):
+    with session(tmp_path, port=0) as (page, _base):
+        write_multifamily_run(tmp_path / "forecast_root")
+        open_tiles(page, contract=True)
+        page.click("#regression-run-open")
+        page.locator("#regression-family-comparison tbody tr").first.wait_for()
+        page.evaluate(
+            """state => {
+              const topic = forecastTopics.get('regression');
+              const models = ['ridge', 'xgboost', 'snaive'].map(family => ({
+                tile_id: `model:${family}:best`, kind: 'model', family,
+              }));
+              const tile = {tile_id: 'ensemble:pair', kind: 'ensemble', family: 'ensemble',
+                members: [models[0].tile_id, models[state === 'different' ? 2 : 1].tile_id],
+                viewable: state !== 'hidden'};
+              topic.paintModelResults({...topic.resultsView, model: 'ensemble', family: 'ensemble',
+                members: ['xgboost', 'ridge'], ensemble: {members: ['xgboost', 'ridge']},
+                run_tiles: state === 'absent' ? [] : [...models, tile]});
+            }""",
+            tile_state,
+        )
+        assert (
+            "ensemble of xgboost, ridge" in page.locator("#regression-results-model").inner_text()
+        )
+        page.click("#regression-results-model")
+        settle_menu(page)
+        legacy = page.locator('.menu-panel .menu-item[data-id="ensemble"]')
+        selected = page.locator(".menu-panel .menu-item.on")
+        assert selected.count() == 1
+        if tile_state == "matching":
+            assert legacy.count() == 0
+            assert selected.get_attribute("data-id") == "ensemble:pair"
+            assert page.locator('.menu-item[data-id="ensemble:pair"]').count() == 1
+        else:
+            assert legacy.count() == 1
+            assert selected.get_attribute("data-id") == "ensemble"
+
+
 @pytest.mark.parametrize("better_ensemble", [False, True])
 def test_results_picker_lists_and_selects_every_saved_tile(tmp_path, better_ensemble):
     from smolsmort.forecast.tables import read_table
@@ -474,13 +513,24 @@ def test_results_picker_lists_and_selects_every_saved_tile(tmp_path, better_ense
         assert "best recipe" in page.locator("#regression-family-comparison").inner_text()
         page.click("#regression-results-model")
         settle_menu(page)
-        assert page.locator(".menu-panel .menu-item").count() == len(tiles) + better_ensemble
+        assert page.locator(".menu-panel .menu-item").count() == len(tiles)
         if better_ensemble:
             assert (
                 "ensemble of xgboost, ridge"
                 in page.locator("#regression-results-model").inner_text()
             )
-            assert page.locator('.menu-item[data-id="ensemble"]').count() == 1
+            assert page.locator('.menu-item[data-id="ensemble"]').count() == 0
+            tile_families = {tile["tile_id"]: tile["family"] for tile in tiles}
+            matching_tile = next(
+                tile
+                for tile in tiles
+                if tile["kind"] == "ensemble"
+                and {tile_families[member] for member in tile["members"]} == {"xgboost", "ridge"}
+            )
+            assert (
+                page.locator(".menu-panel .menu-item.on").get_attribute("data-id")
+                == matching_tile["tile_id"]
+            )
             assert page.evaluate("forecastTopics.get('regression').resultsView.model") == "ensemble"
             assert (
                 page.evaluate("forecastTopics.get('regression').resultsView.verdict.accuracy.ratio")

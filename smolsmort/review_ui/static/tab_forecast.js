@@ -2976,11 +2976,19 @@ class ForecastTopic {
       };
       // only tiles with saved predictions can open; older runs keep their saved ensemble entry
       const shown = (tiles || []).filter(tile => tile.viewable !== false);
+      const savedMembers = new Set(this.resultsView.ensemble?.members || []);
+      const matchingEnsemble = this.resultsView.ensemble && shown.find(tile => {
+        if (tile.kind !== 'ensemble') return false;
+        const members = new Set((tile.members || []).map(id =>
+          tiles.find(member => member.tile_id === id)?.family));
+        return members.size === savedMembers.size && [...members].every(family => savedMembers.has(family));
+      });
       const options = shown.map(tile => rankOption({
-        id: tile.tile_id, label: forecastRunTileLabel(tile, tiles), on: this.resultsModel === tile.tile_id,
+        id: tile.tile_id, label: forecastRunTileLabel(tile, tiles),
+        on: this.resultsModel === tile.tile_id || (this.resultsModel === 'ensemble' && tile === matchingEnsemble),
       }, tile));
       if (!tiles?.length) options.push(rankOption({id: 'winner', label: this.resultsView.winner_family || 'xgboost', on: this.resultsModel === 'winner'}, this.resultsView.winner));
-      if (this.resultsView.ensemble && (this.resultsModel === 'ensemble' || !shown.some(tile => tile.kind === 'ensemble'))) {
+      if (this.resultsView.ensemble && !matchingEnsemble) {
         options.push(rankOption({id: 'ensemble', label: `ensemble of ${(this.resultsView.ensemble.members || []).join(', ')}`, on: this.resultsModel === 'ensemble'}, this.resultsView.ensemble));
       }
       if (!options.length) options.push(rankOption({id: 'winner', label: this.resultsView.winner_family || 'xgboost', on: this.resultsModel === 'winner'}, this.resultsView.winner));
