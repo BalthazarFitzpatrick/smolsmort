@@ -218,6 +218,18 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-run-sort .dropdown-head { min-width: 0; max-width: none; width: 100%; }
 .forecast-run-controls .toggle { padding-inline: 6px; }
 .forecast-run-detail { min-width: 0; }
+.forecast-run-panels { display: flex; align-items: flex-start; gap: var(--gap); min-width: 0; }
+.forecast-run-progress-panel { flex: 1 1 0; min-width: 0; }
+.forecast-run-config { flex: 0 0 auto; width: max-content; min-width: 28ch; max-width: min(38ch, 100%); box-sizing: border-box; }
+.forecast-run-config:not(:has(> :not(.hidden))) { display: none; }
+.forecast-run-config .stepper-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; }
+.forecast-run-config .stepper-row .spacer { display: none; }
+.forecast-run-config .run-controls { flex-wrap: wrap; }
+.forecast-family-progress-reserved { visibility: hidden; }
+@media (max-width: 899px) {
+  .forecast-run-panels { flex-direction: column; }
+  .forecast-run-progress-panel { flex: auto; width: 100%; box-sizing: border-box; }
+}
 .forecast-tiles { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 13px; line-height: 1.4; color: var(--text); padding-bottom: 12px; }
 .forecast-tiles [data-state="better"] { --tile-tone: var(--lichen); }
 .forecast-tiles [data-state="identical"] { --tile-tone: var(--vanilla); }
