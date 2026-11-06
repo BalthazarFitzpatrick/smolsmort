@@ -211,6 +211,35 @@ def save_model(folder, family, prediction):
     return genome
 
 
+def test_selection_metrics_rank_legacy_ensemble_validation_error(tmp_path):
+    from smolsmort.forecast import views
+
+    request = {
+        "version": 2,
+        "spec": {"task": "regression", "mode": "timeseries", "horizon": 2},
+        "families": [{"name": name} for name in ("ridge", "snaive")],
+    }
+    save_json(tmp_path / "request.json", request)
+    save_json(tmp_path / "status.json", {"state": "done"})
+    save_json(tmp_path / "result.json", {"winner": {"family": "ridge"}})
+    save_model(tmp_path, "ridge", [8, 16])
+    save_model(tmp_path, "snaive", [12, 24])
+    ensembles = tiles.ensemble_rows(tmp_path)
+    ensembles[0].pop("error_metrics")
+    save_json(tmp_path / "ensembles.json", ensembles)
+    tiles.write_ensemble_views(tmp_path, ensembles)
+    saved = views._mark_viewable(tmp_path, tiles.read_tiles(tmp_path), "ridge")
+    assert len(saved) == 3 and all(tile["viewable"] for tile in saved)
+    views._set_selection_metrics(tmp_path, request, {}, {"run_tiles": saved}, None)
+    values = {tile["family"]: tile["selection_metrics"]["validation_error"] for tile in saved}
+    assert values == {"ensemble": 0.0, "ridge": 0.2, "snaive": 0.2}
+    assert (
+        min(saved, key=lambda tile: tile["selection_metrics"]["validation_error"])["kind"]
+        == "ensemble"
+    )
+    assert "error_metrics" not in json.loads((tmp_path / "ensembles.json").read_text())[0]
+
+
 def test_selection_metrics_follow_saved_tile_leads_and_blends(tmp_path, monkeypatch):
     from smolsmort.forecast import metrics, views
 
