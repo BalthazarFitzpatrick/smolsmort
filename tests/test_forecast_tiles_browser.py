@@ -1294,6 +1294,9 @@ def test_run_panels_fit_config_and_keep_layout_across_views(tmp_path):
         progress = page.locator(".forecast-run-progress-panel:has(#regression-run-title)")
         config = page.locator(".forecast-run-config:has(#regression-warm-budget)")
         config.wait_for()
+        family_table = progress.locator("#regression-family-progress")
+        assert family_table.is_visible()
+        assert family_table.locator("tbody tr").count() == 3
         progress_box = progress.bounding_box()
         config_box = config.bounding_box()
         assert abs(progress_box["y"] - config_box["y"]) <= 2
@@ -1306,6 +1309,7 @@ def test_run_panels_fit_config_and_keep_layout_across_views(tmp_path):
             assert 0 <= minus["x"] - label["x"] - label["width"] < 120
         for view in ("tables", "tiles"):
             page.locator(f"#regression-run-view-{view}").click()
+            assert family_table.is_visible()
             for panel, before in ((progress, progress_box), (config, config_box)):
                 after = panel.bounding_box()
                 for dimension in ("x", "y", "width", "height"):
@@ -1337,7 +1341,7 @@ def test_tiles_read_saved_winner_artifacts_and_kept_tables(tmp_path):
         assert "chart" not in tile_data
         assert page.locator("#regression-run-view-tiles").get_attribute("aria-pressed") == "true"
         assert page.locator("#regression-tiles .forecast-tile").count() == 3
-        assert not page.locator("#regression-family-progress").is_visible()
+        assert page.locator("#regression-family-progress").is_visible()
         save_tiles(page, "saved-charts")
         ridge = find_tile(page, "ridge")
         front = ridge.locator(".forecast-tile-front")

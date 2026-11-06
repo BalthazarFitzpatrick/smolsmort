@@ -2607,7 +2607,6 @@ class ForecastTopic {
     const metrics = this.selectedMetrics(run);
     const familyProgress = document.getElementById(`${this.topic}-family-progress-wrap`);
     familyProgress.classList.toggle('hidden', !families.length);
-    familyProgress.classList.toggle('forecast-family-progress-reserved', this.runView !== 'tables');
     forecastFillTable(document.getElementById(`${this.topic}-family-progress`),
       ['family', 'state', 'phase', 'candidates done', 'expected remaining', ...metrics.map(forecastMetricHeader), 'reason'],
       families.map(([name, status]) => [name, status.terminated ? `${status.state} (terminated)` : status.state,

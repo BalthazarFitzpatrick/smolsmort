@@ -225,7 +225,6 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-run-config .stepper-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; }
 .forecast-run-config .stepper-row .spacer { display: none; }
 .forecast-run-config .run-controls { flex-wrap: wrap; }
-.forecast-family-progress-reserved { visibility: hidden; }
 @media (max-width: 899px) {
   .forecast-run-panels { flex-direction: column; }
   .forecast-run-progress-panel { flex: auto; width: 100%; box-sizing: border-box; }
