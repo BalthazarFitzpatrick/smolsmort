@@ -2765,11 +2765,12 @@ class ForecastTopic {
     running.replaceChildren();
     const byRatio = this.runOrder === 'best performance';
     const ratioOf = run => run.error_metrics?.test_ratio?.value;
-    // runs won by the naive baseline are only a yardstick, so the ratio sort leaves them out
-    const runs = [...this.runCache.values()].filter(
-      run => !(byRatio && run.winner_family === 'snaive' && run.id !== this.selectedRunId),
-    ).sort((a, b) => {
+    const runs = [...this.runCache.values()].sort((a, b) => {
       if (byRatio) {
+        const leftNaive = a.selected_family === 'snaive';
+        const rightNaive = b.selected_family === 'snaive';
+        if (leftNaive !== rightNaive) return leftNaive ? 1 : -1;
+        if (leftNaive) return b.id.localeCompare(a.id);
         const left = Number.isFinite(ratioOf(a)) ? ratioOf(a) : Infinity;
         const right = Number.isFinite(ratioOf(b)) ? ratioOf(b) : Infinity;
         if (left !== right) return left - right;
@@ -2965,7 +2966,7 @@ class ForecastTopic {
         id: tile.tile_id, label: forecastRunTileLabel(tile, tiles), on: this.resultsModel === tile.tile_id,
       }));
       if (!tiles?.length) options.push({id: 'winner', label: this.resultsView.winner_family || 'xgboost', on: this.resultsModel === 'winner'});
-      if (!shown.some(tile => tile.kind === 'ensemble') && this.resultsView.ensemble) {
+      if (this.resultsView.ensemble && (this.resultsModel === 'ensemble' || !shown.some(tile => tile.kind === 'ensemble'))) {
         options.push({id: 'ensemble', label: `ensemble of ${(this.resultsView.ensemble.members || []).join(', ')}`, on: this.resultsModel === 'ensemble'});
       }
       if (!options.length) options.push({id: 'winner', label: this.resultsView.winner_family || 'xgboost', on: this.resultsModel === 'winner'});

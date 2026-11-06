@@ -454,7 +454,6 @@ def multi_run_state(run_dir, request, status, *, since_generation=None, since_ev
         "best_wape": best
         if request["spec"].get("task") == "regression" and kind != "refit"
         else None,
-        "test_error": result.get("model_error"),
         "excluded_series": result.get("excluded_series", []),
         **run_metric_payload(run_dir, request, {"best_error": best}, result=result, recipe=recipe),
     }
@@ -785,18 +784,47 @@ def family_tiles(
     return tiles
 
 
+def _default_model(result, recipe):
+    if recipe.get("family") == "ensemble":
+        return "ensemble"
+    winner = {**result, **(result.get("winner") or {})}
+    ensemble = result.get("ensemble") or {}
+    winner_fitness = winner.get("fitness", winner.get("val_error"))
+    ensemble_fitness = ensemble.get("fitness")
+    if (
+        _finite_number(winner_fitness) is not None
+        and _finite_number(ensemble_fitness) is not None
+        and ensemble_fitness < winner_fitness
+    ):
+        return "ensemble"
+    return "winner"
+
+
+def _winner_family(result, recipe):
+    return (
+        (result.get("winner") or {}).get("family")
+        or (recipe.get("genome") or {}).get("family")
+        or (result.get("best") or {}).get("family")
+        or (recipe.get("family") if recipe.get("family") != "ensemble" else None)
+        or "xgboost"
+    )
+
+
 def run_metric_payload(run_dir, request, status=None, *, result=None, recipe=None, model=None):
     """expose the selected saved model without borrowing another model's predictions"""
     result = result if result is not None else _read_json(run_dir / "result.json", {})
     recipe = recipe if recipe is not None else _read_json(run_dir / "recipe.json", {})
-    default_model = "ensemble" if recipe.get("family") == "ensemble" else "winner"
+    default_model = _default_model(result, recipe)
+    saved_model = "ensemble" if recipe.get("family") == "ensemble" else "winner"
     model = model or default_model
+    selected_family = "ensemble" if model == "ensemble" else _winner_family(result, recipe)
     summary = result.get(model) or {}
-    if model == default_model:
+    if model == saved_model:
         summary = {**result, **summary}
     path = run_dir / f"{model}_test.parquet"
     if model.startswith(("model:", "ensemble:")):
         tile, _ = _select_tile(run_dir, model)
+        selected_family = tile["family"]
         path = _tile_prediction_path(run_dir, model, "test")
         saved = tile.get("error_metrics", {})
         fitness = saved.get("validation_error", {}).get("value")
@@ -806,7 +834,7 @@ def run_metric_payload(run_dir, request, status=None, *, result=None, recipe=Non
             else tile["metrics"]["wape"]["validation"],
             "verdict": {"accuracy": {"ratio": saved.get("test_ratio", {}).get("value")}},
         }
-    if not path.exists() and model == default_model:
+    if not path.exists() and model == saved_model:
         path = run_dir / "test.parquet"
     fitness = next(
         (
@@ -831,6 +859,8 @@ def run_metric_payload(run_dir, request, status=None, *, result=None, recipe=Non
         )
     spec = request.get("spec", {})
     payload = {
+        "selected_family": selected_family,
+        "test_error": summary.get("model_error"),
         "metric_registry": fm.metric_registry(spec),
         "error_metrics": fm.error_metrics(
             spec, fitness=fitness, verdict=summary.get("verdict"), path=path
@@ -863,15 +893,10 @@ def _require_done(run_dir: Path) -> dict:
 def _select_model(run_dir: Path, result: dict, query: dict) -> dict:
     recipe = _read_json(run_dir / "recipe.json", {})
     winner = result.get("winner") or {}
-    winner_family = (
-        winner.get("family")
-        or (recipe.get("genome") or {}).get("family")
-        or (result.get("best") or {}).get("family")
-        or (recipe.get("family") if recipe.get("family") != "ensemble" else None)
-        or "xgboost"
-    )
+    winner_family = _winner_family(result, recipe)
     ensemble = result.get("ensemble")
-    default_model = "ensemble" if recipe.get("family") == "ensemble" else "winner"
+    default_model = _default_model(result, recipe)
+    saved_model = "ensemble" if recipe.get("family") == "ensemble" else "winner"
     model = query.get("model") or default_model
     if model.startswith(("model:", "ensemble:")):
         tile, tiles = _select_tile(run_dir, model)
@@ -884,6 +909,7 @@ def _select_model(run_dir: Path, result: dict, query: dict) -> dict:
             "winner_family": winner_family,
             "verdict": None,
             "default_model": default_model,
+            "saved_model": saved_model,
         }
     if model not in ("winner", "ensemble"):
         raise ViewError("model must be winner or ensemble")
@@ -897,6 +923,7 @@ def _select_model(run_dir: Path, result: dict, query: dict) -> dict:
         "winner_family": winner_family,
         "verdict": selected.get("verdict") or result.get("verdict"),
         "default_model": default_model,
+        "saved_model": saved_model,
     }
 
 
@@ -948,7 +975,7 @@ def _tile_prediction_path(run_dir: Path, model: str, kind: str) -> Path:
     if tile["kind"] == "model":
         winner = _select_model(run_dir, _require_done(run_dir), {"model": "winner"})
         return _model_prediction_path(
-            run_dir, tile["family"], kind, winner["family"], winner["default_model"]
+            run_dir, tile["family"], kind, winner["family"], winner["saved_model"]
         )
     target = run_dir / "tile_views" / tile["recipe_key"] / f"{kind}.parquet"
     if target.exists():
@@ -991,7 +1018,7 @@ def _prediction_path(run_dir: Path, query: dict, kind: str) -> Path:
     path = run_dir / f"{selected['model']}_{kind}.parquet"
     if path.exists():
         return path
-    if selected["model"] != selected["default_model"]:
+    if selected["model"] != selected["saved_model"]:
         raise ViewError(f"run has no saved {selected['model']} {kind}")
     return run_dir / f"{kind}.parquet"
 
@@ -1002,7 +1029,7 @@ def _optional_prediction_path(run_dir: Path, query: dict, kind: str) -> Path | N
         return path if path.exists() else None
     selected = _select_model(run_dir, _require_done(run_dir), query)
     path = run_dir / f"{selected['model']}_{kind}.parquet"
-    if not path.exists() and selected["model"] == selected["default_model"]:
+    if not path.exists() and selected["model"] == selected["saved_model"]:
         path = run_dir / f"{kind}.parquet"
     return path if path.exists() else None
 
@@ -1012,6 +1039,7 @@ def result_details(run_dir: Path, request: dict, query: dict) -> dict:
     result = _require_done(run_dir)
     selected = _select_model(run_dir, result, query)
     selected.pop("default_model")
+    selected.pop("saved_model")
     recipe = _read_json(run_dir / "recipe.json", {})
     tiles = family_tiles(
         run_dir, request, _read_json(run_dir / "status.json", {}), result=result, recipe=recipe
@@ -1330,7 +1358,7 @@ def _horizon_sources(con, request, query, validation, test, forecast):
 def _read_lead_errors(run_dir, result, model, horizon):
     rows = (result.get(model) or {}).get("lead_errors")
     path = run_dir / f"{model}_lead_errors.parquet"
-    default_model = _select_model(run_dir, result, {})["default_model"]
+    default_model = _select_model(run_dir, result, {})["saved_model"]
     if rows is None and not path.exists() and model == default_model:
         rows = result.get("lead_errors")
         path = run_dir / "lead_errors.parquet"

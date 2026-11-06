@@ -447,13 +447,20 @@ def test_ensemble_single_values_kept_chart_height_and_legend_clear(tmp_path):
         )
 
 
-def test_results_picker_lists_and_selects_every_saved_tile(tmp_path):
+@pytest.mark.parametrize("better_ensemble", [False, True])
+def test_results_picker_lists_and_selects_every_saved_tile(tmp_path, better_ensemble):
     from smolsmort.forecast.tables import read_table
     from smolsmort.forecast.tiles import read_tiles
 
     with session(tmp_path, port=0) as (page, _base):
         run_id = write_multifamily_run(tmp_path / "forecast_root")
         run = tmp_path / "forecast_root/.forecast-runs" / run_id
+        if better_ensemble:
+            result_path = run / "result.json"
+            result = json.loads(result_path.read_text())
+            result["winner"]["fitness"] = 0.12
+            result["ensemble"]["fitness"] = 0.09
+            result_path.write_text(json.dumps(result))
         for index, name in enumerate(("xgboost", "ridge", "snaive")):
             for split in ("validation", "test", "forecast"):
                 table = read_table(run / f"winner_{split}.parquet")
@@ -467,7 +474,18 @@ def test_results_picker_lists_and_selects_every_saved_tile(tmp_path):
         assert "best recipe" in page.locator("#regression-family-comparison").inner_text()
         page.click("#regression-results-model")
         settle_menu(page)
-        assert page.locator(".menu-panel .menu-item").count() == len(tiles)
+        assert page.locator(".menu-panel .menu-item").count() == len(tiles) + better_ensemble
+        if better_ensemble:
+            assert (
+                "ensemble of xgboost, ridge"
+                in page.locator("#regression-results-model").inner_text()
+            )
+            assert page.locator('.menu-item[data-id="ensemble"]').count() == 1
+            assert page.evaluate("forecastTopics.get('regression').resultsView.model") == "ensemble"
+            assert (
+                page.evaluate("forecastTopics.get('regression').resultsView.verdict.accuracy.ratio")
+                == 1.05
+            )
         page.keyboard.press("Escape")
         page.locator(".menu-panel").wait_for(state="detached")
         for tile in tiles:
