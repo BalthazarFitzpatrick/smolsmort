@@ -2965,17 +2965,31 @@ class ForecastTopic {
     document.getElementById(`${this.topic}-results-model`).onclick = evt => {
       if (!this.resultsView) return;
       const tiles = this.resultsView.run_tiles;
+      const metric = this.selectedMetricIds[0];
+      const selection = this.resultsView.view;
+      const scope = selection?.mode === 'lead' ? `lead ${selection.n}`
+        : selection?.mode === 'blend' ? 'blend weighted' : 'saved test';
+      const rankOption = (option, entry) => {
+        const value = entry?.selection_metrics?.[metric];
+        return {...option, value: Number.isFinite(value) ? value : null,
+          hint: Number.isFinite(value) ? `${metric} ${value.toFixed(4)} at ${scope}` : undefined};
+      };
       // only tiles with saved predictions can open; older runs keep their saved ensemble entry
       const shown = (tiles || []).filter(tile => tile.viewable !== false);
-      const options = shown.map(tile => ({
+      const options = shown.map(tile => rankOption({
         id: tile.tile_id, label: forecastRunTileLabel(tile, tiles), on: this.resultsModel === tile.tile_id,
-      }));
-      if (!tiles?.length) options.push({id: 'winner', label: this.resultsView.winner_family || 'xgboost', on: this.resultsModel === 'winner'});
+      }, tile));
+      if (!tiles?.length) options.push(rankOption({id: 'winner', label: this.resultsView.winner_family || 'xgboost', on: this.resultsModel === 'winner'}, this.resultsView.winner));
       if (this.resultsView.ensemble && (this.resultsModel === 'ensemble' || !shown.some(tile => tile.kind === 'ensemble'))) {
-        options.push({id: 'ensemble', label: `ensemble of ${(this.resultsView.ensemble.members || []).join(', ')}`, on: this.resultsModel === 'ensemble'});
+        options.push(rankOption({id: 'ensemble', label: `ensemble of ${(this.resultsView.ensemble.members || []).join(', ')}`, on: this.resultsModel === 'ensemble'}, this.resultsView.ensemble));
       }
-      if (!options.length) options.push({id: 'winner', label: this.resultsView.winner_family || 'xgboost', on: this.resultsModel === 'winner'});
-      listMenu('forecast', options, async item => {
+      if (!options.length) options.push(rankOption({id: 'winner', label: this.resultsView.winner_family || 'xgboost', on: this.resultsModel === 'winner'}, this.resultsView.winner));
+      // missing legacy entries stay first; missing tile values follow the ranked tiles
+      const legacy = options.filter(option => option.value === null && ['winner', 'ensemble'].includes(option.id));
+      const ranked = options.filter(option => !legacy.includes(option));
+      ranked.sort((a, b) => (a.value ?? Infinity) - (b.value ?? Infinity));
+      const ordered = [...legacy, ...ranked];
+      const menu = listMenu('forecast', ordered, async item => {
         this.resultsModel = item.id;
         this.importanceFamily = null;
         this.tableRequest++;
@@ -2983,6 +2997,9 @@ class ForecastTopic {
         await this.refreshView();
         await this.refreshTable();
       }).openAt(evt.currentTarget);
+      menu.el?.querySelectorAll('.menu-item').forEach((row, index) => {
+        if (ordered[index].hint) row.title = ordered[index].hint;
+      });
     };
     document.getElementById(`${this.topic}-importance-family`).onclick = evt => {
       const names = this.resultsView?.importance_families || [];

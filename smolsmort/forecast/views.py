@@ -2107,11 +2107,48 @@ def view(run_dir: Path, request: dict, query: dict) -> dict:
     )
     if payload.get("view"):
         _horizon_result_metrics(run_dir, request, query, details, payload["view"])
+    _set_selection_metrics(run_dir, request, query, details, payload.get("view"))
     for series in payload["series"]:
         if series.get("dashed"):
             series["family"] = details["family"]
             series["members"] = details["members"]
     return {**payload, **details}
+
+
+def _set_selection_metrics(run_dir, request, query, details, selection):
+    """rank saved tiles using the same horizon selection as the family comparison"""
+    registry = fm.metric_registry(request["spec"])
+    winner = _select_model(run_dir, _require_done(run_dir), {"model": "winner"})
+    with connect() as con:
+        for tile in details["run_tiles"]:
+            if not tile["viewable"]:
+                continue
+            metrics = dict(tile.get("error_metrics", {}))
+            if selection:
+                if tile["kind"] == "model":
+                    path = _model_prediction_path(
+                        run_dir, tile["family"], "test", winner["family"], winner["saved_model"]
+                    )
+                else:
+                    # read saved ensemble views only; opening a menu must not refit a tile
+                    path = run_dir / "tile_views" / tile["recipe_key"] / "test.parquet"
+                metrics.update(_horizon_metrics(con, run_dir, request, query, path, selection))
+            tile["selection_metrics"] = {
+                metric["id"]: _finite_number(metrics.get(metric["id"], {}).get("value"))
+                for metric in registry
+            }
+        for name in ("winner", "ensemble"):
+            entry = details.get(name)
+            if entry is None:
+                continue
+            metrics = dict(entry["error_metrics"])
+            if selection:
+                path = _optional_prediction_path(run_dir, {**query, "model": name}, "test")
+                metrics.update(_horizon_metrics(con, run_dir, request, query, path, selection))
+            entry["selection_metrics"] = {
+                metric["id"]: _finite_number(metrics.get(metric["id"], {}).get("value"))
+                for metric in registry
+            }
 
 
 # ---------------------------------------------------------------- table
