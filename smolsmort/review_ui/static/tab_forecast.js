@@ -90,6 +90,10 @@ function forecastRunShortName(run) {
   return [model, kind].filter(Boolean).join(' ') || 'run';
 }
 
+function forecastRunName(run) {
+  return `${forecastRunCode(run.id)} | ${forecastRunShortName(run)}`;
+}
+
 function forecastSearchProgress(run) {
   const progress = run.progress || {};
   const budget = run.budget || {};
@@ -417,7 +421,9 @@ function forecastReduceTilePoints(points) {
 
 function forecastRunTileChart(tile, tiles, metric, training) {
   const chart = forecastNode('div', 'forecast-tile-chart forecast-run-tile-chart');
-  chart.append(forecastNode('div', 'forecast-tile-chart-label', training ? 'train loss' : `validation ${metric}`));
+  const chartLabel = forecastNode('div', 'forecast-tile-chart-label', training ? 'train loss' : `validation ${metric}`);
+  chart.append(chartLabel);
+  const validationLabels = new Set();
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('viewBox', '-0.03 -0.03 1.06 1.06');
   svg.setAttribute('preserveAspectRatio', 'none');
@@ -430,7 +436,14 @@ function forecastRunTileChart(tile, tiles, metric, training) {
   members.forEach((member, memberIndex) => {
     let generations = Object.entries(member.curves || {}).sort(([a], [b]) => Number(a) - Number(b));
     if (tile.kind === 'ensemble') generations = generations.filter(([generation]) => Number(generation) === member.best_generation);
-    const valuesFor = curve => (training ? curve.train_loss || [] : curve.validation?.[metric] || []).map(value => Number.isFinite(value) ? value : null);
+    const metricFor = curve => {
+      const validation = curve.validation || {};
+      if ((validation[metric] || []).some(Number.isFinite)) return metric;
+      const native = curve.loss?.name;
+      return [native, ...Object.keys(validation)].find(key =>
+        (validation[key] || []).some(Number.isFinite)) || metric;
+    };
+    const valuesFor = curve => (training ? curve.train_loss || [] : curve.validation?.[metricFor(curve)] || []).map(value => Number.isFinite(value) ? value : null);
     const oneShot = generations.length && generations.every(([, curve]) => valuesFor(curve).length <= 1);
     const allValues = generations.flatMap(([, curve]) => valuesFor(curve)).filter(Number.isFinite);
     if (!allValues.length) return;
@@ -440,6 +453,9 @@ function forecastRunTileChart(tile, tiles, metric, training) {
         : Number(generation) === member.best_generation ? '--cream' : '--muted-on';
     generations.forEach(([generation, curve], index) => {
       const values = valuesFor(curve);
+      const curveMetric = training ? curve.loss?.name || 'loss' : metricFor(curve);
+      if (!training && values.some(Number.isFinite)) validationLabels.add(
+        curveMetric === metric ? `validation ${metric}` : `validation ${curveMetric} (native loss)`);
       const finite = (oneShot ? allValues : values).filter(Number.isFinite);
       const min = Math.min(...finite), span = Math.max(...finite) - min || 1;
       const points = values.map((value, round) => value === null ? null : [
@@ -467,7 +483,7 @@ function forecastRunTileChart(tile, tiles, metric, training) {
           dot.setAttribute('cx', '6'); dot.setAttribute('cy', '6'); dot.setAttribute('r', '3');
           dot.style.fill = `var(${colour})`;
           dotSvg.append(dot);
-          marker.append(dotSvg, document.createTextNode(`${training ? curve.loss?.name || 'loss' : metric} ${Number(values.find(Number.isFinite).toPrecision(4))}`));
+          marker.append(dotSvg, document.createTextNode(`${curveMetric} ${Number(values.find(Number.isFinite).toPrecision(4))}`));
           chart.append(marker);
           segment = [];
           return;
@@ -485,6 +501,10 @@ function forecastRunTileChart(tile, tiles, metric, training) {
       drawSegment();
     });
   });
+  if (validationLabels.size) {
+    chartLabel.textContent = [...validationLabels].join(' / ');
+    svg.setAttribute('aria-label', `${chartLabel.textContent} by round`);
+  }
   if (svg.childElementCount || tile.kind === 'ensemble') chart.append(svg);
   else chart.classList.add('forecast-run-tile-chart-compact');
   if (!recorded) chart.append(forecastNode('span', 'forecast-tile-chart-note', 'no curve saved'));
@@ -2789,7 +2809,7 @@ class ForecastTopic {
       const status = ['cancelled', 'stopped'].includes(run.state) || run.stopped === 'cancelled' ? 'stopped'
         : this.isRunning(run) ? 'running' : run.state === 'failed' ? 'failed' : 'done';
       row.title = [run.id, forecastRunLocalTime(run)].filter(Boolean).join(' | ');
-      row.append(forecastNode('span', 'name', `${forecastRunCode(run.id)} | ${forecastRunShortName(run)}`));
+      row.append(forecastNode('span', 'name', forecastRunName(run)));
       row.append(forecastNode('span', 'field-label forecast-run-status', status));
       const time = forecastRunTime(run);
       if (time) {
@@ -3026,13 +3046,25 @@ class ForecastTopic {
 
   async openRunPicker(head) {
     const data = await api('/api/forecast-runs');
+    this.resultsRunSummaries = new Map(data.runs.map(run => [run.id, run]));
     listMenu('runs', data.runs.map(r => ({
-      id: r.id, label: `${r.id} - ${r.state}`, on: r.id === this.resultsRunId,
+      id: r.id, label: `${forecastRunName(r)} - ${r.state}`, stats: forecastRunTime(r), on: r.id === this.resultsRunId,
     })), item => {
       this.resultsRunId = item.id;
-      setHead(head, item.id);
+      this.paintResultsRunName();
       this.loadResults();
     }, {empty: 'no runs yet'}).openAt(head);
+    document.querySelectorAll('.menu-item').forEach(item => {
+      if (this.resultsRunSummaries.has(item.dataset.id)) item.title = item.dataset.id;
+    });
+  }
+
+  paintResultsRunName() {
+    const run = this.resultsRunSummaries?.get(this.resultsRunId) || this.runCache.get(this.resultsRunId) || {id: this.resultsRunId};
+    const head = document.getElementById(`${this.topic}-results-run`);
+    setHead(head, forecastRunName(run));
+    head.title = run.id;
+    return `${forecastRunName(run)} · ${run.id}`;
   }
 
   async loadResults() {
@@ -3052,6 +3084,10 @@ class ForecastTopic {
     this.tableRequest++;
     try {
       const state = await api(`/api/forecast-run?id=${encodeURIComponent(runId)}`);
+      if (!this.resultsRunSummaries?.has(runId)) {
+        const summaries = await api('/api/forecast-runs');
+        this.resultsRunSummaries = new Map(summaries.runs.map(run => [run.id, run]));
+      }
       if (load !== this.resultsLoad || runId !== this.resultsRunId) return;
       this.resultsSpec = state.spec;
       this.acceptMetricRegistry(state, 'results');
@@ -3059,7 +3095,7 @@ class ForecastTopic {
       this.importanceFamily = null;
       this.paintExcludedSeries(state.excluded_series || []);
       this.setResultsNotes('load', []);
-      setHead(document.getElementById(`${this.topic}-results-run`), this.resultsRunId);
+      this.paintResultsRunName();
       const exportLink = document.getElementById(`${this.topic}-export`);
       exportLink.href = `/api/forecast-export/${encodeURIComponent(this.resultsRunId)}.csv`;
       exportLink.classList.remove('hidden');
@@ -3276,7 +3312,7 @@ class ForecastTopic {
     if (!box) return;
     const blendBand = verdict === this.resultsView?.verdict
       ? forecastBlendBandText(this.resultsView) : null;
-    this.infoContext.textContent = [this.resultsRunId, label, 'pooled'].filter(Boolean).join(' · ');
+    this.infoContext.textContent = [this.resultsRunId ? this.paintResultsRunName() : null, label, 'pooled'].filter(Boolean).join(' · ');
     forecastRatioStyle(box, verdict);
     box.innerHTML = '';
     if (!verdict) {

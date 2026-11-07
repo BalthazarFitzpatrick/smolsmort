@@ -255,6 +255,54 @@ def test_contract_tiles_square_curves_filters_and_ensembles(tmp_path, monkeypatc
         assert "mape" in page.locator("#regression-tiles-metric").inner_text()
 
 
+def test_native_loss_curves_and_results_run_names(tmp_path):
+    with session(tmp_path, port=0) as (page, _base):
+        run_id = make_saved_tiles(tmp_path / "forecast_root")
+        open_tiles(page)
+        name = page.locator(f'.forecast-run-row[data-run-id="{run_id}"] .name').inner_text()
+        page.click("#regression-run-open")
+        head = page.locator("#regression-results-run")
+        page.wait_for_function(
+            "name => document.querySelector('#regression-results-run').textContent === name",
+            arg=name,
+        )
+        assert head.get_attribute("title") == run_id
+        page.click("#regression-results-run")
+        item = page.locator(f'.menu-item[data-id="{run_id}"]')
+        assert name in item.inner_text()
+        assert "done" in item.inner_text()
+        assert item.get_attribute("title") == run_id
+        item.click()
+        assert head.inner_text() == name
+        context = page.evaluate("forecastTopics.get('regression').infoContext.textContent")
+        assert name in context
+        assert run_id in context
+        checks = page.evaluate(
+            """() => {
+              const old = {tile_id: 'old', family: 'lightgbm', best_generation: 1,
+                curves: Object.fromEntries([0, 1].map(generation => [generation, {
+                  validation: {wape: [null, null, null], l1: [3, 2, 1]}, loss: {name: 'l1'},
+                }]))};
+              const current = {tile_id: 'current', family: 'xgboost', best_generation: 0,
+                curves: {0: {validation: {wape: [0.3, 0.2], l1: [3, 2]}}}};
+              const ensemble = {kind: 'ensemble', members: ['old', 'current']};
+              return [[old, false], [current, false], [ensemble, false], [old, true]].map(([tile, training]) => {
+                const chart = forecastRunTileChart(tile, [old, current], 'wape', training);
+                return {label: chart.querySelector('.forecast-tile-chart-label').textContent,
+                  lines: chart.querySelectorAll('polyline').length, text: chart.textContent};
+              });
+            }"""
+        )
+        assert checks[0]["lines"] == 2
+        assert checks[0]["label"] == "validation l1 (native loss)"
+        assert checks[1]["label"] == "validation wape"
+        assert checks[2]["lines"] == 2
+        assert "native loss" in checks[2]["label"]
+        assert "validation wape" in checks[2]["label"]
+        assert checks[3]["lines"] == 0
+        assert "no curve saved" in checks[3]["text"]
+
+
 def test_contract_curve_drawing_and_loading(tmp_path):
     with session(tmp_path, port=0) as (page, _base):
         run_id = make_saved_tiles(tmp_path / "forecast_root")
