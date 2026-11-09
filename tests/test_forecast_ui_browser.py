@@ -620,7 +620,7 @@ def test_results_chart_showed_both_ranges(tmp_path):
         )
 
 
-def test_stored_filters_with_quotes_fill_their_fields_intact(tmp_path):
+def test_stored_filters_with_quotes_kept_the_legacy_text_intact(tmp_path):
     """sql filters quote column names; stored text must come back verbatim, never break markup"""
     where = '"branch" <> \'x"y\''
     with session(tmp_path) as (page, base):
@@ -633,8 +633,11 @@ def test_stored_filters_with_quotes_fill_their_fields_intact(tmp_path):
         page.wait_for_timeout(400)
         switch_to_regression(page)
         show_tab(page, "regression-data")
-        assert page.locator(f"#{TOPIC}-where").input_value() == where
-        assert page.locator(f"#{TOPIC}-predict-where").input_value() == where
+        assert (
+            page.locator(f"#{TOPIC}-legacy-where span").inner_text()
+            == f"custom filter kept: {where}"
+        )
+        assert page.locator(f"#{TOPIC}-where, #{TOPIC}-predict-where").count() == 0
 
 
 @pytest.mark.parametrize(
@@ -2024,6 +2027,233 @@ def choose_forecast_source(page, source, topic="regression"):
     )
 
 
+def choose_data_filter_field(page, row, name):
+    row.locator('[aria-label="filter field"]').click()
+    page.locator(f'.menu-panel .menu-item[data-id="{name}"]').click()
+
+
+def open_data_range(page):
+    page.locator("#regression-date-range").click()
+    menu = page.locator("#regression-date-range-menu")
+    menu.wait_for(state="visible")
+    return menu
+
+
+def select_data_date(menu, side, year, month="", day=""):
+    if menu.locator(f'[data-part="{side}-year"]').is_disabled():
+        menu.locator(f'[data-na="{side}"]').click()
+        assert menu.is_visible()
+    for part, value in (("year", year), ("month", month), ("day", day)):
+        control = menu.locator(f'[data-part="{side}-{part}"]')
+        if not value and control.is_disabled():
+            continue
+        control.select_option(value)
+        assert menu.is_visible(), f"menu closed after selecting {side}-{part}"
+
+
+def prepare_data_filter_spec(page, preparations):
+    page.keyboard.press("Escape")
+    page.locator("#regression-prepare").click()
+    page.wait_for_function(
+        "document.getElementById('regression-data-status').innerText.startsWith('prepared')"
+    )
+    return preparations[-1]
+
+
+def write_data_filter_source(tmp_path):
+    (tmp_path / "forecast_root/filter_rows.csv").write_text(
+        "need_by_date,region,amount\n"
+        "2023-04-03,north,1\n2024-06-15,north,2\n"
+        "2025-07-20,south,3\n2026-10-25,,4\n",
+        encoding="utf-8",
+    )
+
+
+def test_data_date_range_posted_inclusive_bounds_and_kept_controls_open(tmp_path):
+    with session(tmp_path) as (page, _):
+        _, preparations = mock_prepared_searches(page)
+        write_data_filter_source(tmp_path)
+        switch_to_regression(page)
+        choose_forecast_source(page, "filter_rows.csv")
+        set_role(page, "amount", "target")
+        page.locator("#regression-date-column").click()
+        page.locator('.menu-panel .menu-item[data-id="need_by_date"]').click()
+        assert page.locator("#regression-where, #regression-predict-where").count() == 0
+        menu = open_data_range(page)
+        assert menu.locator('[data-part="from-month"]').is_disabled()
+        select_data_date(menu, "from", "2023", "4", "3")
+        select_data_date(menu, "to", "2026", "10", "25")
+        expected = "\"need_by_date\" >= '2023-04-03' AND \"need_by_date\" <= '2026-10-25'"
+        spec = prepare_data_filter_spec(page, preparations)
+        assert spec["where"] == expected
+        assert "predict_where" not in spec
+        page.reload()
+        switch_to_regression(page)
+        show_tab(page, "regression-data")
+        page.locator("#regression-date-range").wait_for(state="visible")
+        menu = open_data_range(page)
+        assert menu.locator('[data-part="from-day"]').input_value() == "3"
+        assert menu.locator('[data-part="to-day"]').input_value() == "25"
+        select_data_date(menu, "from", "2024")
+        select_data_date(menu, "to", "2024")
+        assert prepare_data_filter_spec(page, preparations)["where"] == (
+            "\"need_by_date\" >= '2024-01-01' AND \"need_by_date\" <= '2024-12-31'"
+        )
+        menu = open_data_range(page)
+        menu.locator('[data-na="from"]').click()
+        assert menu.is_visible()
+        assert prepare_data_filter_spec(page, preparations)["where"] == (
+            "\"need_by_date\" <= '2024-12-31'"
+        )
+        menu = open_data_range(page)
+        menu.locator('[data-na="from"]').click()
+        assert menu.is_visible()
+        menu.locator('[data-na="to"]').click()
+        assert menu.is_visible()
+        assert prepare_data_filter_spec(page, preparations)["where"] == (
+            "\"need_by_date\" >= '2024-01-01'"
+        )
+
+
+def test_data_dimension_filters_kept_inner_clicks_open_and_removed_rows(tmp_path):
+    with session(tmp_path) as (page, _):
+        _, preparations = mock_prepared_searches(page)
+        write_data_filter_source(tmp_path)
+        switch_to_regression(page)
+        choose_forecast_source(page, "filter_rows.csv")
+        set_role(page, "amount", "target")
+        page.locator("#regression-add-filter").click()
+        row = page.locator(".forecast-filter-row")
+        assert row.count() == 1
+        choose_data_filter_field(page, row, "region")
+        row.locator(".forecast-filter-value").click()
+        menu = page.locator(".menu-panel").filter(has=page.locator('input[type="search"]'))
+        search = menu.locator('input[type="search"]')
+        search.fill("north")
+        assert menu.is_visible()
+        page.wait_for_timeout(400)
+        assert menu.is_visible()
+        assert "north" in menu.inner_text()
+        search.fill("")
+        page.wait_for_timeout(400)
+        menu.get_by_role("button", name="exclude", exact=True).click()
+        assert menu.is_visible()
+        menu.get_by_role("button", name="include", exact=True).click()
+        assert menu.is_visible()
+        menu.get_by_role("button", name="exclude", exact=True).click()
+        assert menu.is_visible()
+        null_option = menu.locator("label").filter(has_text="(null)")
+        null_option.click()
+        assert menu.is_visible()
+        assert prepare_data_filter_spec(page, preparations)["where"] == '"region" IS NOT NULL'
+        page.locator("#regression-add-filter").click()
+        assert page.locator(".forecast-filter-row").count() == 2
+        page.locator('.forecast-filter-row [aria-label="remove filter"]').last.click()
+        assert page.locator(".forecast-filter-row").count() == 1
+        page.locator('.forecast-filter-row [aria-label="remove filter"]').click()
+        assert page.locator(".forecast-filter-row").count() == 0
+        assert prepare_data_filter_spec(page, preparations)["where"] is None
+        for mode, expected in (
+            ("include", '("re""gion" IN (\'o\'\'hare\') OR "re""gion" IS NULL)'),
+            ("exclude", '("re""gion" NOT IN (\'o\'\'hare\') AND "re""gion" IS NOT NULL)'),
+        ):
+            actual = page.evaluate(
+                "mode => ForecastTopic.prototype.buildWhere.call({"
+                "dateRange: {column: '', from: {}, to: {}}, legacyWhere: '', columnsInfo: [],"
+                "dataFilters: [{field: 're\"gion', kind: 'text', mode, picked: [\"o'hare\", null]}]})",
+                mode,
+            )
+            assert actual == expected
+        actual = page.evaluate(
+            "() => ForecastTopic.prototype.buildWhere.call({"
+            "dateRange: {column: 'stamp', from: {na: true}, to: {y:'2024',m:'2',d:'29'}},"
+            "legacyWhere: 'amount = 1 OR amount = 2', dataFilters: [],"
+            "columnsInfo: [{name:'stamp',dtype:'TIMESTAMP'}]})"
+        )
+        assert actual == "(amount = 1 OR amount = 2) AND \"stamp\" < '2024-03-01'"
+
+
+def test_data_date_and_number_filter_rows_combined_with_and(tmp_path):
+    with session(tmp_path) as (page, _):
+        _, preparations = mock_prepared_searches(page)
+        write_data_filter_source(tmp_path)
+        switch_to_regression(page)
+        choose_forecast_source(page, "filter_rows.csv")
+        set_role(page, "amount", "target")
+        page.locator("#regression-add-filter").click()
+        row = page.locator(".forecast-filter-row").first
+        choose_data_filter_field(page, row, "need_by_date")
+        row.locator(".forecast-filter-value").click()
+        menu = page.locator(".menu-panel").filter(has=page.locator('[data-part="from-year"]'))
+        select_data_date(menu, "from", "2024")
+        page.keyboard.press("Escape")
+        page.locator("#regression-add-filter").click()
+        row = page.locator(".forecast-filter-row").last
+        choose_data_filter_field(page, row, "amount")
+        row.locator(".forecast-filter-value").click()
+        menu = page.locator(".menu-panel").filter(has=page.locator('[data-part="from-number"]'))
+        menu.locator('[data-part="from-number"]').fill("2")
+        assert menu.is_visible()
+        menu.locator('[data-part="to-number"]').fill("4")
+        assert menu.is_visible()
+        menu.locator('[data-na="to"]').click()
+        assert menu.is_visible()
+        assert prepare_data_filter_spec(page, preparations)["where"] == (
+            '"need_by_date" >= \'2024-01-01\' AND "amount" >= 2'
+        )
+
+
+@pytest.mark.parametrize("operator", ["<", "<="])
+def test_data_legacy_date_window_filled_the_range(tmp_path, operator):
+    upper = "2026-10-26" if operator == "<" else "2026-10-25"
+    where = f"need_by_date >= '2023-04-03' AND need_by_date {operator} '{upper}'"
+    with session(tmp_path) as (page, _):
+        _, preparations = mock_prepared_searches(page)
+        write_data_filter_source(tmp_path)
+        page.evaluate(
+            "state => localStorage.setItem('smolsmort:forecast:regression', JSON.stringify({state}))",
+            {"source": "filter_rows.csv", "where": where},
+        )
+        page.reload()
+        switch_to_regression(page)
+        choose_forecast_source(page, "filter_rows.csv")
+        set_role(page, "amount", "target")
+        menu = open_data_range(page)
+        assert menu.locator('[data-part="from-year"]').input_value() == "2023"
+        assert menu.locator('[data-part="from-month"]').input_value() == "4"
+        assert menu.locator('[data-part="from-day"]').input_value() == "3"
+        assert menu.locator('[data-part="to-year"]').input_value() == "2026"
+        assert menu.locator('[data-part="to-month"]').input_value() == "10"
+        assert menu.locator('[data-part="to-day"]').input_value() == "25"
+        assert prepare_data_filter_spec(page, preparations)["where"] == (
+            "\"need_by_date\" >= '2023-04-03' AND \"need_by_date\" <= '2026-10-25'"
+        )
+
+
+def test_data_legacy_custom_filter_passed_through_and_cleared(tmp_path):
+    where = "\"region\" <> 'o''hare'"
+    with session(tmp_path) as (page, _):
+        _, preparations = mock_prepared_searches(page)
+        write_data_filter_source(tmp_path)
+        page.evaluate(
+            "state => localStorage.setItem('smolsmort:forecast:regression', JSON.stringify({state}))",
+            {"source": "filter_rows.csv", "where": where, "predictWhere": "amount > 2"},
+        )
+        page.reload()
+        switch_to_regression(page)
+        choose_forecast_source(page, "filter_rows.csv")
+        set_role(page, "amount", "target")
+        assert (
+            page.locator("#regression-legacy-where span").inner_text()
+            == f"custom filter kept: {where}"
+        )
+        spec = prepare_data_filter_spec(page, preparations)
+        assert spec["where"] == where
+        assert spec["predict_where"] == "amount > 2"
+        page.get_by_role("button", name="clear", exact=True).click()
+        assert prepare_data_filter_spec(page, preparations)["where"] is None
+
+
 def assert_dataset_state(page, state, *, source="rows.csv", topic="regression"):
     readout = page.locator("#forecast-dataset")
     assert readout.is_visible()
@@ -2078,8 +2308,12 @@ def test_forecast_reloaded_setup_started_with_current_picks(tmp_path):
 
         for index, action in enumerate(("start", "warm", "refit")):
             show_tab(page, "regression-data")
-            page.locator("#regression-where").fill(f"size > {index}")
-            page.locator("#regression-where").blur()
+            page.locator("#regression-date-column").click()
+            page.locator('.menu-panel .menu-item[data-id="created"]').click()
+            page.locator("#regression-date-range").click()
+            menu = page.locator("#regression-date-range-menu")
+            menu.locator('[data-part="from-year"]').select_option(str(2023 + index))
+            page.keyboard.press("Escape")
             assert_dataset_state(page, "changed since prepare")
             show_tab(page, "regression-search")
             if action == "start":
@@ -2097,7 +2331,7 @@ def test_forecast_reloaded_setup_started_with_current_picks(tmp_path):
                 "return title.includes(shortId) && title.endsWith('· done'); }",
                 arg=f"test{index + 2:02d}",
             )
-            assert requests[-1][1]["spec"]["where"] == f"size > {index}"
+            assert requests[-1][1]["spec"]["where"] == f"\"created\" >= '{2023 + index}-01-01'"
             assert_dataset_state(page, "prepared")
         assert requests[-2][1]["warm_from"]
         assert requests[-2][1]["budget"] == {

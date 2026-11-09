@@ -363,7 +363,7 @@ The review server is a small json api; the page and any host tab speak it. All p
 | folders, settings | `GET dir-list`, `GET dir-tree`, `POST set-bases` |
 | housekeeping | `GET housekeeping-recordings`, `GET housekeeping-assets`, `POST housekeeping-archive`, `POST housekeeping-delete` |
 | images | `/tile/<name>`, `/crop/<index>` (png) |
-| forecast | `GET forecast-sources`, `POST forecast-columns`, `POST forecast-prep`, `POST forecast-runs`, `GET forecast-runs`, `GET forecast-run`, `POST forecast-cancel`, `POST forecast-refit`, `GET forecast-view`, `GET forecast-table`, `/forecast-export/<run>.csv` |
+| forecast | `GET forecast-sources`, `POST forecast-columns`, `GET forecast-column-values`, `POST forecast-prep`, `POST forecast-runs`, `GET forecast-runs`, `GET forecast-run`, `POST forecast-cancel`, `POST forecast-refit`, `GET forecast-view`, `GET forecast-table`, `/forecast-export/<run>.csv` |
 | host | `GET tabs` |
 
 Two shapes worth knowing: `train-info` reports `capture_width`, `capture_override`,
@@ -427,6 +427,8 @@ uv sync --extra forecast        # xgboost + duckdb
 `set-bases`; by default `forecast/` beside `sessions/`, and never committed). the data tab reads its
 columns and their kinds, samples and distinct counts. for entities, it suggests anchor for a date,
 dimension for text and measure for a number. you pick the targets; nothing suggests one.
+
+the data tab's date range applies to training, validation and test. choose a date column and from/to dates; an empty month or day covers the whole period, and n/a leaves that side open. use + in filters to add date or number bounds, or include/exclude dimension values with counts and `(null)`. every filter combines with and. older custom filters stay active until cleared.
 
 **the two flavours.**
 

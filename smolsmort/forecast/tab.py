@@ -167,7 +167,7 @@ def _column_kind(duckdb_type: str) -> str:
     return "text"
 
 
-def _columns(app, payload: dict) -> dict:
+def _column_source(app, payload: dict):
     source = _resolve_source(app, payload.get("source", ""))
     data = source.read_bytes()
     encoding = resolve_encoding(data, payload.get("encoding"))
@@ -187,7 +187,11 @@ def _columns(app, payload: dict) -> dict:
             if source.suffix.lower() == ".json"
             else f"read_csv('{source}', header = true)"
         )
-    read_expr = type_source(con, read_expr)
+    return con, type_source(con, read_expr), encoding
+
+
+def _columns(app, payload: dict) -> dict:
+    con, read_expr, encoding = _column_source(app, payload)
     described = con.execute(f"DESCRIBE SELECT * FROM {read_expr}").fetchall()
     row_count = con.execute(f"SELECT count(*) FROM {read_expr}").fetchone()[0]
     mode = normalize_mode(payload.get("mode") or "timeseries")
@@ -195,8 +199,9 @@ def _columns(app, payload: dict) -> dict:
     for name, duckdb_type, *_rest in described:
         kind = _column_kind(duckdb_type)
         q = '"' + name.replace('"', '""') + '"'
-        distinct, missing = con.execute(
-            f"SELECT count(DISTINCT {q}), count(*) - count({q}) FROM {read_expr}"
+        bounds = f", min({q}), max({q})" if kind in ("date", "number") else ""
+        distinct, missing, *limits = con.execute(
+            f"SELECT count(DISTINCT {q}), count(*) - count({q}){bounds} FROM {read_expr}"
         ).fetchone()
         sample = [
             row[0]
@@ -210,17 +215,52 @@ def _columns(app, payload: dict) -> dict:
             suggested = "dimension"
         else:
             suggested = "measure"
-        out.append(
-            {
-                "name": name,
-                "kind": kind,
-                "distinct": distinct,
-                "missing": missing,
-                "sample": [str(v) for v in sample],
-                "suggested_role": suggested,
-            }
-        )
+        column = {
+            "name": name,
+            "kind": kind,
+            "dtype": duckdb_type,
+            "distinct": distinct,
+            "missing": missing,
+            "sample": [str(v) for v in sample],
+            "suggested_role": suggested,
+        }
+        if kind in ("date", "number"):
+            minimum, maximum = limits
+            column["min"] = minimum.isoformat() if kind == "date" and minimum else minimum
+            column["max"] = maximum.isoformat() if kind == "date" and maximum else maximum
+        out.append(column)
+    con.close()
     return {"columns": out, "encoding": encoding, "row_count": row_count}
+
+
+def _column_values(app, query: dict) -> dict:
+    try:
+        limit = max(1, min(200, int(query.get("limit", 200))))
+    except (TypeError, ValueError) as exc:
+        raise RequestError("limit must be an integer") from exc
+    con, read_expr, encoding = _column_source(app, query)
+    with con:
+        names = [row[0] for row in con.execute(f"DESCRIBE SELECT * FROM {read_expr}").fetchall()]
+        column = query.get("column", "")
+        if column not in names:
+            raise RequestError(f"unknown column: {column}")
+        quoted = '"' + column.replace('"', '""') + '"'
+        null_count = con.execute(
+            f"SELECT count(*) FROM {read_expr} WHERE {quoted} IS NULL"
+        ).fetchone()[0]
+        rows = con.execute(
+            f"SELECT {quoted}, count(*) AS count FROM {read_expr} "
+            f"WHERE {quoted} IS NOT NULL AND contains(lower(CAST({quoted} AS VARCHAR)), lower(?)) "
+            f"GROUP BY {quoted} ORDER BY count DESC, CAST({quoted} AS VARCHAR) LIMIT ?",
+            [str(query.get("q") or ""), limit],
+        ).fetchall()
+        values = [
+            {"value": value.isoformat() if hasattr(value, "isoformat") else value, "count": count}
+            for value, count in rows
+        ]
+        if null_count:
+            values.append({"value": None, "count": null_count})
+    return {"values": values, "null_count": null_count, "encoding": encoding}
 
 
 def _prep(app, payload: dict) -> dict:
@@ -689,6 +729,7 @@ def forecast_tab() -> Tab:
             "/api/forecast-plan": _get_plan,
             "/api/forecast-families": _families,
             "/api/forecast-sources": _sources,
+            "/api/forecast-column-values": _column_values,
             "/api/forecast-runs": _list_runs,
             "/api/forecast-run": _run,
             "/api/forecast-run-tiles": _run_tiles,

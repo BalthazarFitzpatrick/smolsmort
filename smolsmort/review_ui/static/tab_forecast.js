@@ -1349,6 +1349,30 @@ function forecastMountPlan(rail) {
   refresh();
 }
 
+function forecastEmptyRange() {
+  return {column: '', from: {y: '', m: '', d: '', na: false}, to: {y: '', m: '', d: '', na: false}};
+}
+
+function forecastDateBound(side, which) {
+  if (side.na || !side.y) return null;
+  const month = Number(side.m || (which === 'from' ? 1 : 12));
+  const last = new Date(Date.UTC(Number(side.y), month, 0)).getUTCDate();
+  const day = Math.min(Number(side.d || (which === 'from' ? 1 : last)), last);
+  return `${side.y}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+class ForecastFilterMenu extends Menu {
+  constructor(options) {
+    super({...options, persistent: true});
+    // the event path survives a control rebuilding its own section
+    this._onDocDown = event => {
+      const path = event.composedPath();
+      if (path.includes(this.el) || path.includes(this._trigger)) return;
+      this.close();
+    };
+  }
+}
+
 class ForecastTopic {
   constructor(topic, task) {
     this.topic = topic;
@@ -1363,7 +1387,9 @@ class ForecastTopic {
     this.step = 'week';
     this.horizon = 8;
     this.asOf = todayIso();
-    this.where = '';
+    this.dateRange = forecastEmptyRange();
+    this.dataFilters = [];
+    this.legacyWhere = '';
     this.predictWhere = '';
     this.censorOn = false;
     this.censorUnit = 'week';
@@ -1512,6 +1538,7 @@ class ForecastTopic {
       if (!raw) return;
       const saved = JSON.parse(raw);
       Object.assign(this, saved.state || {});
+      if (!saved.state?.dateRange) this.importWhere(saved.state?.where);
       // utf-8 was the old default, and auto still picks it for any file that decodes as utf-8
       if (this.encoding === 'utf-8') this.encoding = 'auto';
     } catch (err) { /* nothing saved, or it did not parse - start clean */ }
@@ -1522,7 +1549,8 @@ class ForecastTopic {
       const state = {
         source: this.source, encoding: this.encoding, columnState: this.columnState,
         seriesSetup: this.seriesSetup,
-        step: this.step, horizon: this.horizon, asOf: this.asOf, where: this.where,
+        step: this.step, horizon: this.horizon, asOf: this.asOf,
+        dateRange: this.dateRange, dataFilters: this.dataFilters, legacyWhere: this.legacyWhere,
         predictWhere: this.predictWhere, censorOn: this.censorOn, censorUnit: this.censorUnit,
         censorAsOf: this.censorAsOf,
         columnsInfo: this.columnsInfo, sourceRows: this.sourceRows, detectedEncoding: this.detectedEncoding,
@@ -1599,6 +1627,233 @@ class ForecastTopic {
 
   // ================================================================== data tab
 
+  importWhere(where) {
+    if (!where) return;
+    const match = where.match(/^\s*("(?:[^"]|"")+"|[\w]+)\s*>=\s*'(\d{4}-\d{2}-\d{2})'\s+AND\s+\1\s*(<=|<)\s*'(\d{4}-\d{2}-\d{2})'\s*$/i);
+    if (!match) { this.legacyWhere = where; return; }
+    let end = match[4];
+    if (match[3] === '<') {
+      const date = new Date(`${end}T00:00:00Z`);
+      date.setUTCDate(date.getUTCDate() - 1);
+      end = date.toISOString().slice(0, 10);
+    }
+    const side = date => {
+      const [y, m, d] = date.split('-');
+      return {y, m: String(Number(m)), d: String(Number(d)), na: false};
+    };
+    this.dateRange = {column: match[1].replace(/^"|"$/g, '').replaceAll('""', '"'), from: side(match[2]), to: side(end)};
+    this.legacyWhere = '';
+  }
+
+  buildWhere() {
+    const quote = name => `"${name.replaceAll('"', '""')}"`;
+    const literal = value => `'${String(value).replaceAll("'", "''")}'`;
+    const conditions = this.legacyWhere ? [this.legacyWhere] : [];
+    const rangeConditions = (field, range, kind) => {
+      if (!field) return;
+      for (const which of ['from', 'to']) {
+        const side = range[which];
+        const value = kind === 'date' ? forecastDateBound(side, which)
+          : side.na || side.v === '' || side.v == null || !Number.isFinite(Number(side.v)) ? null : Number(side.v);
+        if (value === null) continue;
+        const timestamp = kind === 'date' && /timestamp/i.test(this.columnsInfo.find(col => col.name === field)?.dtype || '');
+        if (which === 'to' && timestamp) {
+          const next = new Date(`${value}T00:00:00Z`);
+          next.setUTCDate(next.getUTCDate() + 1);
+          conditions.push(`${quote(field)} < ${literal(next.toISOString().slice(0, 10))}`);
+        } else conditions.push(`${quote(field)} ${which === 'from' ? '>=' : '<='} ${kind === 'date' ? literal(value) : value}`);
+      }
+    };
+    rangeConditions(this.dateRange.column, this.dateRange, 'date');
+    for (const filter of this.dataFilters) {
+      if (!filter.field) continue;
+      if (['date', 'number'].includes(filter.kind)) rangeConditions(filter.field, filter.range, filter.kind);
+      else if (filter.picked?.length) {
+        const include = filter.mode !== 'exclude';
+        const values = filter.picked.filter(value => value !== null);
+        const parts = [];
+        if (values.length) parts.push(`${quote(filter.field)} ${include ? 'IN' : 'NOT IN'} (${values.map(literal).join(', ')})`);
+        if (filter.picked.includes(null)) parts.push(`${quote(filter.field)} IS ${include ? '' : 'NOT '}NULL`);
+        conditions.push(parts.length > 1 ? `(${parts.join(include ? ' OR ' : ' AND ')})` : parts[0]);
+      }
+    }
+    if (this.legacyWhere && conditions.length > 1) conditions[0] = `(${this.legacyWhere})`;
+    return conditions.join(' AND ') || null;
+  }
+
+  rangeLabel(range, kind) {
+    const bound = which => kind === 'number' ? (range[which].na ? null : range[which].v)
+      : forecastDateBound(range[which], which);
+    const from = bound('from'), to = bound('to');
+    return [from ? `from ${from}` : '', to ? `to ${to}` : ''].filter(Boolean).join(' ') || 'no limit';
+  }
+
+  openRangeMenu(head, range, field, kind, changed) {
+    const pane = forecastNode('div', 'forecast-range-pane');
+    pane.onkeydown = event => { if (event.key !== 'Escape') event.stopPropagation(); };
+    const draw = () => {
+      pane.replaceChildren();
+      for (const which of ['from', 'to']) {
+        const side = range[which];
+        const section = forecastNode('div', 'forecast-range-section');
+        const heading = forecastNode('div', 'run-controls');
+        const na = forecastNode('button', `toggle${side.na ? ' on' : ''}`, 'n/a');
+        na.type = 'button'; na.dataset.na = which;
+        na.setAttribute('aria-pressed', String(side.na));
+        na.onclick = () => { side.na = !side.na; draw(); changed(); };
+        heading.append(forecastNode('span', 'field-label grow', which), na);
+        section.append(heading);
+        if (kind === 'number') {
+          const input = forecastNode('input', 'text-field');
+          input.type = 'number'; input.value = side.v || ''; input.disabled = side.na;
+          input.dataset.part = `${which}-number`;
+          input.oninput = () => { side.v = input.value; changed(); };
+          section.append(input);
+        } else {
+          const column = this.columnsInfo.find(col => col.name === field);
+          const currentYear = new Date().getFullYear();
+          const min = Number(String(column?.min || currentYear - 20).slice(0, 4));
+          const max = Number(String(column?.max || currentYear + 5).slice(0, 4));
+          const years = Array.from({length: Math.max(1, max - min + 1)}, (_, i) => String(min + i));
+          for (const value of [range.from.y, range.to.y]) if (value && !years.includes(value)) years.push(value);
+          years.sort();
+          const row = forecastNode('div', 'forecast-range-parts');
+          for (const [part, label, options] of [['y', 'year', years], ['m', 'month', Array.from({length: 12}, (_, i) => String(i + 1))],
+            ['d', 'day', Array.from({length: side.y && side.m ? new Date(Date.UTC(+side.y, +side.m, 0)).getUTCDate() : 31}, (_, i) => String(i + 1))]]) {
+            const select = forecastNode('select', 'field-select');
+            select.dataset.part = `${which}-${label}`;
+            select.setAttribute('aria-label', `${which} ${label}`);
+            for (const value of ['', ...options]) {
+              const option = forecastNode('option', null, value || label);
+              option.value = value; select.append(option);
+            }
+            select.value = side[part] || '';
+            select.disabled = side.na || (part === 'm' && !side.y) || (part === 'd' && !side.m);
+            select.onchange = () => {
+              side[part] = select.value;
+              if (!side.y) { side.m = ''; side.d = ''; }
+              if (!side.m) side.d = '';
+              if (side.d && side.y && side.m) side.d = String(Math.min(+side.d, new Date(Date.UTC(+side.y, +side.m, 0)).getUTCDate()));
+              draw(); changed();
+            };
+            row.append(select);
+          }
+          section.append(row);
+        }
+        pane.append(section);
+      }
+    };
+    draw();
+    forecastOpenMenu(new ForecastFilterMenu({title: kind === 'date' ? 'date range' : 'number range', sections: [{kind: 'node', node: pane}]}), head);
+  }
+
+  openDimensionMenu(head, filter, changed) {
+    const pane = forecastNode('div', 'forecast-range-pane');
+    pane.onkeydown = event => { if (event.key !== 'Escape') event.stopPropagation(); };
+    const search = forecastNode('input', 'text-field');
+    search.type = 'search'; search.placeholder = 'search values'; search.value = filter.search || '';
+    const modes = forecastNode('div', 'run-controls');
+    for (const mode of ['include', 'exclude']) {
+      const button = forecastNode('button', `toggle${filter.mode === mode ? ' on' : ''}`, mode);
+      button.type = 'button';
+      button.onclick = () => {
+        filter.mode = mode;
+        [...modes.children].forEach(child => child.classList.toggle('on', child === button));
+        changed();
+      };
+      modes.append(button);
+    }
+    const values = forecastNode('div', 'forecast-filter-values');
+    pane.append(search, modes, values);
+    const menu = forecastOpenMenu(new ForecastFilterMenu({title: filter.field, sections: [{kind: 'node', node: pane}]}), head);
+    let request = 0, timer;
+    const load = async () => {
+      const own = ++request;
+      try {
+        const query = new URLSearchParams({source: this.source, encoding: this.encoding, column: filter.field, q: search.value, limit: '200'});
+        const result = await api(`/api/forecast-column-values?${query}`);
+        if (!menu.isOpen || own !== request) return;
+        values.replaceChildren();
+        for (const item of result.values) {
+          const label = forecastNode('label', 'toggle forecast-filter-option');
+          const checkbox = forecastNode('input'); checkbox.type = 'checkbox';
+          checkbox.checked = filter.picked.includes(item.value);
+          checkbox.onchange = () => {
+            filter.picked = checkbox.checked ? [...filter.picked, item.value] : filter.picked.filter(value => value !== item.value);
+            changed();
+          };
+          label.append(checkbox, forecastNode('span', 'grow', item.value === null ? '(null)' : String(item.value)), forecastNode('span', 'stat', String(item.count)));
+          values.append(label);
+        }
+        if (!result.values.length) values.append(forecastNode('span', 'stat', 'no value matches'));
+      } catch (error) { if (menu.isOpen && own === request) values.textContent = error.message; }
+    };
+    search.oninput = () => {
+      filter.search = search.value; this.saveStored(); clearTimeout(timer);
+      request++; timer = setTimeout(load, 200);
+    };
+    load();
+  }
+
+  renderDataFilters() {
+    const host = document.getElementById(`${this.topic}-data-filters`);
+    if (!host) return;
+    host.replaceChildren();
+    const dates = this.columnsInfo.filter(col => col.kind === 'date').map(col => col.name);
+    if (!this.dateRange.column && dates.length) this.dateRange.column = dates[0];
+    const box = forecastNode('div', 'forecast-data-box');
+    box.append(forecastNode('div', 'field-label', 'date range'));
+    const row = forecastNode('div', 'run-controls');
+    const column = forecastDropdown(dates, this.dateRange.column, value => {
+      this.dateRange.column = value; this.saveStored(); this.renderDataFilters();
+    }, 'date column', value => value || 'choose date');
+    column.id = `${this.topic}-date-column`;
+    const range = forecastNode('button', 'toggle dropdown-head', this.rangeLabel(this.dateRange, 'date'));
+    range.type = 'button'; range.id = `${this.topic}-date-range`;
+    range.onclick = () => this.openRangeMenu(range, this.dateRange, this.dateRange.column, 'date', () => {
+      range.textContent = this.rangeLabel(this.dateRange, 'date'); this.saveStored();
+    });
+    row.append(column, range); box.append(row); host.append(box);
+    const filters = forecastNode('div', 'forecast-data-box');
+    const heading = forecastNode('div', 'run-controls');
+    const add = forecastNode('button', 'toggle adds', '+');
+    add.type = 'button'; add.id = `${this.topic}-add-filter`; add.setAttribute('aria-label', 'add filter');
+    add.onclick = () => {
+      this.dataFilters.push({id: Date.now(), field: '', kind: '', picked: [], mode: 'include', search: ''});
+      this.saveStored(); this.renderDataFilters();
+    };
+    heading.append(forecastNode('span', 'field-label grow', 'filters'), add); filters.append(heading);
+    for (const filter of this.dataFilters) {
+      const row = forecastNode('div', 'run-controls forecast-filter-row');
+      const field = forecastDropdown(this.columnsInfo.map(col => col.name), filter.field, value => {
+        filter.field = value; filter.kind = this.columnsInfo.find(col => col.name === value).kind;
+        filter.range = forecastEmptyRange(); filter.picked = []; filter.mode = 'include'; filter.search = '';
+        this.saveStored(); this.renderDataFilters();
+      }, 'filter field', value => {
+        const col = this.columnsInfo.find(col => col.name === value);
+        return col ? `${value} · ${col.kind === 'text' ? 'dimension' : col.kind}` : 'choose field';
+      });
+      const label = () => ['date', 'number'].includes(filter.kind) ? this.rangeLabel(filter.range, filter.kind)
+        : filter.picked.length ? `${filter.mode}: ${filter.picked.map(value => value === null ? '(null)' : value).join(', ')}` : 'any value';
+      const value = forecastNode('button', 'toggle dropdown-head forecast-filter-value', label()); value.type = 'button';
+      value.disabled = !filter.field;
+      const changed = () => { value.textContent = label(); this.saveStored(); };
+      value.onclick = () => ['date', 'number'].includes(filter.kind)
+        ? this.openRangeMenu(value, filter.range, filter.field, filter.kind, changed)
+        : this.openDimensionMenu(value, filter, changed);
+      const remove = forecastNode('button', 'toggle removes', 'remove'); remove.type = 'button'; remove.setAttribute('aria-label', 'remove filter');
+      remove.onclick = () => { this.dataFilters = this.dataFilters.filter(item => item !== filter); this.saveStored(); this.renderDataFilters(); };
+      row.append(field, value, remove); filters.append(row);
+    }
+    if (this.legacyWhere) {
+      const legacy = forecastNode('div', 'run-controls'); legacy.id = `${this.topic}-legacy-where`;
+      const clear = forecastNode('button', 'toggle removes', 'clear'); clear.type = 'button';
+      clear.onclick = () => { this.legacyWhere = ''; this.saveStored(); this.renderDataFilters(); };
+      legacy.append(forecastNode('span', 'stat grow', `custom filter kept: ${this.legacyWhere}`), clear); filters.append(legacy);
+    }
+    host.append(filters);
+  }
+
   mountData(panel) {
     const censorBlock = this.task === 'regression' ? `
       <div class="run-controls forecast-censor-row">
@@ -1631,17 +1886,8 @@ class ForecastTopic {
         <div class="field-label" id="${this.topic}-entity-heading">entity settings</div>
         <div id="${this.topic}-entity-row">
           ${censorBlock}
-          <div class="run-controls">
-            <span class="field-label">rows to predict</span>
-            <input type="text" id="${this.topic}-predict-where"
-                   placeholder="sql filter, optional" class="text-field grow">
-          </div>
         </div>
-        <div class="run-controls">
-          <span class="field-label">filter</span>
-          <input type="text" id="${this.topic}-where"
-                 placeholder="sql filter over the source, optional" class="text-field grow">
-        </div>
+        <div id="${this.topic}-data-filters"></div>
         <div class="run-controls">
           <div class="toggle adds" id="${this.topic}-prepare">prepare</div>
           <span class="stat" id="${this.topic}-data-status"></span>
@@ -1655,7 +1901,6 @@ class ForecastTopic {
     // typed text goes in through the property, never the markup: a sql filter carries quotes
     const typed = {
       'censor-asof': this.censorAsOf, 'data-encoding': this.encoding, asof: this.asOf,
-      'predict-where': this.predictWhere, where: this.where,
     };
     for (const [suffix, value] of Object.entries(typed)) {
       const input = panel.querySelector(`#${this.topic}-${suffix}`);
@@ -1663,6 +1908,7 @@ class ForecastTopic {
     }
     this.dataSay = text => setText(`${this.topic}-data-status`, text);
     this.wireData(panel);
+    this.renderDataFilters();
     this.renderSetupHeads();
     this.paintDataMode();
     this.restorePrepared();
@@ -1696,10 +1942,6 @@ class ForecastTopic {
     };
     const asOf = document.getElementById(`${this.topic}-asof`);
     if (asOf) asOf.onchange = () => { this.asOf = asOf.value; this.saveStored(); };
-    const predictWhere = document.getElementById(`${this.topic}-predict-where`);
-    if (predictWhere) predictWhere.onchange = () => { this.predictWhere = predictWhere.value; this.saveStored(); };
-    const where = document.getElementById(`${this.topic}-where`);
-    where.onchange = () => { this.where = where.value; this.saveStored(); };
     if (this.task === 'regression') {
       const toggle = document.getElementById(`${this.topic}-censor-toggle`);
       toggle.onclick = () => {
@@ -1763,6 +2005,7 @@ class ForecastTopic {
       });
       if (source !== this.source || encoding !== this.encoding || mode !== this.mode()) return;
       this.columnsInfo = res.columns;
+      this.renderDataFilters();
       this.sourceRows = res.row_count;
       this.detectedEncoding = res.encoding;
       // entity roles survive flavour changes; timeseries picks have their own saved state
@@ -2045,8 +2288,8 @@ class ForecastTopic {
       encoding: this.encoding || 'auto',
       step: timeseries ? (this.step === 'auto' ? null : this.step) : null,
       horizon: timeseries ? this.horizon : 8,
-      where: this.where || null,
-      predict_where: !timeseries ? (this.predictWhere || null) : null,
+      where: this.buildWhere(),
+      ...(this.predictWhere ? {predict_where: this.predictWhere} : {}),
       censor: (!timeseries && this.task === 'regression' && this.censorOn && anchorEntry) ? {
         anchor: anchorEntry.name, unit: this.censorUnit, as_of: this.censorAsOf || null,
       } : null,

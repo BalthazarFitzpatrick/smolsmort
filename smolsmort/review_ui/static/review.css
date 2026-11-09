@@ -144,6 +144,15 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-setup-menu .popup-title { white-space: nowrap; }
 .forecast-setup-readout { white-space: nowrap; overflow-x: auto; margin-block: 8px; }
 .forecast-setup-pane { display: grid; gap: 8px; padding: 4px 0; }
+.forecast-data-box { border: 2px solid var(--grey-border); padding: var(--inset-x); margin-block: var(--gap); display: grid; gap: var(--gap); }
+.forecast-range-pane, .forecast-range-section { display: grid; gap: var(--gap); }
+.forecast-range-pane { min-width: 300px; padding: 4px 0; }
+.forecast-range-parts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--gap); }
+.forecast-range-parts select { min-width: 0; width: 100%; }
+.forecast-range-pane input[type=number], .forecast-range-pane input[type=search] { width: 100%; box-sizing: border-box; }
+.forecast-filter-values { display: grid; gap: 4px; max-height: 240px; overflow-y: auto; }
+.forecast-filter-option { display: flex; gap: var(--gap); align-items: center; }
+.forecast-filter-row { flex-wrap: wrap; }
 .forecast-agg-row { display: flex; align-items: flex-start; gap: 8px; }
 .forecast-agg-row .forecast-field { justify-content: flex-start; }
 .forecast-agg-row .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
