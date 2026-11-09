@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from pathlib import Path
 
 from smolsmort.forecast import plan, processes, runs, views
@@ -127,21 +128,25 @@ def _prepare_spec(app, spec):
 
 def _sources(app, query: dict) -> dict:
     root = _root(app)
-    files = []
+    paths = []
     if root.is_dir():
-        for path in sorted(root.rglob("*")):
-            if path.suffix.lower() not in SOURCE_SUFFIXES:
-                continue
-            if ".forecast-cache" in path.parts or ".forecast-runs" in path.parts:
-                continue
-            stat = path.stat()
-            files.append(
-                {
-                    "path": path.relative_to(root).as_posix(),
-                    "size": stat.st_size,
-                    "modified": stat.st_mtime,
-                }
-            )
+        for folder, names, found in os.walk(root):
+            # hidden folders hold runs, caches, archives, seeds and venvs: never data sources
+            names[:] = [name for name in names if not name.startswith(".")]
+            for name in found:
+                path = Path(folder) / name
+                if path.suffix.lower() in SOURCE_SUFFIXES and not name.startswith("."):
+                    paths.append(path)
+    files = []
+    for path in sorted(paths):
+        stat = path.stat()
+        files.append(
+            {
+                "path": path.relative_to(root).as_posix(),
+                "size": stat.st_size,
+                "modified": stat.st_mtime,
+            }
+        )
     return {"root": str(root), "files": files}
 
 
