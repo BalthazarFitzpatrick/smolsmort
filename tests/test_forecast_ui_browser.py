@@ -2164,6 +2164,13 @@ def test_data_dimension_filters_kept_inner_clicks_open_and_removed_rows(tmp_path
                 mode,
             )
             assert actual == expected
+        # excluding values keeps rows with an empty value, which a bare NOT IN would drop
+        actual = page.evaluate(
+            "() => ForecastTopic.prototype.buildWhere.call({"
+            "dateRange: {column: '', from: {}, to: {}}, legacyWhere: '', columnsInfo: [],"
+            "dataFilters: [{field: 'region', kind: 'text', mode: 'exclude', picked: ['north']}]})"
+        )
+        assert actual == '("region" NOT IN (\'north\') OR "region" IS NULL)'
         actual = page.evaluate(
             "() => ForecastTopic.prototype.buildWhere.call({"
             "dateRange: {column: 'stamp', from: {na: true}, to: {y:'2024',m:'2',d:'29'}},"

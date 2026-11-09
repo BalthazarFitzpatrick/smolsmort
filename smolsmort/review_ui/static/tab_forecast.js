@@ -1674,7 +1674,10 @@ class ForecastTopic {
         const parts = [];
         if (values.length) parts.push(`${quote(filter.field)} ${include ? 'IN' : 'NOT IN'} (${values.map(literal).join(', ')})`);
         if (filter.picked.includes(null)) parts.push(`${quote(filter.field)} IS ${include ? '' : 'NOT '}NULL`);
-        conditions.push(parts.length > 1 ? `(${parts.join(include ? ' OR ' : ' AND ')})` : parts[0]);
+        // sql drops empty rows from a NOT IN, so excluding values keeps the empty rows unless null is excluded too
+        else if (!include && values.length) parts.push(`${quote(filter.field)} IS NULL`);
+        const joiner = include || !filter.picked.includes(null) ? ' OR ' : ' AND ';
+        conditions.push(parts.length > 1 ? `(${parts.join(joiner)})` : parts[0]);
       }
     }
     if (this.legacyWhere && conditions.length > 1) conditions[0] = `(${this.legacyWhere})`;
