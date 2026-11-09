@@ -821,3 +821,39 @@ def test_legacy_results_kept_latest_model_importance_and_table_after_delayed_res
             "ensemble of xgboost, ridge: test ratio 1.05, worse than naive"
         )
         assert_ensemble_table()
+
+
+def test_progress_minutes_are_rounded_to_two_decimals(tmp_path):
+    with session(tmp_path) as (page, _):
+        multi = page.evaluate(
+            "run => forecastSearchProgress(run)",
+            {"id": "a", "state": "done", "version": 2, "time_budget_s": 7, "elapsed": 7},
+        )
+        assert "of 0.12 min" in multi["label"]
+        single = page.evaluate(
+            "run => forecastSearchProgress(run)",
+            make_run(state="running", progress={"elapsed": 3, "generation": 1}),
+        )
+        assert "of 20 min" in single["label"]
+        short = make_run(state="running", progress={"elapsed": 3, "generation": 1})
+        short["budget"]["time_cap"] = 7
+        assert "of 0.12 min" in page.evaluate("run => forecastSearchProgress(run)", short)["label"]
+
+
+def test_results_run_picker_hides_part_runs_unless_selected(tmp_path):
+    parent, part = "20261009-120000-aaaaaa", "20261009-120001-bbbbbb"
+    runs = [
+        {"id": parent, "state": "done", "kind": "set", "label": "12 weeks - total"},
+        {"id": part, "state": "done", "part_of": parent, "label": "12 weeks - total - xgboost"},
+    ]
+    with session(tmp_path) as (page, _):
+        switch_to_regression(page)
+        page.select_option("#topic-flavour", "timeseries")
+        show_tab(page, "regression-results")
+        page.route("**/api/forecast-runs", lambda route: route.fulfill(json={"runs": runs}))
+        page.locator("#regression-results-run").click()
+        settle_menu(page)
+        ids = page.locator(".menu-panel .menu-item").evaluate_all(
+            "items => items.map(item => item.dataset.id)"
+        )
+        assert ids == [parent]
