@@ -94,6 +94,10 @@ function forecastRunName(run) {
   return `${forecastRunCode(run.id)} | ${forecastRunShortName(run)}`;
 }
 
+function forecastMinutes(seconds) {
+  return Number((seconds / 60).toFixed(2));
+}
+
 function forecastSearchProgress(run) {
   const progress = run.progress || {};
   const budget = run.budget || {};
@@ -110,11 +114,11 @@ function forecastSearchProgress(run) {
     const duration = run.time_budget_s || timeCap;
     const fill = done ? 1 : Math.min(1, elapsed / duration);
     const state = run.state === 'cancelled' || run.stopped === 'cancelled' ? 'stopped' : run.state;
-    return {fill, done, label: `${run.phase || state} - ${Math.floor(elapsed)}s of ${duration / 60} min - ${state}`};
+    return {fill, done, label: `${run.phase || state} - ${Math.floor(elapsed)}s of ${forecastMinutes(duration)} min - ${state}`};
   }
   const fill = done ? 1 : Math.min(1, Math.max(0, elapsed / timeCap,
     (generation + candidate / population) / generations, flat / plateau));
-  let label = `generation ${generation} - candidate ${candidate} of ${population} - ${Math.floor(elapsed)}s of ${timeCap / 60} min - ${flat} of ${plateau} quiet generations`;
+  let label = `generation ${generation} - candidate ${candidate} of ${population} - ${Math.floor(elapsed)}s of ${forecastMinutes(timeCap)} min - ${flat} of ${plateau} quiet generations`;
   if (run.state === 'stopped') label += ' - stopped';
   if (done) label += ' - done';
   else if (run.state === 'failed' || run.state === 'cancelled' || run.stopped === 'cancelled') {
@@ -3047,7 +3051,8 @@ class ForecastTopic {
   async openRunPicker(head) {
     const data = await api('/api/forecast-runs');
     this.resultsRunSummaries = new Map(data.runs.map(run => [run.id, run]));
-    listMenu('runs', data.runs.map(r => ({
+    // part runs are internal; they only show while one is selected
+    listMenu('runs', data.runs.filter(r => !r.part_of || r.id === this.resultsRunId).map(r => ({
       id: r.id, label: `${forecastRunName(r)} - ${r.state}`, stats: forecastRunTime(r), on: r.id === this.resultsRunId,
     })), item => {
       this.resultsRunId = item.id;
