@@ -6,7 +6,7 @@ function forecastBuildFamilySelection(family) {
 class ForecastTrainingConfig {
   constructor(ctl) {
     this.ctl = ctl;
-    this.prefix = `${ctl.topic}-models`;
+    this.prefix = `${ctl.topic}-config`;
     this.catalog = [];
     this.catalogRequest = 0;
     this.catalogSpec = null;

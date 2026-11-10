@@ -170,7 +170,7 @@ u3: keep numpy float32 and native nan handling. translate categorical type marke
 
 u5: use rolling-origin cross-validation with `h=b`, stride 1, exact origin joins and `refit=False` as the fixed-parameter, observed-history protocol. it works and is much cheaper; do not claim it reproduces refit-true forecasts. use this same mode for scoring and subsequent phases. retain true-mode measurements as the documented accuracy/cost comparison, without adding an unrequested ui control. check earliest origin history before fitting and expose missing-history/model failures; never rank silently dropped rows alongside complete candidates. use the train-only profile period and persist the effective value. cap autoarima search as above for the initial cost hint.
 
-models-page cost hints, measured elapsed seconds for one candidate on one bike series:
+family cost hints, measured elapsed seconds for one candidate on one bike series:
 
 | model/protocol | daily six-bucket total | weekly horizon-8 three-bucket total |
 |---|---:|---:|
