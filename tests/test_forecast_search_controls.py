@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from smolsmort.forecast import family_worker, runs, tab
+from smolsmort.forecast import family_worker, runs, tab, views
 from smolsmort.forecast.requests import parse_request
 from smolsmort.forecast.search import Budget
 from smolsmort.forecast.spec import Column, PrepSpec
@@ -139,3 +139,26 @@ def test_family_search_uses_controls_and_retains_old_defaults(route_context, mon
     assert family_worker.run(root, "snaive") == 0
     assert budgets[0].population == controls.get("population", Budget().population)
     assert budgets[0].max_generations == controls.get("max_generations", 2**31 - 1)
+
+
+@pytest.mark.parametrize(
+    "controls",
+    [{}, {"population": 8, "plateau": 7, "max_generations": 22, "max_concurrent_families": 1}],
+)
+def test_run_snapshot_and_list_preserve_only_saved_controls(route_context, monkeypatch, controls):
+    root, spec = route_context
+    folder = root / "saved"
+    folder.mkdir(parents=True)
+    request = make_request(spec=asdict(spec), **controls)
+    (folder / "request.json").write_text(json.dumps(request))
+    (folder / "status.json").write_text(json.dumps({"state": "done"}))
+    monkeypatch.setattr(views, "family_tiles", lambda *args, **kwargs: {})
+    monkeypatch.setattr(views, "run_metric_payload", lambda *args, **kwargs: {})
+    for snapshot in (runs.run_state(root, "saved"), runs.list_runs(root)[0]):
+        assert snapshot["time_budget_s"] == 1200
+        assert list(snapshot["families"]) == ["snaive"]
+        for key in ("population", "plateau", "max_generations", "max_concurrent_families"):
+            if key in controls:
+                assert snapshot[key] == controls[key]
+            else:
+                assert key not in snapshot
