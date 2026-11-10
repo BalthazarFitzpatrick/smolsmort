@@ -174,6 +174,7 @@ def test_error_metric_selection_updates_every_display_from_saved_predictions(tmp
         assert tile.locator("svg").count() == 0
         assert tile.locator(".forecast-tile-chart-note").inner_text() == "no curve saved"
 
+        page.locator("#regression-config-mode-warm").click()
         page.locator("#regression-run-open").click()
         page.locator("#regression-family-comparison tbody tr").first.wait_for()
         assert page.locator(f".forecast-results-header {PICKER}").count() == 1
@@ -287,6 +288,7 @@ def test_error_metric_picker_keeps_phone_document_within_viewport(tmp_path):
         page.locator("#regression-run-view-tables").click()
         assert_width()
         save_metrics(page, "phone-tables")
+        page.locator("#regression-config-mode-warm").click()
         page.locator("#regression-run-open").click()
         page.locator("#regression-family-comparison tbody tr").first.wait_for()
         assert_width()

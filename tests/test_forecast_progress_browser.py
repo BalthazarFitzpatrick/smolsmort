@@ -529,6 +529,7 @@ def test_multifamily_saved_run_named_models_and_explained_importance(tmp_path):
         artifacts = Path(__file__).resolve().parents[1] / "outputs" / "u10"
         artifacts.mkdir(parents=True, exist_ok=True)
         page.screenshot(path=artifacts / "training.png", full_page=True)
+        page.click("#regression-config-mode-warm")
         page.click("#regression-run-open")
         page.wait_for_function(
             "document.querySelectorAll('#regression-family-comparison tbody tr').length === 3"
@@ -615,6 +616,7 @@ def test_importance_default_used_saved_family_or_disabled_empty_menu(tmp_path, a
         page.select_option("#topic-flavour", "timeseries")
         show_tab(page, "regression-search")
         page.locator(f'#regression-runs-list [data-run-id="{run_id}"]').click()
+        page.click("#regression-config-mode-warm")
         page.click("#regression-run-open")
         page.locator("#regression-family-comparison tbody tr").first.wait_for()
         head = page.locator("#regression-importance-family")
@@ -650,6 +652,7 @@ def test_legacy_saved_run_defaulted_to_xgboost_without_comparison(tmp_path):
         board.locator("tbody tr").wait_for()
         family_index = board.locator("thead th").all_text_contents().index("family")
         assert board.locator("tbody tr td").nth(family_index).inner_text() == "xgboost"
+        page.click("#regression-config-mode-warm")
         page.click("#regression-run-open")
         open_info(page)
         assert page.locator("#regression-info-verdict").inner_text() == (
@@ -672,6 +675,7 @@ def test_result_and_run_banners_compared_ratios_and_kept_plain_facts(tmp_path):
         show_tab(page, "regression-search")
         page.locator(f'#regression-runs-list [data-run-id="{run_id}"]').click()
         page.locator("#regression-run-verdict").wait_for()
+        page.click("#regression-config-mode-warm")
         page.click("#regression-run-open")
         open_info(page)
         facts = [
@@ -749,6 +753,7 @@ def test_legacy_results_kept_latest_model_importance_and_table_after_delayed_res
         page.select_option("#topic-flavour", "timeseries")
         show_tab(page, "regression-search")
         page.locator(f'#regression-runs-list [data-run-id="{run_id}"]').click()
+        page.click("#regression-config-mode-warm")
         page.click("#regression-run-open")
         page.wait_for_function(
             "document.querySelector('#regression-results-table tr:nth-child(2) td:last-child')?.innerText === 'xgboost'"

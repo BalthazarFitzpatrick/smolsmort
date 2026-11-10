@@ -802,8 +802,17 @@ stores `finish_estimate_s`, `finish_reserve_s`, and `search_deadline` for inspec
 resume keeps the original run deadline and restores checkpointed candidates;
 time spent stopped still consumes the wall-clock budget.
 
-families run one at a time without a machine config (`max_concurrent_families=1`); the models
-page keeps an opt-in parallel toggle. the run resolves `nthread` once (all logical
+families run one at a time without a machine config (`max_concurrent_families=1`). the training
+tab's config box sets families, time cap, run at once, population, patience and max generations.
+its two rows of dropdowns share settings between new runs and warm starts. families use a
+multi-select menu with save and close; unavailable families show why they cannot run.
+run at once 1 means one family at a time. from this run locks families to the picked run
+and starts the other settings from its saved request. the rail's + new run button focuses
+the box in new run mode. v2 requests accept optional positive integer `population` and
+`max_generations`; omitted fields retain the existing search defaults and request identity.
+new runs send minutes as `time_budget_s`, patience as `plateau`, and run at once as
+`max_concurrent_families`. warm starts use the existing v1 `budget` with the same time cap
+in seconds. the run resolves `nthread` once (all logical
 cores when omitted), then uses it for screening and final fits. family searches
 use the machine thread setting below, or split that total among active families.
 `coordinator.json` and `result.json` record the machine, library versions,

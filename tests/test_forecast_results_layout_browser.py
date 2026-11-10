@@ -27,6 +27,7 @@ def test_results_stacked_report_and_shared_metric_picker(tmp_path, width):
             "window.sharedMetricHead = document.getElementById('regression-error-metrics')"
         )
         page.locator(f'.forecast-run-rail [data-run-id="{run_id}"]').click()
+        page.locator("#regression-config-mode-warm").click()
         page.locator("#regression-run-open").click()
         page.locator("#regression-lead-errors tbody tr").first.wait_for()
 
