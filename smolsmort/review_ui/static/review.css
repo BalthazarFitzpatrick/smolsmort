@@ -397,7 +397,7 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 
 .forecast-config-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .forecast-config-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.forecast-config-field .dropdown-head { width: 100%; }
+.forecast-config-field .dropdown-head { width: 100%; min-width: 0; max-width: 100%; }
 .forecast-config-custom { padding: 8px 10px; }
 .forecast-config-custom input { width: 80px; }
 .forecast-run-config { gap: 14px; }

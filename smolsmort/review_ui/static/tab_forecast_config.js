@@ -3,7 +3,7 @@ function forecastBuildFamilySelection(family) {
   return {name: family.name, method: 'genetic'};
 }
 
-class ForecastModels {
+class ForecastTrainingConfig {
   constructor(ctl) {
     this.ctl = ctl;
     this.prefix = `${ctl.topic}-models`;
@@ -84,9 +84,11 @@ class ForecastModels {
     const cfg = this.numbers()[key];
     const apply = value => {
       this.values()[key] = value;
+      this.plan[key] = value;
       this.syncBudget(); this.ctl.saveStored(); this.paintControls();
     };
-    const menu = forecastOpenMenu(listMenu(this.heads[key].getAttribute('aria-label'), cfg.presets.map(value => ({
+    const options = [...new Set([...cfg.presets, this.values()[key]])].sort((a, b) => a - b);
+    const menu = forecastOpenMenu(listMenu(this.heads[key].getAttribute('aria-label'), options.map(value => ({
       id: value, label: this.numberLabel(key, value), on: value === this.values()[key],
     })), item => apply(item.id)), this.heads[key]);
     const row = forecastNode('label', 'run-controls forecast-config-custom', 'custom');
@@ -261,6 +263,6 @@ class ForecastModels {
   }
 }
 
-function registerForecastModels(ctl) {
-  ctl.models = new ForecastModels(ctl);
+function registerForecastConfig(ctl) {
+  ctl.models = new ForecastTrainingConfig(ctl);
 }

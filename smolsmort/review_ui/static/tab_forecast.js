@@ -1136,32 +1136,6 @@ class ForecastInfoMenu extends Menu {
   }
 }
 
-// warm starts retain their own v1 budget controls
-function forecastStepperRow(prefix, row) {
-  return `<div class="run-controls stepper-row" data-stepper="${row.key}">
-    <span class="field-label">${row.label}</span>
-    <span class="spacer"></span>
-    <span class="field-value" id="${prefix}-${row.key}">${row.value}</span>
-    <div class="toggle" data-step="-${row.step}">-</div>
-    <div class="toggle" data-step="${row.step}">+</div>
-  </div>`;
-}
-
-function forecastWireSteppers(panel, prefix, rows, values, onChange) {
-  panel.querySelectorAll(`[data-stepper]`).forEach(row => {
-    const key = row.dataset.stepper;
-    const spec = rows.find(r => r.key === key);
-    if (!spec) return;
-    row.querySelectorAll('[data-step]').forEach(btn => {
-      btn.onclick = () => {
-        values[key] = Math.max(spec.min, Math.min(spec.max, values[key] + Number(btn.dataset.step)));
-        setText(`${prefix}-${key}`, String(values[key]));
-        onChange();
-      };
-    });
-  });
-}
-
 function forecastMountPlan(rail) {
   const section = forecastNode('details', 'forecast-plan');
   section.append(forecastNode('summary', 'field-label', 'search plan'));
@@ -2370,9 +2344,7 @@ class ForecastTopic {
           <div class="field-label" id="${this.topic}-run-stop"></div>
           <div class="field-value" id="${this.topic}-run-stats"></div>
         </div>
-        <div class="panel-inline forecast-pane forecast-run-config">
-
-        </div>
+        <div class="panel-inline forecast-pane forecast-run-config"></div>
         </div>
         <div class="run-controls hidden" id="${this.topic}-run-view" role="group" aria-label="candidate view">
           <button type="button" class="toggle on" id="${this.topic}-run-view-tiles" aria-pressed="true">tiles</button>
@@ -3774,7 +3746,7 @@ window.addEventListener('smolsmort-topic', event => {
   const ctl = new ForecastTopic(topic, topic);
   forecastTopics.set(topic, ctl);
   smolsmortTabs.register({id: `${topic}-data`, label: 'data', topic, mount: p => ctl.mountData(p)});
-  registerForecastModels(ctl);
+  registerForecastConfig(ctl);
   smolsmortTabs.register({id: `${topic}-search`, label: 'training', topic, mount: p => ctl.mountSearch(p)});
   smolsmortTabs.register({id: `${topic}-results`, label: 'results', topic, mount: p => ctl.mountResults(p)});
   const flavours = topic === 'regression'
