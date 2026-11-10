@@ -442,8 +442,11 @@ one outcome, anchored at its start date.
   from its anchor to the export date.
 - *time series* - the table is aggregated to one row per step and per combination of dimensions (a
   sum is zero-filled inside a series' own span; mean, median, min and max leave gaps missing),
-  and forecast over a horizon. set the export date: the step holding it is still running, so history
-  ends before it and later rows - scheduled, not happened - are dropped and counted.
+  and forecast over a horizon. use the date range's `to` bound to exclude the current unfinished
+  period: choose the last day of the previous completed period. leaving `to` empty keeps later rows.
+
+saved requests may still set the optional top-level `as_of` spec field. when present, it drops
+the step holding that date and all later rows. the ui no longer sets this field.
 
 **on the page.** pick the topic in the first row, then the flavour beside it (regression offers
 *entity* and *time series*; classification offers entity). three tabs follow
@@ -458,7 +461,7 @@ the work:
   chooses dimensions. each panel keeps a draft: `save` keeps it, `close` or dismissal discards it.
   scaffold rows show `[n]` distinct values; the live product shows combinations, such as
   `4 x 3 = 12 series`. heads and field lists are 260px wide. the one-line readout below the heads
-  shows saved picks. the export date and optional source filter still apply. `prepare` shows
+  shows saved picks. the date range and optional source filters still apply. `prepare` shows
   what prep did and the sql. saved timeseries picks and entity roles stay separate.
   prep aggregates every selected target; the existing search and results model the first target
   in source-column order.
