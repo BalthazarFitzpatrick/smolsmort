@@ -1360,7 +1360,6 @@ class ForecastTopic {
     this.seriesSetup = null; // persisted browser state keeps its existing key
     this.step = 'week';
     this.horizon = 8;
-    this.asOf = todayIso();
     this.dateRange = forecastEmptyRange();
     this.dataFilters = [];
     this.legacyWhere = '';
@@ -1511,7 +1510,9 @@ class ForecastTopic {
       const raw = localStorage.getItem(this.storageKey);
       if (!raw) return;
       const saved = JSON.parse(raw);
-      Object.assign(this, saved.state || {});
+      const state = {...saved.state};
+      delete state.asOf;
+      Object.assign(this, state);
       if (!saved.state?.dateRange) this.importWhere(saved.state?.where);
       // utf-8 was the old default, and auto still picks it for any file that decodes as utf-8
       if (this.encoding === 'utf-8') this.encoding = 'auto';
@@ -1523,7 +1524,7 @@ class ForecastTopic {
       const state = {
         source: this.source, encoding: this.encoding, columnState: this.columnState,
         seriesSetup: this.seriesSetup,
-        step: this.step, horizon: this.horizon, asOf: this.asOf,
+        step: this.step, horizon: this.horizon,
         dateRange: this.dateRange, dataFilters: this.dataFilters, legacyWhere: this.legacyWhere,
         predictWhere: this.predictWhere, censorOn: this.censorOn, censorUnit: this.censorUnit,
         censorAsOf: this.censorAsOf,
@@ -1862,10 +1863,6 @@ class ForecastTopic {
         <div id="${this.topic}-timeseries-row">
           <div class="forecast-setup-heads" id="${this.topic}-setup-heads"></div>
           <div class="stat forecast-setup-readout" id="${this.topic}-setup-readout" aria-live="polite"></div>
-          <div class="run-controls">
-            <span class="field-label">as of</span>
-            <input type="date" id="${this.topic}-asof" class="text-field">
-          </div>
         </div>
         <div class="field-label" id="${this.topic}-entity-heading">entity settings</div>
         <div id="${this.topic}-entity-row">
@@ -1884,7 +1881,7 @@ class ForecastTopic {
       </div>`;
     // typed text goes in through the property, never the markup: a sql filter carries quotes
     const typed = {
-      'censor-asof': this.censorAsOf, 'data-encoding': this.encoding, asof: this.asOf,
+      'censor-asof': this.censorAsOf, 'data-encoding': this.encoding,
     };
     for (const [suffix, value] of Object.entries(typed)) {
       const input = panel.querySelector(`#${this.topic}-${suffix}`);
@@ -1924,8 +1921,6 @@ class ForecastTopic {
       this.saveStored();
       if (this.source) this.loadColumns();
     };
-    const asOf = document.getElementById(`${this.topic}-asof`);
-    if (asOf) asOf.onchange = () => { this.asOf = asOf.value; this.saveStored(); };
     if (this.task === 'regression') {
       const toggle = document.getElementById(`${this.topic}-censor-toggle`);
       toggle.onclick = () => {
@@ -2277,7 +2272,6 @@ class ForecastTopic {
       censor: (!timeseries && this.task === 'regression' && this.censorOn && anchorEntry) ? {
         anchor: anchorEntry.name, unit: this.censorUnit, as_of: this.censorAsOf || null,
       } : null,
-      as_of: timeseries ? (this.asOf || null) : null,
     };
   }
 

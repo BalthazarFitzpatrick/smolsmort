@@ -2085,6 +2085,45 @@ def prepare_data_filter_spec(page, preparations):
     return preparations[-1]
 
 
+def test_timeseries_data_omitted_as_of_control_and_spec(tmp_path):
+    with session(tmp_path, numeric=True) as (page, _):
+        _, preparations = mock_prepared_searches(page)
+        switch_to_regression(page)
+        page.select_option("#topic-flavour", "timeseries")
+        choose_forecast_source(page, "bike_daily.csv")
+        assert page.locator("#regression-asof").count() == 0
+        assert page.locator("#regression-censor-asof").count() == 1
+        page.click("#regression-setup-predict")
+        page.locator('.forecast-setup-menu .menu-item[data-id="cnt"]').click()
+        page.locator('.forecast-setup-menu .menu-buttons [data-id="save"]').click()
+        spec = prepare_data_filter_spec(page, preparations)
+        assert spec["mode"] == "timeseries"
+        assert "as_of" not in spec
+
+
+def test_timeseries_legacy_as_of_state_loaded_without_cutoff(tmp_path):
+    with session(tmp_path, numeric=True) as (page, _):
+        _, preparations = mock_prepared_searches(page)
+        page.evaluate(
+            "state => localStorage.setItem('smolsmort:forecast:regression', JSON.stringify({state}))",
+            {"asOf": "2020-01-01", "horizon": 5},
+        )
+        page.reload()
+        switch_to_regression(page)
+        page.select_option("#topic-flavour", "timeseries")
+        choose_forecast_source(page, "bike_daily.csv")
+        page.click("#regression-setup-predict")
+        page.locator('.forecast-setup-menu .menu-item[data-id="cnt"]').click()
+        page.locator('.forecast-setup-menu .menu-buttons [data-id="save"]').click()
+        spec = prepare_data_filter_spec(page, preparations)
+        assert spec["horizon"] == 5
+        assert "as_of" not in spec
+        state = page.evaluate(
+            "JSON.parse(localStorage.getItem('smolsmort:forecast:regression')).state"
+        )
+        assert "asOf" not in state
+
+
 def write_data_filter_source(tmp_path):
     (tmp_path / "forecast_root/filter_rows.csv").write_text(
         "need_by_date,region,amount\n"
