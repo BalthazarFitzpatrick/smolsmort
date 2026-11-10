@@ -18,69 +18,172 @@ class ForecastModels {
         ? [...new Set(saved.families.filter(name => typeof name === 'string'))] : ['xgboost'],
       minutes: Number.isFinite(saved.minutes) && saved.minutes >= 1 && saved.minutes <= 1440
         ? saved.minutes : 20,
-      // parallel is the default; only an explicit off is remembered as off
-      parallel: saved.parallel === true,
-      atOnce: Number.isInteger(saved.atOnce) && saved.atOnce >= 1 ? saved.atOnce : 4,
+      atOnce: saved.parallel === false ? 1 : Number.isInteger(saved.atOnce) && saved.atOnce >= 1 ? saved.atOnce : 4,
+      population: saved.population || 16,
+      patience: saved.patience || 5,
+      generations: saved.generations || 60,
     };
   }
 
   mount(panel) {
     this.panel = panel;
+    this.prefix = `${this.ctl.topic}-config`;
+    this.mode = 'new';
+    this.heads = {};
+    panel.id = this.prefix;
+    panel.tabIndex = -1;
+    const field = (key, label) => `<div class="forecast-config-field"><span class="field-label">${label}</span><span id="${this.prefix}-${key}-slot"></span></div>`;
     panel.innerHTML = `
-      <div class="panel-inline forecast-pane forecast-models">
-        <div class="run-controls">
-          <span class="field-label">families</span>
-          <button type="button" class="toggle" id="${this.prefix}-all-suitable">all suitable</button>
-        </div>
-        <div class="forecast-pane forecast-model-families" id="${this.prefix}-families"></div>
-        <div class="run-controls">
-          <label class="field-label" for="${this.prefix}-minutes">duration (minutes)</label>
-          <input class="text-field" type="number" id="${this.prefix}-minutes" min="1" max="1440" step="any" required>
-        </div>
-        <div class="run-controls">
-          <button type="button" class="toggle" role="checkbox" id="${this.prefix}-parallel">run families in parallel</button>
-          <label class="field-label" for="${this.prefix}-at-once">at once</label>
-          <input class="text-field" type="number" id="${this.prefix}-at-once" min="1" step="1" required>
-        </div>
-        <div class="run-controls">
-          <button type="button" class="toggle adds" id="${this.prefix}-start">start</button>
-          <span class="stat" id="${this.prefix}-summary"></span>
-        </div>
-        <div class="stat" id="${this.prefix}-status" aria-live="polite"></div>
-      </div>`;
-    this.minutes = document.getElementById(`${this.prefix}-minutes`);
-    this.atOnce = document.getElementById(`${this.prefix}-at-once`);
-    this.parallel = document.getElementById(`${this.prefix}-parallel`);
+      <div class="run-controls" role="group" aria-label="mode">
+        <button class="toggle" id="${this.prefix}-mode-new">new run</button>
+        <button class="toggle" id="${this.prefix}-mode-warm">from this run</button>
+      </div>
+      <div class="forecast-config-row">${field('families', 'families')}${field('minutes', 'time cap')}${field('atOnce', 'run at once')}</div>
+      <div class="forecast-config-row">${field('population', 'population')}${field('patience', 'patience')}${field('generations', 'max generations')}</div>
+      <div class="run-controls" id="${this.prefix}-new-actions"><button class="toggle adds" id="${this.prefix}-start">start run</button><span class="stat" id="${this.prefix}-summary"></span></div>
+      <div class="run-controls hidden" id="${this.ctl.topic}-run-actions">
+        <button class="toggle" id="${this.ctl.topic}-run-warm">warm start</button>
+        <button class="toggle" id="${this.ctl.topic}-run-refit">refit</button>
+        <button class="toggle" id="${this.ctl.topic}-run-open">open</button>
+        <span class="stat">families come from the picked run</span>
+      </div><div class="stat" id="${this.prefix}-status" aria-live="polite"></div>`;
+    for (const key of ['families', ...Object.keys(this.numbers())]) {
+      const head = forecastNode('button', 'toggle dropdown-head');
+      head.type = 'button'; head.id = `${this.prefix}-${key}`;
+      head.setAttribute('aria-expanded', 'false');
+      head.setAttribute('aria-label', key === 'atOnce' ? 'run at once' : key);
+      head.append(forecastNode('span'));
+      head.onclick = () => key === 'families' ? this.openFamilies() : this.openNumber(key);
+      document.getElementById(`${this.prefix}-${key}-slot`).append(head);
+      this.heads[key] = head;
+    }
+    for (const mode of ['new', 'warm']) document.getElementById(`${this.prefix}-mode-${mode}`).onclick = () => this.setMode(mode);
     this.start = document.getElementById(`${this.prefix}-start`);
-    this.preset = document.getElementById(`${this.prefix}-all-suitable`);
-    this.minutes.value = this.plan.minutes;
-    this.minutes.oninput = () => {
-      if (this.minutes.checkValidity()) {
-        this.plan.minutes = this.minutes.valueAsNumber;
-        this.ctl.saveStored();
-      }
-      this.paintStart();
-    };
-    this.atOnce.oninput = () => {
-      if (this.atOnce.checkValidity()) {
-        this.plan.atOnce = this.atOnce.valueAsNumber;
-        this.ctl.saveStored();
-      }
-      this.paintStart();
-    };
-    this.parallel.onclick = () => {
-      this.plan.parallel = !this.plan.parallel;
-      this.ctl.saveStored();
-      this.paintControls();
-    };
-    this.preset.onclick = () => {
-      this.plan.families = this.catalog.filter(family => this.canSelect(family)).map(family => family.name);
-      this.ctl.saveStored();
-      this.paintFamilies();
-    };
     this.start.onclick = () => this.startRun();
     this.paintControls();
-    return {enter: () => this.enter()};
+  }
+
+  numbers() {
+    return {
+      minutes: {presets: [5,10,20,30,60,120,240,480,1440], min: 1, max: 1440},
+      atOnce: {presets: [1,2,4,8,16], min: 1, max: 16},
+      population: {presets: [10,20,40,80,160,320], min: 2, max: 400},
+      patience: {presets: [3,5,8,12,20,40], min: 1, max: 100},
+      generations: {presets: [20,40,60,100,200,500], min: 1, max: 500},
+    };
+  }
+
+  values() { return this.mode === 'warm' ? this.warmValues : this.plan; }
+
+  numberLabel(key, value) {
+    return key === 'minutes' ? `${value} min` : key === 'atOnce'
+      ? value === 1 ? 'one at a time' : `${value} at once` : String(value);
+  }
+
+  openNumber(key) {
+    const cfg = this.numbers()[key];
+    const apply = value => {
+      this.values()[key] = value;
+      this.syncBudget(); this.ctl.saveStored(); this.paintControls();
+    };
+    const menu = forecastOpenMenu(listMenu(this.heads[key].getAttribute('aria-label'), cfg.presets.map(value => ({
+      id: value, label: this.numberLabel(key, value), on: value === this.values()[key],
+    })), item => apply(item.id)), this.heads[key]);
+    const row = forecastNode('label', 'run-controls forecast-config-custom', 'custom');
+    const input = forecastNode('input', 'text-field');
+    input.type = 'number'; input.min = cfg.min; input.max = cfg.max;
+    input.setAttribute('aria-label', 'custom value');
+    input.onkeydown = event => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault(); event.stopPropagation();
+      if (!input.value || !input.checkValidity()) return;
+      apply(Math.round(input.valueAsNumber)); menu.close();
+    };
+    row.append(input); menu.el.append(row);
+  }
+
+  openFamilies() {
+    if (this.mode === 'warm') return;
+    const draft = new Set(this.plan.families);
+    const sections = () => [{kind: 'list', multi: true,
+      items: [{id: 'all-suitable', label: 'all suitable', on: this.catalog.filter(f => this.canSelect(f)).every(f => draft.has(f.name))},
+        ...this.catalog.map(f => ({id: f.name, label: f.label || f.name, on: draft.has(f.name),
+          disabled: !this.canSelect(f), stats: this.canSelect(f) ? '' : f.reason || f.install_command || 'unavailable'}))],
+      onPick: (item, on, menu) => {
+        if (item.id === 'all-suitable') this.catalog.filter(f => this.canSelect(f)).forEach(f => draft.add(f.name));
+        else if (this.catalog.some(f => f.name === item.id && this.canSelect(f))) {
+          if (on) draft.add(item.id); else draft.delete(item.id);
+        }
+        menu.refresh(sections());
+      },
+    }, {kind: 'buttons', buttons: [
+      {id: 'save', label: 'save', tone: 'adds', primary: true, onClick: menu => {
+        this.plan.families = [...draft]; this.ctl.saveStored(); menu.close(); this.paintControls();
+      }},
+      {id: 'close', label: 'close', onClick: menu => menu.close()},
+    ]}];
+    forecastOpenMenu(new Menu({title: 'model families', persistent: true, sections: sections()}), this.heads.families);
+  }
+
+  setMode(mode) {
+    const run = this.ctl.runCache.get(this.ctl.selectedRunId);
+    if (mode === 'warm' && !run) return;
+    this.mode = mode;
+    if (mode === 'warm') { this.loadRun(run); this.loadedRun = this.ctl.selectedRunId; }
+    this.paintControls();
+  }
+
+  loadRun(run) {
+    const budget = run.budget || {};
+    this.warmValues = {
+      minutes: (run.time_budget_s || budget.time_cap || 1200) / 60,
+      atOnce: run.max_concurrent_families || 1,
+      population: run.population || budget.population || 16,
+      patience: run.plateau || budget.plateau || 5,
+      generations: run.max_generations || budget.max_generations || 60,
+    };
+    this.syncBudget();
+  }
+
+  syncBudget() {
+    const values = this.values();
+    this.ctl.searchValues = {population: values.population, plateau: values.patience,
+      generations: values.generations, minutes: values.minutes};
+  }
+
+  paintFamilies() { this.paintControls(); }
+
+  paintControls() {
+    if (!this.heads) return;
+    const run = this.ctl.runCache.get(this.ctl.selectedRunId);
+    if (this.mode === 'warm' && !run) this.mode = 'new';
+    if (this.mode === 'warm' && this.loadedRun !== this.ctl.selectedRunId) {
+      this.loadRun(run); this.loadedRun = this.ctl.selectedRunId;
+    }
+    const warm = this.mode === 'warm';
+    const runFamilies = Array.isArray(run?.families)
+      ? run.families.map(f => typeof f === 'string' ? f : f.name) : Object.keys(run?.families || {});
+    const families = warm ? runFamilies : this.selectedFamilies().map(f => f.name);
+    if (warm && !families.length) families.push('xgboost');
+    setHead(this.heads.families, families.length ? families.join(' + ') : 'none picked');
+    this.heads.families.disabled = warm;
+    for (const key of Object.keys(this.numbers())) setHead(this.heads[key], this.numberLabel(key, this.values()[key]));
+    for (const mode of ['new', 'warm']) {
+      const button = document.getElementById(`${this.prefix}-mode-${mode}`);
+      button.classList.toggle('on', mode === this.mode);
+      button.setAttribute('aria-pressed', String(mode === this.mode));
+      button.disabled = mode === 'warm' && !run;
+    }
+    document.getElementById(`${this.prefix}-new-actions`).classList.toggle('hidden', warm);
+    document.getElementById(`${this.ctl.topic}-run-actions`).classList.toggle('hidden', !warm);
+    this.paintStart();
+  }
+
+  paintStart() {
+    if (!this.start) return;
+    const count = this.selectedFamilies().length;
+    this.start.disabled = this.loading || this.starting || !count;
+    setText(`${this.prefix}-summary`, count ? `${count} ${count === 1 ? 'family' : 'families'} · ${this.plan.minutes} min` : 'pick at least one family');
   }
 
   say(text) { setText(`${this.prefix}-status`, text); }
@@ -127,59 +230,6 @@ class ForecastModels {
     }
   }
 
-  paintFamilies() {
-    const box = document.getElementById(`${this.prefix}-families`);
-    box.replaceChildren();
-    this.catalog.forEach(family => {
-      const enabled = this.canSelect(family);
-      const selected = enabled && this.plan.families.includes(family.name);
-      const row = forecastNode('div', 'run-controls forecast-model-family');
-      row.dataset.family = family.name;
-      const check = forecastNode('button', `toggle${selected ? ' on' : ''}${enabled ? '' : ' disabled'}`, family.label);
-      check.type = 'button';
-      check.setAttribute('role', 'checkbox');
-      check.setAttribute('aria-checked', String(selected));
-      check.disabled = !enabled;
-      check.onclick = () => {
-        this.plan.families = selected ? this.plan.families.filter(name => name !== family.name)
-          : [...this.plan.families, family.name];
-        this.ctl.saveStored();
-        this.paintFamilies();
-        box.querySelector(`[data-family="${family.name}"] button`).focus();
-      };
-      row.append(check, forecastNode('span', 'field-value', family.available ? 'library ready' : 'missing library'));
-      const reason = family.available ? family.reason : family.install_command || family.reason;
-      const note = forecastNode('span', 'stat forecast-model-reason', reason || '');
-      note.title = family.reason || reason || '';
-      note.id = `${this.prefix}-${family.name}-reason`;
-      check.setAttribute('aria-describedby', note.id);
-      row.append(note);
-      row.classList.toggle('unavailable', !family.available);
-      box.append(row);
-    });
-    this.paintControls();
-  }
-
-  paintControls() {
-    const count = this.selectedFamilies().length;
-    this.atOnce.max = Math.max(1, count);
-    this.atOnce.value = Math.min(this.plan.atOnce, Math.max(1, count));
-    this.atOnce.disabled = !this.plan.parallel;
-    this.parallel.classList.toggle('on', this.plan.parallel);
-    this.parallel.setAttribute('aria-checked', String(this.plan.parallel));
-    this.preset.disabled = this.loading || !this.catalog.some(family => this.canSelect(family));
-    this.preset.classList.toggle('disabled', this.preset.disabled);
-    this.paintStart();
-  }
-
-  paintStart() {
-    const count = this.selectedFamilies().length;
-    this.start.disabled = this.loading || this.starting || !count
-      || !this.minutes.checkValidity() || !this.atOnce.checkValidity();
-    this.start.classList.toggle('disabled', this.start.disabled);
-    setText(`${this.prefix}-summary`, `${count} ${count === 1 ? 'family' : 'families'} selected`);
-  }
-
   async startRun() {
     if (this.start.disabled || this.starting) return;
     this.starting = true;
@@ -187,12 +237,14 @@ class ForecastModels {
     this.say('starting...');
     try {
       const spec = this.ctl.currentSpec();
-      if (JSON.stringify(spec) !== this.catalogSpec) throw new Error('data changed - reopen models to check families');
+      if (JSON.stringify(spec) !== this.catalogSpec) throw new Error('data changed - reopen training to check families');
       const payload = {
         version: 2, spec,
         families: this.selectedFamilies().map(forecastBuildFamilySelection),
-        time_budget_s: this.minutes.valueAsNumber * 60,
-        max_concurrent_families: this.plan.parallel ? this.atOnce.valueAsNumber : 1,
+        time_budget_s: this.plan.minutes * 60,
+        max_concurrent_families: this.plan.atOnce,
+        plateau: this.plan.patience, population: this.plan.population,
+        max_generations: this.plan.generations,
       };
       this.ctl.saveStored();
       const res = await api('/api/forecast-runs', payload);
@@ -211,6 +263,4 @@ class ForecastModels {
 
 function registerForecastModels(ctl) {
   ctl.models = new ForecastModels(ctl);
-  smolsmortTabs.register({id: `${ctl.topic}-models`, label: 'models', topic: ctl.topic,
-    mount: panel => ctl.models.mount(panel)});
 }
