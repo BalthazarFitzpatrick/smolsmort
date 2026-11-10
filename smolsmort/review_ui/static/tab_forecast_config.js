@@ -137,6 +137,7 @@ class ForecastTrainingConfig {
 
   loadRun(run) {
     const budget = run.budget || {};
+    this.loadedRunConfig = this.runConfigSignature(run);
     this.warmValues = {
       minutes: (run.time_budget_s || budget.time_cap || 1200) / 60,
       atOnce: run.max_concurrent_families || 1,
@@ -145,6 +146,11 @@ class ForecastTrainingConfig {
       generations: run.max_generations || budget.max_generations || 60,
     };
     this.syncBudget();
+  }
+
+  runConfigSignature(run) {
+    return JSON.stringify([run.budget, run.time_budget_s, run.max_concurrent_families,
+      run.population, run.plateau, run.max_generations]);
   }
 
   syncBudget() {
@@ -159,7 +165,8 @@ class ForecastTrainingConfig {
     if (!this.heads) return;
     const run = this.ctl.runCache.get(this.ctl.selectedRunId);
     if (this.mode === 'warm' && !run) this.mode = 'new';
-    if (this.mode === 'warm' && this.loadedRun !== this.ctl.selectedRunId) {
+    if (this.mode === 'warm' && (this.loadedRun !== this.ctl.selectedRunId
+        || this.loadedRunConfig !== this.runConfigSignature(run))) {
       this.loadRun(run); this.loadedRun = this.ctl.selectedRunId;
     }
     const warm = this.mode === 'warm';
