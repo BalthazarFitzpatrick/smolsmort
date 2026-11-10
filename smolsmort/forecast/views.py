@@ -438,6 +438,11 @@ def multi_run_state(run_dir, request, status, *, since_generation=None, since_ev
         "task": request["spec"].get("task"),
         "winner_family": winner,
         "time_budget_s": request["time_budget_s"],
+        **{
+            key: request[key]
+            for key in ("population", "plateau", "max_generations", "max_concurrent_families")
+            if key in request
+        },
         "budget": {},
         "generation_count": len(generations),
         "generation": len(snapshot["curves"]) - 1,

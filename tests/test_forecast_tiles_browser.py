@@ -260,6 +260,7 @@ def test_native_loss_curves_and_results_run_names(tmp_path):
         run_id = make_saved_tiles(tmp_path / "forecast_root")
         open_tiles(page)
         name = page.locator(f'.forecast-run-row[data-run-id="{run_id}"] .name').inner_text()
+        page.click("#regression-config-mode-warm")
         page.click("#regression-run-open")
         head = page.locator("#regression-results-run")
         page.wait_for_function(
@@ -500,6 +501,7 @@ def test_results_picker_saved_ensemble_has_one_selected_option(tmp_path, tile_st
     with session(tmp_path, port=0) as (page, _base):
         write_multifamily_run(tmp_path / "forecast_root")
         open_tiles(page, contract=True)
+        page.click("#regression-config-mode-warm")
         page.click("#regression-run-open")
         page.locator("#regression-family-comparison tbody tr").first.wait_for()
         page.evaluate(
@@ -555,6 +557,7 @@ def test_results_picker_lists_and_selects_every_saved_tile(tmp_path, better_ense
                 write_table(run / f"families/{name}/{split}.parquet", table)
         tiles = read_tiles(run)
         open_tiles(page, contract=True)
+        page.click("#regression-config-mode-warm")
         page.click("#regression-run-open")
         page.locator("#regression-family-comparison tbody tr").first.wait_for()
         assert page.locator("#regression-family-comparison tbody tr").count() == 3
@@ -1408,7 +1411,7 @@ def test_run_panels_fit_config_and_keep_layout_across_views(tmp_path):
         make_saved_tiles(tmp_path / "forecast_root")
         open_tiles(page)
         progress = page.locator(".forecast-run-progress-panel:has(#regression-run-title)")
-        config = page.locator(".forecast-run-config:has(#regression-warm-budget)")
+        config = page.locator("#regression-config")
         config.wait_for()
         family_table = page.locator("#regression-run-tables #regression-family-progress")
         assert not family_table.is_visible()
@@ -1419,12 +1422,9 @@ def test_run_panels_fit_config_and_keep_layout_across_views(tmp_path):
         config_box = config.bounding_box()
         assert abs(progress_box["y"] - config_box["y"]) <= 2
         assert config_box["x"] >= progress_box["x"] + progress_box["width"]
-        assert config_box["width"] < 420
-        assert progress_box["width"] > config_box["width"]
-        for row in config.locator(".stepper-row").all():
-            label = row.locator(".field-label").bounding_box()
-            minus = row.locator('[data-step^="-"]').bounding_box()
-            assert 0 <= minus["x"] - label["x"] - label["width"] < 120
+        heads = config.locator(".dropdown-head")
+        assert heads.count() == 6
+        assert len({round(head.bounding_box()["y"]) for head in heads.all()}) == 2
         for view in ("tables", "tiles"):
             page.locator(f"#regression-run-view-{view}").click()
             assert family_table.is_visible() == (view == "tables")
@@ -1441,14 +1441,11 @@ def test_run_panels_fit_config_and_keep_layout_across_views(tmp_path):
         assert config_box["y"] >= progress_box["y"] + progress_box["height"]
         assert config_box["x"] == pytest.approx(progress_box["x"], abs=2)
         page.evaluate("forecastTopics.get('regression').paintRunDetail(null)")
-        assert not page.locator("#regression-warm-budget").is_visible()
         assert not page.locator("#regression-run-actions").is_visible()
-        assert not config.is_visible()
+        assert config.is_visible()
+        assert page.locator("#regression-config-mode-new").get_attribute("aria-pressed") == "true"
         page.set_viewport_size({"width": 1600, "height": 1000})
-        assert progress.bounding_box()["width"] == pytest.approx(
-            page.locator(".forecast-run-panels:has(#regression-run-title)").bounding_box()["width"],
-            abs=2,
-        )
+        assert config.bounding_box()["x"] >= progress.bounding_box()["x"]
 
 
 def test_tiles_read_saved_winner_artifacts_and_kept_tables(tmp_path):

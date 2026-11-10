@@ -192,6 +192,7 @@ def open_horizon_run(page, run_id: str) -> None:
     page.select_option("#topic-flavour", "timeseries")
     show_tab(page, "regression-search")
     page.locator(f'.forecast-run-rail [data-run-id="{run_id}"]').click()
+    page.locator("#regression-config-mode-warm").click()
     page.locator("#regression-run-open").click()
     page.locator("#regression-family-comparison tbody tr").first.wait_for()
 
@@ -1328,6 +1329,7 @@ def test_results_info_recovered_initial_view_failure_on_poll(tmp_path):
         page.select_option("#topic-flavour", "timeseries")
         show_tab(page, "regression-search")
         page.locator(f'.forecast-run-rail [data-run-id="{run_id}"]').click()
+        page.locator("#regression-config-mode-warm").click()
         page.locator("#regression-run-open").click()
         page.wait_for_function(
             "document.getElementById('regression-info').innerText === 'info · 1 note'"

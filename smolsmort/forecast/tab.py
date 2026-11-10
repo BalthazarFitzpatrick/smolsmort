@@ -427,6 +427,11 @@ def _start(app, payload: dict) -> dict:
                 "holdout": previous.get("holdout", "block"),
                 "horizon_mode": previous.get("horizon_mode", "mixed"),
                 "nthread": budget.get("nthread", previous.get("nthread")),
+                **{
+                    key: budget[key]
+                    for key in ("population", "plateau", "max_generations")
+                    if key in budget
+                },
             }
             multi = True
         elif not multi:
@@ -463,6 +468,9 @@ def _start(app, payload: dict) -> dict:
                 "prune_sigma",
                 "ensemble",
                 "nthread",
+                "plateau",
+                "population",
+                "max_generations",
             )
             if key in payload
         }

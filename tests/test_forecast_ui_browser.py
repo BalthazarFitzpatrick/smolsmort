@@ -1,5 +1,5 @@
 """headless chromium against the real review server, over the synthetic row fixture: the
-regression topic end to end (data -> models -> training -> results). run with:
+regression topic end to end (data -> training -> results). run with:
 uv run --with playwright pytest -q tests/test_forecast_ui_browser.py"""
 
 from __future__ import annotations
@@ -240,17 +240,25 @@ def mock_model_catalog(page: Page) -> None:
     )
 
 
-def start_models(page: Page, topic: str = TOPIC) -> None:
+def set_config_number(page: Page, key: str, value: int | float, topic: str = TOPIC) -> None:
+    page.click(f"#{topic}-config-{key}")
+    field = page.locator('.menu-panel input[aria-label="custom value"]')
+    field.fill(str(value))
+    field.press("Enter")
+
+
+def start_training(page: Page, topic: str = TOPIC) -> None:
     mock_model_catalog(page)
-    show_tab(page, f"{topic}-models")
-    page.click(f"#{topic}-models-start")
+    show_tab(page, f"{topic}-search")
+    page.click(f"#{topic}-new-search")
+    page.click(f"#{topic}-config-start")
 
 
 def run_search(page: Page) -> None:
-    show_tab(page, "regression-models")
-    page.locator(f"#{TOPIC}-models-minutes").fill("1")
-    page.locator(f"#{TOPIC}-models-minutes").blur()
-    page.click(f"#{TOPIC}-models-start")
+    show_tab(page, "regression-search")
+    page.click(f"#{TOPIC}-new-search")
+    set_config_number(page, "minutes", 1)
+    page.click(f"#{TOPIC}-config-start")
     page.wait_for_function(
         f'/· (done|failed)$/.test(document.getElementById("{TOPIC}-run-title").innerText)',
         timeout=180000,
@@ -542,6 +550,7 @@ def test_forecast_regression_entity_flow(tmp_path):
             run_search(page)
         assert started.value.json()["prepared"]["reused"] is True
 
+        page.click(f"#{TOPIC}-config-mode-warm")
         page.click(f"#{TOPIC}-run-open")
         page.wait_for_timeout(300)
 
@@ -859,7 +868,7 @@ def test_search_charts_accumulate_validation_generations_and_reset(tmp_path, top
         )
         assert not progress.is_visible()
         assert not loss.is_visible()
-        start_models(page, topic)
+        start_training(page, topic)
         page.click(f"#{topic}-run-view-tables")
         page.wait_for_function(
             f'document.getElementById("{topic}-search-status").innerText === "running"'
@@ -977,7 +986,7 @@ def test_search_charts_accumulate_validation_generations_and_reset(tmp_path, top
         assert loss.is_visible()
         snapshot.update(count=0, state="running")
         page.click(f"#{topic}-new-search")
-        start_models(page, topic)
+        start_training(page, topic)
         page.click(f"#{topic}-run-view-tables")
         page.wait_for_function(
             f'document.getElementById("{topic}-search-status").innerText === "running"'
@@ -1036,11 +1045,11 @@ def test_generation_loss_ignores_response_from_previous_run(tmp_path):
         )
         show_tab(page, "regression-search")
         with page.expect_request("**/api/forecast-run?**"):
-            start_models(page)
+            start_training(page)
         page.wait_for_timeout(100)
         assert delayed
         page.click(f"#{TOPIC}-new-search")
-        start_models(page)
+        start_training(page)
         page.click(f"#{TOPIC}-run-view-tables")
         page.wait_for_function(
             f'document.getElementById("{TOPIC}-search-status").innerText === "running"'
@@ -1109,7 +1118,7 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
             f'document.getElementById("{topic}-data-status").innerText.startsWith("prepared")'
         )
         show_tab(page, f"{topic}-search")
-        start_models(page, topic)
+        start_training(page, topic)
         page.click(f"#{topic}-run-view-tables")
         table = page.locator(f"#{topic}-leaderboard-table")
         table.locator("tbody tr").first.wait_for()
@@ -1194,7 +1203,7 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
             recorded + [{"note": "failed: too few usable rows"}] + [recorded[-1]] * 12
         )
         page.click(f"#{topic}-new-search")
-        start_models(page, topic)
+        start_training(page, topic)
         page.click(f"#{topic}-run-view-tables")
         table.locator("tbody tr").nth(9).wait_for()
         assert table.locator("th").all_text_contents() == headers
@@ -1208,7 +1217,7 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
 
         snapshot["rows"] = [{"fitness": 0, "metrics": {metric: 0}}, {"fitness": 1}, {}]
         page.click(f"#{topic}-new-search")
-        start_models(page, topic)
+        start_training(page, topic)
         page.click(f"#{topic}-run-view-tables")
         page.wait_for_function(
             "id => document.getElementById(id).querySelectorAll('tbody tr').length === 3",
@@ -1221,14 +1230,14 @@ def test_search_leaderboard_explains_recorded_recipes(tmp_path, topic, metric):
         assert table.locator("th").all_text_contents() == headers
         snapshot["rows"] = [{"fitness": 1}, {"fitness": 1.0002}]
         page.click(f"#{topic}-new-search")
-        start_models(page, topic)
+        start_training(page, topic)
         page.click(f"#{topic}-run-view-tables")
         table.locator(
             'td:text-is("100.0%")' if topic == "regression" else 'td:text-is("1")'
         ).first.wait_for()
         snapshot["rows"] = []
         page.click(f"#{topic}-new-search")
-        start_models(page, topic)
+        start_training(page, topic)
         page.click(f"#{topic}-run-view-tables")
         page.wait_for_function(
             "id => document.getElementById(id).classList.contains('hidden')",
@@ -1516,8 +1525,8 @@ def test_search_runs_reattach_sort_and_keep_live_detail(tmp_path):
             path=tmp_path / "runs-first.png"
         )
         page.click(f"#{TOPIC}-new-search")
-        assert page.locator(f"#{TOPIC}-models-start").is_visible()
-        assert not page.locator(f"#{TOPIC}-search-loss").is_visible()
+        assert page.locator(f"#{TOPIC}-config-start").is_visible()
+        assert page.locator(f"#{TOPIC}-config-mode-new").get_attribute("aria-pressed") == "true"
 
 
 @pytest.mark.parametrize("width", [1440, 1100])
@@ -1700,10 +1709,10 @@ def test_forecast_controls_follow_the_shared_row_height(tmp_path, width):
             "setup-time",
             "setup-scaffold",
             "settings",
-            "models-regression-new",
-            "models-regression-entity",
-            "models-regression-timeseries",
-            "models-classification-entity",
+            "training-regression-new",
+            "training-regression-entity",
+            "training-regression-timeseries",
+            "training-classification-entity",
             "search-classification-finished",
             "recipe-regression",
             "results-classification",
@@ -1960,6 +1969,7 @@ def test_timeseries_setup_saves_discards_and_prepares(tmp_path):
         ) as request:
             run_search(page)
         assert request.value.post_data_json["spec"] == spec
+        page.click(f"#{TOPIC}-config-mode-warm")
         page.click(f"#{TOPIC}-run-open")
         open_info(page)
         page.locator(f"#{TOPIC}-results-table tr").nth(1).wait_for()
@@ -1998,6 +2008,21 @@ def mock_prepared_searches(page):
             "state": "done",
             "kind": kind,
             "spec": payload["spec"],
+            "budget": payload.get("budget", {}),
+            "families": {
+                family["name"]: {} for family in payload.get("families", [{"name": "xgboost"}])
+            },
+            **{
+                key: payload[key]
+                for key in (
+                    "time_budget_s",
+                    "max_concurrent_families",
+                    "population",
+                    "plateau",
+                    "max_generations",
+                )
+                if key in payload
+            },
             "stopped": "generation cap",
             "generations": [],
             "generation_curves": [],
@@ -2268,7 +2293,7 @@ def assert_dataset_state(page, state, *, source="rows.csv", topic="regression"):
     if source:
         assert readout.locator(".forecast-dataset-file").inner_text() == source
         assert readout.locator(".forecast-dataset-file").get_attribute("title") == source
-    for tab in ("data", "models", "search", "results"):
+    for tab in ("data", "search", "results"):
         show_tab(page, f"{topic}-{tab}")
         assert readout.is_visible()
         assert readout.locator(".field-value").last.inner_text() == state
@@ -2306,7 +2331,7 @@ def test_forecast_reloaded_setup_started_with_current_picks(tmp_path):
         assert_dataset_state(page, "prepared")
         show_tab(page, "regression-search")
         page.click("#regression-new-search")
-        start_models(page)
+        start_training(page)
         page.wait_for_function(
             "document.getElementById('regression-run-title').innerText.endsWith('· done')"
         )
@@ -2325,13 +2350,14 @@ def test_forecast_reloaded_setup_started_with_current_picks(tmp_path):
             show_tab(page, "regression-search")
             if action == "start":
                 page.click("#regression-new-search")
-                start_models(page)
+                start_training(page)
             else:
                 if action == "warm":
-                    minutes = page.locator('#regression-budget [data-stepper="minutes"]')
-                    minutes.locator('[data-step="-1"]').click()
-                    population = page.locator('#regression-budget [data-stepper="population"]')
-                    population.locator('[data-step="2"]').click()
+                    page.click("#regression-config-mode-warm")
+                    set_config_number(page, "minutes", 19)
+                    set_config_number(page, "population", 18)
+                else:
+                    page.click("#regression-config-mode-warm")
                 page.click(f"#regression-run-{action}")
             page.wait_for_function(
                 "shortId => { const title = document.getElementById('regression-run-title').innerText; "
@@ -2411,8 +2437,8 @@ def test_forecast_search_named_missing_setup_pieces(tmp_path):
         def refused(message):
             show_tab(page, "regression-search")
             page.click("#regression-new-search")
-            start_models(page)
-            assert page.locator("#regression-models-status").inner_text() == message
+            start_training(page)
+            assert page.locator("#regression-config-status").inner_text() == message
 
         refused("no dataset selected")
         choose_forecast_source(page, "rows.csv")
@@ -2448,7 +2474,7 @@ def test_forecast_unprepared_saved_setup_started_after_reload(tmp_path, flavour)
         assert_dataset_state(page, "not prepared", source=source)
         show_tab(page, "regression-search")
         page.click("#regression-new-search")
-        start_models(page)
+        start_training(page)
         page.wait_for_function(
             "document.getElementById('regression-run-title').innerText.endsWith('· done')"
         )

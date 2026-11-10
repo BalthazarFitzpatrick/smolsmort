@@ -104,6 +104,9 @@ def parse_request(request: dict) -> dict:
         raise ValueError("plateau must be a positive integer")
     if type(min_generations) is not int or min_generations < 0:
         raise ValueError("min_generations must be a non-negative integer")
+    for field in ("population", "max_generations"):
+        if field in request and (type(request[field]) is not int or request[field] < 1):
+            raise ValueError(f"{field} must be a positive integer")
     prune_sigma = request.get("prune_sigma", 1.0)
     if (
         isinstance(prune_sigma, bool)

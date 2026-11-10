@@ -1136,32 +1136,6 @@ class ForecastInfoMenu extends Menu {
   }
 }
 
-// warm starts retain their own v1 budget controls
-function forecastStepperRow(prefix, row) {
-  return `<div class="run-controls stepper-row" data-stepper="${row.key}">
-    <span class="field-label">${row.label}</span>
-    <span class="spacer"></span>
-    <span class="field-value" id="${prefix}-${row.key}">${row.value}</span>
-    <div class="toggle" data-step="-${row.step}">-</div>
-    <div class="toggle" data-step="${row.step}">+</div>
-  </div>`;
-}
-
-function forecastWireSteppers(panel, prefix, rows, values, onChange) {
-  panel.querySelectorAll(`[data-stepper]`).forEach(row => {
-    const key = row.dataset.stepper;
-    const spec = rows.find(r => r.key === key);
-    if (!spec) return;
-    row.querySelectorAll('[data-step]').forEach(btn => {
-      btn.onclick = () => {
-        values[key] = Math.max(spec.min, Math.min(spec.max, values[key] + Number(btn.dataset.step)));
-        setText(`${prefix}-${key}`, String(values[key]));
-        onChange();
-      };
-    });
-  });
-}
-
 function forecastMountPlan(rail) {
   const section = forecastNode('details', 'forecast-plan');
   section.append(forecastNode('summary', 'field-label', 'search plan'));
@@ -1559,6 +1533,13 @@ class ForecastTopic {
       localStorage.setItem(this.storageKey, JSON.stringify({state}));
     } catch (err) { /* private window, no matter */ }
     this.paintDataset();
+    if (this.models?.panel) {
+      const signature = JSON.stringify(this.buildSpec());
+      if (signature !== this.models.observedSpec) {
+        this.models.observedSpec = signature;
+        this.models.enter();
+      }
+    }
   }
 
   restorePrepared() {
@@ -1622,7 +1603,7 @@ class ForecastTopic {
     this.restorePrepared();
     this.models.clearCatalog();
     await loading;
-    if (!this.models.panel.classList.contains('hidden')) this.models.enter();
+    if (this.models.panel) this.models.enter();
   }
 
   // ================================================================== data tab
@@ -2333,12 +2314,6 @@ class ForecastTopic {
   // ================================================================== search tab
 
   mountSearch(panel) {
-    const budgetRows = [
-      {key: 'population', label: 'population', step: 2, min: 2, max: 400, value: this.searchValues.population},
-      {key: 'plateau', label: 'patience', step: 1, min: 1, max: 100, value: this.searchValues.plateau},
-      {key: 'generations', label: 'max generations', step: 1, min: 1, max: 500, value: this.searchValues.generations},
-      {key: 'minutes', label: 'time cap (minutes)', step: 1, min: 1, max: 240, value: this.searchValues.minutes},
-    ];
     panel.innerHTML = `
       <div class="forecast-search-layout">
         <aside class="panel-inline forecast-run-rail">
@@ -2357,7 +2332,7 @@ class ForecastTopic {
         <div class="forecast-run-panels">
         <div class="panel-inline forecast-pane forecast-run-progress-panel">
           <div class="run-controls">
-            <span class="field-value" id="${this.topic}-run-title">pick a run or start one on models</span>
+            <span class="field-value" id="${this.topic}-run-title">pick a run or start one here</span>
             <span class="forecast-verdict hidden" id="${this.topic}-run-verdict"></span>
             <button class="toggle removes disabled" id="${this.topic}-search-cancel" disabled>cancel</button>
           </div>
@@ -2369,17 +2344,7 @@ class ForecastTopic {
           <div class="field-label" id="${this.topic}-run-stop"></div>
           <div class="field-value" id="${this.topic}-run-stats"></div>
         </div>
-        <div class="panel-inline forecast-pane forecast-run-config">
-          <div class="hidden" id="${this.topic}-warm-budget">
-            <div class="field-label">warm start · budget</div>
-            <div id="${this.topic}-budget">${budgetRows.map(r => forecastStepperRow(`${this.topic}-budget`, r)).join('')}</div>
-          </div>
-          <div class="run-controls hidden" id="${this.topic}-run-actions">
-            <button class="toggle" id="${this.topic}-run-warm">warm start</button>
-            <button class="toggle" id="${this.topic}-run-refit">refit</button>
-            <button class="toggle" id="${this.topic}-run-open">open</button>
-          </div>
-        </div>
+        <div class="panel-inline forecast-pane forecast-run-config"></div>
         </div>
         <div class="run-controls hidden" id="${this.topic}-run-view" role="group" aria-label="candidate view">
           <button type="button" class="toggle on" id="${this.topic}-run-view-tiles" aria-pressed="true">tiles</button>
@@ -2437,7 +2402,7 @@ class ForecastTopic {
         </div>
       </div>`;
     forecastMountPlan(panel.querySelector('.forecast-run-rail'));
-    forecastWireSteppers(panel, `${this.topic}-budget`, budgetRows, this.searchValues, () => {});
+    this.models.mount(panel.querySelector('.forecast-run-config'));
     for (const view of ['tiles', 'tables']) {
       document.getElementById(`${this.topic}-run-view-${view}`).onclick = () => {
         this.runView = view;
@@ -2474,7 +2439,11 @@ class ForecastTopic {
     topHead.id = `${this.topic}-tiles-top`;
     document.getElementById(`${this.topic}-tiles-metric-slot`).append(topHead);
     document.getElementById(`${this.topic}-search-cancel`).onclick = () => this.cancelSearch();
-    document.getElementById(`${this.topic}-new-search`).onclick = () => activateTab(`${this.topic}-models`);
+    document.getElementById(`${this.topic}-new-search`).onclick = () => {
+      this.models.setMode('new');
+      this.models.panel.scrollIntoView({block: 'nearest'});
+      this.models.panel.focus();
+    };
     const sortHead = forecastDropdown(
       ['date, newest first', 'best performance'], this.runOrder,
       value => {
@@ -2504,6 +2473,7 @@ class ForecastTopic {
   }
 
   async enterSearch() {
+    this.models.enter();
     this.mountMetricPicker('search');
     await this.loadRuns();
     if (!this.searchEntered) {
@@ -2666,8 +2636,7 @@ class ForecastTopic {
       setText(`${this.topic}-run-progress-label`, progress.label);
     }
     document.getElementById(`${this.topic}-search-status`).classList.toggle('hidden', run?.state === 'done');
-    document.getElementById(`${this.topic}-warm-budget`).classList.toggle('hidden', !run);
-    document.getElementById(`${this.topic}-run-actions`).classList.toggle('hidden', !run);
+    this.models.paintControls();
     const cancel = document.getElementById(`${this.topic}-search-cancel`);
     cancel.disabled = !this.currentRunId;
     cancel.classList.toggle('disabled', cancel.disabled);
@@ -2675,7 +2644,7 @@ class ForecastTopic {
     const ratioMetric = this.selectedMetrics(run).find(metric => metric.id === 'test_ratio');
     verdict.classList.toggle('hidden', !run?.verdict || !ratioMetric);
     if (!run) {
-      setText(`${this.topic}-run-title`, 'pick a run or start one on models');
+      setText(`${this.topic}-run-title`, 'pick a run or start one here');
       setText(`${this.topic}-run-stop`, '');
       setText(`${this.topic}-run-stats`, '');
       this.searchSay('idle');
@@ -3777,7 +3746,7 @@ window.addEventListener('smolsmort-topic', event => {
   const ctl = new ForecastTopic(topic, topic);
   forecastTopics.set(topic, ctl);
   smolsmortTabs.register({id: `${topic}-data`, label: 'data', topic, mount: p => ctl.mountData(p)});
-  registerForecastModels(ctl);
+  registerForecastConfig(ctl);
   smolsmortTabs.register({id: `${topic}-search`, label: 'training', topic, mount: p => ctl.mountSearch(p)});
   smolsmortTabs.register({id: `${topic}-results`, label: 'results', topic, mount: p => ctl.mountResults(p)});
   const flavours = topic === 'regression'
