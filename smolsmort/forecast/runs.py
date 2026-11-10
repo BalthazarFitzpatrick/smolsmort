@@ -72,6 +72,8 @@ def start_run(
     candidate_limit_fraction: float = 0.25,
     plateau: int = 5,
     min_generations: int = 0,
+    population: int | None = None,
+    max_generations: int | None = None,
     prune_sigma: float = 1.0,
     part_of: str | None = None,
     label: str | None = None,
@@ -114,6 +116,9 @@ def start_run(
         )
         if max_concurrent_families is not None:
             request["max_concurrent_families"] = max_concurrent_families
+        for field, value in (("population", population), ("max_generations", max_generations)):
+            if value is not None:
+                request[field] = value
     request = parse_request(request)
     folder.mkdir(parents=True)
     (folder / "request.json").write_text(json.dumps(request, indent=2, default=str))

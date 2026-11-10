@@ -144,7 +144,8 @@ def run(folder: Path, name: str) -> int:
                     if allocation
                     else request["time_budget_s"],
                     nthread=nthread,
-                    max_generations=2**31 - 1,
+                    **({"population": request["population"]} if "population" in request else {}),
+                    max_generations=request.get("max_generations", 2**31 - 1),
                     plateau=request["plateau"],
                     min_generations=request["min_generations"],
                 ),
