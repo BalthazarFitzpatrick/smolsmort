@@ -203,6 +203,34 @@ def test_training_catalog_reloaded_when_data_changed_and_guarded_stale_spec(tmp_
         assert requests == []
 
 
+def test_training_picked_run_loaded_late_without_resetting_edits_on_poll(tmp_path):
+    with session(tmp_path) as (page, _base):
+        mock_prepared_searches(page)
+        mock_catalog(page)
+        select_timeseries(page)
+        page.evaluate("""() => {
+            const ctl = forecastTopics.get('regression');
+            ctl.selectedRunId = 'late-run';
+            ctl.runCache.set('late-run', {id: 'late-run', state: 'done'});
+            ctl.models.paintControls();
+        }""")
+        page.click("#regression-config-mode-warm")
+        page.evaluate("""() => {
+            const ctl = forecastTopics.get('regression');
+            ctl.runCache.set('late-run', {id: 'late-run', state: 'done',
+                families: {ridge: {}, snaive: {}}, time_budget_s: 3600,
+                population: 40, plateau: 8, max_generations: 100,
+                max_concurrent_families: 2});
+            ctl.models.paintControls();
+        }""")
+        assert "ridge + snaive" in page.locator("#regression-config-families").inner_text()
+        assert "60 min" in page.locator("#regression-config-minutes").inner_text()
+        assert page.locator("#regression-config-population").inner_text() == "40"
+        set_config_number(page, "population", 24)
+        page.evaluate("forecastTopics.get('regression').models.paintControls()")
+        assert page.locator("#regression-config-population").inner_text() == "24"
+
+
 def test_training_families_menu_saved_and_discarded_draft(tmp_path):
     with session(tmp_path) as (page, _base):
         mock_catalog(page)
