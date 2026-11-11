@@ -698,8 +698,10 @@ def test_unsaved_time_setup_shows_week_and_saved_plural(tmp_path, stored_step):
         assert "auto" not in readout.inner_text()
         head.click()
         menu = page.locator(".forecast-setup-menu")
-        assert menu.locator(".dropdown-head").inner_text() == "week"
-        menu.locator(".dropdown-head").click()
+        assert (
+            menu.get_by_role("button", name="date granularity", exact=True).inner_text() == "week"
+        )
+        menu.get_by_role("button", name="date granularity", exact=True).click()
         menu.locator('.forecast-inline-list .menu-item:has-text("month")').click()
         menu.locator('input[type="number"]').fill("1")
         menu.locator('.menu-buttons [data-id="save"]').click()
@@ -1836,6 +1838,51 @@ def test_numeric_scaffold_saved_prepared_and_searched(tmp_path):
         finish(menu)
 
 
+def test_timeseries_integer_time_field(tmp_path):
+    with session(tmp_path) as (page, _base):
+        (tmp_path / "forecast_root" / "weeks.csv").write_text(
+            "day,swo_week,units,ratio\n2026-01-05,202602,1,1.5\n2026-01-12,202603,2,2.5\n"
+        )
+        switch_to_regression(page)
+        page.select_option("#topic-flavour", "timeseries")
+        show_tab(page, "regression-data")
+        page.click(f"#{TOPIC}-data-source")
+        page.locator('.menu-item[data-id="weeks.csv"]').click()
+        page.wait_for_function(
+            f'/^4 columns/.test(document.getElementById("{TOPIC}-data-status").innerText)'
+        )
+        page.click(f"#{TOPIC}-setup-predict")
+        page.locator('.forecast-setup-menu .menu-item[data-id="units"]').click()
+        page.locator('.forecast-setup-menu [data-id="save"]').click()
+        page.click(f"#{TOPIC}-setup-time")
+        menu = page.locator(".forecast-setup-menu")
+        dates_only = menu.get_by_role("button", name="dates only", exact=True)
+        assert dates_only.inner_text() == "true"
+        assert menu.locator('[data-id="swo_week"]').is_hidden()
+        dates_only.click()
+        menu.locator(".forecast-inline-list .menu-item").filter(has_text="false").click()
+        assert menu.locator('[data-id="swo_week"]').is_visible()
+        assert menu.locator('[data-id="ratio"]').count() == 0
+        menu.locator('[data-id="swo_week"]').click()
+        menu.locator('[data-id="save"]').click()
+        page.reload()
+        switch_to_regression(page)
+        page.select_option("#topic-flavour", "timeseries")
+        show_tab(page, "regression-data")
+        page.wait_for_function(
+            f'/^4 columns/.test(document.getElementById("{TOPIC}-data-status").innerText)'
+        )
+        page.click(f"#{TOPIC}-setup-time")
+        menu = page.locator(".forecast-setup-menu")
+        assert menu.get_by_role("button", name="dates only", exact=True).inner_text() == "false"
+        assert "on" in menu.locator('[data-id="swo_week"]').get_attribute("class")
+        menu.locator('[data-id="close"]').click()
+        with page.expect_request("**/api/forecast-prep") as request:
+            page.click(f"#{TOPIC}-prepare")
+        columns = request.value.post_data_json["spec"]["columns"]
+        assert next(col for col in columns if col["name"] == "swo_week")["role"] == "time"
+
+
 def test_timeseries_setup_saves_discards_and_prepares(tmp_path):
     with session(tmp_path) as (page, base):
         switch_to_regression(page)
@@ -1908,7 +1955,7 @@ def test_timeseries_setup_saves_discards_and_prepares(tmp_path):
         assert menu.locator(".menu-list").bounding_box()["width"] == 260
         pick("other_day")
         assert menu.locator(".menu-list .menu-item.on").count() == 1
-        menu.locator(".dropdown-head").click()
+        menu.get_by_role("button", name="date granularity", exact=True).click()
         menu.locator('.forecast-inline-list .menu-item:has-text("month")').click()
         menu.locator('input[type="number"]').fill("3")
         finish("close")
@@ -1918,7 +1965,7 @@ def test_timeseries_setup_saves_discards_and_prepares(tmp_path):
         pick("other_day")
         pick("other_day")
         assert menu.locator(".menu-list .menu-item.on").count() == 1
-        menu.locator(".dropdown-head").click()
+        menu.get_by_role("button", name="date granularity", exact=True).click()
         menu.locator('.forecast-inline-list .menu-item:has-text("week")').click()
         menu.locator('input[type="number"]').fill("3")
         finish("save")

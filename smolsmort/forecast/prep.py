@@ -271,13 +271,51 @@ def _prep_entity(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[str, d
 # ---------------------------------------------------------------------------
 
 
+def _time_expression(con, read_expr: str, time_col: str, where: str) -> str:
+    """read integer year-weeks as iso mondays, rejecting invalid calendar weeks"""
+    q = _quote(time_col)
+    described = con.execute(f"DESCRIBE SELECT * FROM {read_expr}").fetchall()
+    kind = {row[0]: row[1] for row in described}[time_col]
+    text = f"CAST({q} AS VARCHAR)"
+    integer = kind in {
+        "TINYINT",
+        "SMALLINT",
+        "INTEGER",
+        "BIGINT",
+        "HUGEINT",
+        "UTINYINT",
+        "USMALLINT",
+        "UINTEGER",
+        "UBIGINT",
+        "UHUGEINT",
+    }
+    candidate = f"regexp_full_match({text}, '[0-9]{{6}}')"
+    monday = f"CAST(try_strptime({text} || '1', '%G%V%u') AS DATE)"
+    valid = f"({candidate} AND substr({text}, 1, 4) BETWEEN '0001' AND '9999' AND strftime({monday}, '%G%V') = {text})"
+    if integer or kind == "VARCHAR":
+        applies = "TRUE" if integer else candidate
+        invalid = con.execute(
+            f"SELECT {text} FROM {read_expr} WHERE ({where}) AND {q} IS NOT NULL "
+            f"AND {applies} AND NOT COALESCE({valid}, FALSE) LIMIT 1"
+        ).fetchone()
+        if invalid:
+            raise ValueError(
+                f"invalid year-week in column {time_col!r}: {invalid[0]!r}; expected a valid yyyyww iso week"
+            )
+        if integer:
+            return monday
+        return f"CASE WHEN {candidate} THEN {monday} ELSE CAST({q} AS DATE) END"
+    return f"CAST({q} AS DATE)"
+
+
 def _infer_step(con, read_expr: str, time_col: str, where: str) -> str:
     """the step whose interval best matches the median gap between distinct time values"""
+    time_sql = _time_expression(con, read_expr, time_col, where)
     query = f"""
         SELECT median(gap) FROM (
             SELECT date_diff('day', lag(t) OVER (ORDER BY t), t) AS gap
             FROM (
-                SELECT DISTINCT CAST({_quote(time_col)} AS DATE) AS t
+                SELECT DISTINCT {time_sql} AS t
                 FROM {read_expr}
                 WHERE {where}
             ) d
@@ -336,6 +374,7 @@ def _prep_timeseries(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[st
     measure_names = spec.named("measure") + spec.named("target")
     time_q = "__time_date"
     where = spec.where or "TRUE"
+    time_sql = _time_expression(con, read_expr, time_col, where)
     step = spec.step or _infer_step(con, read_expr, time_col, where)
     unit = STEP_UNIT[step]
     dims_sel = _cols(dims)
@@ -349,8 +388,7 @@ def _prep_timeseries(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[st
 
     stmts = [
         f"CREATE OR REPLACE TEMP VIEW filtered AS\nSELECT * FROM {read_expr} WHERE {where};",
-        "CREATE OR REPLACE TEMP VIEW timed AS\n"
-        f"SELECT *, CAST({_quote(time_col)} AS DATE) AS {time_q} FROM filtered;",
+        f"CREATE OR REPLACE TEMP VIEW timed AS\nSELECT *, {time_sql} AS {time_q} FROM filtered;",
         f"CREATE OR REPLACE TEMP VIEW valid AS\nSELECT * FROM timed WHERE {time_q} IS NOT NULL;",
         f"CREATE OR REPLACE TEMP VIEW history AS\nSELECT * FROM valid WHERE {history_sql};",
         "CREATE OR REPLACE TEMP VIEW stepped AS\n"

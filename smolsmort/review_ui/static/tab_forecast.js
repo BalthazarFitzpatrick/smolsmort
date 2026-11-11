@@ -2023,13 +2023,17 @@ class ForecastTopic {
       dimensions: [],
     };
     const targets = prior.targets.filter(name => measures.includes(name));
-    const time = dates.includes(prior.time) ? prior.time : (dates[0] || null);
+    const datesOnly = prior.datesOnly !== false;
+    const timeFields = this.columnsInfo.filter(col => col.kind === 'date' ||
+      (!datesOnly && col.kind === 'number' && /^(U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?)$/.test(col.dtype))).map(col => col.name);
+    const time = timeFields.includes(prior.time) ? prior.time : (dates[0] || null);
     const dimensions = this.scaffoldFields({targets, time}).map(col => col.name);
     this.seriesSetup = {
       targets,
       aggregations: Object.fromEntries(targets.map(name => [name,
         FORECAST_AGGREGATIONS.includes(prior.aggregations[name]) ? prior.aggregations[name] : 'sum'])),
       time,
+      datesOnly,
       dimensions: prior.dimensions.filter(name => dimensions.includes(name)),
     };
     if (!FORECAST_UNITS.includes(this.step)) this.step = 'week';
@@ -2094,6 +2098,7 @@ class ForecastTopic {
       ...saved, targets: [...saved.targets], aggregations: {...saved.aggregations},
       dimensions: [...saved.dimensions], step: this.step === 'auto' ? 'week' : this.step,
       horizon: this.horizon,
+      datesOnly: saved.datesOnly !== false,
     };
     const fields = kind => this.columnsInfo.filter(col => col.kind === kind);
     const targets = fields('number').filter(col => !draft.dimensions.includes(col.name));
@@ -2102,7 +2107,7 @@ class ForecastTopic {
         this.seriesSetup = {
           targets: draft.targets,
           aggregations: Object.fromEntries(draft.targets.map(name => [name, draft.aggregations[name] || 'sum'])),
-          time: draft.time, dimensions: draft.dimensions,
+          time: draft.time, dimensions: draft.dimensions, datesOnly: draft.datesOnly,
         };
         this.step = draft.step;
         this.horizon = draft.horizon;
@@ -2154,8 +2159,18 @@ class ForecastTopic {
       ahead.oninput = () => { draft.horizon = Math.max(1, Math.min(366, Math.round(+ahead.value) || 1)); };
       ahead.onkeydown = evt => { if (evt.key !== 'Escape') evt.stopPropagation(); };
       right.append(forecastNode('div', 'field-label', 'date granularity'), granularity, aheadLabel, ahead);
+      const timeFields = this.columnsInfo.filter(col => col.kind === 'date' ||
+        (col.kind === 'number' && /^(U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?)$/.test(col.dtype)));
+      const timeItems = () => timeFields.filter(col => !draft.datesOnly || col.kind === 'date')
+        .map(col => ({id: col.name, label: col.name, on: draft.time === col.name}));
+      right.append(forecastNode('div', 'field-label', 'dates only'),
+        forecastInlineSelect(['true', 'false'], String(draft.datesOnly), value => {
+          draft.datesOnly = value === 'true';
+          sections[0].items = timeItems();
+          menu.refresh([...sections, footer]);
+        }, 'dates only'));
       sections = [{kind: 'list', multi: true, label: 'date field', empty: 'no date fields',
-        items: fields('date').map(col => ({id: col.name, label: col.name, on: draft.time === col.name})),
+        items: timeItems(),
         onPick: (item, on, menu) => {
           draft.time = item.id;
           draft.dimensions = draft.dimensions.filter(name => name !== item.id);
