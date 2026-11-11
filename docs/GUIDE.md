@@ -433,6 +433,8 @@ the data tab's date range applies to training, validation and test. choose a dat
 **the two flavours.**
 
 `timeseries` (time series) uses one row per series per time step to predict quantities over time.
+
+in `time to extend`, `dates only` defaults to `true`. choose `false` to also list integer columns, then pick a year-week number such as `202643` as the time field. `yyyyww` values use iso weeks and become that week's monday (`202643` becomes `2026-10-19`). the dropdown choice is saved with the setup.
 `entity` uses one row per thing, such as an order, ticket or customer, with its own attributes and
 one outcome, anchored at its start date.
 
