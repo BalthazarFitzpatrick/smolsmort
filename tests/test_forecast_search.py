@@ -532,6 +532,9 @@ def test_generation_curves_use_the_generation_winner_even_without_a_new_best(mon
         for generation, index, value in [(0, 0, 6.5), (1, 4, 10.5), (2, 4, 10.5)]
     ]
     assert curves[0]["train_loss"] == [6.0]
+    assert [curve["genome"] for curve in curves] == [
+        genomes[index].to_dict() for index in (0, 4, 4)
+    ]
     assert {candidate["key"] for candidate in curves[0]["candidates"]} == {
         genome.key() for genome in genomes[:4]
     }
@@ -570,6 +573,12 @@ def test_worker_records_generation_curves_once_and_polling_returns_only_unseen(
         {
             "generation": generation,
             "key": str(generation),
+            "genome": {
+                "family": "ridge",
+                "families": ["lag"],
+                "objective": "squared",
+                "params": {"alpha": generation + 1},
+            },
             "metric": "rmse",
             "bucket": None,
             "validation": [float(generation)],
@@ -582,6 +591,7 @@ def test_worker_records_generation_curves_once_and_polling_returns_only_unseen(
     job.save("leaderboard_generation.json", 2)
     path = tmp_path / "generation_curves.jsonl"
     assert len(path.read_text().splitlines()) == 3
+    assert [json.loads(line) for line in path.read_text().splitlines()] == curves
     state = run_state(tmp_path.parent, tmp_path.name, since_generation=0)
     assert state["state"] == "done"
     assert state["generation_curves"] == curves[1:]

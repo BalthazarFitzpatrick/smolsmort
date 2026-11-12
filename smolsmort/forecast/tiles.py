@@ -385,16 +385,28 @@ def read_tiles(folder: Path, *, include_ensembles=True):
         records = read_records(target / "generation_curves.jsonl")
         if not records and len(names) == 1:
             records = read_records(folder / "generation_curves.jsonl")
-        curves = {}
+        curves, generation_recipes = {}, {}
         for record in records:
             candidates = record.get("candidates", [record])
             candidate = (
                 record
-                if record.get("key") == key
-                else next((item for item in candidates if item.get("key", key) == key), None)
+                if any(
+                    name in record
+                    for name in (
+                        "curves",
+                        "validation",
+                        "train_loss",
+                        "training",
+                        "validation_metrics",
+                        "metrics",
+                        "loss",
+                    )
+                )
+                else next((item for item in candidates if item.get("key", key) == key), record)
             )
-            if candidate is None:
-                continue
+            generation_recipes[str(record["generation"])] = {
+                name: record[name] for name in ("key", "genome") if name in record
+            }
             validation = dict(candidate.get("curves") or {})
             legacy = candidate.get("validation")
             if isinstance(legacy, list):
@@ -457,6 +469,7 @@ def read_tiles(folder: Path, *, include_ensembles=True):
                     path=split_paths["test"],
                 ),
                 "curves": curves,
+                "generation_recipes": generation_recipes,
                 "state": "running" if running else "done",
                 "best_generation": best.get("generation", min(generations, default=None)),
                 "running_generation": progress.get("generation") if running else None,

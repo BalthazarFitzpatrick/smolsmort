@@ -988,6 +988,12 @@ result, and the forecast / validation / test parquet files).
 
 ### forecast run tiles data
 
+each model tile shows its leader's curve for every generation. the `gen` picker defaults to
+`best`; choosing a generation highlights its curve and shows its saved feature families and
+parameters in `feat` and `param`. importance percentages belong to `best` only. older runs
+without a saved generation genome show `not saved`. one-shot models join their values across
+generations; ensembles keep each member's best generation.
+
 `GET /api/forecast-run-tiles?run=<id>` returns `{"tiles": [...], "ensembles": [...]}`, with no
 cursor; `ensembles` holds every scored ensemble row using the same tile shape.
 `read_tiles(run_folder)` returns the same list. initial v2 run-state reads also include model
@@ -1009,6 +1015,7 @@ tiles; summary and cursor polls keep their existing payloads. each tile has this
     "wae": {"validation": 10, "test": 20}
   },
   "curves": {"0": {"train_loss": [3, 2], "validation": {"ape": [0.2, 0.1], "mape": [0.2, 0.1], "wape": [0.2, 0.1], "ae": [2, 1], "mae": [2, 1], "wae": [20, 10]}, "loss": {"name": "rmse", "objective": "squared", "training": [3, 2], "validation": [4, 3]}}},
+  "generation_recipes": {"0": {"key": "recipe-key", "genome": {"family": "xgboost", "families": ["target:lag"], "objective": "squared", "params": {"max_depth": 3}}}},
   "state": "done",
   "best_generation": 0,
   "running_generation": null

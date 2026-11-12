@@ -760,6 +760,7 @@ def search(
                 {
                     "generation": generation,
                     "key": leader.genome.key(),
+                    "genome": leader.genome.to_dict(),
                     **{key: value for key, value in (history or {}).items() if key != "training"},
                     "train_loss": (history or {}).get("training", []),
                     "loss": {

@@ -472,6 +472,40 @@ def test_tiles_stable_ids_full_scores_legacy_curves_and_top_five(tmp_path):
     ]
 
 
+def test_tiles_keep_each_generation_leader_and_optional_genome(tmp_path):
+    save_json(tmp_path / "request.json", {"version": 2, "families": [{"name": "ridge"}]})
+    best = save_model(tmp_path, "ridge", [9, 19])
+    records = []
+    for generation in range(3):
+        genome = best if generation == 1 else {**best, "params": {"alpha": generation + 1}}
+        records.append(
+            {
+                "generation": generation,
+                "key": tiles.recipe_key(genome),
+                "genome": genome,
+                "train_loss": [5, generation + 1],
+                "curves": {"mae": [4, generation + 1]},
+                "loss": {"name": "rmse"},
+                "candidates": [{"key": tiles.recipe_key(genome), "validation_metrics": {"mae": 9}}],
+            }
+        )
+    del records[0]["genome"]
+    path = tmp_path / "families/ridge/generation_curves.jsonl"
+    path.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+    tile = tiles.read_tiles(tmp_path, include_ensembles=False)[0]
+    assert set(tile["curves"]) == {"0", "1", "2"}
+    for record in records:
+        generation = str(record["generation"])
+        assert tile["curves"][generation]["train_loss"] == record["train_loss"]
+        assert tile["curves"][generation]["validation"]["mae"] == record["curves"]["mae"]
+        assert tile["curves"][generation]["loss"] == record["loss"]
+        assert tile["generation_recipes"][generation] == {
+            name: record[name] for name in ("key", "genome") if name in record
+        }
+    assert tile["recipe"] == best and tile["best_generation"] == 1
+    assert tile["running_generation"] is None
+
+
 def test_tile_route_full_read_and_new_curves(tmp_path):
     from smolsmort.forecast.tab import forecast_tab
 
@@ -496,6 +530,9 @@ def test_tile_route_full_read_and_new_curves(tmp_path):
     assert result["tiles"][0]["curves"]["2"]["train_loss"] == [3, 2]
     assert result["tiles"][0]["curves"]["2"]["validation"]["mae"] == [2, 1]
     record["key"] = "another-leader"
+    path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    assert get(app, {"run": "saved"})["tiles"][0]["curves"]["2"]["train_loss"] == [3, 2]
+    record = {name: record[name] for name in ("generation", "key", "candidates")}
     path.write_text(json.dumps(record) + "\n", encoding="utf-8")
     candidate_curve = get(app, {"run": "saved"})["tiles"][0]["curves"]["2"]
     assert candidate_curve["train_loss"] == []
@@ -576,6 +613,7 @@ def test_refit_run_real_worker_incremental_no_search(tmp_path, monkeypatch):
     assert set(record["validation_metrics"]) == set(tiles.CURVE_METRICS)
     assert record["loss"]["name"] == "penalized_squared_error"
     assert record["loss"]["objective"] == "squared"
+    assert record["genome"] == ridge["recipe"]
     assert len([tile for tile in result if tile["kind"] == "ensemble"]) == 1
     ensemble = next(tile for tile in result if tile["kind"] == "ensemble")
     from smolsmort.forecast.tables import read_table

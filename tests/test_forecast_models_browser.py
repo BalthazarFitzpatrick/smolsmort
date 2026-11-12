@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 pytest.importorskip("playwright")
@@ -17,6 +19,78 @@ from test_forecast_ui_browser import (
     show_tab,
     switch_to_regression,
 )
+
+
+def test_tile_generation_picker_keeps_recipes_and_selection_on_poll(tmp_path, monkeypatch):
+    from test_forecast_tiles_browser import make_contract_tiles, open_tiles, write_json
+
+    from smolsmort.forecast import runs
+    from smolsmort.forecast.tiles import recipe_key
+
+    monkeypatch.setattr(runs, "_alive", lambda _folder: True)
+    with session(tmp_path, port=0) as (page, _base):
+        run_id = make_contract_tiles(tmp_path / "forecast_root")
+        run = tmp_path / "forecast_root/.forecast-runs" / run_id
+        path = run / "families/xgboost/generation_curves.jsonl"
+        records = [json.loads(line) for line in path.read_text().splitlines()][:3]
+        for generation, record in enumerate(records):
+            genome = {
+                "family": "xgboost",
+                "families": [f"lag_{generation}"],
+                "objective": "squared",
+                "params": {"max_depth": generation + 2},
+            }
+            record.update(key=recipe_key(genome), genome=genome)
+        best = records[1]["genome"]
+        del records[2]["genome"]
+        path.write_text("\n".join(json.dumps(record) for record in records), encoding="utf-8")
+        write_json(
+            run / "families/xgboost/leaderboard.json",
+            [{"genome": best, "fitness": 0.2, "generation": 1}],
+        )
+        write_json(
+            run / "families/xgboost/importance.json",
+            {"features": [{"feature": "best_feature", "importance": 0.7}]},
+        )
+        open_tiles(page, contract=True)
+        tile = page.locator('.forecast-run-tile[data-family="xgboost"]')
+        chart = tile.locator(".forecast-run-tile-chart").last
+        assert chart.locator("polyline").count() == 3
+        gen = tile.locator('details[data-menu="gen"]')
+        feat = tile.locator('details[data-menu="feat"]')
+        param = tile.locator('details[data-menu="param"]')
+        assert "best" in gen.locator("summary").inner_text()
+        assert "best_feature" in feat.text_content() and "70%" in feat.text_content()
+        assert "max_depth3" in param.text_content()
+        gen.locator("summary").click()
+        assert gen.locator("button").all_text_contents() == ["best", "0", "1", "2"]
+        gen.locator('button[data-generation="0"]').click()
+        assert "lag_0" in feat.text_content() and "%" not in feat.text_content()
+        assert "max_depth2" in param.text_content()
+        selected = chart.locator('polyline[data-generation="0"]')
+        assert selected.get_attribute("data-selected") == "true"
+        assert selected.evaluate("node => getComputedStyle(node).strokeWidth") == "3px"
+        assert (
+            chart.locator('polyline[data-generation="1"]').evaluate("node => node.style.stroke")
+            == "var(--cream)"
+        )
+        records.append({**records[-1], "generation": 3})
+        path.write_text("\n".join(json.dumps(record) for record in records), encoding="utf-8")
+        chart.locator('polyline[data-generation="3"]').wait_for(timeout=15000)
+        assert "0" in gen.locator("summary").inner_text()
+        assert selected.get_attribute("data-selected") == "true"
+        assert "lag_0" in feat.text_content() and "max_depth2" in param.text_content()
+        gen.locator("summary").click()
+        gen.locator('button[data-generation="2"]').click()
+        assert "not saved" in feat.text_content() and "not saved" in param.text_content()
+        gen.locator("summary").click()
+        gen.locator('button[data-generation="1"]').click()
+        assert "lag_1" in feat.text_content() and "%" not in feat.text_content()
+        gen.locator("summary").click()
+        gen.locator('button[data-generation="best"]').click()
+        assert "best_feature" in feat.text_content() and "70%" in feat.text_content()
+        ridge = page.locator('.forecast-run-tile[data-family="ridge"]')
+        assert ridge.locator(".forecast-run-tile-chart").last.locator("polyline").count() == 3
 
 
 def make_catalog():

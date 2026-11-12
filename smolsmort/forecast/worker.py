@@ -183,6 +183,7 @@ def run(folder: Path) -> int:
             curve = {
                 "generation": 0,
                 "key": genome.key(),
+                "genome": genome.to_dict(),
                 "metrics": scored.metrics,
                 "validation_metrics": scored.metrics.get("validation_metrics", scored.metrics),
                 **{key: value for key, value in history.items() if key != "training"},
