@@ -426,6 +426,9 @@ function forecastReduceTilePoints(points) {
 function forecastRunTileChart(tile, tiles, metric, training, selected = 'best') {
   const chart = forecastNode('div', 'forecast-tile-chart forecast-run-tile-chart');
   const chartLabel = forecastNode('div', 'forecast-tile-chart-label', training ? 'train loss' : `validation ${metric}`);
+  const labelText = forecastNode('span', '', chartLabel.textContent);
+  const currentValue = forecastNode('span', 'forecast-tile-current-value');
+  chartLabel.replaceChildren(labelText, currentValue);
   chart.append(chartLabel);
   const validationLabels = new Set();
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -449,13 +452,17 @@ function forecastRunTileChart(tile, tiles, metric, training, selected = 'best') 
     };
     const valuesFor = curve => (training ? curve.train_loss || [] : curve.validation?.[metricFor(curve)] || []).map(value => Number.isFinite(value) ? value : null);
     const oneShot = generations.length && generations.every(([, curve]) => valuesFor(curve).length <= 1);
+    if (oneShot) chart.classList.add('forecast-run-tile-chart-short');
+    const shown = member.curves?.[selected === 'best' ? member.best_generation : selected];
+    const current = shown ? valuesFor(shown).filter(Number.isFinite).at(-1) : null;
+    currentValue.textContent = Number.isFinite(current) ? Number(current.toPrecision(4)) : '–';
     const allValues = generations.flatMap(([, curve]) => valuesFor(curve)).filter(Number.isFinite);
     if (!allValues.length) return;
     recorded = true;
     const colourFor = generation => tile.kind === 'ensemble' ? palette[memberIndex % palette.length]
-      : Number(generation) === member.best_generation ? '--cream'
-        : Number(generation) === member.running_generation ? '--kingfisher-milk'
-          : generation === selected ? '--vanilla' : '--muted-on';
+      : generation === selected ? '--accent-on'
+        : Number(generation) === member.best_generation ? '--cream'
+          : Number(generation) === member.running_generation ? '--tile-tone' : '--muted-on';
     generations.forEach(([generation, curve], index) => {
       const values = valuesFor(curve);
       const curveMetric = training ? curve.loss?.name || 'loss' : metricFor(curve);
@@ -476,6 +483,11 @@ function forecastRunTileChart(tile, tiles, metric, training, selected = 'best') 
       const drawSegment = () => {
         if (!segment.length) return;
         if (segment.length === 1) {
+          // the next segment already includes the first one-shot value
+          if (oneShot && generations.length > 1 && index === 0) {
+            segment = [];
+            return;
+          }
           if (tile.kind === 'ensemble') {
             singleValues.set(member, Number(values.find(Number.isFinite).toPrecision(4)));
             segment = [];
@@ -497,11 +509,12 @@ function forecastRunTileChart(tile, tiles, metric, training, selected = 'best') 
         line.setAttribute('points', forecastReduceTilePoints(segment).map(point => point.join(',')).join(' '));
         line.setAttribute('vector-effect', 'non-scaling-stroke');
         line.style.stroke = `var(${colour})`;
+        line.style.strokeWidth = colour === '--muted-on' ? '1px' : '1.5px';
         line.dataset.generation = generation;
         line.dataset.member = member.family;
         if (tile.kind !== 'ensemble' && generation === selected) {
           line.dataset.selected = 'true';
-          line.style.strokeWidth = '3px';
+          line.style.strokeWidth = '2.5px';
         }
         svg.append(line);
         segment = [];
@@ -512,8 +525,8 @@ function forecastRunTileChart(tile, tiles, metric, training, selected = 'best') 
     svg.querySelectorAll('[data-selected]').forEach(line => svg.append(line));
   });
   if (validationLabels.size) {
-    chartLabel.textContent = [...validationLabels].join(' / ');
-    svg.setAttribute('aria-label', `${chartLabel.textContent} by round`);
+    labelText.textContent = [...validationLabels].join(' / ');
+    svg.setAttribute('aria-label', `${labelText.textContent} by round`);
   }
   if (svg.childElementCount || tile.kind === 'ensemble') chart.append(svg);
   else chart.classList.add('forecast-run-tile-chart-compact');
@@ -556,44 +569,63 @@ function forecastCreateRunTile(tile, index, tiles, metric, legacy, metrics, sele
   const inner = forecastNode('div', 'forecast-tile-inner');
   const face = forecastNode('div', 'forecast-tile-face forecast-tile-front');
   const title = forecastNode('div', 'forecast-tile-header');
-  const score = tile.metrics?.[metric] || {
-    validation: tile.curves?.[tile.best_generation]?.validation?.[metric]?.at(-1),
+  const score = tile.metrics?.wape || {
+    validation: tile.curves?.[tile.best_generation]?.validation?.wape?.at(-1),
   };
-  const format = value => Number.isFinite(value) ? Number(value.toPrecision(4)) : '-';
+  const format = value => Number.isFinite(value) ? Number(value.toPrecision(4)) : '–';
   title.append(forecastNode('span', 'forecast-tile-name', `#${index + 1} ${forecastRunTileLabel(tile, tiles)}`));
   title.title = forecastRunTileLabel(tile, tiles);
-  face.append(title, forecastNode('div', 'forecast-tile-score', `${metric} · validation ${format(score.validation)} · test ${format(score.test)}`));
+  title.append(forecastNode('span', 'forecast-tile-score',
+    Number.isFinite(tile.running_generation) ? `gen ${tile.running_generation}` : tile.state || 'pending'));
+  face.append(title);
   if (tile.series_count) {
-    face.append(forecastNode('div', 'forecast-tile-dim',
-      `scores cover ${tile.series_count.covered} of ${tile.series_count.total} series`));
+    title.title += `; scores cover ${tile.series_count.covered} of ${tile.series_count.total} series`;
   }
-  const charts = [forecastRunTileChart(tile, tiles, metric, true, selected), forecastRunTileChart(tile, tiles, metric, false, selected)];
-  if (charts.every(chart => !chart.querySelector('svg'))) {
-    face.append(forecastNode('div', 'forecast-tile-chart-note', 'no curve saved'));
-  } else face.append(...charts);
-  if (tile.kind === 'ensemble') {
-    const details = forecastNode('details');
-    details.dataset.menu = 'members';
-    details.append(forecastNode('summary', '', 'ensemble members'));
-    const menu = forecastNode('div', 'forecast-tile-menu');
-    (tile.members || []).forEach(id => {
-      const member = tiles.find(item => item.tile_id === id);
-      if (!member) return;
-      menu.append(forecastNode('div', 'forecast-tile-menu-row', member.family),
-        forecastNode('div', 'forecast-tile-menu-row', `features: ${(member.recipe?.families || []).join(', ') || '-'}`),
-        forecastNode('div', 'forecast-tile-menu-row', `params: ${JSON.stringify(member.recipe?.params || {})}`));
-    });
-    details.append(menu);
-    face.append(details);
+  const hasCurves = tile.kind !== 'ensemble' && Object.values(tile.curves || {}).some(curve =>
+    [curve.train_loss, ...Object.values(curve.validation || {})].some(values => values?.some(Number.isFinite)));
+  if (!hasCurves) {
+    wrap.classList.add('forecast-run-tile-small');
+    const members = (tile.members || []).map(id => tiles.find(item => item.tile_id === id)?.family || id);
+    face.append(forecastNode('div', 'forecast-tile-chart-note',
+      tile.kind === 'ensemble' ? members.join(' + ') : 'one candidate, no curve'));
   } else {
+    face.append(forecastRunTileChart(tile, tiles, metric, true, selected),
+      forecastRunTileChart(tile, tiles, metric, false, selected));
     const genome = selected === 'best' ? tile.recipe : tile.generation_recipes?.[selected]?.genome;
     const menus = forecastTileMenus({...legacy, genome,
       importance: selected === 'best' ? legacy?.importance : null,
       generationMissing: selected !== 'best' && !genome});
     menus.prepend(forecastGenerationMenu(tile, selected, onGeneration));
+    menus.append(menus.querySelector('[data-menu="feat"]'));
+    for (const [key, label] of [['param', 'P'], ['feat', 'F']]) {
+      menus.querySelector(`[data-menu="${key}"] summary > span`).textContent = label;
+    }
     face.append(menus);
   }
-  face.append(forecastMetricLines(metrics, forecastRunTileMetricRow(tile, metrics)));
+  const metricLines = forecastNode('div', 'forecast-metric-lines forecast-run-tile-metrics');
+  const ratio = forecastRunTileMetricRow(tile, [{id: 'test_ratio', scope: 'test'}]).error_metrics.test_ratio?.value
+    ?? tile.test_ratio;
+  const ratioLine = forecastNode('div', 'forecast-metric', 'test ratio: ');
+  ratioLine.dataset.metricId = 'test_ratio';
+  const ratioMetric = metrics.find(item => item.id === 'test_ratio');
+  ratioLine.title = ratioMetric ? forecastMetricValue(ratioMetric, forecastRunTileMetricRow(tile, metrics)).title
+    : 'test model error / naive error';
+  ratioLine.append(forecastNode('span', 'forecast-run-tile-ratio', Number.isFinite(ratio) ? ratio.toFixed(2) : '–'));
+  const scoreLine = forecastNode('div', 'forecast-tile-dim', 'wape · validation ');
+  scoreLine.append(forecastNode('span', 'forecast-run-tile-value', format(score.validation)),
+    document.createTextNode(' · test '), forecastNode('span', 'forecast-run-tile-value', format(score.test)));
+  metricLines.append(ratioLine, scoreLine);
+  const defaultMetrics = metrics.length === 2 && metrics.some(item => item.id === 'validation_error') && ratioMetric;
+  const extraMetrics = metrics.filter(item => item.id !== 'test_ratio'
+    && (!defaultMetrics || item.id !== 'validation_error'));
+  if (extraMetrics.length) metricLines.append(forecastMetricLines(extraMetrics, forecastRunTileMetricRow(tile, extraMetrics)));
+  face.append(metricLines);
+  wrap.addEventListener('toggle', event => {
+    if (!event.target.matches('details') || !event.target.open) return;
+    wrap.closest('.forecast-tiles-grid')?.querySelectorAll('details[open]').forEach(details => {
+      if (details !== event.target) details.open = false;
+    });
+  }, true);
   inner.append(face);
   wrap.append(inner);
   return wrap;
@@ -616,11 +648,15 @@ function forecastGenerationMenu(tile, selected, onGeneration) {
   const details = forecastNode('details');
   details.dataset.menu = 'gen';
   const summary = forecastNode('summary');
-  summary.append(forecastNode('span', '', 'gen'), forecastNode('span', 'forecast-tile-dim', `${selected} ▾`));
+  summary.append(forecastNode('span', '', 'G'), forecastNode('span', 'forecast-tile-dim', `${selected} ▾`));
   const menu = forecastNode('div', 'forecast-tile-menu');
   const generations = Object.keys(tile.curves || {}).sort((a, b) => Number(a) - Number(b));
   ['best', ...generations].forEach(generation => {
-    const button = forecastNode('button', 'forecast-tile-menu-row', generation);
+    const button = forecastNode('button', 'forecast-tile-menu-row');
+    const curve = tile.curves?.[generation === 'best' ? tile.best_generation : generation];
+    const wape = curve?.validation?.wape?.filter(Number.isFinite).at(-1);
+    button.append(forecastNode('span', '', generation === 'best' ? 'best' : `gen ${generation}`),
+      forecastNode('span', 'forecast-tile-dim', `${generation === 'best' ? `gen ${tile.best_generation} · ` : ''}${Number.isFinite(wape) ? Number(wape.toPrecision(4)) : '–'}`));
     button.type = 'button';
     button.dataset.generation = generation;
     button.setAttribute('aria-pressed', String(generation === selected));
@@ -2466,6 +2502,12 @@ class ForecastTopic {
       this.tilesFlipped = !this.tilesFlipped;
       this.paintTileFlip();
     };
+    document.addEventListener('keydown', event => {
+      if (event.key !== 'Escape') return;
+      panel.querySelectorAll('.forecast-run-tile details[open]').forEach(details => {
+        details.open = false;
+      });
+    });
     const metricLabel = id => id === 'validation_error' ? 'validation error' : id;
     const tileMetricOptions = ['validation_error', 'wape', 'mae'];
     const tileMetricHead = forecastDropdown(tileMetricOptions, this.tileMetric, value => {

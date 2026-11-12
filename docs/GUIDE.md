@@ -988,11 +988,18 @@ result, and the forecast / validation / test parquet files).
 
 ### forecast run tiles data
 
-each model tile shows its leader's curve for every generation. the `gen` picker defaults to
-`best`; choosing a generation highlights its curve and shows its saved feature families and
-parameters in `feat` and `param`. importance percentages belong to `best` only. older runs
-without a saved generation genome show `not saved`. one-shot models join their values across
-generations; ensembles keep each member's best generation.
+training run tiles flow into 306px masonry columns with a 12px gap; height follows content.
+models with curves show train loss and validation charts, then `G`, `P`, `F` pickers and
+test ratio plus validation/test wape lines. the `G` picker defaults to `best` and lists each
+generation with its validation wape; choosing one highlights its curve and shows its saved
+parameters in `P` and feature families in `F`. importance percentages belong to `best` only.
+older runs without a saved generation genome show `not saved`. picks, open menus and keyboard
+focus survive polling; only one menu opens at a time, and escape closes it. one-shot models
+join their values across generations in shorter charts. models without curves have short
+cards with no pickers; ensembles have short dashed cards listing their members. results tab
+tiles keep their existing layout and flip controls.
+custom error metric selections add their saved values and help texts below the two summary
+lines; the default selection keeps the compact footer.
 
 `GET /api/forecast-run-tiles?run=<id>` returns `{"tiles": [...], "ensembles": [...]}`, with no
 cursor; `ensembles` holds every scored ensemble row using the same tile shape.

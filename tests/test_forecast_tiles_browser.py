@@ -156,14 +156,14 @@ def make_contract_tiles(root):
             {
                 "generation": generation,
                 "key": key,
-                "train_loss": [9, 4, 2] if index < 2 else [],
+                "train_loss": [9, 4, 2] if index < 2 else [index + generation],
                 "curves": {
                     "wape": [3, 2, 1] if index < 2 else [index + generation],
                     "mae": [1, 2, 3],
                 },
                 "loss": {"name": "rmse"},
             }
-            for generation in range(4)
+            for generation in range(4 if index < 3 else 0)
         ]
         target = run / f"families/{name}/generation_curves.jsonl"
         target.write_text("\n".join(json.dumps(record) for record in records))
@@ -180,7 +180,7 @@ def make_contract_tiles(root):
     return run_id
 
 
-def test_contract_tiles_square_curves_filters_and_ensembles(tmp_path, monkeypatch):
+def test_contract_tiles_masonry_curves_filters_and_ensembles(tmp_path, monkeypatch):
     from smolsmort.forecast import runs
 
     monkeypatch.setattr(runs, "_alive", lambda _folder: True)
@@ -190,11 +190,26 @@ def test_contract_tiles_square_curves_filters_and_ensembles(tmp_path, monkeypatc
         page.locator(".forecast-run-tile").first.wait_for()
         tiles = page.locator(".forecast-run-tile")
         assert tiles.count() == 12
-        for tile in tiles.all():
-            box = tile.bounding_box()
-            assert abs(box["width"] - box["height"]) <= 1
-            assert tile.locator("svg").count() >= 1
         model = page.locator('.forecast-run-tile[data-family="xgboost"]')
+        naive = page.locator('.forecast-run-tile[data-family="snaive"]')
+        assert model.bounding_box()["height"] > naive.bounding_box()["height"] + 100
+        assert naive.locator("svg, details").count() == 0
+        assert "one candidate, no curve" in naive.inner_text()
+        assert model.locator(".forecast-run-tile-chart > svg").count() == 2
+        for chart in model.locator(".forecast-run-tile-chart > svg").all():
+            assert chart.bounding_box()["height"] >= 60
+        ridge = page.locator('.forecast-run-tile[data-family="ridge"]')
+        for chart in ridge.locator(".forecast-run-tile-chart > svg").all():
+            assert chart.bounding_box()["height"] == 48
+        assert model.locator("summary > span:first-child").all_text_contents() == ["G", "P", "F"]
+        assert "test ratio:" in model.inner_text()
+        assert "wape · validation" in model.inner_text()
+        assert (
+            page.locator("#regression-tiles-grid").evaluate(
+                "node => getComputedStyle(node).columnWidth"
+            )
+            == "306px"
+        )
         colours = (
             model.locator("svg")
             .first.locator("polyline")
@@ -204,15 +219,24 @@ def test_contract_tiles_square_curves_filters_and_ensembles(tmp_path, monkeypatc
             "var(--muted-on)",
             "var(--cream)",
             "var(--muted-on)",
-            "var(--kingfisher-milk)",
+            "var(--tile-tone)",
         ]
         assert page.locator(".forecast-run-tile polyline").evaluate_all(
             "nodes => nodes.every(node => node.getAttribute('points').split(/[ ,]/).every(value => Number(value) >= 0 && Number(value) <= 1))"
         )
         assert (
             model.locator("polyline").first.evaluate("node => getComputedStyle(node).strokeWidth")
-            == "1.5px"
+            == "1px"
         )
+        model.locator('details[data-menu="param"] summary').click()
+        model.locator('details[data-menu="feat"] summary').click()
+        page.wait_for_function(
+            "document.querySelectorAll('.forecast-run-tile details[open]').length === 1"
+        )
+        assert model.locator('details[data-menu="feat"]').get_attribute("open") is not None
+        page.locator("#regression-tiles-metric").focus()
+        page.keyboard.press("Escape")
+        assert model.locator("details[open]").count() == 0
         model.locator('details[data-menu="param"] summary').click()
         run = tmp_path / "forecast_root/.forecast-runs" / run_id
         curve_path = run / "families/xgboost/generation_curves.jsonl"
@@ -229,14 +253,10 @@ def test_contract_tiles_square_curves_filters_and_ensembles(tmp_path, monkeypatc
         )
         model.locator('details[data-menu="param"] summary').click()
         ensemble = page.locator('.forecast-run-tile[data-kind="ensemble"]').first
-        assert (
-            ensemble.locator(".forecast-run-tile-chart")
-            .last.locator("polyline, .forecast-run-tile-legend [data-value]")
-            .count()
-            >= 2
-        )
-        ensemble.locator("summary").click()
-        assert "lag" in ensemble.locator(".forecast-tile-menu").first.text_content()
+        assert ensemble.locator("svg, details").count() == 0
+        assert "+" in ensemble.locator(".forecast-tile-chart-note").inner_text()
+        page.set_viewport_size({"width": 1440, "height": 1800})
+        page.locator("#regression-tiles").screenshot(path=tmp_path / "run-tiles-masonry.png")
         before = tiles.evaluate_all("nodes => nodes.map(node => node.dataset.tileId)")
         page.locator("#regression-tiles-metric").click()
         assert {"ape", "mape", "wape", "ae", "mae", "wae", "rmse"} <= set(
@@ -289,7 +309,7 @@ def test_native_loss_curves_and_results_run_names(tmp_path):
               const ensemble = {kind: 'ensemble', members: ['old', 'current']};
               return [[old, false], [current, false], [ensemble, false], [old, true]].map(([tile, training]) => {
                 const chart = forecastRunTileChart(tile, [old, current], 'wape', training);
-                return {label: chart.querySelector('.forecast-tile-chart-label').textContent,
+                return {label: chart.querySelector('.forecast-tile-chart-label > span').textContent,
                   lines: chart.querySelectorAll('polyline').length, text: chart.textContent};
               });
             }"""
@@ -338,7 +358,7 @@ def test_contract_curve_drawing_and_loading(tmp_path):
                 "first": 0,
                 "last": 1,
                 "effect": "non-scaling-stroke",
-                "width": "1.5px",
+                "width": "1px",
             }
             assert result["points"] <= 150
         model = {
@@ -397,7 +417,7 @@ def test_contract_curve_drawing_and_loading(tmp_path):
         assert "test ratio: 0.25" in page.locator('[data-tile-id="ensemble"]').inner_text()
         empty_tile = page.locator('[data-tile-id="empty"]')
         assert empty_tile.locator(".forecast-tile-chart-note").all_text_contents() == [
-            "no curve saved"
+            "one candidate, no curve"
         ]
         assert empty_tile.locator(".forecast-run-tile-chart, svg").count() == 0
 
@@ -441,7 +461,7 @@ def test_ensemble_ratio_states_and_repaint(tmp_path):
                 assert result["tone"] == result["modelTone"]
 
 
-def test_ensemble_single_values_kept_chart_height_and_legend_clear(tmp_path):
+def test_ensemble_cards_list_members_without_charts_or_menus(tmp_path):
     with session(tmp_path, port=0) as (page, _base):
         page.wait_for_function("() => typeof forecastCreateRunTile === 'function'")
         page.evaluate(
@@ -465,36 +485,11 @@ def test_ensemble_single_values_kept_chart_height_and_legend_clear(tmp_path):
         tiles = page.locator("#ensemble-layout-test .forecast-run-tile")
         mixed = tiles.nth(1)
         assert mixed.locator(".forecast-run-tile-single").count() == 0
-        for index, value in ((0, "1685"), (1, "0.1917")):
-            chart = mixed.locator(".forecast-run-tile-chart").nth(index)
-            legend = chart.locator(".forecast-run-tile-legend")
-            assert f"snaive {value}" in legend.inner_text()
-            assert legend.locator("span").nth(2).evaluate("node => node.style.color") == (
-                "var(--stone-red-lift)"
-            )
-            svg_box = chart.locator(":scope > svg").bounding_box()
-            reference = (
-                tiles.first.locator(".forecast-run-tile-chart")
-                .nth(index)
-                .locator(":scope > svg")
-                .bounding_box()
-            )
-            assert svg_box["height"] > 0
-            assert svg_box["height"] == pytest.approx(reference["height"], abs=1)
-            legend_box = legend.bounding_box()
-            label_box = chart.locator(".forecast-tile-chart-label").bounding_box()
-            assert label_box["y"] + label_box["height"] <= svg_box["y"] + 1
-            assert svg_box["y"] + svg_box["height"] <= legend_box["y"] + 1
-        legend_box = mixed.locator(".forecast-run-tile-legend").first.bounding_box()
-        next_label = mixed.locator(".forecast-tile-chart-label").last.bounding_box()
-        assert legend_box["y"] + legend_box["height"] <= next_label["y"] + 1
-        last_svg = mixed.locator(".forecast-run-tile-chart > svg").last.bounding_box()
-        menu_box = mixed.locator("summary").bounding_box()
-        assert last_svg["y"] + last_svg["height"] <= menu_box["y"] + 1
-        assert mixed.locator(".forecast-run-tile-legend").first.evaluate(
-            "node => getComputedStyle(node).whiteSpace === 'nowrap' && "
-            "getComputedStyle(node).textOverflow === 'ellipsis'"
+        assert mixed.locator("svg, details").count() == 0
+        assert mixed.locator(".forecast-tile-chart-note").inner_text() == (
+            "lightgbm + xgboost + snaive + ridge + arima + ets + theta"
         )
+        assert mixed.bounding_box()["height"] < 160
 
 
 @pytest.mark.parametrize("tile_state", ["matching", "different", "hidden", "absent"])

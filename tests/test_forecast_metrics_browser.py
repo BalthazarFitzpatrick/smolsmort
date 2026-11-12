@@ -80,7 +80,16 @@ def assert_metric_headers(page, selector: str, selected: list[str]) -> None:
 
 def assert_metric_lines(locator, selected: list[str]) -> None:
     metrics = locator.locator(".forecast-metric[data-metric-id]")
-    assert metrics.evaluate_all("nodes => nodes.map(node => node.dataset.metricId)") == selected
+    if locator.locator(".forecast-run-tile-metrics").count():
+        expected = (
+            ["test_ratio"]
+            if selected == DEFAULTS
+            else list(dict.fromkeys(["test_ratio", *selected]))
+        )
+        assert metrics.evaluate_all("nodes => nodes.map(node => node.dataset.metricId)") == expected
+        assert "wape · validation" in locator.inner_text()
+    else:
+        assert metrics.evaluate_all("nodes => nodes.map(node => node.dataset.metricId)") == selected
     assert all(metrics.nth(index).get_attribute("title") for index in range(metrics.count()))
 
 
@@ -172,7 +181,7 @@ def test_error_metric_selection_updates_every_display_from_saved_predictions(tmp
         save_metrics(page, "tiles-front")
         assert not page.locator("#regression-tiles-flip").is_visible()
         assert tile.locator("svg").count() == 0
-        assert tile.locator(".forecast-tile-chart-note").inner_text() == "no curve saved"
+        assert tile.locator(".forecast-tile-chart-note").inner_text() == "one candidate, no curve"
 
         page.locator("#regression-config-mode-warm").click()
         page.locator("#regression-run-open").click()
@@ -300,7 +309,7 @@ def test_error_metric_picker_keeps_phone_document_within_viewport(tmp_path):
         save_metrics(page, "phone-picker")
 
 
-def test_square_tile_picker_uses_each_models_and_ensembles_saved_metrics(tmp_path):
+def test_masonry_tile_picker_uses_each_models_and_ensembles_saved_metrics(tmp_path):
     from test_forecast_tiles_browser import make_contract_tiles
 
     with session(tmp_path, port=0) as (page, base):
@@ -329,7 +338,7 @@ def test_square_tile_picker_uses_each_models_and_ensembles_saved_metrics(tmp_pat
                     baseline = result["winner"]["verdict"]["accuracy"]["baseline_error"]
                     value = tile["metrics"]["wape"]["test"] / baseline
                 expected = (
-                    "-"
+                    ("–" if metric == "test_ratio" else "-")
                     if value is None
                     else f"{value:.2f}"
                     if metric == "test_ratio"
@@ -341,8 +350,9 @@ def test_square_tile_picker_uses_each_models_and_ensembles_saved_metrics(tmp_pat
                 assert line.inner_text().endswith(": " + expected), (tile["tile_id"], metric)
                 if tile["kind"] == "ensemble" and metric == "test_ratio":
                     assert "model error / naive error" in line.get_attribute("title")
-            box = card.bounding_box()
-            assert abs(box["width"] - box["height"]) <= 1
-            assert card.locator("svg").count() >= 1
+            if tile["kind"] == "ensemble" or not tile["curves"]:
+                assert card.locator("svg, details").count() == 0
+            else:
+                assert card.locator("svg").count() >= 1
             for chart in card.locator("svg").all():
                 assert chart.bounding_box()["height"] > 0
