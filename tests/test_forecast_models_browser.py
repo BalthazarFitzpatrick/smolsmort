@@ -63,13 +63,27 @@ def test_tile_generation_picker_keeps_recipes_and_selection_on_poll(tmp_path, mo
         assert "best_feature" in feat.text_content() and "70%" in feat.text_content()
         assert "max_depth3" in param.text_content()
         gen.locator("summary").click()
-        assert gen.locator("button").all_text_contents() == ["best", "0", "1", "2"]
+        assert tile.locator("summary > span:first-child").all_text_contents() == ["G", "P", "F"]
+        assert gen.locator("button > span:first-child").all_text_contents() == [
+            "best",
+            "gen 0",
+            "gen 1",
+            "gen 2",
+        ]
+        assert gen.locator("button > span:last-child").all_text_contents() == [
+            "gen 1 · 1",
+            "1",
+            "1",
+            "1",
+        ]
         gen.locator('button[data-generation="0"]').click()
         assert "lag_0" in feat.text_content() and "%" not in feat.text_content()
         assert "max_depth2" in param.text_content()
         selected = chart.locator('polyline[data-generation="0"]')
         assert selected.get_attribute("data-selected") == "true"
-        assert selected.evaluate("node => getComputedStyle(node).strokeWidth") == "3px"
+        assert gen.locator("summary").evaluate("node => node === document.activeElement")
+        assert selected.evaluate("node => node.style.stroke") == "var(--accent-on)"
+        assert selected.evaluate("node => getComputedStyle(node).strokeWidth") == "2.5px"
         assert (
             chart.locator('polyline[data-generation="1"]').evaluate("node => node.style.stroke")
             == "var(--cream)"
@@ -91,6 +105,16 @@ def test_tile_generation_picker_keeps_recipes_and_selection_on_poll(tmp_path, mo
         assert "best_feature" in feat.text_content() and "70%" in feat.text_content()
         ridge = page.locator('.forecast-run-tile[data-family="ridge"]')
         assert ridge.locator(".forecast-run-tile-chart").last.locator("polyline").count() == 3
+        ridge_chart = ridge.locator(".forecast-run-tile-chart").last
+        assert (
+            ridge_chart.locator('line[data-generation="1"]').evaluate("node => node.style.stroke")
+            == "var(--cream)"
+        )
+        ridge.locator('details[data-menu="gen"] summary').click()
+        ridge.locator('button[data-generation="0"]').click()
+        marker = ridge_chart.locator('line[data-generation="0"][data-selected="true"]')
+        assert marker.evaluate("node => node.style.stroke") == "var(--accent-on)"
+        assert marker.evaluate("node => getComputedStyle(node).strokeWidth") == "2.5px"
 
 
 def make_catalog():

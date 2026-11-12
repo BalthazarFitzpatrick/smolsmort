@@ -296,25 +296,36 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-tile-bar-value { min-width: 48px; flex: 0 0 auto; text-align: right; color: var(--tile-tone); }
 .forecast-tile-bar[data-state="unknown"] .forecast-tile-bar-value { color: var(--text-dim); }
 .forecast-tile-note { font-size: 10px; margin-top: 5px; }
-.forecast-run-tile { aspect-ratio: 1; }
-.forecast-run-tile .forecast-tile-inner { height: 100%; }
-.forecast-run-tile .forecast-tile-face { height: 100%; min-height: 0; gap: 4px; }
+.forecast-tiles-grid:has(> .forecast-run-tile) { display: block; column-width: 306px; column-gap: 12px; }
+.forecast-run-tile { width: 100%; break-inside: avoid; margin-bottom: 12px; }
+.forecast-run-tile .forecast-tile-face { min-height: 0; gap: 4px; }
 .forecast-run-tile[data-kind="ensemble"] .forecast-tile-face { border-style: dashed; }
-.forecast-run-tile .forecast-tile-score { font-size: 10px; }
+.forecast-run-tile .forecast-tile-score { font-size: 10px; line-height: 20px; }
 .forecast-run-tile-chart { flex: 0 0 auto; min-height: 0; position: relative; margin: 0; }
-.forecast-run-tile-chart > svg { width: 100%; height: 48px; display: block; border-left: 1px solid var(--grey-border); border-bottom: 1px solid var(--grey-border); }
+.forecast-run-tile-chart > svg { width: 100%; height: 64px; display: block; box-sizing: border-box; border-left: 1px solid var(--grey-border); border-bottom: 1px solid var(--grey-border); }
+.forecast-run-tile-chart-short > svg { height: 48px; }
+.forecast-run-tile .forecast-tile-chart-label { margin: 4px 0; }
 .forecast-run-tile-legend { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .forecast-tile .forecast-run-tile-chart polyline { stroke-width: 1.5px; fill: none; }
 .forecast-run-tile-chart-compact { flex: 0 0 auto; }
 .forecast-run-tile-single { display: flex; align-items: center; font-size: 11px; }
 .forecast-run-tile-chart .forecast-run-tile-single svg { width: 12px; height: 12px; border: 0; flex: 0 0 12px; }
-.forecast-run-tile .forecast-tile-menus { flex: 0 0 auto; grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.forecast-run-tile details[data-menu="feat"] .forecast-tile-menu { left: 50%; transform: translateX(-50%); }
+.forecast-run-tile .forecast-tile-menus { flex: 0 0 auto; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 4px; }
+.forecast-run-tile .forecast-tile-menu { width: calc(300% + 16px); max-width: 80vw; }
+.forecast-run-tile .forecast-tile-menu-row { box-sizing: border-box; font: inherit; font-size: 12px; }
+.forecast-run-tile details[data-menu="param"] .forecast-tile-menu { left: 50%; right: auto; transform: translateX(-50%); }
+.forecast-run-tile details[data-menu="feat"] .forecast-tile-menu { left: auto; right: 0; }
 .forecast-tile details[data-menu="gen"] button { width: 100%; border: 0; background: none; color: inherit; text-align: left; cursor: pointer; }
 .forecast-tile details[data-menu="gen"] button:hover, .forecast-tile details[data-menu="gen"] button[aria-pressed="true"] { background: var(--accent-on); color: var(--accent-on-text); }
 .forecast-tile-selectors { display: flex; gap: 12px; }
 .forecast-tile .forecast-metric-lines { margin-top: auto; padding-top: 8px; font-size: 11px; line-height: 18px; }
-.forecast-run-tile .forecast-metric-lines { flex: 0 0 auto; padding-top: 0; line-height: 14px; }
+.forecast-run-tile .forecast-metric-lines { flex: 0 0 auto; margin-top: 6px; padding-top: 0; line-height: 14px; }
+.forecast-run-tile .forecast-metric-lines .forecast-metric-lines { margin-top: 0; }
+.forecast-run-tile-ratio { color: var(--tile-tone); }
+.forecast-run-tile-value { color: var(--text); }
+.forecast-run-tile-small .forecast-tile-face { gap: 2px; }
+.forecast-run-tile-small .forecast-metric-lines { margin-top: 2px; }
+.forecast-run-tile-small .forecast-tile-chart-note { font-size: 11px; line-height: 14px; }
 @media (prefers-reduced-motion: reduce) { .forecast-tile-inner { transition: none; } }
 @media (max-width: 760px) { .forecast-search-layout { grid-template-columns: minmax(0, 1fr); } }
 .forecast-run-row { position: relative; width: 100%; height: auto; min-height: var(--row-height); flex-wrap: wrap; justify-content: flex-start; gap: 4px var(--gap); padding-block: 6px; }
