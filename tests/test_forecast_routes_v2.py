@@ -705,7 +705,7 @@ def test_multi_poll_merges_family_status_and_never_loses_slower_family_updates(a
             "families": {
                 "ridge": {
                     "state": "pruned",
-                    "phase": "halving",
+                    "phase": "pruning",
                     "slice_s": 5,
                     "best_error": 0.4,
                     "pruned_reason": "behind snaive",

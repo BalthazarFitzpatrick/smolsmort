@@ -18,7 +18,7 @@ from smolsmort.forecast.requests import parse_request
 from smolsmort.forecast.screen import read_priors, read_top_families
 from smolsmort.forecast.search import Budget, search
 from smolsmort.forecast.spec import spec_from_dict
-from smolsmort.forecast.worker import _Run, _warm_start
+from smolsmort.forecast.worker import _Run, _warm_start, restore_phases
 
 
 def read_json(path, default=None):
@@ -39,6 +39,7 @@ def run(folder: Path, name: str) -> int:
     target.mkdir(parents=True, exist_ok=True)
     allocation = read_json(target / "slice.json")
     if allocation:
+        restore_phases(allocation)
         watch_parent(allocation["parent_pid"])
     if not allocation and read_json(target / "status.json", {}).get("state") == "done":
         return 0
