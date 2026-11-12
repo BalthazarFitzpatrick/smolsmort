@@ -483,7 +483,7 @@ function forecastRunTileChart(tile, tiles, metric, training, selected = 'best') 
       const drawSegment = () => {
         if (!segment.length) return;
         if (segment.length === 1) {
-          // the next segment already includes the first one-shot value
+          // the next segment includes the first value; state markers are drawn below
           if (oneShot && generations.length > 1 && index === 0) {
             segment = [];
             return;
@@ -521,6 +521,22 @@ function forecastRunTileChart(tile, tiles, metric, training, selected = 'best') 
       };
       points.forEach(point => { if (point) segment.push(point); else drawSegment(); });
       drawSegment();
+      if (oneShot && generations.length > 1 && values.some(Number.isFinite)
+          && (Number(generation) === member.best_generation || generation === selected)) {
+        const marker = document.createElementNS(svg.namespaceURI, 'line');
+        const x = index / (generations.length - 1);
+        marker.setAttribute('x1', x); marker.setAttribute('x2', x);
+        marker.setAttribute('y1', '0'); marker.setAttribute('y2', '1');
+        marker.setAttribute('vector-effect', 'non-scaling-stroke');
+        marker.style.stroke = `var(${colour})`;
+        marker.style.strokeWidth = generation === selected ? '2.5px' : '1.5px';
+        marker.dataset.generation = generation;
+        if (generation === selected) marker.dataset.selected = 'true';
+        const title = document.createElementNS(svg.namespaceURI, 'title');
+        title.textContent = `gen ${generation} · ${curveMetric} ${Number(values.find(Number.isFinite).toPrecision(4))}`;
+        marker.append(title);
+        svg.append(marker);
+      }
     });
     svg.querySelectorAll('[data-selected]').forEach(line => svg.append(line));
   });

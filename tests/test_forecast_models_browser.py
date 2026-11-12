@@ -105,6 +105,16 @@ def test_tile_generation_picker_keeps_recipes_and_selection_on_poll(tmp_path, mo
         assert "best_feature" in feat.text_content() and "70%" in feat.text_content()
         ridge = page.locator('.forecast-run-tile[data-family="ridge"]')
         assert ridge.locator(".forecast-run-tile-chart").last.locator("polyline").count() == 3
+        ridge_chart = ridge.locator(".forecast-run-tile-chart").last
+        assert (
+            ridge_chart.locator('line[data-generation="1"]').evaluate("node => node.style.stroke")
+            == "var(--cream)"
+        )
+        ridge.locator('details[data-menu="gen"] summary').click()
+        ridge.locator('button[data-generation="0"]').click()
+        marker = ridge_chart.locator('line[data-generation="0"][data-selected="true"]')
+        assert marker.evaluate("node => node.style.stroke") == "var(--accent-on)"
+        assert marker.evaluate("node => getComputedStyle(node).strokeWidth") == "2.5px"
 
 
 def make_catalog():

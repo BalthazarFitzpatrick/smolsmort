@@ -180,8 +180,9 @@ def test_error_metric_selection_updates_every_display_from_saved_predictions(tmp
         assert_metric_lines(run_row, METRICS)
         save_metrics(page, "tiles-front")
         assert not page.locator("#regression-tiles-flip").is_visible()
-        assert tile.locator("svg").count() == 0
-        assert tile.locator(".forecast-tile-chart-note").inner_text() == "one candidate, no curve"
+        # validation curves render even when training history is missing
+        assert tile.locator(".forecast-run-tile-chart > svg").count() == 1
+        assert tile.locator(".forecast-tile-chart-note").inner_text() == "no curve saved"
 
         page.locator("#regression-config-mode-warm").click()
         page.locator("#regression-run-open").click()
