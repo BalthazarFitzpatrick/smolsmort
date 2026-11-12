@@ -110,7 +110,7 @@ class ForecastTrainingConfig {
     const sections = () => [{kind: 'list', multi: true,
       items: [{id: 'all-suitable', label: 'all suitable', on: this.catalog.filter(f => this.canSelect(f)).every(f => draft.has(f.name))},
         ...this.catalog.map(f => ({id: f.name, label: f.label || f.name, on: draft.has(f.name),
-          disabled: !this.canSelect(f), stats: this.canSelect(f) ? '' : f.reason || f.install_command || 'unavailable'}))],
+          disabled: !this.canSelect(f), stats: this.canSelect(f) ? f.coverage_note || '' : f.reason || f.install_command || 'unavailable'}))],
       onPick: (item, on, menu) => {
         if (item.id === 'all-suitable') this.catalog.filter(f => this.canSelect(f)).forEach(f => draft.add(f.name));
         else if (this.catalog.some(f => f.name === item.id && this.canSelect(f))) {

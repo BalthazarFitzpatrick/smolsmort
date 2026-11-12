@@ -8,17 +8,30 @@ from math import erfc
 import numpy as np
 
 
+def mean_predictions(predictions):
+    """average available members per row; no available member stays n/a"""
+    values = np.asarray(predictions, dtype=float)
+    available = ~np.isnan(values)
+    counts = available.sum(axis=0)
+    return np.divide(
+        np.where(available, values, 0).sum(axis=0),
+        counts,
+        out=np.full(values.shape[1:], np.nan),
+        where=counts > 0,
+    )
+
+
 def wape(y, p) -> float:
-    """sum of absolute errors over the sum of actuals, on rows with a known actual"""
+    """sum of absolute errors over absolute actuals, on finite prediction pairs"""
     y, p = np.asarray(y, dtype=float), np.asarray(p, dtype=float)
-    known = np.isfinite(y)
+    known = np.isfinite(y) & np.isfinite(p)
     total = np.abs(y[known]).sum()
     return float(np.abs(y[known] - p[known]).sum() / total) if total else float("nan")
 
 
 def mae(y, p) -> float:
     y, p = np.asarray(y, dtype=float), np.asarray(p, dtype=float)
-    known = np.isfinite(y)
+    known = np.isfinite(y) & np.isfinite(p)
     return float(np.abs(y[known] - p[known]).mean()) if known.any() else float("nan")
 
 
@@ -283,8 +296,11 @@ def lead_errors(actual, prediction, naive, leads, phase):
     }
     errors = {}
     for lead in np.unique(leads):
-        rows = leads == lead
-        model, baseline = wape(actual[rows], prediction[rows]), wape(actual[rows], naive[rows])
+        rows = (leads == lead) & np.isfinite(actual) & np.isfinite(prediction)
+        model = wape(actual[rows], prediction[rows])
+        baseline = (
+            wape(actual[rows], naive[rows]) if np.isfinite(naive[rows]).all() else float("nan")
+        )
         count = int(rows.sum())
         errors[str(lead)] = {"model": model, "naive": baseline, "rows": count}
         values = (
@@ -426,8 +442,11 @@ def judge(
         {
             "check": "naive baseline comparison",
             "group": "accuracy",
-            "detail": f"error {model_error:.3g} vs baseline {baseline_error:.3g} "
-            f"(ratio {ratio:.2f})",
+            "detail": (
+                f"error {model_error:.3g} vs baseline {baseline_error:.3g} (ratio {ratio:.2f})"
+                if np.isfinite(baseline_error)
+                else "naive predictions unavailable on covered test rows"
+            ),
         }
     )
     has_band = band_coverage is not None and np.isfinite(band_coverage)
@@ -482,7 +501,11 @@ def judge(
         }
     )
     comparison = "better" if ratio < 1 else "worse"
-    summary = f"ratio {ratio:.2f}, {comparison} than naive: {accuracy['text']}"
+    summary = (
+        f"ratio {ratio:.2f}, {comparison} than naive: {accuracy['text']}"
+        if not np.isnan(ratio)
+        else f"baseline comparison unavailable: {accuracy['text']}"
+    )
     return {
         "summary": summary,
         "accuracy": accuracy,
@@ -495,6 +518,10 @@ def _accuracy_text(metric: str, model: float, baseline: float, ratio: float) -> 
         model_text, baseline_text = f"{model:.1%}", f"{baseline:.1%}"
     else:
         model_text, baseline_text = f"{model:.3g}", f"{baseline:.3g}"
+    if not np.isfinite(model):
+        model_text = "n/a"
+    if not np.isfinite(baseline):
+        baseline_text = "n/a"
     gain = (
         f"{abs(1 - ratio):.0%} {'better' if ratio < 1 else 'worse'}" if np.isfinite(ratio) else ""
     )

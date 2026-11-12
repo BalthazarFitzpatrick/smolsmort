@@ -183,10 +183,9 @@ def _read_test_metrics(path, modified_ns, size):
             known = f"isfinite({actual})"
             valid = f"{known} AND isfinite(prediction)"
             positive = f"{valid} AND {actual} > 0"
-            total, count, invalid, denominator, absolute, mape, positive_count = con.execute(
-                f"""SELECT COUNT(*), COUNT(*) FILTER (WHERE {known}),
-                    COUNT(*) FILTER (WHERE {known} AND NOT COALESCE(isfinite(prediction), FALSE)),
-                    SUM(ABS({actual})) FILTER (WHERE {known}),
+            total, count, denominator, absolute, mape, positive_count = con.execute(
+                f"""SELECT COUNT(*), COUNT(*) FILTER (WHERE {valid}),
+                    SUM(ABS({actual})) FILTER (WHERE {valid}),
                     SUM(ABS({actual} - prediction)) FILTER (WHERE {valid}),
                     AVG(ABS({actual} - prediction) / {actual}) FILTER (WHERE {positive}),
                     COUNT(*) FILTER (WHERE {positive}) FROM {source}"""
@@ -194,18 +193,18 @@ def _read_test_metrics(path, modified_ns, size):
     except (duckdb.Error, OSError, ValueError, TypeError):
         return _unavailable_test("saved test predictions are incomplete or unreadable")
     if not count:
-        reason = "test predictions have no known actuals"
-    elif invalid:
-        reason = "test predictions contain undefined predictions for known actuals"
+        reason = "test predictions have no finite prediction and actual pairs"
     else:
         reason = None
     wape = absolute / denominator if reason is None and denominator else None
     mae = absolute / count if reason is None else None
     return {
         "wape": _metric_value(
-            wape, reason=reason or "wape is undefined because absolute actuals sum to zero"
+            wape,
+            reason=reason or "wape is undefined because absolute actuals sum to zero",
+            excluded_rows=total - count,
         ),
-        "mae": _metric_value(mae, reason=reason or "mae is undefined"),
+        "mae": _metric_value(mae, reason=reason or "mae is undefined", excluded_rows=total - count),
         "mape": _metric_value(
             mape,
             reason="mape has no finite predictions with actual > 0",

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from smolsmort.forecast.evaluate import apply_lead_bands, fit_lead_bands
+from smolsmort.forecast.evaluate import apply_lead_bands, fit_lead_bands, mean_predictions
 from smolsmort.forecast.tables import read_table, write_table
 from smolsmort.forecast.views import write_json_atomic
 
@@ -61,6 +61,10 @@ def _validation_error(folder):
 
 
 def _wape(prediction, actual):
+    finite = np.isfinite(prediction) & np.isfinite(actual)
+    prediction, actual = prediction[finite], actual[finite]
+    if not len(actual):
+        return math.inf
     denominator = float(np.abs(actual).sum())
     error = float(np.abs(prediction - actual).sum())
     return error / denominator if denominator else (0.0 if error == 0 else math.inf)
@@ -85,9 +89,8 @@ def pick_ensemble(runs_root: Path, members: dict[str, str]):
             family: np.asarray(table["prediction"], dtype=float)
             for family, table in aligned_tables.items()
         }
-        finite = np.all(np.isfinite(np.column_stack(list(aligned.values()))), axis=1)
-        parts[part] = {name: values[finite].copy() for name, values in first.items()}
-        stacks[part] = {family: values[finite] for family, values in aligned.items()}
+        parts[part] = {name: values.copy() for name, values in first.items()}
+        stacks[part] = aligned
     actual = parts["validation"]["actual"]
     best = min(
         (
@@ -96,11 +99,11 @@ def pick_ensemble(runs_root: Path, members: dict[str, str]):
             for group in itertools.combinations(members, count)
         ),
         key=lambda group: _wape(
-            np.mean([stacks["validation"][name] for name in group], axis=0), actual
+            mean_predictions([stacks["validation"][name] for name in group]), actual
         ),
     )
     for part, table in parts.items():
-        table["prediction"] = np.mean([stacks[part][name] for name in best], axis=0)
+        table["prediction"] = mean_predictions([stacks[part][name] for name in best])
     validation = parts["validation"]
     if "weeks_ahead" in validation:
         leads = {part: table["weeks_ahead"] for part, table in parts.items()}
@@ -204,6 +207,11 @@ def update_set(
         validation_error = _wape(parts["validation"]["prediction"], parts["validation"]["actual"])
         test_error = _wape(parts["test"]["prediction"], parts["test"]["actual"])
         baseline = result.get("baseline_error")
+        if "naive_prediction" in parts["test"]:
+            test = parts["test"]
+            covered = np.isfinite(test["prediction"]) & np.isfinite(test["actual"])
+            naive = test["naive_prediction"][covered]
+            baseline = _wape(naive, test["actual"][covered]) if np.isfinite(naive).all() else None
         ratio = test_error / baseline if baseline else None
         result["ensemble"] = {
             "members": list(selected),

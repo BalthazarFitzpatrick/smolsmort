@@ -50,8 +50,10 @@ def test_zero_actuals_and_undefined_predictions_remain_honest(tmp_path):
     assert values["mape"]["value"] is None and values["mape"]["excluded_rows"] == 2
     write_predictions(path, [10, 20, 0], [12, np.nan, 0])
     values = metrics.read_test_metrics(path)
+    assert values["wape"]["value"] == pytest.approx(0.2)
+    assert values["mae"]["value"] == 1
     for name in ("wape", "mae"):
-        assert values[name]["value"] is None and "undefined predictions" in values[name]["reason"]
+        assert values[name]["excluded_rows"] == 1
     assert values["mape"]["value"] == pytest.approx(0.2)
     assert values["mape"]["excluded_rows"] == 2
 

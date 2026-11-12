@@ -10,7 +10,12 @@ import pytest
 
 from smolsmort.forecast.families import get_family
 from smolsmort.forecast.families import stats as stats_module
-from smolsmort.forecast.families.stats import RawSeriesTask, build_model, forecast_single_rows
+from smolsmort.forecast.families.stats import (
+    RawSeriesTask,
+    build_model,
+    forecast_single_rows,
+    series_eligibility,
+)
 from smolsmort.forecast.pipeline import PipelineError, _timeseries_raw_fit, make_genome
 from smolsmort.forecast.spec import SERIES, STEP
 
@@ -46,6 +51,7 @@ def make_task(origins=(70, 71, 72, 73, 74, 75), *, future=False):
         np.ones(len(keys), dtype=bool),
         (1, horizon),
         13,
+        series_eligibility(panel, "y", "week", {"period": 13}, horizon),
         horizon_mode="single",
     )
 
@@ -105,9 +111,9 @@ def test_single_stats_transforms_never_validate_post_origin_targets(transform):
     task = make_task(origins=(70,))
     workspace = SimpleNamespace(
         panel=task.panel,
-        spec=SimpleNamespace(named=lambda _role: ["y"], history_fill=None),
+        spec=SimpleNamespace(named=lambda _role: ["y"], history_fill=None, horizon=8),
         unit=task.unit,
-        profile={"genes": {"period": task.season_length}},
+        profile={"period": task.season_length, "genes": {"period": task.season_length}},
         horizon_mode="single",
     )
     genome = make_genome([], "squared", {}, family="ets", transform=transform)

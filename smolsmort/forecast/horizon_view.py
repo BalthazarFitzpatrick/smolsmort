@@ -102,7 +102,13 @@ def blend_rows(
         positive = target_weights > 0
         for name in averaged:
             values = columns[name][indices].astype(float)
-            result[name][target_index] = np.dot(values[positive], target_weights[positive])
+            available = positive & ~np.isnan(values)
+            result[name][target_index] = (
+                np.dot(values[available], target_weights[available])
+                / target_weights[available].sum()
+                if available.any()
+                else np.nan
+            )
     return result
 
 

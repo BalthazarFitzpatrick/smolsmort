@@ -771,6 +771,8 @@ file without a search, or seed the next search with its final population.
 
 #### long-run forecast controls
 
+statistical families show n/a for series with fewer than two seasons of training history and score only the series they cover.
+
 v2 request json and `forecast.runs.start_run` support these controls:
 
 | field | default | meaning |

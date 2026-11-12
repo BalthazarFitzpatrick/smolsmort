@@ -16,6 +16,7 @@ from smolsmort.forecast.families.stats import (
     build_model,
     join_predictions,
     season_length,
+    series_eligibility,
 )
 from smolsmort.forecast.features import buckets_for, timeseries_features
 from smolsmort.forecast.pipeline import (
@@ -76,6 +77,7 @@ def make_task(ws, bucket=(2, 4), phase="val"):
         ws.series_masks[bucket][phase],
         bucket,
         season_length(ws.profile),
+        series_eligibility(ws.panel, "y", ws.unit, ws.profile, ws.spec.horizon),
     )
 
 
@@ -274,8 +276,7 @@ def test_search_records_history_failure_and_continues(workspace):
     ws.families = ["y@day:lag+0"]
     ws.profile["genes"]["objectives"] = ["squared"]
     cutoff = ws.frames[(1, 1)].origin[ws.series_masks[(1, 1)]["val"]].min()
-    keep = ws.panel[STEP] >= cutoff
-    ws.panel = {name: values[keep] for name, values in ws.panel.items()}
+    ws.panel["y"][ws.panel[STEP] == cutoff] = np.nan
     genome = make_genome(["y@day:lag+0"], "squared", {}, family="ets")
     baseline = make_genome(["y@day:lag+0"], "squared", {}, family="snaive")
     result = search(
@@ -285,7 +286,7 @@ def test_search_records_history_failure_and_continues(workspace):
     entry = next(row for row in result["leaderboard"] if row["genome"]["family"] == "ets")
     assert entry["fitness"] is None
     assert "failed: family 'ets'" in entry["note"]
-    assert "insufficient history" in entry["note"]
+    assert "nonfinite history" in entry["note"]
 
 
 @pytest.mark.parametrize("name", ["ets", "theta", "arima"])
