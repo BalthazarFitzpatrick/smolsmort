@@ -30,8 +30,6 @@ from smolsmort.forecast.transform import TransformError
 
 # budget defaults: the design review's population and plateau, a 20 minute cap - unmeasured
 POPULATION = 16
-ELITE = 3
-TOURNAMENT = 3
 PLATEAU = 5
 TIME_CAP = 20 * 60
 MAX_GENERATIONS = 60
@@ -529,6 +527,10 @@ def _map_saved_names(ws, warm, resume, priors, top_families):
     return warm, resume, priors, top_families
 
 
+def _selection_sizes(population: int) -> tuple[int, int]:
+    return max(1, round(0.10 * population)), max(2, round(0.10 * population))
+
+
 def search(
     ws: Workspace,
     budget: Budget,
@@ -556,6 +558,7 @@ def search(
     """run until a plateau, the time cap, the generation cap or `stop()`; returns the ranked
     leaderboard, the final population (the next search's warm start) and why it stopped"""
     rng = np.random.default_rng(budget.seed)
+    elite_count, tournament = _selection_sizes(budget.population)
     validation_folds = check_validation_folds(ws, resume)
     if isinstance(family, str):
         family = get_family(family)
@@ -820,12 +823,12 @@ def search(
         if elapsed >= budget.time_cap:
             reason = "time cap"
             break
-        elite = [e.genome for e in entries[:ELITE]]
+        elite = [e.genome for e in entries[:elite_count]]
         children = []
         keys = {g.key() for g in elite}
         while len(elite) + len(children) < budget.population:
             a, b = (
-                min(rng.choice(len(entries), TOURNAMENT), key=lambda i: entries[i].rank())
+                min(rng.choice(len(entries), tournament), key=lambda i: entries[i].rank())
                 for _ in range(2)
             )
             child = var.mutate(var.crossover(entries[a].genome, entries[b].genome))

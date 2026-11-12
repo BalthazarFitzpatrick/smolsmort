@@ -24,6 +24,7 @@ from smolsmort.forecast.search import (
     _family_population,
     _FamilyVariation,
     _seed_population,
+    _selection_sizes,
     _Variation,
     search,
 )
@@ -34,6 +35,66 @@ pytest.importorskip("xgboost")
 pytest.importorskip("duckdb")
 
 TINY = {"population": 6, "plateau": 2, "max_generations": 3, "time_cap": 120, "seed": 0}
+
+
+@pytest.mark.parametrize(
+    "population, expected", [(1, (1, 2)), (16, (2, 2)), (40, (4, 4)), (100, (10, 10))]
+)
+def test_selection_sizes_follow_the_population(population, expected):
+    assert _selection_sizes(population) == expected
+
+
+@pytest.mark.parametrize(
+    "population, elite_count, tournament", [(16, 2, 2), (40, 4, 4), (100, 10, 10)]
+)
+@pytest.mark.parametrize("family", [None, "lightgbm"])
+def test_search_carries_elites_unchanged_and_uses_population_sized_contests(
+    monkeypatch, population, elite_count, tournament, family
+):
+    import importlib
+
+    search_module = importlib.import_module("smolsmort.forecast.search")
+    ws, _var, _legacy, _novel = make_candidate_search("week", family)
+    monkeypatch.setattr(search_module, "_sample", lambda *_: None)
+    default_rng = np.random.default_rng
+    contests = []
+
+    class RecordingRng:
+        def __init__(self, seed):
+            self.rng = default_rng(seed)
+
+        def __getattr__(self, name):
+            return getattr(self.rng, name)
+
+        def choice(self, values, size=None):
+            if isinstance(values, int) and size is not None:
+                contests.append((values, size))
+            return self.rng.choice(values, size)
+
+    monkeypatch.setattr(search_module.np.random, "default_rng", RecordingRng)
+    evaluated = []
+
+    def score_candidate(_ws, genome, **_kwargs):
+        evaluated.append(genome)
+        fitness = -float(len(evaluated))
+        return Scored(fitness, np.array([fitness]), {}, None)
+
+    monkeypatch.setattr(search_module, "score", score_candidate)
+    budget = Budget(population=population, max_generations=1, seed=17)
+    first = search(ws, budget, family=family)
+    assert len(evaluated) == population
+    assert len(first["population"]) == population
+    assert first["population"][:elite_count] == [
+        genome.to_dict() for genome in reversed(evaluated[-elite_count:])
+    ]
+    expected_contests = [(population, tournament)] * (2 * (population - elite_count))
+    assert contests == expected_contests
+    evaluated.clear()
+    contests.clear()
+    second = search(ws, budget, family=family)
+    assert first["population"] == second["population"]
+    assert first["leaderboard"] == second["leaderboard"]
+    assert contests == expected_contests
 
 
 def make_candidate_search(unit, family):
@@ -382,7 +443,8 @@ def test_best_history_replaced_before_generation_events_and_cleared_when_unusabl
         profile={"genes": {"objectives": ["squared"]}},
     )
     genomes = [
-        make_genome(ws.families, "squared", {"max_depth": depth}) for depth in (6, 7, 8, 9, 4, 2, 1)
+        make_genome(ws.families, "squared", {"max_depth": depth})
+        for depth in (6, 7, 8, 9, 4, 10, 11, 2, 12, 13, 1, 14, 15)
     ]
     children = iter(genomes[4:])
     monkeypatch.setattr(search_module, "_seed_population", lambda *_: genomes[:4])
@@ -430,7 +492,7 @@ def test_generation_curves_use_the_generation_winner_even_without_a_new_best(mon
     )
     genomes = [make_genome(ws.families, "squared", {"max_depth": depth}) for depth in range(6, 14)]
     children = iter(genomes[4:] * 2)
-    monkeypatch.setattr(search_module, "ELITE", 0)
+    monkeypatch.setattr(search_module, "_selection_sizes", lambda _: (0, 2))
     monkeypatch.setattr(search_module, "_seed_population", lambda *_: genomes[:4])
     monkeypatch.setattr(search_module._Variation, "mutate", lambda *_: next(children))
 
@@ -758,7 +820,7 @@ def test_progress_includes_cached_candidates_and_full_sample_rescores(monkeypatc
         profile={"genes": {"objectives": ["squared"]}},
     )
     genomes = [make_genome(ws.families, "squared", {"max_depth": n}) for n in range(1, 5)]
-    monkeypatch.setattr(search_module, "ELITE", 4)
+    monkeypatch.setattr(search_module, "_selection_sizes", lambda _: (4, 2))
     monkeypatch.setattr(search_module, "_seed_population", lambda *_: genomes)
     monkeypatch.setattr(search_module, "_sample", lambda *_: ws.masks["train"] if sampled else None)
     scores = []
