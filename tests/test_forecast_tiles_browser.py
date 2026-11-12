@@ -416,6 +416,7 @@ def test_ensemble_ratio_states_and_repaint(tmp_path):
                   const run = {runTiles: [model, ensemble],
                     verdict: {accuracy: {baseline_error: baseline ? 1 : null}}};
                   const context = {topic: 'regression', tileMetric: 'wape', tileTop: 'all',
+                    tileGenerations: new Map(),
                     tileMetricOptions: [], selectedMetrics: () => [{id: 'test_ratio', scope: 'test',
                       label: 'test ratio', unit: 'ratio'}]};
                   ForecastTopic.prototype.paintContractTiles.call(context, run, grid);

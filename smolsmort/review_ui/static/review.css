@@ -308,7 +308,10 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-run-tile-chart-compact { flex: 0 0 auto; }
 .forecast-run-tile-single { display: flex; align-items: center; font-size: 11px; }
 .forecast-run-tile-chart .forecast-run-tile-single svg { width: 12px; height: 12px; border: 0; flex: 0 0 12px; }
-.forecast-run-tile .forecast-tile-menus { flex: 0 0 auto; }
+.forecast-run-tile .forecast-tile-menus { flex: 0 0 auto; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.forecast-run-tile details[data-menu="feat"] .forecast-tile-menu { left: 50%; transform: translateX(-50%); }
+.forecast-tile details[data-menu="gen"] button { width: 100%; border: 0; background: none; color: inherit; text-align: left; cursor: pointer; }
+.forecast-tile details[data-menu="gen"] button:hover, .forecast-tile details[data-menu="gen"] button[aria-pressed="true"] { background: var(--accent-on); color: var(--accent-on-text); }
 .forecast-tile-selectors { display: flex; gap: 12px; }
 .forecast-tile .forecast-metric-lines { margin-top: auto; padding-top: 8px; font-size: 11px; line-height: 18px; }
 .forecast-run-tile .forecast-metric-lines { flex: 0 0 auto; padding-top: 0; line-height: 14px; }
