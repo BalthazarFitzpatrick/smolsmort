@@ -557,6 +557,10 @@ function forecastCreateRunTile(tile, index, tiles, metric, legacy, metrics) {
   title.append(forecastNode('span', 'forecast-tile-name', `#${index + 1} ${forecastRunTileLabel(tile, tiles)}`));
   title.title = forecastRunTileLabel(tile, tiles);
   face.append(title, forecastNode('div', 'forecast-tile-score', `${metric} · validation ${format(score.validation)} · test ${format(score.test)}`));
+  if (tile.series_count) {
+    face.append(forecastNode('div', 'forecast-tile-dim',
+      `scores cover ${tile.series_count.covered} of ${tile.series_count.total} series`));
+  }
   const charts = [forecastRunTileChart(tile, tiles, metric, true), forecastRunTileChart(tile, tiles, metric, false)];
   if (charts.every(chart => !chart.querySelector('svg'))) {
     face.append(forecastNode('div', 'forecast-tile-chart-note', 'no curve saved'));
@@ -2812,8 +2816,9 @@ class ForecastTopic {
     }).find(value => Number.isFinite(value) && value > 0);
     tiles.filter(tile => tile.kind === 'ensemble').forEach(tile => {
       const value = tile.metrics?.wape?.test;
-      tile.test_ratio = Number.isFinite(value) && Number.isFinite(baseline) && baseline > 0
-        ? value / baseline : undefined;
+      const savedRatio = tile.error_metrics?.test_ratio;
+      tile.test_ratio = savedRatio ? savedRatio.value
+        : Number.isFinite(value) && Number.isFinite(baseline) && baseline > 0 ? value / baseline : undefined;
       if (tile.metrics) tile.metrics.test_ratio = {test: tile.test_ratio};
     });
     const existing = new Map([...grid.children].map(node => [node.dataset.tileId, node]));

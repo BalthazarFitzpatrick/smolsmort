@@ -521,7 +521,7 @@ def test_refit_run_real_worker_incremental_no_search(tmp_path, monkeypatch):
     from smolsmort.forecast import worker
     from smolsmort.forecast.prep import Prepared
 
-    ws = build_workspace(monkeypatch, weeks=85, series=1, holdout="block")
+    ws = build_workspace(monkeypatch, weeks=160, series=1, holdout="block")
     genome = candidate(ws).to_dict()
     prepared = Prepared(tmp_path, "", {}, False)
     monkeypatch.setattr(worker, "load_workspace", lambda *args, **kwargs: ws)

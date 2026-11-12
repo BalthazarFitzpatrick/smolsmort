@@ -21,6 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
+from smolsmort.forecast.evaluate import mean_predictions, wape
 from smolsmort.forecast.metrics import CURVE_METRICS, error_metrics, prediction_metrics
 from smolsmort.forecast.tables import read_table
 
@@ -76,6 +77,18 @@ def table_metrics(table):
     if table is None:
         return dict.fromkeys(CURVE_METRICS)
     return prediction_metrics(table.get("actual", table.get("truth")), table["prediction"])
+
+
+def table_coverage(table):
+    """show the series denominator behind each saved family score"""
+    if table is None or "series" not in table:
+        return None
+    series = np.asarray(table["series"])
+    finite = np.isfinite(table["prediction"])
+    actual = table.get("actual", table.get("truth"))
+    if actual is not None:
+        finite &= np.isfinite(actual)
+    return {"covered": len(np.unique(series[finite])), "total": len(np.unique(series))}
 
 
 def _join_indexes(tables, keys):
@@ -135,6 +148,8 @@ def score_ensembles(models, tables):
     for count in range(2, len(available) + 1):
         for members in itertools.combinations(available, count):
             metrics = {}
+            test_ratio = None
+            scored_baseline = False
             for split in ("validation", "test"):
                 parts = [tables[member].get(split) for member in members]
                 if any(part is None for part in parts):
@@ -163,7 +178,8 @@ def score_ensembles(models, tables):
                         {
                             name: values[index[common][order]]
                             for name, values in part.items()
-                            if name in ("actual", "truth", "prediction")
+                            if name
+                            in ("series", "actual", "truth", "prediction", "naive_prediction")
                         }
                         for part, index in zip(parts, indexes, strict=True)
                     ]
@@ -177,8 +193,20 @@ def score_ensembles(models, tables):
                         np.array_equal(actuals[0], actual, equal_nan=True) for actual in actuals
                     ):
                         raise ValueError("ensemble members disagree on actuals")
-                    prediction = np.mean([part["prediction"] for part in parts], axis=0)
+                    prediction = mean_predictions([part["prediction"] for part in parts])
                     values = prediction_metrics(actuals[0], prediction)
+                    if split == "test" and "naive_prediction" in parts[0]:
+                        scored_baseline = True
+                        covered = np.isfinite(prediction) & np.isfinite(actuals[0])
+                        naive = parts[0]["naive_prediction"][covered]
+                        if np.isfinite(naive).all():
+                            baseline = wape(actuals[0][covered], naive)
+                            if (
+                                values["wape"] is not None
+                                and np.isfinite(baseline)
+                                and baseline > 0
+                            ):
+                                test_ratio = values["wape"] / baseline
                 for name, value in values.items():
                     metrics.setdefault(name, {})[split] = value
             if metrics.get("wape", {}).get("validation") is None:
@@ -193,6 +221,9 @@ def score_ensembles(models, tables):
                     "members": list(members),
                     "recipe": {"weight": "equal", "members": list(members)},
                     "metrics": metrics,
+                    "error_metrics": {"test_ratio": {"value": test_ratio, "scope": "test"}}
+                    if scored_baseline
+                    else {},
                     "curves": {},
                     "state": "done",
                     "best_generation": None,
@@ -277,7 +308,7 @@ def write_ensemble_views(folder, rows):
                 ):
                     raise ValueError("ensemble members disagree on actuals")
             parts[split] = dict(tables[0])
-            parts[split]["prediction"] = np.mean([table["prediction"] for table in tables], axis=0)
+            parts[split]["prediction"] = mean_predictions([table["prediction"] for table in tables])
         if len(parts) != 3 or not len(parts["validation"]["prediction"]):
             continue
         validation = parts["validation"]
@@ -418,6 +449,7 @@ def read_tiles(folder: Path, *, include_ensembles=True):
                 "recipe_key": key,
                 "recipe": recipe,
                 "metrics": metrics,
+                "series_count": table_coverage(split_tables.get("validation")),
                 "error_metrics": error_metrics(
                     request.get("spec", {}),
                     fitness=fitness,

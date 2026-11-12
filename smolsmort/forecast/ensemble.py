@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
+from smolsmort.forecast.evaluate import mean_predictions
 from smolsmort.forecast.family_worker import read_json, watch_parent
 from smolsmort.forecast.importance import combine_importance
 from smolsmort.forecast.pipeline import (
@@ -90,7 +91,7 @@ def run(folder, parent_pid):
     config = request.get("ensemble", {})
     members = ranked[: config.get("top", 3)]
     if config.get("enabled", True) and members and ws.mode == "timeseries":
-        prediction = np.mean([entry["prediction"] for entry in members], axis=0)
+        prediction = mean_predictions([entry["prediction"] for entry in members])
         truth = np.concatenate(
             [frame.y[ws.series_masks[bucket]["val"]] for bucket, frame in ws.frames.items()]
         )

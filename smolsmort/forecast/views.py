@@ -251,36 +251,42 @@ def family_catalog(
                 else "provide a spec or prepared folder to check training history"
                 if spec is None
                 else None,
+                **(_series_coverage(family, workspace) if workspace is not None else {}),
                 **estimates.get(family.name, {}),
             }
         )
     return catalog
 
 
+def _series_coverage(family, ws):
+    if family.needs != "raw_series" or ws.spec.mode != "timeseries":
+        return {}
+    from smolsmort.forecast.families.stats import series_eligibility
+
+    eligibility = series_eligibility(
+        ws.panel, ws.spec.named("target")[0], ws.unit, ws.profile, ws.spec.horizon
+    )
+    total = len(eligibility.counts)
+    skipped = total - len(eligibility.eligible)
+    return {
+        "skipped_series": skipped,
+        "total_series": total,
+        "coverage_note": f"n/a for {skipped} of {total} series: needs two seasons"
+        if skipped
+        else None,
+    }
+
+
 def _suitability_reason(family, ws):
     if family.needs == "raw_series":
-        from smolsmort.forecast.spec import SERIES, STEP
-        from smolsmort.forecast.splits import timeseries_cuts
+        from smolsmort.forecast.families.stats import series_eligibility
 
-        steps = np.unique(ws.panel[STEP])
-        cut = steps[timeseries_cuts(len(steps), ws.spec.horizon).val_start]
-        target = ws.spec.named("target")[0]
-        counts = [
-            int(
-                (
-                    (ws.panel[SERIES] == key)
-                    & (ws.panel[STEP] < cut)
-                    & np.isfinite(ws.panel[target])
-                ).sum()
-            )
-            for key in np.unique(ws.panel[SERIES])
-        ]
-        period = (
-            ws.profile.get("period")
-            or {"day": 7, "week": 52, "month": 12, "quarter": 4, "year": 1}[ws.unit]
+        eligibility = series_eligibility(
+            ws.panel, ws.spec.named("target")[0], ws.unit, ws.profile, ws.spec.horizon
         )
-        minimum = min(counts, default=0)
-        if minimum < 2 * period:
+        minimum = min(eligibility.counts.values(), default=0)
+        period = eligibility.period
+        if not eligibility.eligible:
             return f"needs two seasons ({2 * period} training steps per series); shortest series has {minimum}"
     else:
         if ws.mode == "timeseries":
@@ -1002,7 +1008,7 @@ def _tile_prediction_path(run_dir: Path, model: str, kind: str) -> Path:
                 np.array_equal(columns[name], table[name], equal_nan=True) for table in tables
             ):
                 raise ViewError("ensemble members disagree on actuals")
-        columns["prediction"] = np.mean([table["prediction"] for table in tables], axis=0)
+        columns["prediction"] = ev.mean_predictions([table["prediction"] for table in tables])
         # member bands are not calibrated for this new combination
         for name in ("lower", "upper", "lower_50", "upper_50"):
             columns[name] = np.full(len(columns["prediction"]), np.nan)
@@ -1490,18 +1496,14 @@ def _horizon_metrics(con, run_dir, request, query, path, selection):
     valid = known & np.isfinite(prediction)
     positive = valid & (actual > 0)
     errors = np.abs(actual - prediction)
-    denominator = np.abs(actual[known]).sum()
-    reason = (
-        "no known actuals in this view"
-        if not known.any()
-        else ("undefined predictions for known actuals" if not np.all(valid[known]) else None)
-    )
+    denominator = np.abs(actual[valid]).sum()
+    reason = "no finite predictions with known actuals" if not valid.any() else None
     absolute = errors[valid].sum()
-    naive_valid = known & np.isfinite(naive)
-    naive_error = np.abs(actual[known] - naive[known]).sum()
+    naive_valid = valid & np.isfinite(naive)
+    naive_error = np.abs(actual[naive_valid] - naive[naive_valid]).sum()
     ratio_reason = reason or (
         "naive predictions unavailable on these target weeks"
-        if not np.all(naive_valid[known])
+        if not np.all(naive_valid[valid])
         else None
     )
     return {
@@ -1509,7 +1511,7 @@ def _horizon_metrics(con, run_dir, request, query, path, selection):
             absolute / denominator if denominator and reason is None else None,
             reason or "absolute actuals sum to zero",
         ),
-        "mae": metric(absolute / known.sum() if reason is None else None, reason),
+        "mae": metric(absolute / valid.sum() if reason is None else None, reason),
         "mape": metric(
             np.mean(errors[positive] / actual[positive]) if positive.any() else None,
             "no finite predictions with actual > 0",
@@ -1698,7 +1700,7 @@ def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
             GROUP BY step, bucket ORDER BY step
         """
         future_rows = con.execute(future_sql).fetchall()
-        future_forecast = {_iso(step): float(pred) for step, _bucket, pred in future_rows}
+        future_forecast = {_iso(step): _finite_number(pred) for step, _bucket, pred in future_rows}
 
         forecast_series = {**hist_forecast, **future_forecast}
         x_set |= set(actual) | set(forecast_series)
@@ -1817,7 +1819,7 @@ def _timeseries_band(
                 FROM read_parquet({_lit(str(validation))}) v JOIN keymap k USING (series)
                 WHERE {predicate}
             )
-            SELECT step, SUM(actual), SUM(prediction) FROM joined WHERE {combo_where}
+            SELECT step, SUM(actual) FILTER (WHERE isfinite(prediction)), SUM(prediction) FROM joined WHERE {combo_where}
             GROUP BY step ORDER BY step
         """
         rows = con.execute(val_sql).fetchall()
@@ -2368,6 +2370,10 @@ def export_csv(run_dir: Path, request: dict, query: dict | None = None) -> bytes
     buf.write(f"# verdict: {verdict.get('summary', 'no saved verdict')}\n")
     writer = csv.writer(buf)
     writer.writerow([*payload["columns"], "ratio"])
+    prediction_index = (
+        payload["columns"].index("prediction") if "prediction" in payload["columns"] else None
+    )
     for row in payload["rows"]:
-        writer.writerow([*row, ratio])
+        row_ratio = ratio if prediction_index is None or row[prediction_index] is not None else None
+        writer.writerow([*row, row_ratio])
     return buf.getvalue().encode("utf-8")

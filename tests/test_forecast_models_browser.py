@@ -85,6 +85,23 @@ def open_families(page, topic="regression"):
     return page.locator(".menu-panel")
 
 
+def test_families_menu_shows_short_series_note(tmp_path):
+    with session(tmp_path, width=1600) as (page, _base):
+        mock_prepared_searches(page)
+        catalog = make_catalog()
+        catalog[2].update(
+            skipped_series=1,
+            total_series=13,
+            coverage_note="n/a for 1 of 13 series: needs two seasons",
+        )
+        mock_catalog(page, catalog)
+        select_timeseries(page)
+        item = open_families(page).locator('.menu-item[data-id="snaive"]')
+        assert "n/a for 1 of 13 series: needs two seasons" in item.inner_text()
+        assert "disabled" not in (item.get_attribute("class") or "").split()
+        item.click()
+
+
 def save_families(page, names):
     menu = open_families(page)
     for name in names:

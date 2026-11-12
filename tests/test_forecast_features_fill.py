@@ -45,8 +45,8 @@ def test_fill_uses_only_the_trailing_calendar_window():
     assert not mask[:-1].any() and mask[-1] and filled[-1] == 600
 
 
-def make_panel():
-    days = np.datetime64("2024-01-01") + np.arange(20) * 7
+def make_panel(steps=20):
+    days = np.datetime64("2024-01-01") + np.arange(steps) * 7
     spec = PrepSpec(
         "synthetic.csv",
         "timeseries",
@@ -57,9 +57,9 @@ def make_panel():
     )
     panel = {
         STEP: np.tile(days, 2),
-        SERIES: np.repeat(["a", "b"], 20),
-        "y": np.concatenate(([100.0] * 13 + [10.0, 5.0] + [100.0] * 5, [1.0] * 20)),
-        "m": np.arange(40, dtype=float),
+        SERIES: np.repeat(["a", "b"], steps),
+        "y": np.concatenate(([100.0] * 13 + [10.0, 5.0] + [100.0] * (steps - 15), [1.0] * steps)),
+        "m": np.arange(2 * steps, dtype=float),
     }
     scaffold = {STEP: np.array([], dtype="datetime64[D]"), SERIES: np.array([], dtype=str)}
     return spec, panel, scaffold
@@ -114,10 +114,12 @@ def test_builders_fill_lags_and_logdiff_base_but_preserve_labels_and_measures(st
 def test_raw_stats_fill_before_transform_without_mutating_panel(
     monkeypatch, transform, horizon_mode
 ):
-    spec, panel, scaffold = make_panel()
-    frame = timeseries_features(spec, panel, scaffold, (1, 1), "week", np.ones(40, dtype=bool))
+    spec, panel, scaffold = make_panel(steps=60)
+    frame = timeseries_features(spec, panel, scaffold, (1, 1), "week", np.ones(120, dtype=bool))
     rows = (frame.series == "a") & (frame.step == panel[STEP][14])
-    ws = SimpleNamespace(spec=spec, panel=panel, unit="week", profile={}, horizon_mode=horizon_mode)
+    ws = SimpleNamespace(
+        spec=spec, panel=panel, unit="week", profile={"period": 1}, horizon_mode=horizon_mode
+    )
     family = SimpleNamespace(fit=lambda task, **kwargs: task)
     monkeypatch.setattr("smolsmort.forecast.pipeline.get_family", lambda name: family)
     genome = make_genome((), "squared", {}, family="ets", transform=transform)

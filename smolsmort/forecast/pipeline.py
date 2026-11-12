@@ -418,16 +418,25 @@ def _fitness(ws, pred, truth, periods) -> Scored:
     if not folds:
         return _period_fitness(ws, pred, truth, periods)
     scores = []
+    covered_scores = []
+    covered = (
+        np.isfinite(pred) & np.isfinite(truth)
+        if ws.spec.task == "regression"
+        else np.ones(len(truth), dtype=bool)
+    )
     for start, end in folds:
         rows = (periods >= start.astype(int)) & (periods < end.astype(int))
         if rows.any():
-            scores.append(_period_fitness(ws, pred[rows], truth[rows], periods[rows]))
-    if not scores:
+            scored = _period_fitness(ws, pred[rows], truth[rows], periods[rows])
+            scores.append(scored)
+            if (rows & covered).any():
+                covered_scores.append(scored)
+    if not covered_scores:
         return _period_fitness(ws, pred, truth, periods)
-    fold_scores = [s.fitness for s in scores]
+    fold_scores = [s.fitness for s in covered_scores]
     fitness = float(np.mean(fold_scores))
     # equal fold weights keep paired contributions aligned with the ranked fitness
-    contrib = np.concatenate([s.contrib / len(scores) for s in scores])
+    contrib = np.concatenate([s.contrib / len(covered_scores) for s in scores])
     return Scored(
         fitness,
         contrib,
@@ -435,7 +444,7 @@ def _fitness(ws, pred, truth, periods) -> Scored:
             "wape": fitness,
             "mae": ev.mae(truth, pred),
             "fold_scores": fold_scores,
-            "fold_count": len(scores),
+            "fold_count": len(covered_scores),
         },
     )
 
@@ -449,7 +458,13 @@ def _period_fitness(ws, pred, truth, periods, *, classification=None) -> Scored:
         per_row, denom = losses, len(losses)
         metrics = {"log_loss": float(losses.mean()), "brier": ev.brier(codes, probs)}
     else:
-        per_row, denom = np.abs(truth - pred), max(float(np.abs(truth).sum()), 1e-12)
+        finite = np.isfinite(truth) & np.isfinite(pred)
+        if not finite.any():
+            return Scored(
+                float("inf"), np.zeros(len(np.unique(periods))), {"wape": np.nan, "mae": np.nan}
+            )
+        per_row = np.where(finite, np.abs(truth - pred), 0)
+        denom = max(float(np.abs(truth[finite]).sum()), 1e-12)
         metrics = {"wape": ev.wape(truth, pred), "mae": ev.mae(truth, pred)}
     unique, inverse = np.unique(periods, return_inverse=True)
     if getattr(ws, "mode", None) == "entity":
@@ -736,8 +751,10 @@ def _timeseries_fit(ws, genome, frame, rows, nthread):
 
 
 def _timeseries_raw_fit(ws, genome, frame, rows, bucket, nthread):
-    from smolsmort.forecast.families.stats import RawSeriesTask, season_length
+    from smolsmort.forecast.families.stats import RawSeriesTask, season_length, series_eligibility
 
+    target = ws.spec.named("target")[0]
+    eligibility = series_eligibility(ws.panel, target, ws.unit, ws.profile, ws.spec.horizon)
     # bound raw target reads before transforms or statistical providers can inspect them
     clock = frame.origin if ws.horizon_mode == "single" else frame.step
     keep = (
@@ -745,8 +762,8 @@ def _timeseries_raw_fit(ws, genome, frame, rows, bucket, nthread):
         if rows.any()
         else np.zeros(len(ws.panel[STEP]), dtype=bool)
     )
+    keep &= np.isin(ws.panel[SERIES], list(eligibility.eligible))
     panel = {name: values[keep] for name, values in ws.panel.items()}
-    target = ws.spec.named("target")[0]
     if ws.spec.history_fill is not None:
         from smolsmort.forecast.features import fill_shutdown_weeks
 
@@ -771,6 +788,7 @@ def _timeseries_raw_fit(ws, genome, frame, rows, bucket, nthread):
         bucket,
         season_length(ws.profile),
         horizon_mode=ws.horizon_mode,
+        eligibility=eligibility,
     )
     fitted = get_family(genome.family).fit(
         task, objective=genome.objective, params=dict(genome.params), nthread=nthread
@@ -786,12 +804,14 @@ def _timeseries_predict(
         fitted, task = _timeseries_raw_fit(ws, genome, frame, eval_rows, bucket, nthread)
         prediction = fitted.predict(task)
         if genome.transform != "none":
-            base = _raw_origin_base(ws, frame, eval_rows)
+            finite = np.isfinite(prediction)
+            values = prediction[finite]
+            base = _raw_origin_base(ws, frame, eval_rows)[finite]
             if genome.family == "snaive":
-                prediction = transform.fwd(prediction, base)
+                values = transform.fwd(values, base)
             elif genome.transform == "logdiff":
-                prediction = prediction - np.log1p(base)
-            prediction = transform.inv(prediction, base)
+                values = values - np.log1p(base)
+            prediction[finite] = transform.inv(values, base)
     else:
         fitted, x = _timeseries_fit(ws, genome, frame, fit_rows, nthread)
         if importance is not None:
@@ -1167,7 +1187,7 @@ def _finish_timeseries(
                 if prediction_cache is not None:
                     prediction_cache[key] = prediction
             predictions.append(prediction)
-        return np.mean(predictions, axis=0)
+        return ev.mean_predictions(predictions)
 
     for bucket, frame in ws.frames.items():
         masks = ws.series_masks[bucket]
@@ -1216,8 +1236,9 @@ def _finish_timeseries(
         rows = _timeseries_rows(frame, masks["val"], val_pred, bucket)
         rows["lower"], rows["upper"] = apply_bands(val_pred, masks["val"])
         rows["lower_50"], rows["upper_50"] = apply_bands(val_pred, masks["val"], inner_bands)
+        rows["naive_prediction"] = _timeseries_baseline(frame, masks["val"], bucket, period)
         val_rows.append(rows)
-        val_base.append(_timeseries_baseline(frame, masks["val"], bucket, period))
+        val_base.append(rows["naive_prediction"])
         test_pred = _timeseries_test(
             ws,
             bucket,
@@ -1236,6 +1257,7 @@ def _finish_timeseries(
         base_all.append(_timeseries_baseline(frame, masks["test"], bucket, period))
         rows = _timeseries_rows(frame, masks["test"], test_pred, bucket)
         rows.update(lower=lo, upper=hi, lower_50=lo_50, upper_50=hi_50)
+        rows["naive_prediction"] = base_all[-1]
         test_rows.append(rows)
         future_pred = predict_members(
             frame,
@@ -1253,7 +1275,14 @@ def _finish_timeseries(
     test_lo_all, test_hi_all = np.concatenate(test_lo), np.concatenate(test_hi)
     first = next(iter(ws.frames))
     seen = ws.series_masks[first]["train"] | ws.series_masks[first]["val"]
-    model_error, baseline_error = ev.wape(truth, pred), ev.wape(truth, np.concatenate(base_all))
+    covered = np.isfinite(pred) & np.isfinite(truth)
+    model_error = ev.wape(truth, pred)
+    baseline = np.concatenate(base_all)
+    baseline_error = (
+        ev.wape(truth[covered], baseline[covered])
+        if np.isfinite(baseline[covered]).all()
+        else float("nan")
+    )
     validation_rows = _stack(val_rows)
     validation_score = _fitness(
         ws,
@@ -1266,7 +1295,7 @@ def _finish_timeseries(
         baseline_error=baseline_error,
         band_coverage=ev.coverage(truth, np.concatenate(test_lo), np.concatenate(test_hi)),
         band_coverage_50=ev.coverage(truth, np.concatenate(test_lo_50), np.concatenate(test_hi_50)),
-        test_rows=len(truth),
+        test_rows=int(covered.sum()),
         test_steps=ws.test_steps,
         band_width=_median_width(np.concatenate(test_lo), np.concatenate(test_hi)),
         spread=_spread(ws.frames[first].y[seen]),

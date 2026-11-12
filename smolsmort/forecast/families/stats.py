@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 from threadpoolctl import threadpool_limits
@@ -18,6 +18,34 @@ def season_length(profile: dict) -> int:
 
 
 @dataclass
+class SeriesEligibility:
+    counts: dict
+    period: int
+
+    @property
+    def eligible(self) -> set:
+        return {key for key, count in self.counts.items() if count >= 2 * self.period}
+
+
+def series_eligibility(panel, target, unit, profile, horizon) -> SeriesEligibility:
+    """count usable history before the shared validation cut, including late-starting series"""
+    from smolsmort.forecast.splits import timeseries_cuts
+
+    steps = np.unique(panel[STEP])
+    cut = steps[timeseries_cuts(len(steps), horizon).val_start]
+    training = panel[STEP] < cut
+    training_series = panel[SERIES][training]
+    finite = np.isfinite(panel[target][training])
+    counts = {
+        key: int(((training_series == key) & finite).sum()) for key in np.unique(panel[SERIES])
+    }
+    period = (
+        profile.get("period") or {"day": 7, "week": 52, "month": 12, "quarter": 4, "year": 1}[unit]
+    )
+    return SeriesEligibility(counts, period)
+
+
+@dataclass
 class RawSeriesTask:
     panel: dict
     target: str
@@ -26,6 +54,7 @@ class RawSeriesTask:
     rows: np.ndarray
     bucket: tuple[int, int]
     season_length: int
+    eligibility: SeriesEligibility
     horizon_mode: str = "mixed"
 
 
@@ -248,13 +277,22 @@ class StatsFamily:
             raise PipelineError(f"family {self.name!r} accepts no parameters")
         notices = []
         try:
+            selected = x.rows & np.isin(x.frame.series, list(x.eligibility.eligible))
+            task = replace(x, rows=selected)
+            prediction = np.full(int(x.rows.sum()), np.nan)
+            covered = selected[x.rows]
             if self.name == "snaive":
-                prediction = _timeseries_baseline(x.frame, x.rows, x.bucket, x.season_length)
+                values = _timeseries_baseline(
+                    task.frame, task.rows, task.bucket, task.season_length
+                )
             else:
                 with warnings.catch_warnings(record=True) as notices:
-                    prediction = forecast_rows(x, self.name, nthread)
-            if not np.isfinite(prediction).all():
+                    values = (
+                        forecast_rows(task, self.name, nthread) if selected.any() else np.empty(0)
+                    )
+            if not np.isfinite(values).all():
                 raise ValueError("insufficient history: nonfinite predictions")
+            prediction[covered] = values
         except (
             ValueError,
             IndexError,
