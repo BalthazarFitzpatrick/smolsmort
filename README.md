@@ -415,7 +415,7 @@ verdict on every run is what tells you whether they served:
 | horizon buckets | one model each for steps 1, 2-4, 5-8, 9-13, 14-26 | `forecast.features.BUCKETS` |
 | entity maturity before test | 26 weeks | `forecast.splits.MATURITY_WEEKS` |
 | validation / test length (timeseries) | max(26, 2 x horizon) / max(horizon, 13) steps | `forecast.splits.timeseries_cuts` |
-| search population / elite / plateau | 16 / 3 / 5 generations | `forecast.search.POPULATION`, `ELITE`, `PLATEAU` |
+| search population / elite / plateau | 16 / 10% (at least 1) / 5 generations | `forecast.search.POPULATION`, `_selection_sizes`, `PLATEAU` |
 | search time cap | 20 minutes | `forecast.search.TIME_CAP` |
 | v2 family pruning threshold | `prune_sigma=1.0` | `forecast.requests.parse_request`, `forecast.runs.start_run` |
 | accuracy reading | error ratio < 1: better than naive; >= 1: worse | `forecast.evaluate` |

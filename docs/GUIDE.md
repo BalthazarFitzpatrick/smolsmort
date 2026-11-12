@@ -768,6 +768,7 @@ bands also keep the leads separate.
 validation rows and stops when a generation brings no gain larger than its own noise, or at the time
 cap. it runs in its own process and never reads the test rows. a saved run can be refit on a newer
 file without a search, or seed the next search with its final population.
+the best 10% carry over unchanged and each parent is the best of a contest among 10% of the population.
 
 #### long-run forecast controls
 
