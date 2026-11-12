@@ -799,8 +799,9 @@ or three for entities, which also refit validation. this is an estimate, not a g
 the reserve doubles it and keeps a five-minute floor. missing usable costs retain
 the original 30% reserve until measurements arrive.
 
-broad and halving boundaries are 4/7 and 5.5/7 of the available search span;
-halving slices take 1/7, then deep search uses the remainder. a 24h request with
+broad and pruning boundaries are 4/7 and 5.5/7 of the available search span;
+pruning slices take 1/7, then deep search uses the remainder.
+pruning cuts families clearly behind the leader, not half of them. a 24h request with
 cheap measured winners gets a 300-second finish reserve and up to 23h55m of search.
 phase allocations use the estimate available when issued; existing slices are
 not extended when new measurements free more time. deep search can use that time.

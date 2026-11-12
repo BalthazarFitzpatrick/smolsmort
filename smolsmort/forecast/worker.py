@@ -25,6 +25,14 @@ from smolsmort.forecast.spec import spec_from_dict
 from smolsmort.forecast.tables import write_table
 
 
+def restore_phases(status):
+    """restore current phase names without rewriting recorded history"""
+    for current in (status, *status.get("families", {}).values()):
+        if current.get("phase") == "halving":
+            current["phase"] = "pruning"
+    return status
+
+
 class _Run:
     def __init__(self, folder: Path):
         self.folder = folder
@@ -48,7 +56,7 @@ class _Run:
     def status(self, state: str, **extra):
         path = self.folder / "status.json"
         if path.exists():
-            previous = json.loads(path.read_text())
+            previous = restore_phases(json.loads(path.read_text()))
             if "families" in previous and "families" not in extra:
                 extra["families"] = previous["families"]
             if "phase" in previous and "phase" not in extra:

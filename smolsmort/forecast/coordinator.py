@@ -23,6 +23,7 @@ from smolsmort.forecast.pipeline import genome_from_dict
 from smolsmort.forecast.processes import is_process_alive
 from smolsmort.forecast.search import Entry, _significant
 from smolsmort.forecast.spec import normalize_mode
+from smolsmort.forecast.worker import restore_phases
 
 GRACE_S = 2.0
 SHORT_BUDGET_S = 1800
@@ -36,6 +37,7 @@ def initialize_state(folder, request, *, started_at=None):
         "phase": "broad",
         "families": {},
     }
+    restore_phases(state)
     if "nthread" not in state:
         state["nthread"] = request.get("nthread") or os.cpu_count() or 1
     if "config_values" not in state.get("machine", {}):
@@ -359,7 +361,7 @@ def launch_families(folder, request, job):
             if (
                 name in tunable
                 and states[name]["state"] == "paused"
-                and states[name].get("phase") in ("halving", "deep")
+                and states[name].get("phase") in ("pruning", "deep")
                 and states[name].get("generation", 0) >= 1
                 and states[name].get("candidates_done", 0) > 1
                 and name != leader
@@ -482,9 +484,9 @@ def launch_families(folder, request, job):
         for name in selected:
             if states[name]["state"] in ("pending", "running"):
                 states[name]["state"] = "paused"
-        change_phase("halving")
+        change_phase("pruning")
         save()
-    while state["phase"] == "halving" and not job.cancelled:
+    while state["phase"] == "pruning" and not job.cancelled:
         prune_families()
         selected = rank_families(
             [name for name in names if name in tunable and states[name]["state"] == "paused"],

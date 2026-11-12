@@ -208,9 +208,9 @@ def test_measured_day_budget_searches_for_at_least_23_hours(tunable_race, tmp_pa
     assert 23 * 3600 <= race.clock[0] - 100 <= 86400 - 300 + 1
     assert state["finish_reserve_s"] == 300
     assert state["search_deadline"] == 100 + 86400 - 300
-    assert {p.allocation["phase"] for p in race.launches} == {"broad", "halving", "deep"}
-    halving = next(p for p in race.launches if p.allocation["phase"] == "halving")
-    assert halving.allocation["slice_s"] == pytest.approx((86400 - 300) / 7)
+    assert {p.allocation["phase"] for p in race.launches} == {"broad", "pruning", "deep"}
+    pruning = next(p for p in race.launches if p.allocation["phase"] == "pruning")
+    assert pruning.allocation["slice_s"] == pytest.approx((86400 - 300) / 7)
     assert max(p.allocation["deadline"] for p in race.launches) == state["search_deadline"]
 
 
@@ -253,6 +253,47 @@ def test_broad_resume_uses_measured_search_span(tunable_race, tmp_path, monkeypa
     assert read_json(tmp_path / "coordinator.json")["deadline"] == 100 + 86400
 
 
+def test_legacy_halving_state_resumes_as_pruning(tunable_race, tmp_path):
+    from smolsmort.forecast.coordinator import initialize_state
+    from smolsmort.forecast.worker import _Run
+
+    race = tunable_race
+    names = ["ridge", "lightgbm"]
+    history = [{"phase": "halving", "started_at": 100}]
+    saved = {
+        "started_at": 100,
+        "deadline": 160,
+        "phase": "halving",
+        "phase_history": history,
+        "families": {
+            name: {"state": "paused", "phase": "halving", "slice_history": history}
+            for name in names
+        },
+    }
+    race.save("coordinator.json", saved)
+    race.save("status.json", saved)
+    _Run(tmp_path).status("running")
+    status = read_json(tmp_path / "status.json")
+    assert status["phase"] == "pruning"
+    assert all(family["phase"] == "pruning" for family in status["families"].values())
+    state = initialize_state(tmp_path, make_request())
+    assert state["phase"] == "pruning"
+    assert state["phase_history"] == history
+    assert all(family["phase"] == "pruning" for family in state["families"].values())
+    assert all(family["slice_history"] == history for family in state["families"].values())
+
+    result = race.run(names)
+
+    assert race.launches[0].allocation["phase"] == "pruning"
+    assert all(process.allocation["phase"] != "halving" for process in race.launches)
+    assert all(family["candidates_done"] > 0 for family in result["families"].values())
+    final = read_json(tmp_path / "coordinator.json")
+    assert final["phase"] == "finish"
+    assert final["deadline"] == 160
+    assert final["phase_history"][0] == history[0]
+    assert all(family["slice_history"][0] == history[0] for family in final["families"].values())
+
+
 @pytest.mark.parametrize("duration", [90, 300, 1000, 1200, 1800])
 def test_short_budget_keeps_original_phase_timing(tunable_race, monkeypatch, duration):
     race = tunable_race
@@ -260,9 +301,9 @@ def test_short_budget_keeps_original_phase_timing(tunable_race, monkeypatch, dur
     advance_race_clock(race, monkeypatch)
     race.run(["ridge", "lightgbm"], time_budget_s=duration)
     broad = next(p for p in race.launches if p.allocation["phase"] == "broad")
-    halving = next(p for p in race.launches if p.allocation["phase"] == "halving")
+    pruning = next(p for p in race.launches if p.allocation["phase"] == "pruning")
     assert broad.allocation["deadline"] == pytest.approx(100 + 0.4 * duration)
-    assert halving.allocation["slice_s"] == pytest.approx(0.1 * duration)
+    assert pruning.allocation["slice_s"] == pytest.approx(0.1 * duration)
     assert race.clock[0] == pytest.approx(100 + 0.7 * duration, abs=1)
 
 
@@ -421,7 +462,7 @@ def test_only_zero_param_families_finish_after_broad(tunable_race):
     assert race.clock[0] < 101
 
 
-@pytest.mark.parametrize("phase", ["halving", "deep"])
+@pytest.mark.parametrize("phase", ["pruning", "deep"])
 @pytest.mark.parametrize("terminal", ["plateau", "grid complete", "failed", "cancelled"])
 def test_recovery_resumes_pruned_checkpoint_and_keeps_terminal_workers_stopped(
     tunable_race, tmp_path, phase, terminal
@@ -912,7 +953,7 @@ def test_family_queue_fills_freed_slots_and_records_wave_slices(
     assert final["phase_history"] == state["phase_history"]
     assert [item["phase"] for item in state["phase_history"]] == [
         "broad",
-        "halving",
+        "pruning",
         "deep",
         "finish",
         "finish_start",
@@ -982,7 +1023,7 @@ def test_immediate_resume_waits_for_orphan_before_reusing_worker_slot(tmp_path, 
         {
             "started_at": 95,
             "deadline": 185,
-            "phase": "halving",
+            "phase": "pruning",
             "families": {"xgboost": {"state": "running", "pid": old_pid}},
         },
     )
