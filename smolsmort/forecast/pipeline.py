@@ -743,7 +743,7 @@ def _timeseries_fit(ws, genome, frame, rows, nthread):
         round_errors=True,
         **(
             {"metric_transform": genome.transform, "metric_base": base}
-            if genome.family in ("xgboost", "lightgbm")
+            if genome.family in ("xgboost", "lightgbm", "catboost", "mlp")
             else {}
         ),
     )

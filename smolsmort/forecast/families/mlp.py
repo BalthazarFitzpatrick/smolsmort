@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from smolsmort.forecast.families.base import Param, probe_import
+from smolsmort.forecast.families.base import Param, load_torch, probe_import
 from smolsmort.forecast.model import ModelError, RoundErrors
 
 OBJECTIVES = ("squared", "absolute")
@@ -73,7 +73,7 @@ class MlpFitted:
     eval_history: dict | None = None
 
     def predict(self, x) -> np.ndarray:
-        import torch
+        torch = load_torch()
 
         design = torch.from_numpy(self.prep.transform(x))
         self.model.eval()
@@ -197,7 +197,7 @@ class MlpFamily:
     ) -> MlpFitted:
         if objective not in OBJECTIVES:
             raise ModelError(f"no mlp objective called {objective!r}")
-        import torch
+        torch = load_torch()
 
         values = np.asarray(x, dtype=np.float64)
         target = np.asarray(y, dtype=np.float64)

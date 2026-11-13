@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from smolsmort.forecast.families.base import Param, probe_import
+from smolsmort.forecast.families.base import Param, load_torch, probe_import
 from smolsmort.forecast.families.stats import RawSeriesTask
 from smolsmort.forecast.spec import SERIES, STEP
 
@@ -154,7 +154,7 @@ def train_network(torch, inputs, targets, order, horizon, params, seed):
 
 def forecast_rows(task: RawSeriesTask, params: dict, seed: int, nthread: int):
     """returns predictions aligned to task.rows and the first model's epoch history"""
-    import torch
+    torch = load_torch()
 
     frame, rows = task.frame, task.rows
     series = np.asarray(frame.series[rows])

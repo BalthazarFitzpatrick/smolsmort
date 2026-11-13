@@ -56,10 +56,15 @@ class Family(Protocol):
     ) -> Fitted: ...
 
 
+def load_torch():
+    """import torch; it must never share a process with xgboost or lightgbm [two libomp copies abort]"""
+    return import_module("torch")
+
+
 def probe_import(module: str, pip_extra: str) -> tuple[bool, str]:
     """probe only when asked; shared libraries can fail even when the package is installed"""
     try:
-        import_module(module)
+        load_torch() if module == "torch" else import_module(module)
     except (ImportError, OSError) as exc:
         return False, f"uv sync --extra {pip_extra} ({exc})"
     return True, ""
