@@ -91,6 +91,11 @@ def test_tile_generation_picker_keeps_recipes_and_selection_on_poll(tmp_path, mo
         records.append({**records[-1], "generation": 3})
         path.write_text("\n".join(json.dumps(record) for record in records), encoding="utf-8")
         chart.locator('polyline[data-generation="3"]').wait_for(timeout=15000)
+        # the running generation is blue even when it is the newest and so far the best
+        assert (
+            chart.locator('polyline[data-generation="3"]').evaluate("node => node.style.stroke")
+            == "var(--kingfisher-milk)"
+        )
         assert "0" in gen.locator("summary").inner_text()
         assert selected.get_attribute("data-selected") == "true"
         assert "lag_0" in feat.text_content() and "max_depth2" in param.text_content()
