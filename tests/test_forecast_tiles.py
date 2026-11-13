@@ -125,6 +125,93 @@ def test_tiles_keep_family_winner_and_ensemble_metrics_separate(saved_run):
     assert tile["folds_note"] == "wape per validation window; mark = naive on test"
 
 
+@pytest.mark.parametrize("matching", [True, False])
+def test_tiles_show_only_exit_score_for_current_recipe(saved_run, matching):
+    from smolsmort.forecast.tiles import read_tiles, recipe_key
+
+    folder, request, status = saved_run
+    target = folder / "families" / "snaive"
+    genome = json.loads((target / "winner.json").read_text())
+    key = recipe_key(genome) if matching else "old-recipe"
+    table_dir = target / "exit_scores" / key
+    write_predictions(table_dir / "test.parquet", prediction=4)
+    write_predictions(table_dir / "validation.parquet", prediction=4)
+    write_predictions(target / "test.parquet", prediction=100)
+    write_predictions(target / "validation.parquet", prediction=100)
+    board = json.loads((target / "leaderboard.json").read_text())
+    board[0]["metrics"]["validation_metrics"] = {"wape": 0.12}
+    write_json(target / "leaderboard.json", board)
+    write_json(
+        target / "exit_test.json",
+        {
+            "recipe_key": key,
+            "tables_path": f"exit_scores/{key}",
+            "model_error": 0.18,
+            "baseline_error": 0.25,
+            "verdict": {"accuracy": {"ratio": 0.72, "baseline_error": 0.25, "metric": "wape"}},
+        },
+    )
+    tile = views.family_tiles(folder, request, status)["snaive"]
+    assert tile["scored_at_exit"] is matching
+    assert tile["test_ratio"] == (0.72 if matching else None)
+    assert tile["test_error"] == (0.18 if matching else None)
+    assert tile["test_naive_wape"] == (0.25 if matching else None)
+    model = next(
+        tile for tile in read_tiles(folder, include_ensembles=False) if tile["family"] == "snaive"
+    )
+    assert model["scored_at_exit"] is matching
+    assert model["state"] == "pruned"
+    assert model["metrics"]["wape"]["test"] == (pytest.approx(7 / 22) if matching else None)
+    assert model["metrics"]["wape"]["validation"] == (pytest.approx(7 / 22) if matching else 0.12)
+    assert model["error_metrics"]["test_ratio"]["value"] == (0.72 if matching else None)
+    write_json(folder / "finish_complete.json", {})
+    tile = views.family_tiles(folder, request, status)["snaive"]
+    model = next(
+        tile for tile in read_tiles(folder, include_ensembles=False) if tile["family"] == "snaive"
+    )
+    assert not tile["scored_at_exit"] and not model["scored_at_exit"]
+
+
+def test_ensemble_tiles_use_matching_exit_tables_and_refresh_after_resume(saved_run):
+    from smolsmort.forecast.tiles import read_ensemble_rows, recipe_key
+
+    folder, _request, _status = saved_run
+    for family in ("ridge", "snaive"):
+        target = folder / "families" / family
+        genome = json.loads((target / "winner.json").read_text())
+        key = recipe_key(genome)
+        for split in ("validation", "test"):
+            write_predictions(target / f"{split}.parquet", prediction=100)
+            write_predictions(target / "exit_scores" / key / f"{split}.parquet", prediction=4)
+        write_json(
+            target / "exit_test.json",
+            {"recipe_key": key, "tables_path": f"exit_scores/{key}"},
+        )
+    rows = read_ensemble_rows(folder)
+    assert len(rows) == 1
+    assert rows[0]["metrics"]["wape"] == {
+        "validation": pytest.approx(7 / 22),
+        "test": pytest.approx(7 / 22),
+    }
+    target = folder / "families" / "ridge"
+    board = json.loads((target / "leaderboard.json").read_text())
+    board[0]["genome"]["params"]["alpha"] = 2
+    write_json(target / "leaderboard.json", board)
+    assert read_ensemble_rows(folder) == []
+
+
+def test_current_family_status_overrides_saved_result_state(saved_run):
+    folder, request, status = saved_run
+    status["families"]["ridge"]["state"] = "stopped"
+    path = folder / "families" / "ridge" / "leaderboard.json"
+    board = json.loads(path.read_text())
+    board[0]["genome"]["params"]["alpha"] = 2
+    write_json(path, board)
+    tile = views.family_tiles(folder, request, status)["ridge"]
+    assert tile["state"] == "stopped"
+    assert tile["genome"]["params"]["alpha"] == 2
+
+
 @pytest.mark.parametrize("baseline", [None, 0, 1.4])
 def test_tiles_keep_each_familys_saved_test_wape_and_baseline(saved_run, baseline):
     folder, request, status = saved_run

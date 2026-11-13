@@ -392,13 +392,12 @@ function forecastTileEntries(run) {
 function forecastTileState(tile) {
   if (['starting', 'queued', 'running', 'paused'].includes(tile.state)) return 'running';
   if (tile.state === 'pending') return 'pending';
-  if (['cancelled', 'stopped'].includes(tile.state)) return 'unknown';
-  if (['pruned', 'failed'].includes(tile.state)) return 'worse';
+  if (['cancelled', 'stopped', 'failed'].includes(tile.state)) return 'unknown';
   if (Number.isFinite(tile.test_ratio)) {
     if (Math.abs(tile.test_ratio - 1) < 0.005) return 'identical';
     return tile.test_ratio < 1 ? 'better' : 'worse';
   }
-  return 'unknown';
+  return ['pruned', 'done'].includes(tile.state) ? 'pending' : 'unknown';
 }
 
 function forecastRunTileLabel(tile, tiles) {
@@ -580,7 +579,8 @@ function forecastCreateRunTile(tile, index, tiles, metric, legacy, metrics, sele
   wrap.dataset.family = tile.family;
   wrap.dataset.tileId = tile.tile_id;
   wrap.dataset.kind = tile.kind;
-  wrap.dataset.state = forecastTileState({...tile, ...legacy,
+  const testRatio = tile.error_metrics?.test_ratio?.value ?? tile.test_ratio ?? legacy?.test_ratio;
+  wrap.dataset.state = forecastTileState({...tile, ...legacy, test_ratio: testRatio,
     state: tile.state === 'running' ? 'running' : legacy?.state || (tile.recipe_key === 'pending' ? 'pending' : tile.state)});
   const inner = forecastNode('div', 'forecast-tile-inner');
   const face = forecastNode('div', 'forecast-tile-face forecast-tile-front');
@@ -631,6 +631,7 @@ function forecastCreateRunTile(tile, index, tiles, metric, legacy, metrics, sele
   scoreLine.append(forecastNode('span', 'forecast-run-tile-value', format(score.validation)),
     document.createTextNode(' · test '), forecastNode('span', 'forecast-run-tile-value', format(score.test)));
   metricLines.append(ratioLine, scoreLine);
+  if (tile.scored_at_exit) metricLines.append(forecastNode('div', 'forecast-tile-dim', 'scored at exit'));
   const defaultMetrics = metrics.length === 2 && metrics.some(item => item.id === 'validation_error') && ratioMetric;
   const extraMetrics = metrics.filter(item => item.id !== 'test_ratio'
     && (!defaultMetrics || item.id !== 'validation_error'));
@@ -1009,6 +1010,7 @@ function forecastCreateTile(tile, index, metrics, scale, searchScale, rounds) {
     const caption = forecastNode('div', 'forecast-tile-caption forecast-tile-dim', summary);
     if (side === 'front') caption.title = [summary, tile.pruned_reason || tile.reason].filter(Boolean).join(' ');
     face.append(caption);
+    if (tile.scored_at_exit) face.append(forecastNode('div', 'forecast-tile-dim', 'scored at exit'));
     inner.append(face);
   }
   wrap.append(inner);

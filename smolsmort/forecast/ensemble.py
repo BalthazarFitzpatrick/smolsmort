@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from smolsmort.forecast.evaluate import mean_predictions
+from smolsmort.forecast.exit_test import restore_exit_cache
 from smolsmort.forecast.family_worker import read_json, watch_parent
 from smolsmort.forecast.importance import combine_importance
 from smolsmort.forecast.pipeline import (
@@ -74,6 +75,14 @@ def run(folder, parent_pid):
     genome = genome_from_dict(winner["genome"])
     prediction_cache = {}
     importance_cache = {}
+    if ws.mode == "timeseries":
+        for entry in ranked:
+            restore_exit_cache(
+                folder / "families" / entry["family"],
+                genome_from_dict(entry["genome"]),
+                prediction_cache,
+                importance_cache,
+            )
     final = finish(
         ws,
         genome,

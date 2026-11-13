@@ -657,9 +657,9 @@ def family_tiles(
         target = run_dir if legacy else run_dir / "families" / name
         saved = result.get("families", {}).get(name, {})
         progress = {
+            **saved,
             **_read_json(target / "status.json", {}),
             **(status if legacy else status.get("families", {}).get(name, {})),
-            **saved,
         }
         board = _read_json(target / "leaderboard.json", [])
         entries = [
@@ -668,9 +668,7 @@ def family_tiles(
             if _finite_number(entry.get("fitness")) is not None and entry.get("note") != "sample"
         ]
         best = min(entries, key=lambda entry: entry["fitness"], default={})
-        genome = _read_json(target / "winner.json") or best.get("genome") or {}
-        if progress.get("state") in {"running", "paused"} and best.get("genome"):
-            genome = best["genome"]
+        genome = best.get("genome") or _read_json(target / "winner.json") or {}
         if name == winner_family and not genome:
             genome = recipe.get("genome") or {}
         summary = saved
@@ -681,6 +679,22 @@ def family_tiles(
             path = run_dir / "winner_test.parquet"
             if not path.exists() and recipe.get("family") != "ensemble":
                 path = run_dir / "test.parquet"
+        exit_score = _read_json(target / "exit_test.json", {}) if not legacy else {}
+        scored_at_exit = False
+        if exit_score and not (run_dir / "finish_complete.json").exists():
+            from smolsmort.forecast.tiles import recipe_key
+
+            if exit_score.get("recipe_key") == recipe_key(genome):
+                summary = {**exit_score}
+                path = (
+                    target
+                    / exit_score.get("tables_path", f"exit_scores/{exit_score['recipe_key']}")
+                    / "test.parquet"
+                )
+                scored_at_exit = True
+            else:
+                summary = {}
+                path = target / "exit_scores" / "pending" / "test.parquet"
         accuracy = (summary.get("verdict") or {}).get("accuracy") or {}
         if not accuracy and summary.get("model_error") is not None:
             baseline = _finite_number(summary.get("baseline_error"))
@@ -743,6 +757,7 @@ def family_tiles(
                 None,
             ),
             "test_ratio": _finite_number(accuracy.get("ratio")),
+            "scored_at_exit": scored_at_exit,
             "test_error": test_error,
             "test_error_metric": test_metric,
             "test_naive_wape": naive_error if test_metric == "wape" else None,

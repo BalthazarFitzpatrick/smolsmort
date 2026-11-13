@@ -249,12 +249,24 @@ def rank_tile(tile):
     return (value if value is not None else float("inf"), tile["tile_id"])
 
 
+def prediction_folder(folder, family, key):
+    """keep display tables tied to the same recipe as the current tile"""
+    target = Path(folder) / "families" / family
+    marker = target / "exit_test.json"
+    if (Path(folder) / "finish_complete.json").exists() or not marker.exists():
+        return target
+    score = read_json(marker, {})
+    if score.get("recipe_key") != key:
+        return target / "exit_scores" / "pending"
+    return target / score.get("tables_path", f"exit_scores/{key}")
+
+
 def ensemble_rows(folder):
     """full scored ensemble table for persistence after each completed family"""
     models = read_tiles(folder, include_ensembles=False)
     tables = {}
     for tile in models:
-        target = Path(folder) / "families" / tile["family"]
+        target = prediction_folder(folder, tile["family"], tile["recipe_key"])
         parts = {
             split: read_predictions(target / f"{split}.parquet") for split in ("validation", "test")
         }
@@ -275,6 +287,14 @@ def read_ensemble_rows(folder):
             for split in ("validation", "test")
             for path in (folder / "families").glob(f"*/{split}.parquet")
         ]
+        markers = list((folder / "families").glob("*/exit_test.json"))
+        sources.extend(markers)
+        if markers:
+            for filename in ("leaderboard.json", "winner.json"):
+                sources.extend((folder / "families").glob(f"*/{filename}"))
+        finish_marker = folder / "finish_complete.json"
+        if finish_marker.exists():
+            sources.append(finish_marker)
         if path.exists() and all(
             path.stat().st_mtime_ns >= source.stat().st_mtime_ns for source in sources
         ):
@@ -296,7 +316,8 @@ def write_ensemble_views(folder, rows):
         parts = {}
         for split in ("validation", "test", "forecast"):
             paths = [
-                folder / "families" / member.split(":")[1] / f"{split}.parquet"
+                prediction_folder(folder, member.split(":")[1], member.split(":")[2])
+                / f"{split}.parquet"
                 for member in row["members"]
             ]
             if not all(path.exists() for path in paths):
@@ -379,8 +400,8 @@ def read_tiles(folder: Path, *, include_ensembles=True):
         key = recipe_key(recipe) if recipe else "pending"
         tile_id = f"model:{family}:{key}"
         progress = {
-            **status.get("families", {}).get(family, {}),
             **read_json(target / "status.json", {}),
+            **status.get("families", {}).get(family, {}),
         }
         records = read_records(target / "generation_curves.jsonl")
         if not records and len(names) == 1:
@@ -421,9 +442,15 @@ def read_tiles(folder: Path, *, include_ensembles=True):
                 "loss": candidate.get("loss", {}),
             }
         split_tables, split_paths = {}, {}
+        exit_score = read_json(target / "exit_test.json", {})
+        exit_score = exit_score if exit_score.get("recipe_key") == key else {}
+        unfinished_exit = (target / "exit_test.json").exists() and not (
+            folder / "finish_complete.json"
+        ).exists()
+        scored_at_exit = bool(exit_score) and unfinished_exit
         for split in ("validation", "test"):
-            path = target / f"{split}.parquet"
-            if not path.exists() and family == winner_family:
+            path = prediction_folder(folder, family, key) / f"{split}.parquet"
+            if not path.exists() and family == winner_family and not unfinished_exit:
                 path = folder / f"winner_{split}.parquet"
                 if not path.exists() and saved_recipe.get("family") != "ensemble":
                     path = folder / f"{split}.parquet"
@@ -465,12 +492,15 @@ def read_tiles(folder: Path, *, include_ensembles=True):
                 "error_metrics": error_metrics(
                     request.get("spec", {}),
                     fitness=fitness,
-                    verdict=summary.get("verdict"),
+                    verdict=exit_score.get("verdict")
+                    if unfinished_exit
+                    else summary.get("verdict"),
                     path=split_paths["test"],
                 ),
                 "curves": curves,
                 "generation_recipes": generation_recipes,
-                "state": "running" if running else "done",
+                "scored_at_exit": scored_at_exit,
+                "state": "running" if running else progress.get("state", "done"),
                 "best_generation": best.get("generation", min(generations, default=None)),
                 "running_generation": progress.get("generation") if running else None,
             }
