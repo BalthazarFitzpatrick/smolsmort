@@ -214,11 +214,12 @@ def save_families(page, names):
 
 def assert_config_rows(page):
     heads = page.locator("#regression-config .dropdown-head")
-    assert heads.count() == 6
+    assert heads.count() == 7
     positions = [head.bounding_box() for head in heads.all()]
-    assert len({round(position["y"]) for position in positions}) == 2
+    assert len({round(position["y"]) for position in positions}) == 3
     assert positions[0]["y"] == positions[1]["y"] == positions[2]["y"]
     assert positions[3]["y"] == positions[4]["y"] == positions[5]["y"]
+    assert positions[6]["x"] == positions[0]["x"]
 
 
 def test_training_config_shared_new_and_warm_request_values(tmp_path):
@@ -446,3 +447,53 @@ def test_training_entity_only_offered_xgboost_and_removed_tab(tmp_path, topic):
         page.click(f"#{topic}-new-search")
         assert page.locator(f"#{topic}-config-start").is_visible()
         assert page.locator(f'.nav-tab.active[data-tab="{topic}-search"]').count() == 1
+
+
+def pick_effort(page, value):
+    page.click("#regression-config-effort")
+    page.locator(f'.menu-panel .menu-item[data-id="{value}"]').click()
+
+
+def test_training_effort_defaults_normal_posts_only_when_changed(tmp_path):
+    with session(tmp_path, width=1600) as (page, _base):
+        requests, _preparations = mock_prepared_searches(page)
+        mock_catalog(page)
+        select_timeseries(page)
+        assert page.locator("#regression-config-effort").inner_text() == "normal"
+        page.click("#regression-config-start")
+        page.wait_for_function(
+            "document.getElementById('regression-run-title').innerText.includes('test01')"
+        )
+        assert "effort" not in requests[0][1]
+        pick_effort(page, "high")
+        assert page.locator("#regression-config-effort").inner_text() == "high"
+        saved = page.evaluate(
+            "JSON.parse(localStorage.getItem('smolsmort:forecast:regression')).state.modelPlan"
+        )
+        assert saved["effort"] == "high"
+        page.click("#regression-config-start")
+        page.wait_for_function(
+            "document.getElementById('regression-run-title').innerText.includes('test02')"
+        )
+        assert requests[1][1]["effort"] == "high"
+        pick_effort(page, "normal")
+        page.click("#regression-config-start")
+        page.wait_for_function(
+            "document.getElementById('regression-run-title').innerText.includes('test03')"
+        )
+        assert "effort" not in requests[2][1]
+
+
+def test_training_effort_is_disabled_in_warm_mode(tmp_path):
+    with session(tmp_path, width=1600) as (page, _base):
+        mock_prepared_searches(page)
+        mock_catalog(page)
+        select_timeseries(page)
+        page.click("#regression-config-start")
+        page.wait_for_function(
+            "document.getElementById('regression-run-title').innerText.includes('test01')"
+        )
+        page.click("#regression-config-mode-warm")
+        assert page.locator("#regression-config-effort").is_disabled()
+        page.click("#regression-config-mode-new")
+        assert page.locator("#regression-config-effort").is_enabled()

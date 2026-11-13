@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from smolsmort.forecast.effort import clip_default, scale_range
 from smolsmort.forecast.families import get_family
 from smolsmort.forecast.features import (
     family_aliases,
@@ -75,6 +76,8 @@ class Budget:
     min_generations: int = 0
     time_cap: float = TIME_CAP
     max_generations: int = MAX_GENERATIONS
+    # low or high rescales the costly param ranges; normal changes nothing
+    effort: str = "normal"
     seed: int = 0
     nthread: int = 1
 
@@ -143,7 +146,15 @@ def _select_birth_families(ws):
 
 
 class _Variation:
-    def __init__(self, ws: Workspace, rng: np.random.Generator, priors=None, top_families=None):
+    def __init__(
+        self,
+        ws: Workspace,
+        rng: np.random.Generator,
+        priors=None,
+        top_families=None,
+        effort: str = "normal",
+    ):
+        self.effort = effort
         self.transform = getattr(ws, "transform", "none")
         self.priors = dict(priors) if priors and getattr(ws, "mode", None) != "entity" else None
         if self.priors is None:
@@ -171,8 +182,10 @@ class _Variation:
         self.defaults = {}
         for name in SPACE:
             param = catalog[name]
-            self.space[name] = (param.lo, param.hi, "lin" if param.kind == "float" else param.kind)
-            self.defaults[name] = param.default
+            kind = "lin" if param.kind == "float" else param.kind
+            lo, hi = scale_range("xgboost", name, param.lo, param.hi, kind, effort)
+            self.space[name] = (lo, hi, kind)
+            self.defaults[name] = clip_default(param.default, lo, hi, kind)
 
     def make_genome(self, families, objective, params, family="xgboost"):
         return make_genome(families, objective, params, family, self.transform)
@@ -268,17 +281,22 @@ class _Variation:
 
 
 class _FamilyVariation(_Variation):
-    def __init__(self, ws, rng, family, overrides, priors=None, top_families=None):
-        super().__init__(ws, rng, priors, top_families)
+    def __init__(self, ws, rng, family, overrides, priors=None, top_families=None, effort="normal"):
+        super().__init__(ws, rng, priors, top_families, effort)
         self.family = family
         self.space = {}
         self.defaults = {}
         self.choices = set()
         for param in family.space():
-            self.space[param.name] = (
-                param.choices if param.kind == "choice" else (param.lo, param.hi, param.kind)
-            )
-            self.defaults[param.name] = param.default
+            if param.kind == "choice":
+                self.space[param.name] = param.choices
+                self.defaults[param.name] = param.default
+            else:
+                lo, hi = scale_range(
+                    family.name, param.name, param.lo, param.hi, param.kind, effort
+                )
+                self.space[param.name] = (lo, hi, param.kind)
+                self.defaults[param.name] = clip_default(param.default, lo, hi, param.kind)
             if param.kind == "choice":
                 self.choices.add(param.name)
         overrides = dict(overrides or {})
@@ -569,9 +587,9 @@ def search(
         top_families = (resume or {}).get("top_families")
     warm, resume, priors, top_families = _map_saved_names(ws, warm, resume, priors, top_families)
     var = (
-        _Variation(ws, rng, priors, top_families)
+        _Variation(ws, rng, priors, top_families, budget.effort)
         if legacy
-        else _FamilyVariation(ws, rng, family, space, priors, top_families)
+        else _FamilyVariation(ws, rng, family, space, priors, top_families, budget.effort)
     )
     started = time.monotonic()
     sample = None if defaults_only or (family and not family.space()) else _sample(ws, rng)

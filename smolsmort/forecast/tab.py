@@ -471,6 +471,7 @@ def _start(app, payload: dict) -> dict:
                 "plateau",
                 "population",
                 "max_generations",
+                "effort",
             )
             if key in payload
         }

@@ -147,6 +147,7 @@ def run(folder: Path, name: str) -> int:
                     nthread=nthread,
                     **({"population": request["population"]} if "population" in request else {}),
                     max_generations=request.get("max_generations", 2**31 - 1),
+                    effort=request.get("effort", "normal"),
                     plateau=request["plateau"],
                     min_generations=request["min_generations"],
                 ),
