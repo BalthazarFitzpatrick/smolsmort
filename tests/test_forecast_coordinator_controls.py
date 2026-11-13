@@ -769,6 +769,12 @@ def test_family_queue_fills_freed_slots_and_records_wave_slices(
 
     class QueuedProcess:
         def __init__(self, command, **kwargs):
+            if command[2] == "smolsmort.forecast.exit_test":
+                self.name = "exit"
+                self.pid = 3000
+                self.returncode = 0
+                assert kwargs["env"]["OMP_NUM_THREADS"] == "1"
+                return
             if command[2] == "smolsmort.forecast.ensemble":
                 self.name = "finish"
                 self.pid = 2000

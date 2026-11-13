@@ -461,6 +461,33 @@ def test_ensemble_ratio_states_and_repaint(tmp_path):
                 assert result["tone"] == result["modelTone"]
 
 
+def test_pruned_run_tiles_show_exit_score_and_pending_colour(tmp_path):
+    with session(tmp_path, port=0) as (page, _base):
+        page.wait_for_function("() => typeof forecastCreateRunTile === 'function'")
+        result = page.evaluate(
+            """() => {
+              const grid = document.getElementById('regression-tiles-grid');
+              const metrics = [{id: 'test_ratio', scope: 'test'}];
+              const scored = {tile_id: 'scored', family: 'ridge', kind: 'model',
+                state: 'pruned', scored_at_exit: true, metrics: {wape: {validation: 0.3, test: 0.2}},
+                error_metrics: {test_ratio: {value: 0.8, scope: 'test'}}};
+              const pending = {tile_id: 'pending', family: 'snaive', kind: 'model',
+                state: 'pruned', metrics: {}};
+              grid.replaceChildren(...[scored, pending].map((tile, index) =>
+                forecastCreateRunTile(tile, index, [scored, pending], 'wape', null, metrics)));
+              return [...grid.children].map(tile => ({state: tile.dataset.state,
+                text: tile.textContent,
+                dim: [...tile.querySelectorAll('.forecast-tile-dim')].map(node => node.textContent)}));
+            }"""
+        )
+        assert result[0]["state"] == "better"
+        assert "test ratio: 0.80" in result[0]["text"]
+        assert "wape · validation 0.3 · test 0.2" in result[0]["text"]
+        assert "scored at exit" in result[0]["dim"]
+        assert result[1]["state"] == "pending"
+        assert "scored at exit" not in result[1]["text"]
+
+
 def test_ensemble_cards_list_members_without_charts_or_menus(tmp_path):
     with session(tmp_path, port=0) as (page, _base):
         page.wait_for_function("() => typeof forecastCreateRunTile === 'function'")
@@ -621,14 +648,15 @@ def test_saved_tile_states_scores_and_token_colours(tmp_path):
         ("identical", "done", 1.0, "identical", "--vanilla", "0%"),
         ("near_lower", "done", 0.996, "identical", "--vanilla", "0%"),
         ("near_upper", "done", 1.004, "identical", "--vanilla", "0%"),
-        ("unknown", "done", None, "unknown", "--grey-border", "-"),
+        ("unknown", "done", None, "pending", "--grey-border", "…"),
         ("stopped", "stopped", None, "unknown", "--grey-border", "-"),
         ("cancelled", "cancelled", None, "unknown", "--grey-border", "-"),
         ("starting", "starting", None, "running", "--kingfisher-milk", "…"),
         ("queued", "queued", None, "running", "--kingfisher-milk", "…"),
         ("paused", "paused", None, "running", "--kingfisher-milk", "…"),
-        ("pruned", "pruned", None, "worse", "--stone-red-lift", "-"),
-        ("failed", "failed", None, "worse", "--stone-red-lift", "-"),
+        ("pruned", "pruned", None, "pending", "--grey-border", "…"),
+        ("pruned_better", "pruned", 0.8, "better", "--lichen", "+20%"),
+        ("failed", "failed", None, "unknown", "--grey-border", "-"),
     ]
     with session(tmp_path, port=8098) as (page, _base):
         root = tmp_path / "forecast_root"
@@ -1467,7 +1495,7 @@ def test_tiles_read_saved_winner_artifacts_and_kept_tables(tmp_path):
             "test forecast not saved for this family"
             not in page.locator("#regression-tiles").inner_text()
         )
-        assert find_tile(page, "xgboost").get_attribute("data-state") == "unknown"
+        assert find_tile(page, "xgboost").get_attribute("data-state") == "pending"
         feature_menu = front.locator('details[data-menu="feat"]')
         feature_menu.locator("summary").click()
         assert "lag_1" in feature_menu.inner_text() and "70%" in feature_menu.inner_text()
@@ -1507,11 +1535,14 @@ def test_tiles_polled_states_without_losing_flip_menu_or_focus(tmp_path):
             ("ridge", "test ratio: 0.71", "rgb(199, 237, 95)"),
             ("snaive", "test ratio: 1.12", "rgb(173, 121, 111)"),
             ("xgboost", "test ratio: -", "rgb(119, 183, 199)"),
-            ("lightgbm", "test ratio: -", "rgb(173, 121, 111)"),
+            ("lightgbm", "test ratio: -", None),
         ):
             front = find_tile(page, name).locator(".forecast-tile-front")
             assert score in front.inner_text()
-            assert front.evaluate("node => getComputedStyle(node).borderTopColor") == color
+            if color is not None:
+                assert front.evaluate("node => getComputedStyle(node).borderTopColor") == color
+            else:
+                assert find_tile(page, name).get_attribute("data-state") == "pending"
         running = find_tile(page, "xgboost").locator(".forecast-tile-front")
         assert running.locator(".forecast-tile-search-line").count() == 1
         assert "running 7 min" in running.inner_text() and "gen 5" in running.inner_text()

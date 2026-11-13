@@ -11,6 +11,7 @@ from collections import deque
 
 import numpy as np
 
+from smolsmort.forecast.exit_test import ExitScorer
 from smolsmort.forecast.families import get_family
 from smolsmort.forecast.family_worker import read_json
 from smolsmort.forecast.machine import describe_machine
@@ -89,6 +90,25 @@ def best_entry(folder, name):
     entries = read_json(folder / "families" / name / "checkpoint.json", {}).get("entries", [])
     viable = [e for e in entries if e["fitness"] is not None and e.get("note") != "sample"]
     return min(viable, key=lambda e: (e["fitness"], e["families"]), default=None)
+
+
+def build_family_board(checkpoint):
+    board = [
+        {
+            key: value
+            for key, value in entry.items()
+            if key not in ("contrib", "prediction", "eval_history")
+        }
+        for entry in checkpoint.get("entries", [])
+        if entry.get("note") != "sample"
+    ]
+    return sorted(
+        board,
+        key=lambda entry: (
+            entry["fitness"] if entry["fitness"] is not None else float("inf"),
+            entry["families"],
+        ),
+    )
 
 
 def paired_entry(data):
@@ -198,10 +218,25 @@ def estimate_finish_seconds(folder, names, calibration, request):
 
 
 def launch_families(folder, request, job):
+    enabled = (
+        request.get("version") == 2
+        and normalize_mode(request.get("spec", {}).get("mode") or "timeseries") == "timeseries"
+    )
+    exits = ExitScorer(folder, enabled=enabled)
+    try:
+        return _launch_families(folder, request, job, exits)
+    finally:
+        exits.close()
+
+
+def _launch_families(folder, request, job, exits):
     names = [item["name"] for item in request["families"]]
     tunable = {name for name in names if get_family(name).space()}
     state = initialize_state(folder, request)
+    exits.completed.update(tuple(event) for event in state.get("exit_events", []))
+    exits.seen.update(exits.completed)
     deadline = state["deadline"]
+    exits.deadline = deadline
     search_deadline = min(deadline, state["started_at"] + request["time_budget_s"] * 0.7)
     search_span = search_deadline - state["started_at"]
     states = state["families"]
@@ -217,6 +252,8 @@ def launch_families(folder, request, job):
     }
     if state.get("finish_pid") and not (folder / "finish_complete.json").exists():
         orphan_pids.add(state["finish_pid"])
+    if state.get("exit_pid"):
+        orphan_pids.add(state["exit_pid"])
     until = time.monotonic() + GRACE_S
     while any(is_process_alive(pid) for pid in orphan_pids):
         if time.monotonic() >= until:
@@ -313,6 +350,21 @@ def launch_families(folder, request, job):
 
     def save():
         nonlocal search_deadline, search_span
+        if not job.cancelled and not (folder / "finish_complete.json").exists():
+            for name in names:
+                if states[name]["state"] in ("done", "pruned"):
+                    entry = best_entry(folder, name)
+                    queued = exits.enqueue(name, entry, len(states[name].get("slice_history", [])))
+                    if queued:
+                        # a terminated partial generation may be newer than its published board
+                        checkpoint = read_json(folder / "families" / name / "checkpoint.json", {})
+                        job.save(
+                            f"families/{name}/leaderboard.json", build_family_board(checkpoint)[:10]
+                        )
+                        job.save(f"families/{name}/winner.json", entry["genome"])
+            exits.poll()
+        state["exit_pid"] = exits.process.pid if exits.process is not None else None
+        state["exit_events"] = sorted(exits.completed)
         active_names = [
             name for name in names if states[name]["state"] in ("paused", "running", "pending")
         ]
@@ -557,21 +609,7 @@ def launch_families(folder, request, job):
             states[name].update(
                 state="failed", reason="budget expired without a completed candidate"
             )
-        family_board = [
-            {
-                key: value
-                for key, value in entry.items()
-                if key not in ("contrib", "prediction", "eval_history")
-            }
-            for entry in checkpoint_entries
-            if entry.get("note") != "sample"
-        ]
-        family_board.sort(
-            key=lambda entry: (
-                entry["fitness"] if entry["fitness"] is not None else float("inf"),
-                entry["families"],
-            )
-        )
+        family_board = build_family_board(checkpoint)
         if family_board:
             job.save(f"families/{name}/leaderboard.json", family_board[:10])
         for entry in family_board[:10]:
@@ -603,6 +641,19 @@ def launch_families(folder, request, job):
     history = ranked[0].get("eval_history")
     job.save("eval_history.json", {**history, "key": ranked[0]["key"]} if history else None)
     if not (folder / "finish_complete.json").exists():
+        # drain exit work with half the remaining finish reserve, then hand off exclusively
+        exit_deadline = min(deadline, time.time() + max(0, deadline - time.time()) / 2)
+        while (exits.pending or exits.process is not None) and not job.cancelled:
+            if time.time() >= exit_deadline:
+                break
+            exits.poll()
+            save()
+            time.sleep(0.05)
+        exits.close()
+        state["exit_pid"] = None
+        if job.cancelled:
+            result["stopped"] = "cancelled"
+            return result
         if time.time() >= deadline:
             raise ValueError("deadline exhausted before final fitting")
         state["phase_history"].append({"phase": "finish_start", "started_at": time.time()})

@@ -651,7 +651,7 @@ def test_refit_cancelled_state_stays_cancelled(tmp_path):
         wait_run=lambda *args: {"state": "cancelled"},
     )
     assert json.loads((tmp_path / run_id / "status.json").read_text())["state"] == "cancelled"
-    assert tiles.read_tiles(tmp_path / run_id)[0]["state"] == "done"
+    assert tiles.read_tiles(tmp_path / run_id)[0]["state"] == "cancelled"
 
 
 def test_mark_viewable_flags_only_tiles_with_saved_predictions(tmp_path):

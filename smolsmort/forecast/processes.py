@@ -81,7 +81,7 @@ def read_run_pids(folder):
             data = json.loads(path.read_text())
         except (FileNotFoundError, json.JSONDecodeError):
             continue
-        values = [data.get("pid"), data.get("finish_pid")]
+        values = [data.get("pid"), data.get("finish_pid"), data.get("exit_pid")]
         values.extend(state.get("pid") for state in data.get("families", {}).values())
         pids.update(pid for pid in values if type(pid) is int and pid > 0)
     return pids

@@ -772,6 +772,12 @@ the best 10% carry over unchanged and each parent is the best of a contest among
 
 #### long-run forecast controls
 
+long timeseries runs score each family when it stops searching, including one-shot statistical
+families. tiles show its test wape and ratio against the naive baseline as soon as that exit
+score is saved, with a dim `scored at exit` note until finishing. a family that resumes gets a
+new score when it stops again. search, pruning and selection still use validation only; the
+finish phase reuses an exit score only when the winning recipe has not changed.
+
 statistical families show n/a for series with fewer than two seasons of training history and score only the series they cover.
 
 v2 request json and `forecast.runs.start_run` support these controls:
