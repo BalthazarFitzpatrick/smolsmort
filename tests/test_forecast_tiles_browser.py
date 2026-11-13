@@ -219,7 +219,7 @@ def test_contract_tiles_masonry_curves_filters_and_ensembles(tmp_path, monkeypat
             "var(--muted-on)",
             "var(--cream)",
             "var(--muted-on)",
-            "var(--tile-tone)",
+            "var(--kingfisher-milk)",
         ]
         assert page.locator(".forecast-run-tile polyline").evaluate_all(
             "nodes => nodes.every(node => node.getAttribute('points').split(/[ ,]/).every(value => Number(value) >= 0 && Number(value) <= 1))"
