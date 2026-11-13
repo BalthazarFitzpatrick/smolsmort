@@ -35,6 +35,8 @@ parallel = ["psutil>=5.9"]
 lightgbm = ["lightgbm>=4.5"]
 stats = ["statsforecast>=2.1"]
 holidays = ["holidays>=0.50"]
+catboost = ["catboost>=1.2"]
+trees = ["scikit-learn>=1.5"]
 
 [project.scripts]
 smolsmort = "smolsmort.cli:main"
