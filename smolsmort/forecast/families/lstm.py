@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from smolsmort.forecast.families.base import Param, load_torch, probe_import
+from smolsmort.forecast.families.base import Param, guard_process_family, load_torch, probe_import
 from smolsmort.forecast.families.stats import RawSeriesTask
 from smolsmort.forecast.spec import SERIES, STEP
 
@@ -35,6 +35,7 @@ class LstmFitted:
     warnings: tuple[str, ...] = ()
 
     def predict(self, task: RawSeriesTask) -> np.ndarray:
+        guard_process_family("lstm")
         return self.prediction.copy()
 
 
@@ -236,6 +237,7 @@ class LstmFamily:
     label = "lstm"
     needs = "raw_series"
     pip_extra = "neural"
+    isolated = True
 
     def available(self) -> tuple[bool, str]:
         return probe_import("torch", self.pip_extra)
@@ -270,6 +272,7 @@ class LstmFamily:
     ) -> LstmFitted:
         from smolsmort.forecast.pipeline import PipelineError
 
+        guard_process_family("lstm")
         available, reason = self.available()
         if not available:
             raise PipelineError(f"family {self.name!r} is unavailable; {reason}")

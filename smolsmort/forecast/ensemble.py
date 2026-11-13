@@ -9,11 +9,16 @@ from pathlib import Path
 import numpy as np
 
 from smolsmort.forecast.evaluate import mean_predictions
-from smolsmort.forecast.exit_test import restore_exit_cache
+from smolsmort.forecast.exit_test import restore_exit_cache, score_isolated
+from smolsmort.forecast.families import get_family
 from smolsmort.forecast.family_worker import read_json, watch_parent
 from smolsmort.forecast.importance import combine_importance
 from smolsmort.forecast.pipeline import (
+    PipelineError,
     _fitness,
+    _known_rows,
+    _test_windows,
+    _validation_masks,
     finish,
     fit_importance,
     genome_from_dict,
@@ -51,6 +56,23 @@ def summarize(final):
     }
 
 
+def has_finish_cache(ws, genome, entry, predictions):
+    """a recipe marker alone cannot prove all required windows were published"""
+    for bucket in ws.frames:
+        masks = ws.series_masks[bucket]
+        windows = list(_test_windows(ws, bucket))
+        if entry.get("prediction") is None:
+            windows.extend(_validation_masks(ws, bucket))
+        windows = [(fit, rows) for fit, rows in windows if rows.any()]
+        windows.append((_known_rows(masks), masks["future"]))
+        for fit_rows, eval_rows in windows:
+            key = (genome.key(), bucket, fit_rows.tobytes(), eval_rows.tobytes())
+            prediction = predictions.get(key)
+            if prediction is None or prediction.shape != (int(eval_rows.sum()),):
+                return False
+    return True
+
+
 def run(folder, parent_pid):
     watch_parent(parent_pid)
     job = _Run(folder)
@@ -75,14 +97,30 @@ def run(folder, parent_pid):
     genome = genome_from_dict(winner["genome"])
     prediction_cache = {}
     importance_cache = {}
+    isolated = {
+        entry["family"]
+        for entry in ranked
+        if getattr(get_family(entry["family"]), "isolated", False)
+    }
     if ws.mode == "timeseries":
         for entry in ranked:
-            restore_exit_cache(
-                folder / "families" / entry["family"],
-                genome_from_dict(entry["genome"]),
+            name = entry["family"]
+            member = genome_from_dict(entry["genome"])
+            target = folder / "families" / name
+            restored = restore_exit_cache(
+                target,
+                member,
                 prediction_cache,
                 importance_cache,
             )
+            if name in isolated and (
+                not restored or not has_finish_cache(ws, member, entry, prediction_cache)
+            ):
+                score_isolated(folder, name, entry, deadline=coordinator["deadline"])
+                if not restore_exit_cache(target, member, prediction_cache, importance_cache):
+                    raise PipelineError(f"family {name!r}: isolated final fit cache is missing")
+                if not has_finish_cache(ws, member, entry, prediction_cache):
+                    raise PipelineError(f"family {name!r}: isolated final fit cache is incomplete")
     final = finish(
         ws,
         genome,
@@ -91,6 +129,7 @@ def run(folder, parent_pid):
         prediction_cache=prediction_cache,
         importance_cache=importance_cache,
         aggregate_weight=request.get("aggregate_weight"),
+        cache_only_families=isolated,
     )
     summary = {
         "winner": {"family": winner["family"], "fitness": winner["fitness"], **summarize(final)}
@@ -121,6 +160,7 @@ def run(folder, parent_pid):
             validation=prediction,
             prediction_cache=prediction_cache,
             importance_cache=importance_cache,
+            cache_only_families=isolated,
         )
         summary["ensemble"] = {
             "members": [entry["family"] for entry in members],
@@ -168,6 +208,7 @@ def run(folder, parent_pid):
                     validation=entry.get("prediction"),
                     prediction_cache=prediction_cache,
                     importance_cache=importance_cache,
+                    cache_only_families=isolated,
                 )
             )
             _write_tables(folder / "families" / name, spec, family_final)
@@ -176,6 +217,8 @@ def run(folder, parent_pid):
             importance = final.get("importance")
         else:
             if member.key() not in importance_cache:
+                if name in isolated:
+                    raise PipelineError(f"family {name!r}: isolated importance cache is missing")
                 importance_cache[member.key()] = fit_importance(ws, member, nthread=nthread)
             importance = combine_importance(name, importance_cache[member.key()])
         summary["families"][name]["importance"] = importance

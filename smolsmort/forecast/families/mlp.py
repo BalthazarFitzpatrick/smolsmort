@@ -150,6 +150,7 @@ class MlpFamily:
     label = "mlp"
     needs = "lag_features"
     pip_extra = "neural"
+    isolated = True
 
     def available(self) -> tuple[bool, str]:
         return probe_import("torch", self.pip_extra)

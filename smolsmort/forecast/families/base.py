@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from dataclasses import dataclass
 from importlib import import_module
 from typing import Literal, Protocol
@@ -27,6 +29,8 @@ class Fitted(Protocol):
 
 
 class Family(Protocol):
+    """optional isolated=True requires its own process; absent means False"""
+
     name: str
     label: str
     needs: Literal["lag_features", "raw_series"]
@@ -56,16 +60,49 @@ class Family(Protocol):
     ) -> Fitted: ...
 
 
+def guard_process_family(name: str) -> None:
+    """reject incompatible native runtimes before importing or doing thread work"""
+    neural = name in {"mlp", "lstm", "torch"}
+    conflict = (
+        any(module in sys.modules for module in ("xgboost", "lightgbm"))
+        if neural
+        else name in {"xgboost", "lightgbm"} and "torch" in sys.modules
+    )
+    if conflict:
+        from smolsmort.forecast.model import ModelError
+
+        raise ModelError(f"family {name!r}: torch families must run in their own process")
+
+
 def load_torch():
     """import torch; it must never share a process with xgboost or lightgbm [two libomp copies abort]"""
+    guard_process_family("torch")
     return import_module("torch")
 
 
 def probe_import(module: str, pip_extra: str) -> tuple[bool, str]:
     """probe only when asked; shared libraries can fail even when the package is installed"""
     try:
+        from smolsmort.forecast.model import ModelError
+
+        try:
+            guard_process_family(module)
+        except ModelError:
+            # availability must not load a conflicting runtime into its caller
+            result = subprocess.run(
+                [sys.executable, "-c", f"import importlib; importlib.import_module({module!r})"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            return (
+                (True, "")
+                if result.returncode == 0
+                else (False, f"uv sync --extra {pip_extra} ({result.stderr.strip()})")
+            )
         load_torch() if module == "torch" else import_module(module)
-    except (ImportError, OSError) as exc:
+    except (ImportError, OSError, subprocess.SubprocessError) as exc:
         return False, f"uv sync --extra {pip_extra} ({exc})"
     return True, ""
 

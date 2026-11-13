@@ -794,6 +794,11 @@ four families join xgboost, lightgbm, ridge and the statistical families. each n
   range, high lets the same ranges grow by half up to a fixed ceiling. normal is the default and leaves every range and every
   saved run exactly as before.
 
+mlp and lstm always fit and predict in their own process, including during finishing.
+torch and the threaded tree libraries can load conflicting openmp runtimes and abort a shared process.
+finishing reuses matching exit caches or rebuilds them in a separate, deadline-bounded process.
+mixed torch and xgboost or lightgbm use in one process raises a clean error before fitting or prediction.
+
 #### long-run forecast controls
 
 long timeseries runs score each family when it stops searching, including one-shot statistical
