@@ -37,6 +37,8 @@ stats = ["statsforecast>=2.1"]
 holidays = ["holidays>=0.50"]
 catboost = ["catboost>=1.2"]
 trees = ["scikit-learn>=1.5"]
+# mlp and lstm always fit and predict in isolated processes; see the libomp note above
+neural = ["torch>=2.0"]
 
 [project.scripts]
 smolsmort = "smolsmort.cli:main"

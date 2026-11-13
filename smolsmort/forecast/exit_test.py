@@ -13,13 +13,66 @@ from pathlib import Path
 import numpy as np
 
 from smolsmort.forecast.family_worker import read_json
-from smolsmort.forecast.pipeline import finish, genome_from_dict, load_workspace
+from smolsmort.forecast.pipeline import PipelineError, finish, genome_from_dict, load_workspace
 from smolsmort.forecast.processes import watch_parent
 from smolsmort.forecast.spec import spec_from_dict
 from smolsmort.forecast.worker import _Run, _write_tables
 
 EXIT_THREADS = 1
 EXIT_TIMEOUT_S = 300
+
+
+def launch_exit(folder, name, entry):
+    """share the same fresh interpreter and thread limits for search and finish"""
+    target = folder / "families" / name
+    target.mkdir(parents=True, exist_ok=True)
+    _Run(target).save("exit_request.json", entry)
+    env = dict(os.environ)
+    for key in (
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+    ):
+        env[key] = str(EXIT_THREADS)
+    with (target / "exit_test.log").open("a") as log:
+        return subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "smolsmort.forecast.exit_test",
+                str(folder),
+                name,
+                str(os.getpid()),
+            ],
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            env=env,
+        )
+
+
+def score_isolated(folder, name, entry, *, deadline):
+    """finish may wait for one isolated recipe, never past the run deadline"""
+    timeout = min(EXIT_TIMEOUT_S, deadline - time.time())
+    if timeout <= 0:
+        raise PipelineError(f"family {name!r}: deadline exhausted before isolated final fit")
+    process = None
+    try:
+        process = launch_exit(folder, name, entry)
+        code = process.wait(timeout=timeout)
+        if code != 0:
+            raise PipelineError(
+                f"family {name!r}: isolated final fit failed (exit {code}); see families/{name}/exit_test.log"
+            )
+    except subprocess.TimeoutExpired as exc:
+        raise PipelineError(f"family {name!r}: isolated final fit exceeded deadline") from exc
+    except OSError as exc:
+        raise PipelineError(f"family {name!r}: could not launch isolated final fit: {exc}") from exc
+    finally:
+        if process is not None:
+            from smolsmort.forecast.coordinator import stop_process
+
+            stop_process(process)
 
 
 def restore_exit_cache(target, genome, prediction_cache, importance_cache):
@@ -149,31 +202,7 @@ class ExitScorer:
         if not self.pending or time.time() >= self.deadline:
             return
         name, (entry, token) = self.pending.popitem(last=False)
-        target = self.folder / "families" / name
-        target.mkdir(parents=True, exist_ok=True)
-        _Run(target).save("exit_request.json", entry)
-        env = dict(os.environ)
-        for key in (
-            "OMP_NUM_THREADS",
-            "OPENBLAS_NUM_THREADS",
-            "MKL_NUM_THREADS",
-            "NUMEXPR_NUM_THREADS",
-        ):
-            env[key] = str(EXIT_THREADS)
-        with (target / "exit_test.log").open("a") as log:
-            self.process = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-m",
-                    "smolsmort.forecast.exit_test",
-                    str(self.folder),
-                    name,
-                    str(os.getpid()),
-                ],
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                env=env,
-            )
+        self.process = launch_exit(self.folder, name, entry)
         self.started = time.time()
         self.process_token = token
 

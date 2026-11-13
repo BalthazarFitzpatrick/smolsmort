@@ -1965,6 +1965,9 @@ holidays = [
 lightgbm = [
     { name = "lightgbm" },
 ]
+neural = [
+    { name = "torch" },
+]
 parallel = [
     { name = "psutil" },
 ]
@@ -2003,12 +2006,13 @@ requires-dist = [
     { name = "statsforecast", marker = "extra == 'stats'", specifier = ">=2.1" },
     { name = "threadpoolctl", specifier = ">=3.1" },
     { name = "torch", marker = "extra == 'coreml'", specifier = ">=2.0" },
+    { name = "torch", marker = "extra == 'neural'", specifier = ">=2.0" },
     { name = "torch", marker = "extra == 'vision'", specifier = ">=2.0" },
     { name = "ui-base", git = "https://github.com/BalthazarFitzpatrick/smortui.git?rev=7817ce17bd4ad44caabafe03e912a8159bdeddd2" },
     { name = "xgboost", marker = "extra == 'forecast'", specifier = ">=3.2.0" },
     { name = "xgboost", marker = "extra == 'tabular'", specifier = ">=3.2.0" },
 ]
-provides-extras = ["vision", "coreml", "tabular", "forecast", "parallel", "lightgbm", "stats", "holidays", "catboost", "trees"]
+provides-extras = ["vision", "coreml", "tabular", "forecast", "parallel", "lightgbm", "stats", "holidays", "catboost", "trees", "neural"]
 
 [package.metadata.requires-dev]
 dev = [

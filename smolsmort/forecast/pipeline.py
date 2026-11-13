@@ -743,7 +743,7 @@ def _timeseries_fit(ws, genome, frame, rows, nthread):
         round_errors=True,
         **(
             {"metric_transform": genome.transform, "metric_base": base}
-            if genome.family in ("xgboost", "lightgbm", "catboost")
+            if genome.family in ("xgboost", "lightgbm", "catboost", "mlp")
             else {}
         ),
     )
@@ -884,13 +884,21 @@ def finish(
     prediction_cache=None,
     importance_cache=None,
     aggregate_weight: str | None = None,
+    cache_only_families=(),
 ) -> dict:
     """band from validation, the verdict from the untouched test split, and the forecast itself"""
     if ws.mode == "entity":
         result = _finish_entities(ws, genome, nthread, aggregate_weight)
     else:
         result = _finish_timeseries(
-            ws, genome, nthread, members, validation, prediction_cache, importance_cache
+            ws,
+            genome,
+            nthread,
+            members,
+            validation,
+            prediction_cache,
+            importance_cache,
+            cache_only_families,
         )
     return {**result, "transform": genome.transform}
 
@@ -1159,7 +1167,14 @@ def _entity_survival_verdict(ws, genome, nthread):
 
 
 def _finish_timeseries(
-    ws, genome, nthread, members=None, validation=None, prediction_cache=None, importance_cache=None
+    ws,
+    genome,
+    nthread,
+    members=None,
+    validation=None,
+    prediction_cache=None,
+    importance_cache=None,
+    cache_only_families=(),
 ) -> dict:
     profile = ws.profile
     period = profile["genes"].get("period")
@@ -1178,6 +1193,10 @@ def _finish_timeseries(
             key = (member.key(), bucket, fit_rows.tobytes(), eval_rows.tobytes())
             prediction = prediction_cache.get(key) if prediction_cache is not None else None
             if prediction is None:
+                if member.family in cache_only_families:
+                    raise PipelineError(
+                        f"family {member.family!r}: isolated final fit cache is incomplete"
+                    )
                 options = {}
                 if collect and importance_cache is not None:
                     options["importance"] = importance_cache.setdefault(member.key(), [])

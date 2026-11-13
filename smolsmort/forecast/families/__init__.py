@@ -12,6 +12,8 @@ from smolsmort.forecast.families.base import (
 from smolsmort.forecast.families.catboost import CatboostFamily
 from smolsmort.forecast.families.extratrees import ExtratreesFamily
 from smolsmort.forecast.families.lightgbm import LightgbmFamily
+from smolsmort.forecast.families.lstm import LstmFamily
+from smolsmort.forecast.families.mlp import MlpFamily
 from smolsmort.forecast.families.ridge import RidgeFamily
 from smolsmort.forecast.families.stats import StatsFamily
 from smolsmort.forecast.families.xgboost import XgboostFamily
@@ -21,6 +23,8 @@ register(LightgbmFamily())
 register(RidgeFamily())
 register(CatboostFamily())
 register(ExtratreesFamily())
+register(MlpFamily())
+register(LstmFamily())
 for name in ("ets", "theta", "arima", "snaive"):
     register(StatsFamily(name))
 

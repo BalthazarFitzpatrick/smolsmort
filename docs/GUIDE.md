@@ -772,7 +772,7 @@ the best 10% carry over unchanged and each parent is the best of a contest among
 
 #### more model families and the effort setting
 
-catboost and extra trees join xgboost, lightgbm, ridge and the statistical families. each needs its own extra and shows
+four families join xgboost, lightgbm, ridge and the statistical families. each needs its own extra and shows
 `uv sync --extra <name>` in the families menu while it is missing.
 
 - **catboost** (`--extra catboost`): gradient boosting on lag features, with symmetric trees that cope well with small data and
@@ -783,10 +783,22 @@ catboost and extra trees join xgboost, lightgbm, ridge and the statistical famil
   imputation, missing indicators and one-hot categories. searched params are n_estimators (50-600), max_depth (3-24),
   min_samples_leaf (1-40) and max_features (0.3-1.0). absolute_error is several times slower than squared_error, and the tile
   shows a single in-sample error value, not a curve over rounds.
+- **mlp** (`--extra neural`): a feed-forward relu net in torch on cpu, fed the same lag features as the trees. it standardises
+  features and target with training-only statistics and trains with adam for up to 300 epochs. the newest inner share of rows
+  picks the best epoch by early stopping, then the net is refit on all rows for that many epochs. searched params are n_layers,
+  width, dropout, learning_rate, weight_decay and batch_size. epochs are the rounds, so its tile draws curves like a boosting model.
+- **lstm** (`--extra neural`): a global sequence model in torch on cpu. it learns from the recent weekly history of every
+  eligible series at once, scales each series by its own mean and predicts the next horizon steps. it refits on every fourth
+  origin and gives n/a for series with fewer than two seasons of history, like the statistical families. it always runs with seed 0.
 - **effort**: low, normal or high, one dropdown in the training box (new run only). it limits how expensive the searched models
   can get: low cuts the upper end of depth, leaves, width, layers, tree count and lookback ranges to about 40 percent of the
   range, high lets the same ranges grow by half up to a fixed ceiling. normal is the default and leaves every range and every
   saved run exactly as before.
+
+mlp and lstm always fit and predict in their own process, including during finishing.
+torch and the threaded tree libraries can load conflicting openmp runtimes and abort a shared process.
+finishing reuses matching exit caches or rebuilds them in a separate, deadline-bounded process.
+mixed torch and xgboost or lightgbm use in one process raises a clean error before fitting or prediction.
 
 #### long-run forecast controls
 
