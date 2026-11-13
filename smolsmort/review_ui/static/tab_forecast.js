@@ -460,8 +460,8 @@ function forecastRunTileChart(tile, tiles, metric, training, selected = 'best') 
     recorded = true;
     const colourFor = generation => tile.kind === 'ensemble' ? palette[memberIndex % palette.length]
       : generation === selected ? '--accent-on'
-        : Number(generation) === member.best_generation ? '--cream'
-          : Number(generation) === member.running_generation ? '--tile-tone' : '--muted-on';
+        : Number(generation) === member.running_generation ? '--kingfisher-milk'
+          : Number(generation) === member.best_generation ? '--cream' : '--muted-on';
     generations.forEach(([generation, curve], index) => {
       const values = valuesFor(curve);
       const curveMetric = training ? curve.loss?.name || 'loss' : metricFor(curve);

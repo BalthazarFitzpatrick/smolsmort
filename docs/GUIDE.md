@@ -999,6 +999,8 @@ models with curves show train loss and validation charts, then `G`, `P`, `F` pic
 test ratio plus validation/test wape lines. the `G` picker defaults to `best` and lists each
 generation with its validation wape; choosing one highlights its curve and shows its saved
 parameters in `P` and feature families in `F`. importance percentages belong to `best` only.
+curve colours: the running generation is always blue, an older best generation is cream, the picked
+generation is near white and thicker, all other generations are grey.
 older runs without a saved generation genome show `not saved`. picks, open menus and keyboard
 focus survive polling; only one menu opens at a time, and escape closes it. one-shot models
 join their values across generations in shorter charts. models without curves have short
