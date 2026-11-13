@@ -1,11 +1,15 @@
-"""catboost and extra trees are registered, show install hints and use the names effort scales"""
+"""the four new families are registered and show install hints"""
 
 from __future__ import annotations
 
-from smolsmort.forecast.effort import COSTLY
 from smolsmort.forecast.families import get_family, registered_families
 
-NEW = {"catboost": ("lag_features", "catboost"), "extratrees": ("lag_features", "trees")}
+NEW = {
+    "catboost": ("lag_features", "catboost"),
+    "extratrees": ("lag_features", "trees"),
+    "mlp": ("lag_features", "neural"),
+    "lstm": ("raw_series", "neural"),
+}
 
 
 def test_new_families_are_registered_with_their_extras():
@@ -31,6 +35,8 @@ def test_missing_library_gives_the_install_hint(monkeypatch):
 
 
 def test_cost_params_use_the_names_effort_scales():
-    for name in NEW:
+    from smolsmort.forecast.effort import COSTLY
+
+    for name in ("catboost", "extratrees", "mlp", "lstm"):
         space = {param.name for param in get_family(name).space()}
         assert space & set(COSTLY.get(name, {})), name

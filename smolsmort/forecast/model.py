@@ -71,6 +71,9 @@ class RoundErrors:
 
 
 def _xgb():
+    from smolsmort.forecast.families.base import guard_process_family
+
+    guard_process_family("xgboost")
     import xgboost
 
     return xgboost

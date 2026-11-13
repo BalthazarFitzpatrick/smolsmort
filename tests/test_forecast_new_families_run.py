@@ -27,13 +27,13 @@ def run_families(tmp_path, names, budget_s):
 
 
 @pytest.mark.skipif(
-    not get_family("extratrees").available()[0],
-    reason="needs scikit-learn",
+    not all(get_family(name).available()[0] for name in ("extratrees", "mlp", "lstm")),
+    reason="needs scikit-learn and torch",
 )
-def test_extratrees_shares_one_run_with_xgboost(tmp_path):
-    names = ["xgboost", "extratrees", "snaive"]
-    result = run_families(tmp_path, names, 150)
-    for name in ("extratrees",):
+def test_extratrees_mlp_and_lstm_share_one_run_with_xgboost(tmp_path):
+    names = ["xgboost", "extratrees", "mlp", "lstm", "snaive"]
+    result = run_families(tmp_path, names, 240)
+    for name in ("extratrees", "mlp", "lstm"):
         state = result["families"][name]
         assert state["fitness"] is not None, (name, state)
         assert state["state"] != "failed", (name, state)

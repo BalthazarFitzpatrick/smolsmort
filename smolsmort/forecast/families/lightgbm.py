@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from smolsmort.forecast.families.base import Param, probe_import
+from smolsmort.forecast.families.base import Param, guard_process_family, probe_import
 from smolsmort.forecast.model import ModelError, RoundErrors
 
 OBJECTIVES = ("regression_l1", "regression", "poisson", "tweedie")
@@ -28,6 +28,7 @@ class LightgbmFitted:
     eval_history: dict | None = None
 
     def predict(self, x) -> np.ndarray:
+        guard_process_family("lightgbm")
         values = np.asarray(
             self.booster.predict(np.asarray(x, dtype=np.float32), num_threads=self.nthread)
         )
@@ -86,6 +87,7 @@ class LightgbmFamily:
         metric_transform: str = "none",
         metric_base=None,
     ) -> LightgbmFitted:
+        guard_process_family("lightgbm")
         if objective not in OBJECTIVES:
             raise ModelError(f"no lightgbm objective called {objective!r}")
         import lightgbm as lgb
