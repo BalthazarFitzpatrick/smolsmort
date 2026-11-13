@@ -6,6 +6,7 @@ import math
 import re
 
 from smolsmort.forecast.aggregate import get_aggregator
+from smolsmort.forecast.effort import check_effort
 from smolsmort.forecast.machine_config import load_machine_config
 from smolsmort.forecast.spec import normalize_saved_modes
 
@@ -107,6 +108,8 @@ def parse_request(request: dict) -> dict:
     for field in ("population", "max_generations"):
         if field in request and (type(request[field]) is not int or request[field] < 1):
             raise ValueError(f"{field} must be a positive integer")
+    if "effort" in request:
+        check_effort(request["effort"])
     prune_sigma = request.get("prune_sigma", 1.0)
     if (
         isinstance(prune_sigma, bool)
@@ -124,6 +127,8 @@ def parse_request(request: dict) -> dict:
         raise ValueError("ensemble.top must be a positive integer")
     if type(ensemble.get("enabled", True)) is not bool:
         raise ValueError("ensemble.enabled must be a boolean")
+    # normal is the absence of the field, so old and explicit-normal requests stay identical
+    request = {key: value for key, value in request.items() if (key, value) != ("effort", "normal")}
     return {
         **request,
         "aggregate": aggregate,

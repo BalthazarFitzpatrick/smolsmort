@@ -770,6 +770,24 @@ cap. it runs in its own process and never reads the test rows. a saved run can b
 file without a search, or seed the next search with its final population.
 the best 10% carry over unchanged and each parent is the best of a contest among 10% of the population.
 
+#### more model families and the effort setting
+
+catboost and extra trees join xgboost, lightgbm, ridge and the statistical families. each needs its own extra and shows
+`uv sync --extra <name>` in the families menu while it is missing.
+
+- **catboost** (`--extra catboost`): gradient boosting on lag features, with symmetric trees that cope well with small data and
+  native missing values. searched params are depth (4-10), learning_rate (0.01-0.3) and l2_leaf_reg (0.1-30). objectives are
+  RMSE, MAE, Poisson and Tweedie. rounds come from early stopping on the newest 15 percent of rows, then it refits on all rows.
+  one candidate takes several times longer than xgboost, so give it a roomy time cap.
+- **extra trees** (`--extra trees`): scikit-learn's extremely randomized trees on the lag features, with training-only median
+  imputation, missing indicators and one-hot categories. searched params are n_estimators (50-600), max_depth (3-24),
+  min_samples_leaf (1-40) and max_features (0.3-1.0). absolute_error is several times slower than squared_error, and the tile
+  shows a single in-sample error value, not a curve over rounds.
+- **effort**: low, normal or high, one dropdown in the training box (new run only). it limits how expensive the searched models
+  can get: low cuts the upper end of depth, leaves, width, layers, tree count and lookback ranges to about 40 percent of the
+  range, high lets the same ranges grow by half up to a fixed ceiling. normal is the default and leaves every range and every
+  saved run exactly as before.
+
 #### long-run forecast controls
 
 long timeseries runs score each family when it stops searching, including one-shot statistical

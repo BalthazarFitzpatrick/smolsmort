@@ -22,6 +22,7 @@ class ForecastTrainingConfig {
       population: saved.population || 16,
       patience: saved.patience || 5,
       generations: saved.generations || 60,
+      effort: ['low', 'normal', 'high'].includes(saved.effort) ? saved.effort : 'normal',
     };
   }
 
@@ -40,6 +41,7 @@ class ForecastTrainingConfig {
       </div>
       <div class="forecast-config-row">${field('families', 'families')}${field('minutes', 'time cap')}${field('atOnce', 'run at once')}</div>
       <div class="forecast-config-row">${field('population', 'population')}${field('patience', 'patience')}${field('generations', 'max generations')}</div>
+      <div class="forecast-config-row">${field('effort', 'effort')}</div>
       <div class="run-controls" id="${this.prefix}-new-actions"><button class="toggle adds" id="${this.prefix}-start">start run</button><span class="stat" id="${this.prefix}-summary"></span></div>
       <div class="run-controls hidden" id="${this.ctl.topic}-run-actions">
         <button class="toggle" id="${this.ctl.topic}-run-warm">warm start</button>
@@ -47,13 +49,14 @@ class ForecastTrainingConfig {
         <button class="toggle" id="${this.ctl.topic}-run-open">open</button>
         <span class="stat">families come from the picked run</span>
       </div><div class="stat" id="${this.prefix}-status" aria-live="polite"></div>`;
-    for (const key of ['families', ...Object.keys(this.numbers())]) {
+    for (const key of ['families', ...Object.keys(this.numbers()), 'effort']) {
       const head = forecastNode('button', 'toggle dropdown-head');
       head.type = 'button'; head.id = `${this.prefix}-${key}`;
       head.setAttribute('aria-expanded', 'false');
       head.setAttribute('aria-label', key === 'atOnce' ? 'run at once' : key);
       head.append(forecastNode('span'));
-      head.onclick = () => key === 'families' ? this.openFamilies() : this.openNumber(key);
+      head.onclick = () => key === 'families' ? this.openFamilies()
+        : key === 'effort' ? this.openEffort() : this.openNumber(key);
       document.getElementById(`${this.prefix}-${key}-slot`).append(head);
       this.heads[key] = head;
     }
@@ -102,6 +105,15 @@ class ForecastTrainingConfig {
       apply(Math.round(input.valueAsNumber)); menu.close();
     };
     row.append(input); menu.el.append(row);
+  }
+
+  openEffort() {
+    if (this.mode === 'warm') return;
+    forecastOpenMenu(listMenu('effort', ['low', 'normal', 'high'].map(value => ({
+      id: value, label: value, on: value === this.plan.effort,
+    })), item => {
+      this.plan.effort = item.id; this.ctl.saveStored(); this.paintControls();
+    }), this.heads.effort);
   }
 
   openFamilies() {
@@ -176,6 +188,8 @@ class ForecastTrainingConfig {
     if (warm && !families.length) families.push('xgboost');
     setHead(this.heads.families, families.length ? families.join(' + ') : 'none picked');
     this.heads.families.disabled = warm;
+    setHead(this.heads.effort, this.plan.effort);
+    this.heads.effort.disabled = warm;
     for (const key of Object.keys(this.numbers())) setHead(this.heads[key], this.numberLabel(key, this.values()[key]));
     for (const mode of ['new', 'warm']) {
       const button = document.getElementById(`${this.prefix}-mode-${mode}`);
@@ -255,6 +269,7 @@ class ForecastTrainingConfig {
         plateau: this.plan.patience, population: this.plan.population,
         max_generations: this.plan.generations,
       };
+      if (this.plan.effort !== 'normal') payload.effort = this.plan.effort;
       this.ctl.saveStored();
       const res = await api('/api/forecast-runs', payload);
       if (res.prepared) this.ctl.rememberPrepared(spec, res.prepared);

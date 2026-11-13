@@ -74,6 +74,7 @@ def start_run(
     min_generations: int = 0,
     population: int | None = None,
     max_generations: int | None = None,
+    effort: str = "normal",
     prune_sigma: float = 1.0,
     part_of: str | None = None,
     label: str | None = None,
@@ -119,6 +120,8 @@ def start_run(
         for field, value in (("population", population), ("max_generations", max_generations)):
             if value is not None:
                 request[field] = value
+        if effort != "normal":
+            request["effort"] = effort
     request = parse_request(request)
     folder.mkdir(parents=True)
     (folder / "request.json").write_text(json.dumps(request, indent=2, default=str))
