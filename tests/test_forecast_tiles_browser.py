@@ -198,9 +198,14 @@ def test_contract_tiles_masonry_curves_filters_and_ensembles(tmp_path, monkeypat
         assert model.locator(".forecast-run-tile-chart > svg").count() == 2
         for chart in model.locator(".forecast-run-tile-chart > svg").all():
             assert chart.bounding_box()["height"] >= 60
+        # one-shot and boosting charts share one height, so every tile lines up
         ridge = page.locator('.forecast-run-tile[data-family="ridge"]')
-        for chart in ridge.locator(".forecast-run-tile-chart > svg").all():
-            assert chart.bounding_box()["height"] == 48
+        heights = {
+            round(chart.bounding_box()["height"])
+            for chart in page.locator(".forecast-run-tile .forecast-run-tile-chart > svg").all()
+        }
+        assert heights == {64}, heights
+        assert ridge.locator(".forecast-run-tile-chart > svg").count() == 2
         assert model.locator("summary > span:first-child").all_text_contents() == ["G", "P", "F"]
         assert "test ratio:" in model.inner_text()
         assert "wape · validation" in model.inner_text()
@@ -1447,8 +1452,8 @@ def test_run_panels_fit_config_and_keep_layout_across_views(tmp_path):
         assert abs(progress_box["y"] - config_box["y"]) <= 2
         assert config_box["x"] >= progress_box["x"] + progress_box["width"]
         heads = config.locator(".dropdown-head")
-        assert heads.count() == 6
-        assert len({round(head.bounding_box()["y"]) for head in heads.all()}) == 2
+        assert heads.count() == 7
+        assert len({round(head.bounding_box()["y"]) for head in heads.all()}) == 3
         for view in ("tables", "tiles"):
             page.locator(f"#regression-run-view-{view}").click()
             assert family_table.is_visible() == (view == "tables")
