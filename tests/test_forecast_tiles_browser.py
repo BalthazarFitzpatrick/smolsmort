@@ -1452,8 +1452,8 @@ def test_run_panels_fit_config_and_keep_layout_across_views(tmp_path):
         assert abs(progress_box["y"] - config_box["y"]) <= 2
         assert config_box["x"] >= progress_box["x"] + progress_box["width"]
         heads = config.locator(".dropdown-head")
-        assert heads.count() == 7
-        assert len({round(head.bounding_box()["y"]) for head in heads.all()}) == 3
+        assert heads.count() == 10
+        assert len({round(head.bounding_box()["y"]) for head in heads.all()}) == 4
         for view in ("tables", "tiles"):
             page.locator(f"#regression-run-view-{view}").click()
             assert family_table.is_visible() == (view == "tables")

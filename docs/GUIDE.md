@@ -794,6 +794,9 @@ four families join xgboost, lightgbm, ridge and the statistical families. each n
   can get: low cuts the upper end of depth, leaves, width, layers, tree count and lookback ranges to about 40 percent of the
   range, high lets the same ranges grow by half up to a fixed ceiling. normal is the default and leaves every range and every
   saved run exactly as before.
+- transform: none (default), log1p or logdiff; new runs only.
+- holdout: block (default) or seasonal; new runs only.
+- prune sigma: 1 by default; presets 0.5, 1, 1.5, 2, 3 or a custom positive finite number; new runs only.
 
 mlp and lstm always fit and predict in their own process, including during finishing.
 torch and the threaded tree libraries can load conflicting openmp runtimes and abort a shared process.
