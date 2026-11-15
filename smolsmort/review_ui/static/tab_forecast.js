@@ -98,6 +98,42 @@ function forecastMinutes(seconds) {
   return Number((seconds / 60).toFixed(2));
 }
 
+function forecastProgressTime(seconds, cap = seconds) {
+  const minutes = Math.floor(Math.max(0, seconds) / 60);
+  if (cap <= 7200) return seconds > 0 && minutes === 0 ? '<1 min' : `${minutes} min`;
+  const hours = Math.floor(minutes / 60), rest = minutes % 60;
+  return rest ? `${hours}h ${String(rest).padStart(2, '0')}m` : `${hours}h`;
+}
+
+function forecastProgressTimeline(run, elapsed) {
+  const plan = run.timeline;
+  if (!plan || ![plan.started_at, plan.deadline, plan.search_deadline].every(Number.isFinite)
+      || plan.deadline <= plan.started_at) return null;
+  const start = plan.started_at, span = Math.max(0, plan.search_deadline - start);
+  const cap = plan.deadline - start;
+  const deepBy = Math.min(plan.search_deadline, start + span * 6.5 / 7);
+  const history = plan.phase_history || [];
+  const actual = phase => history.find(entry => entry.phase === phase)?.started_at;
+  const boundaries = [
+    actual('pruning') ?? start + span * 4 / 7,
+    actual('deep') ?? deepBy,
+    actual('finish') ?? actual('finish_start') ?? plan.search_deadline,
+    plan.deadline,
+  ];
+  const ticks = boundaries.map((at, index) => ({
+    position: Math.max(0, Math.min(1, (at - start) / cap)),
+    passed: at <= start + elapsed,
+    end: index === boundaries.length - 1,
+  }));
+  const next = {
+    broad: 'next: pruning when every family has its first score',
+    pruning: `next: deep, by ${forecastProgressTime(deepBy - start, cap)}`,
+    deep: `next: finish at ${forecastProgressTime(plan.search_deadline - start, cap)}`,
+    finish: 'next: test scoring and ensembles, then done',
+  }[run.phase] || '';
+  return {ticks, next};
+}
+
 function forecastSearchProgress(run) {
   const progress = run.progress || {};
   const budget = run.budget || {};
@@ -114,7 +150,11 @@ function forecastSearchProgress(run) {
     const duration = run.time_budget_s || timeCap;
     const fill = done ? 1 : Math.min(1, elapsed / duration);
     const state = run.state === 'cancelled' || run.stopped === 'cancelled' ? 'stopped' : run.state;
-    return {fill, done, label: `${run.phase || state} - ${Math.floor(elapsed)}s of ${forecastMinutes(duration)} min - ${state}`};
+    const terminal = ['done', 'failed', 'stopped'].includes(state);
+    const timeline = forecastProgressTimeline(run, elapsed);
+    return {fill, done, label: terminal ? state : [run.phase, state].filter(Boolean).join(' · '),
+      time: `${forecastProgressTime(elapsed, duration)} of ${forecastProgressTime(duration)}`,
+      next: terminal ? '' : timeline?.next || '', ticks: timeline?.ticks || []};
   }
   const fill = done ? 1 : Math.min(1, Math.max(0, elapsed / timeCap,
     (generation + candidate / population) / generations, flat / plateau));
@@ -2444,7 +2484,10 @@ class ForecastTopic {
           <div class="stat" id="${this.topic}-search-status">idle</div>
           <div id="${this.topic}-run-progress" class="hidden">
             <div class="progress-row"><div class="bar"><div class="bar-fill" id="${this.topic}-run-bar-fill"></div></div></div>
+            <div class="forecast-progress-axis hidden" id="${this.topic}-run-progress-axis" aria-hidden="true"></div>
             <div class="stat" id="${this.topic}-run-progress-label"></div>
+            <div class="stat hidden" id="${this.topic}-run-progress-time"></div>
+            <div class="stat hidden" id="${this.topic}-run-progress-next"></div>
           </div>
           <div class="field-label" id="${this.topic}-run-stop"></div>
           <div class="field-value" id="${this.topic}-run-stats"></div>
@@ -2745,6 +2788,19 @@ class ForecastTopic {
       fill.style.width = `${progress.fill * 100}%`;
       fill.classList.toggle('good', progress.done);
       setText(`${this.topic}-run-progress-label`, progress.label);
+      const axis = document.getElementById(`${this.topic}-run-progress-axis`);
+      axis.classList.toggle('hidden', !progress.ticks?.length);
+      axis.replaceChildren(...(progress.ticks || []).map(tick => {
+        const node = forecastNode('span', 'forecast-progress-tick major'
+          + (tick.passed ? ' done' : '') + (tick.end ? ' end' : ''));
+        node.style.left = `${tick.position * 100}%`;
+        return node;
+      }));
+      for (const key of ['time', 'next']) {
+        const row = document.getElementById(`${this.topic}-run-progress-${key}`);
+        row.textContent = progress[key] || '';
+        row.classList.toggle('hidden', progress.time === undefined);
+      }
     }
     document.getElementById(`${this.topic}-search-status`).classList.toggle('hidden', run?.state === 'done');
     this.models.paintControls();
@@ -2778,9 +2834,14 @@ class ForecastTopic {
     const latest = generations.at(-1);
     const stats = `elapsed ${forecastNumber(run.elapsed ?? latest?.elapsed)}s · generations ${generations.length}`;
     setText(`${this.topic}-run-stats`, stats);
+    const multi = run.version === 2 || (!run.version && Number.isFinite(run.time_budget_s));
+    for (const suffix of ['run-stop', 'run-stats']) {
+      document.getElementById(`${this.topic}-${suffix}`).classList.toggle('hidden', multi);
+    }
     this.searchSay(this.isRunning(run)
       ? latest ? `generation ${latest.generation} - evaluated ${latest.evaluated} - elapsed ${latest.elapsed}s` : run.state
       : ['failed', 'stopped', 'cancelled'].includes(run.state) || run.stopped === 'cancelled' ? this.stopReason(run) : '');
+    if (multi) document.getElementById(`${this.topic}-search-status`).classList.add('hidden');
     const chartVersion = `${run.id}:${this.generationFamily}:${generations.length}:${run.cursor}`;
     if (this.paintedChartVersion !== chartVersion) {
       this.paintSearchChart(generations.map(entry => ({...entry, generation: entry.family_generation ?? entry.generation})));

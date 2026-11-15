@@ -29,6 +29,11 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 #sweep-warning { white-space: normal; overflow: visible; }
 .placeholder { color: var(--text-dim); }
 .select-status { min-height: var(--row-height); }
+.forecast-progress-axis { position: relative; height: 22px; border-top: 1px solid var(--grey-border); margin-top: 1px; }
+.forecast-progress-tick { position: absolute; top: 0; width: 0; height: 6px; border-left: 1px solid var(--grey-border); }
+.forecast-progress-tick.major { height: 10px; }
+.forecast-progress-tick.done { border-left-color: var(--text); }
+.forecast-progress-tick.end { transform: translateX(-1px); }
 
 /* ---- find ---- */
 #draw-panel { display: flex; flex-direction: column; gap: var(--gap); }

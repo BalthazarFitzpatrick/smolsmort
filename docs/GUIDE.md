@@ -802,6 +802,10 @@ mixed torch and xgboost or lightgbm use in one process raises a clean error befo
 
 #### long-run forecast controls
 
+the training tab shows timeline ticks below the run bar, with passed ticks brighter than planned ticks.
+three rows show phase and state, readable elapsed time and cap, and the next step; old runs without a timeline have no ticks.
+pruning shows its latest slice-based end, deep shows the search deadline, and finishing lists test scoring and ensembles.
+
 long timeseries runs score each family when it stops searching, including one-shot statistical
 families. tiles show its test wape and ratio against the naive baseline as soon as that exit
 score is saved, with a dim `scored at exit` note until finishing. a family that resumes gets a
