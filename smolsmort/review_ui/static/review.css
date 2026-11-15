@@ -303,7 +303,6 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-run-tile .forecast-tile-score { font-size: 10px; line-height: 20px; }
 .forecast-run-tile-chart { flex: 0 0 auto; min-height: 0; position: relative; margin: 0; }
 .forecast-run-tile-chart > svg { width: 100%; height: 64px; display: block; box-sizing: border-box; border-left: 1px solid var(--grey-border); border-bottom: 1px solid var(--grey-border); }
-.forecast-run-tile-chart-short > svg { height: 48px; }
 .forecast-run-tile .forecast-tile-chart-label { margin: 4px 0; }
 .forecast-run-tile-legend { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .forecast-tile .forecast-run-tile-chart polyline { stroke-width: 1.5px; fill: none; }

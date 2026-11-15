@@ -1033,7 +1033,7 @@ curve colours: the running generation is always blue, an older best generation i
 generation is near white and thicker, all other generations are grey.
 older runs without a saved generation genome show `not saved`. picks, open menus and keyboard
 focus survive polling; only one menu opens at a time, and escape closes it. one-shot models
-join their values across generations in shorter charts. models without curves have short
+join their values across generations in charts of the same height. models without curves have short
 cards with no pickers; ensembles have short dashed cards listing their members. results tab
 tiles keep their existing layout and flip controls.
 custom error metric selections add their saved values and help texts below the two summary

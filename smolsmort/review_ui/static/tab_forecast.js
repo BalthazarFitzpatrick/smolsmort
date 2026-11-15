@@ -451,7 +451,6 @@ function forecastRunTileChart(tile, tiles, metric, training, selected = 'best') 
     };
     const valuesFor = curve => (training ? curve.train_loss || [] : curve.validation?.[metricFor(curve)] || []).map(value => Number.isFinite(value) ? value : null);
     const oneShot = generations.length && generations.every(([, curve]) => valuesFor(curve).length <= 1);
-    if (oneShot) chart.classList.add('forecast-run-tile-chart-short');
     const shown = member.curves?.[selected === 'best' ? member.best_generation : selected];
     const current = shown ? valuesFor(shown).filter(Number.isFinite).at(-1) : null;
     currentValue.textContent = Number.isFinite(current) ? Number(current.toPrecision(4)) : '–';
