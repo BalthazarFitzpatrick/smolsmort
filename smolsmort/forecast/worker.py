@@ -61,6 +61,8 @@ class _Run:
                 extra["families"] = previous["families"]
             if "phase" in previous and "phase" not in extra:
                 extra["phase"] = previous["phase"]
+            if "timeline" in previous and "timeline" not in extra:
+                extra["timeline"] = previous["timeline"]
         progress_path = self.folder / "progress.json"
         if state in ("done", "cancelled", "failed") and progress_path.exists():
             progress = json.loads(progress_path.read_text())

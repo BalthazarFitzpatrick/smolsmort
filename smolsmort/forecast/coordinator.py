@@ -395,6 +395,16 @@ def _launch_families(folder, request, job, exits):
             started_at=state["started_at"],
             phase=state["phase"],
             families=states,
+            timeline={
+                key: state[key]
+                for key in (
+                    "started_at",
+                    "deadline",
+                    "search_deadline",
+                    "finish_reserve_s",
+                    "phase_history",
+                )
+            },
             elapsed=round(max(0, time.time() - state["started_at"]), 1),
         )
 

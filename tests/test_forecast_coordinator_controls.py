@@ -214,6 +214,36 @@ def test_measured_day_budget_searches_for_at_least_23_hours(tunable_race, tmp_pa
     assert max(p.allocation["deadline"] for p in race.launches) == state["search_deadline"]
 
 
+def test_status_saved_timeline_and_terminal_updates_preserved_it(tunable_race, tmp_path):
+    from smolsmort.forecast.worker import _Run
+
+    race = tunable_race
+    job = _Run(tmp_path)
+    race.job.status = job.status
+    race.run(["ridge", "lightgbm"])
+    status = read_json(tmp_path / "status.json")
+    state = read_json(tmp_path / "coordinator.json")
+    assert status["timeline"] == {
+        key: state[key]
+        for key in (
+            "started_at",
+            "deadline",
+            "search_deadline",
+            "finish_reserve_s",
+            "phase_history",
+        )
+    }
+    assert {entry["phase"] for entry in status["timeline"]["phase_history"]} >= {
+        "broad",
+        "pruning",
+        "deep",
+        "finish",
+    }
+    for terminal in ("done", "failed", "cancelled"):
+        job.status(terminal)
+        assert read_json(tmp_path / "status.json")["timeline"] == status["timeline"]
+
+
 def test_broad_resume_uses_measured_search_span(tunable_race, tmp_path, monkeypatch):
     race = tunable_race
     genome = make_genome(["lag"], "squared", {}, "ridge")

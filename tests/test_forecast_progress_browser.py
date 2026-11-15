@@ -834,7 +834,8 @@ def test_progress_minutes_are_rounded_to_two_decimals(tmp_path):
             "run => forecastSearchProgress(run)",
             {"id": "a", "state": "done", "version": 2, "time_budget_s": 7, "elapsed": 7},
         )
-        assert "of 0.12 min" in multi["label"]
+        assert multi["label"] == "done"
+        assert multi["time"] == "<1 min of <1 min"
         single = page.evaluate(
             "run => forecastSearchProgress(run)",
             make_run(state="running", progress={"elapsed": 3, "generation": 1}),
