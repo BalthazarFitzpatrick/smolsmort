@@ -23,6 +23,9 @@ class ForecastTrainingConfig {
       patience: saved.patience || 5,
       generations: saved.generations || 60,
       effort: ['low', 'normal', 'high'].includes(saved.effort) ? saved.effort : 'normal',
+      transform: ['none', 'log1p', 'logdiff'].includes(saved.transform) ? saved.transform : 'none',
+      holdout: ['block', 'seasonal'].includes(saved.holdout) ? saved.holdout : 'block',
+      prune_sigma: Number.isFinite(saved.prune_sigma) && saved.prune_sigma > 0 ? saved.prune_sigma : 1,
     };
   }
 
@@ -41,7 +44,8 @@ class ForecastTrainingConfig {
       </div>
       <div class="forecast-config-row">${field('families', 'families')}${field('minutes', 'time cap')}${field('atOnce', 'run at once')}</div>
       <div class="forecast-config-row">${field('population', 'population')}${field('patience', 'patience')}${field('generations', 'max generations')}</div>
-      <div class="forecast-config-row">${field('effort', 'effort')}</div>
+      <div class="forecast-config-row">${field('effort', 'effort')}${field('transform', 'transform')}${field('holdout', 'holdout')}</div>
+      <div class="forecast-config-row">${field('prune_sigma', 'prune sigma')}</div>
       <div class="run-controls" id="${this.prefix}-new-actions"><button class="toggle adds" id="${this.prefix}-start">start run</button><span class="stat" id="${this.prefix}-summary"></span></div>
       <div class="run-controls hidden" id="${this.ctl.topic}-run-actions">
         <button class="toggle" id="${this.ctl.topic}-run-warm">warm start</button>
@@ -49,14 +53,14 @@ class ForecastTrainingConfig {
         <button class="toggle" id="${this.ctl.topic}-run-open">open</button>
         <span class="stat">families come from the picked run</span>
       </div><div class="stat" id="${this.prefix}-status" aria-live="polite"></div>`;
-    for (const key of ['families', ...Object.keys(this.numbers()), 'effort']) {
+    for (const key of ['families', ...Object.keys(this.numbers()), ...Object.keys(this.choices())]) {
       const head = forecastNode('button', 'toggle dropdown-head');
       head.type = 'button'; head.id = `${this.prefix}-${key}`;
       head.setAttribute('aria-expanded', 'false');
-      head.setAttribute('aria-label', key === 'atOnce' ? 'run at once' : key);
+      head.setAttribute('aria-label', key === 'atOnce' ? 'run at once' : key === 'prune_sigma' ? 'prune sigma' : key);
       head.append(forecastNode('span'));
       head.onclick = () => key === 'families' ? this.openFamilies()
-        : key === 'effort' ? this.openEffort() : this.openNumber(key);
+        : this.choices()[key] ? this.openChoice(key) : this.openNumber(key);
       document.getElementById(`${this.prefix}-${key}-slot`).append(head);
       this.heads[key] = head;
     }
@@ -73,7 +77,12 @@ class ForecastTrainingConfig {
       population: {presets: [10,20,40,80,160,320], min: 2, max: 400},
       patience: {presets: [3,5,8,12,20,40], min: 1, max: 100},
       generations: {presets: [20,40,60,100,200,500], min: 1, max: 500},
+      prune_sigma: {presets: [0.5,1,1.5,2,3], min: 0, fractional: true},
     };
+  }
+
+  choices() {
+    return {effort: ['low', 'normal', 'high'], transform: ['none', 'log1p', 'logdiff'], holdout: ['block', 'seasonal']};
   }
 
   values() { return this.mode === 'warm' ? this.warmValues : this.plan; }
@@ -84,36 +93,42 @@ class ForecastTrainingConfig {
   }
 
   openNumber(key) {
+    if (key === 'prune_sigma' && this.mode === 'warm') return;
     const cfg = this.numbers()[key];
+    const value = key === 'prune_sigma' ? this.plan[key] : this.values()[key];
     const apply = value => {
       this.values()[key] = value;
       this.plan[key] = value;
       this.syncBudget(); this.ctl.saveStored(); this.paintControls();
     };
-    const options = [...new Set([...cfg.presets, this.values()[key]])].sort((a, b) => a - b);
-    const menu = forecastOpenMenu(listMenu(this.heads[key].getAttribute('aria-label'), options.map(value => ({
-      id: value, label: this.numberLabel(key, value), on: value === this.values()[key],
+    const options = [...new Set([...cfg.presets, value])].sort((a, b) => a - b);
+    const menu = forecastOpenMenu(listMenu(this.heads[key].getAttribute('aria-label'), options.map(item => ({
+      id: item, label: this.numberLabel(key, item), on: item === value,
     })), item => apply(item.id)), this.heads[key]);
     const row = forecastNode('label', 'run-controls forecast-config-custom', 'custom');
     const input = forecastNode('input', 'text-field');
-    input.type = 'number'; input.min = cfg.min; input.max = cfg.max;
+    input.type = 'number'; input.min = cfg.min;
+    if (cfg.max !== undefined) input.max = cfg.max;
+    if (cfg.fractional) input.step = 'any';
     input.setAttribute('aria-label', 'custom value');
     input.onkeydown = event => {
       if (event.key !== 'Enter') return;
       event.preventDefault(); event.stopPropagation();
-      if (!input.value || !input.checkValidity()) return;
-      apply(Math.round(input.valueAsNumber)); menu.close();
+      const number = input.valueAsNumber;
+      if (!input.value || !input.checkValidity() || !Number.isFinite(number)
+          || (cfg.fractional && number <= 0)) return;
+      apply(cfg.fractional ? number : Math.round(number)); menu.close();
     };
     row.append(input); menu.el.append(row);
   }
 
-  openEffort() {
+  openChoice(key) {
     if (this.mode === 'warm') return;
-    forecastOpenMenu(listMenu('effort', ['low', 'normal', 'high'].map(value => ({
-      id: value, label: value, on: value === this.plan.effort,
+    forecastOpenMenu(listMenu(key, this.choices()[key].map(value => ({
+      id: value, label: value, on: value === this.plan[key],
     })), item => {
-      this.plan.effort = item.id; this.ctl.saveStored(); this.paintControls();
-    }), this.heads.effort);
+      this.plan[key] = item.id; this.ctl.saveStored(); this.paintControls();
+    }), this.heads[key]);
   }
 
   openFamilies() {
@@ -188,9 +203,15 @@ class ForecastTrainingConfig {
     if (warm && !families.length) families.push('xgboost');
     setHead(this.heads.families, families.length ? families.join(' + ') : 'none picked');
     this.heads.families.disabled = warm;
-    setHead(this.heads.effort, this.plan.effort);
-    this.heads.effort.disabled = warm;
-    for (const key of Object.keys(this.numbers())) setHead(this.heads[key], this.numberLabel(key, this.values()[key]));
+    for (const key of Object.keys(this.choices())) {
+      setHead(this.heads[key], this.plan[key]);
+      this.heads[key].disabled = warm;
+    }
+    this.heads.prune_sigma.disabled = warm;
+    for (const key of Object.keys(this.numbers())) {
+      const value = key === 'prune_sigma' ? this.plan[key] : this.values()[key];
+      setHead(this.heads[key], this.numberLabel(key, value));
+    }
     for (const mode of ['new', 'warm']) {
       const button = document.getElementById(`${this.prefix}-mode-${mode}`);
       button.classList.toggle('on', mode === this.mode);
@@ -270,6 +291,9 @@ class ForecastTrainingConfig {
         max_generations: this.plan.generations,
       };
       if (this.plan.effort !== 'normal') payload.effort = this.plan.effort;
+      if (this.plan.transform !== 'none') payload.transform = this.plan.transform;
+      if (this.plan.holdout !== 'block') payload.holdout = this.plan.holdout;
+      if (this.plan.prune_sigma !== 1) payload.prune_sigma = this.plan.prune_sigma;
       this.ctl.saveStored();
       const res = await api('/api/forecast-runs', payload);
       if (res.prepared) this.ctl.rememberPrepared(spec, res.prepared);

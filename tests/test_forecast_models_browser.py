@@ -214,12 +214,14 @@ def save_families(page, names):
 
 def assert_config_rows(page):
     heads = page.locator("#regression-config .dropdown-head")
-    assert heads.count() == 7
+    assert heads.count() == 10
     positions = [head.bounding_box() for head in heads.all()]
-    assert len({round(position["y"]) for position in positions}) == 3
+    assert len({round(position["y"]) for position in positions}) == 4
     assert positions[0]["y"] == positions[1]["y"] == positions[2]["y"]
     assert positions[3]["y"] == positions[4]["y"] == positions[5]["y"]
     assert positions[6]["x"] == positions[0]["x"]
+    assert positions[6]["y"] == positions[7]["y"] == positions[8]["y"]
+    assert positions[9]["x"] == positions[0]["x"]
 
 
 def test_training_config_shared_new_and_warm_request_values(tmp_path):
@@ -497,3 +499,90 @@ def test_training_effort_is_disabled_in_warm_mode(tmp_path):
         assert page.locator("#regression-config-effort").is_disabled()
         page.click("#regression-config-mode-new")
         assert page.locator("#regression-config-effort").is_enabled()
+
+
+def pick_search_setting(page, key, value):
+    page.click(f"#regression-config-{key}")
+    page.locator(f'.menu-panel .menu-item[data-id="{value}"]').click()
+
+
+def test_training_search_settings_defaults_post_changes_and_restore(tmp_path):
+    defaults = {"transform": "none", "holdout": "block", "prune_sigma": 1}
+    changed = {"transform": "log1p", "holdout": "seasonal", "prune_sigma": 2}
+    with session(tmp_path, width=1600) as (page, _base):
+        requests, _preparations = mock_prepared_searches(page)
+        mock_catalog(page)
+        select_timeseries(page)
+        for key, value in defaults.items():
+            assert page.locator(f"#regression-config-{key}").inner_text() == str(value)
+        for index, settings in enumerate((defaults, changed, defaults), start=1):
+            for key, value in settings.items():
+                pick_search_setting(page, key, value)
+            if index == 2:
+                saved = page.evaluate(
+                    "JSON.parse(localStorage.getItem('smolsmort:forecast:regression')).state.modelPlan"
+                )
+                assert {key: saved[key] for key in changed} == changed
+                page.reload()
+                page.wait_for_selector("#regression-config-transform")
+                for key, value in changed.items():
+                    assert page.locator(f"#regression-config-{key}").inner_text() == str(value)
+            page.click("#regression-config-start")
+            page.wait_for_function(
+                "id => document.getElementById('regression-run-title').innerText.includes(id)",
+                arg=f"test{index:02}",
+            )
+            payload = requests[-1][1]
+            if index == 2:
+                assert {key: payload[key] for key in changed} == changed
+                page.click("#regression-config-mode-warm")
+                for key in changed:
+                    assert page.locator(f"#regression-config-{key}").is_disabled()
+                page.click("#regression-config-mode-new")
+                for key in changed:
+                    assert page.locator(f"#regression-config-{key}").is_enabled()
+            else:
+                assert not defaults.keys() & payload.keys()
+
+
+def test_training_custom_sigma_requires_positive_finite_number(tmp_path):
+    with session(tmp_path, width=1600) as (page, _base):
+        requests, _preparations = mock_prepared_searches(page)
+        mock_catalog(page)
+        select_timeseries(page)
+        page.click("#regression-config-prune_sigma")
+        menu = page.locator(".menu-panel")
+        assert menu.locator(".menu-item").all_text_contents() == ["0.5", "1", "1.5", "2", "3"]
+        custom = menu.get_by_label("custom value")
+        for value in ("0", "-1", "1e309", ""):
+            custom.fill(value)
+            custom.press("Enter")
+            assert menu.is_visible()
+            assert page.locator("#regression-config-prune_sigma").inner_text() == "1"
+        custom.fill("0.75")
+        custom.press("Enter")
+        assert page.locator("#regression-config-prune_sigma").inner_text() == "0.75"
+        page.reload()
+        page.wait_for_selector("#regression-config-prune_sigma")
+        assert page.locator("#regression-config-prune_sigma").inner_text() == "0.75"
+        page.click("#regression-config-start")
+        page.wait_for_function(
+            "document.getElementById('regression-run-title').innerText.includes('test01')"
+        )
+        assert requests[0][1]["prune_sigma"] == 0.75
+
+
+def test_training_search_settings_legacy_saved_plan_keeps_defaults(tmp_path):
+    with session(tmp_path) as (page, _base):
+        mock_catalog(page)
+        select_timeseries(page)
+        page.evaluate("""() => {
+            const key = 'smolsmort:forecast:regression';
+            const saved = JSON.parse(localStorage.getItem(key));
+            for (const name of ['transform', 'holdout', 'prune_sigma']) delete saved.state.modelPlan[name];
+            localStorage.setItem(key, JSON.stringify(saved));
+        }""")
+        page.reload()
+        page.wait_for_selector("#regression-config-transform")
+        for key, value in {"transform": "none", "holdout": "block", "prune_sigma": "1"}.items():
+            assert page.locator(f"#regression-config-{key}").inner_text() == value
