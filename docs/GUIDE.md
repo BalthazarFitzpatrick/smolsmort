@@ -472,6 +472,9 @@ the work:
   stops. earlier runs are listed with *open*, *refit* on the current file, and *warm start*.
 - **results** - the verdict above everything, then dimension filters and a *break down by* picker
   (up to three), the chart, and below it the paged table with an export link.
+  the model menu shows saved val, test and ratio columns for the first picked error metric.
+  ratio divides test error by the naive tile's test error; missing naive scores use saved wape ratios only.
+  click val, test or ratio to sort ascending; missing scores stay last, and ratio is the default.
 
 **prepare.** prep is one DuckDB sql script, shown in full on the data tab and stored beside the
 cache as `prep.sql`. the cache key is the spec plus the file's content hash, so changing a role, an
