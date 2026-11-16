@@ -197,7 +197,7 @@ def open_horizon_run(page, run_id: str) -> None:
     page.locator("#regression-family-comparison tbody tr").first.wait_for()
 
 
-def test_results_dropdown_ranks_best_ensemble_by_validation_error(tmp_path):
+def test_results_dropdown_ranks_best_ensemble_by_saved_ratio(tmp_path):
     from smolsmort.forecast.tiles import ensemble_rows, write_ensemble_views
 
     with horizon_session(tmp_path) as (page, run_id):
@@ -218,14 +218,15 @@ def test_results_dropdown_ranks_best_ensemble_by_validation_error(tmp_path):
         assert page.evaluate("forecastTopics.get('regression').selectedMetricIds[0]") == (
             "validation_error"
         )
+        page.evaluate("forecastTopics.get('regression').selectedMetricIds = ['wape']")
         page.locator("#regression-results-model").click()
         settle_menu(page)
         first = page.locator(".menu-panel .menu-item[data-id]").first
         assert first.get_attribute("data-id") == ensembles[0]["tile_id"]
-        assert first.get_attribute("title").startswith("validation_error ")
+        assert first.get_attribute("title").startswith("wape ")
 
 
-def test_results_dropdown_ranked_first_metric_and_current_lead(tmp_path):
+def test_results_dropdown_saved_scores_independent_of_current_lead(tmp_path):
     with horizon_session(tmp_path) as (page, run_id):
         folder = tmp_path / "forecast_root/.forecast-runs" / run_id
         future = read_table(folder / "winner_forecast.parquet")
@@ -253,8 +254,13 @@ def test_results_dropdown_ranked_first_metric_and_current_lead(tmp_path):
             expected = page.evaluate(
                 """metric => forecastTopics.get('regression').resultsView.run_tiles
                   .filter(tile => tile.viewable !== false)
-                  .sort((a, b) => (a.selection_metrics[metric] ?? Infinity)
-                    - (b.selection_metrics[metric] ?? Infinity)).map(tile => tile.tile_id)""",
+                  .sort((a, b) => {
+                    const tiles = forecastTopics.get('regression').resultsView.run_tiles;
+                    const baseline = tiles.find(tile => tile.family === 'snaive')?.metrics?.[metric]?.test;
+                    const ratio = tile => Number.isFinite(baseline) && baseline > 0 && Number.isFinite(tile.metrics?.[metric]?.test)
+                      ? tile.metrics[metric].test / baseline : metric === 'wape' ? tile.test_ratio ?? Infinity : Infinity;
+                    return ratio(a) - ratio(b);
+                  }).map(tile => tile.tile_id)""",
                 metric,
             )
             page.locator("#regression-results-model").click()
@@ -286,11 +292,9 @@ def test_results_dropdown_ranked_first_metric_and_current_lead(tmp_path):
         choose_horizon(page, "lead", 1)
         tick_first("wape")
         first = check_order("wape")
-        assert first[0].startswith("model:xgboost:")
         choose_horizon(page, "lead", 2)
         second = check_order("wape")
-        assert second[0].startswith("model:ridge:")
-        assert first != second
+        assert first == second
         tick_first("validation_error")
         assert check_order("validation_error") != second
         tick_first("wape")
@@ -310,8 +314,8 @@ def test_results_dropdown_ranked_first_metric_and_current_lead(tmp_path):
               const topic = forecastTopics.get('regression');
               topic.resultsView.run_tiles = [
                 {tile_id: 'missing', kind: 'model', family: 'ridge', selection_metrics: {wape: null}},
-                {tile_id: 'tie-a', kind: 'model', family: 'ridge', selection_metrics: {wape: 0.2}},
-                {tile_id: 'tie-b', kind: 'model', family: 'ridge', selection_metrics: {wape: 0.2}},
+                {tile_id: 'tie-a', kind: 'model', family: 'ridge', test_ratio: 0.2, selection_metrics: {wape: 0.2}},
+                {tile_id: 'tie-b', kind: 'model', family: 'ridge', test_ratio: 0.2, selection_metrics: {wape: 0.2}},
               ];
               topic.resultsView.ensemble = {members: ['ridge'], selection_metrics: {wape: null}};
             }"""
@@ -320,7 +324,7 @@ def test_results_dropdown_ranked_first_metric_and_current_lead(tmp_path):
         settle_menu(page)
         assert page.locator(".menu-panel .menu-item[data-id]").evaluate_all(
             "rows => rows.map(row => row.dataset.id)"
-        ) == ["ensemble", "tie-a", "tie-b", "missing"]
+        ) == ["tie-a", "tie-b", "missing", "ensemble"]
         page.keyboard.press("Escape")
 
 

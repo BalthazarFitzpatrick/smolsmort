@@ -1218,6 +1218,31 @@ function forecastInlineSelect(options, value, onPick, label) {
   return wrap;
 }
 
+// extend shared rows with score cells; shared menu owns selection, focus and dismissal
+class ForecastResultsMenu extends Menu {
+  _build() {
+    const el = super._build();
+    el.classList.add('forecast-results-menu');
+    return el;
+  }
+
+  _row(item, section) {
+    const row = super._row(item, section);
+    if (item.hint) row.title = item.hint;
+    for (const column of ['val', 'test', 'ratio']) {
+      const value = item[column];
+      const text = !Number.isFinite(value) ? '–' : column === 'ratio' ? value.toFixed(2)
+        : item.metric === 'mae' || item.metric === 'ae' || item.metric === 'wae'
+          ? forecastNumber(value) : value.toFixed(4);
+      const tone = column === 'ratio' && Number.isFinite(value)
+        ? forecastTileState({test_ratio: value}) : Number.isFinite(value) ? 'value' : 'none';
+      const cell = forecastNode('span', `forecast-results-${column} tone-${tone}`, text);
+      row.append(cell);
+    }
+    return row;
+  }
+}
+
 class ForecastSetupMenu extends Menu {
   constructor(key, options) {
     super(options);
@@ -1539,6 +1564,7 @@ class ForecastTopic {
     this.resultsRunId = null;
     this.resultsSpec = null;
     this.resultsModel = null;
+    this.resultsModelSort = 'ratio';
     this.resultsNotes = {};
     this.importanceFamily = null;
     this.resultsLoad = 0;
@@ -3382,12 +3408,19 @@ class ForecastTopic {
       if (!this.resultsView) return;
       const tiles = this.resultsView.run_tiles;
       const metric = this.selectedMetricIds[0];
+      const baseline = tiles?.find(tile => tile.family === 'snaive' && tile.kind !== 'ensemble')
+        ?.metrics?.[metric]?.test;
       const selection = this.resultsView.view;
       const scope = selection?.mode === 'lead' ? `lead ${selection.n}`
         : selection?.mode === 'blend' ? 'blend weighted' : 'saved test';
       const rankOption = (option, entry) => {
         const value = entry?.selection_metrics?.[metric];
-        return {...option, value: Number.isFinite(value) ? value : null,
+        const val = entry?.metrics?.[metric]?.validation;
+        const test = entry?.metrics?.[metric]?.test;
+        const ratio = Number.isFinite(baseline) && baseline > 0
+          ? Number.isFinite(test) ? test / baseline : null
+          : metric === 'wape' ? entry?.test_ratio : null;
+        return {...option, metric, val, test, ratio,
           hint: Number.isFinite(value) ? `${metric} ${value.toFixed(4)} at ${scope}` : undefined};
       };
       // only tiles with saved predictions can open; older runs keep their saved ensemble entry
@@ -3401,29 +3434,46 @@ class ForecastTopic {
       });
       const options = shown.map(tile => rankOption({
         id: tile.tile_id, label: forecastRunTileLabel(tile, tiles),
+        state: { 'forecast-results-ensemble': tile.kind === 'ensemble' },
         on: this.resultsModel === tile.tile_id || (this.resultsModel === 'ensemble' && tile === matchingEnsemble),
       }, tile));
       if (!tiles?.length) options.push(rankOption({id: 'winner', label: this.resultsView.winner_family || 'xgboost', on: this.resultsModel === 'winner'}, this.resultsView.winner));
       if (this.resultsView.ensemble && !matchingEnsemble) {
-        options.push(rankOption({id: 'ensemble', label: `ensemble of ${(this.resultsView.ensemble.members || []).join(', ')}`, on: this.resultsModel === 'ensemble'}, this.resultsView.ensemble));
+        options.push(rankOption({id: 'ensemble', label: `ensemble of ${(this.resultsView.ensemble.members || []).join(', ')}`,
+          state: {'forecast-results-ensemble': true}, on: this.resultsModel === 'ensemble'}, this.resultsView.ensemble));
       }
       if (!options.length) options.push(rankOption({id: 'winner', label: this.resultsView.winner_family || 'xgboost', on: this.resultsModel === 'winner'}, this.resultsView.winner));
-      // missing legacy entries stay first; missing tile values follow the ranked tiles
-      const legacy = options.filter(option => option.value === null && ['winner', 'ensemble'].includes(option.id));
-      const ranked = options.filter(option => !legacy.includes(option));
-      ranked.sort((a, b) => (a.value ?? Infinity) - (b.value ?? Infinity));
-      const ordered = [...legacy, ...ranked];
-      const menu = listMenu('forecast', ordered, async item => {
+      const onPick = async item => {
         this.resultsModel = item.id;
         this.importanceFamily = null;
         this.tableRequest++;
         this.tableState.page = 0;
         await this.refreshView();
         await this.refreshTable();
-      }).openAt(evt.currentTarget);
-      menu.el?.querySelectorAll('.menu-item').forEach((row, index) => {
-        if (ordered[index].hint) row.title = ordered[index].hint;
-      });
+      };
+      const sections = () => {
+        const sort = this.resultsModelSort;
+        const header = forecastNode('div', 'forecast-results-columns');
+        header.append(forecastNode('span', '', `sorted by ${sort}`));
+        for (const column of ['val', 'test', 'ratio']) {
+          const button = forecastNode('button', column === sort ? 'sorted' : '',
+            `${column}${column === sort ? ' ▴' : ''}`);
+          button.type = 'button';
+          button.dataset.sort = column;
+          button.setAttribute('aria-pressed', String(column === sort));
+          button.onclick = () => {
+            this.resultsModelSort = column;
+            menu.refresh(sections());
+            menu.el.querySelector(`[data-sort="${column}"]`).focus();
+          };
+          header.append(button);
+        }
+        const score = option => Number.isFinite(option[sort]) ? option[sort] : Infinity;
+        return [{kind: 'node', node: header}, {kind: 'list', rule: false,
+          items: [...options].sort((a, b) => score(a) - score(b)), onPick}];
+      };
+      const menu = new ForecastResultsMenu({sections: sections()});
+      menu.openAt(evt.currentTarget);
     };
     document.getElementById(`${this.topic}-importance-family`).onclick = evt => {
       const names = this.resultsView?.importance_families || [];
