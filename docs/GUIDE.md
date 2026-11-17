@@ -476,6 +476,16 @@ the work:
   ratio divides test error by the naive tile's test error; missing naive scores use saved wape ratios only.
   click val, test or ratio to sort ascending; missing scores stay last, and ratio is the default.
 
+  finished time series runs also offer `csv wide` for the selected model: one row per group,
+  target `week`, `forecast_made_week` and integer `horizon`. `phase` separates validation, test
+  and forecast. scaffold dimensions keep their spec names. columns contain `forecast`, `actual`,
+  `lower_50`, `upper_50`, `lower_80`, `upper_80`, plus the same six with a `total_` prefix.
+  totals sum groups present at each phase, target, origin and horizon, repeating on each group
+  row; total actual stays empty if any actual is unknown. total bands fit the total's own
+  validation residuals per horizon at 50% and 80%, with lower bounds clipped at zero. fewer than
+  four known validation residuals leave that horizon's total bands empty. group bands copy the
+  saved table; absent bands stay empty.
+
 **prepare.** prep is one DuckDB sql script, shown in full on the data tab and stored beside the
 cache as `prep.sql`. the cache key is the spec plus the file's content hash, so changing a role, an
 aggregation or the file re-runs prep and nothing stale survives.

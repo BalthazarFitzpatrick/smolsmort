@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 
 from smolsmort.forecast import plan, processes, runs, views
+from smolsmort.forecast.export_wide import export_wide_csv
 from smolsmort.forecast.families import get_family
 from smolsmort.forecast.prep import Prepared, prepare
 from smolsmort.forecast.requests import parse_request
@@ -664,6 +665,14 @@ def _table(app, query: dict) -> dict:
 
 
 def _export(app, name: str) -> bytes | None:
+    return _export_file(app, name, views.export_csv)
+
+
+def _export_wide(app, name: str) -> bytes | None:
+    return _export_file(app, name, export_wide_csv)
+
+
+def _export_file(app, name: str, exporter) -> bytes | None:
     if not name.endswith(".csv"):
         return None
     run_id = name[: -len(".csv")]
@@ -677,7 +686,7 @@ def _export(app, name: str) -> bytes | None:
         return None
     request = views.read_request(run_dir)
     try:
-        return views.export_csv(run_dir, request, query)
+        return exporter(run_dir, request, query)
     except views.ViewError:
         return None
 
@@ -755,5 +764,8 @@ def forecast_tab() -> Tab:
             "/api/forecast-refit": _refit,
             "/api/forecast-cancel": _cancel,
         },
-        images={"/api/forecast-export/": (_export, "text/csv")},
+        images={
+            "/api/forecast-export/": (_export, "text/csv"),
+            "/api/forecast-export-wide/": (_export_wide, "text/csv"),
+        },
     )

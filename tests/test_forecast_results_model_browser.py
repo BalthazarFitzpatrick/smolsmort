@@ -7,6 +7,49 @@ from forecast_ui_audit import settle_menu
 from test_forecast_horizon_browser import horizon_session, open_horizon_run
 
 
+def test_wide_export_tracks_selected_model(tmp_path):
+    with horizon_session(tmp_path) as (page, run_id):
+        open_horizon_run(page, run_id)
+        link = page.locator("#regression-export-wide")
+        assert link.is_visible()
+        assert link.inner_text() == "csv wide"
+        assert link.get_attribute("href") == page.locator("#regression-export").get_attribute(
+            "href"
+        ).replace("/forecast-export/", "/forecast-export-wide/")
+        page.evaluate("""() => {
+          const topic = forecastTopics.get('regression');
+          const tile = {tile_id: 'ensemble:wide:test', family: 'ensemble', kind: 'ensemble',
+            members: [], metrics: {}};
+          topic.paintModelResults({...topic.resultsView, model: tile.tile_id, run_tiles: [tile]});
+        }""")
+        assert link.get_attribute("href") == (
+            f"/api/forecast-export-wide/{run_id}/ensemble%3Awide%3Atest.csv"
+        )
+        page.evaluate("""() => {
+          const topic = forecastTopics.get('regression');
+          topic.resultsWideExportReady = false;
+          topic.paintModelResults(topic.resultsView);
+        }""")
+        assert not link.is_visible()
+
+
+@pytest.mark.parametrize("state,mode", [("running", "timeseries"), ("done", "entity")])
+def test_wide_export_hidden_for_other_runs(tmp_path, state, mode):
+    with horizon_session(tmp_path) as (page, run_id):
+        open_horizon_run(page, run_id)
+
+        def change_run(route):
+            response = route.fetch()
+            payload = response.json()
+            payload["state"] = state
+            payload["spec"]["mode"] = mode
+            route.fulfill(response=response, json=payload)
+
+        page.route("**/api/forecast-run?*", change_run)
+        page.evaluate("async () => await forecastTopics.get('regression').loadResults()")
+        assert not page.locator("#regression-export-wide").is_visible()
+
+
 @pytest.mark.parametrize("selection", [None, ["test_ratio", "mae"], ["test_mae"], []])
 def test_results_model_resolves_tile_metric(tmp_path, selection):
     with horizon_session(tmp_path) as (page, run_id):

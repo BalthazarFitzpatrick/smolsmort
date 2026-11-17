@@ -275,8 +275,8 @@ def ensemble_rows(folder):
     return score_ensembles(models, tables)
 
 
-def read_ensemble_rows(folder):
-    """reuse saved scores until a family prediction table changes"""
+def read_ensemble_rows(folder, *, read_only=False):
+    """reuse saved scores until predictions change; read-only refreshes stay in memory"""
     from smolsmort.forecast.views import write_json_atomic
 
     folder = Path(folder)
@@ -302,7 +302,8 @@ def read_ensemble_rows(folder):
             if isinstance(saved, list):
                 return _set_ensemble_error_metrics(sorted(saved, key=rank_tile))
         rows = ensemble_rows(folder)
-        write_json_atomic(path, rows)
+        if not read_only:
+            write_json_atomic(path, rows)
         return rows
 
 
@@ -370,7 +371,7 @@ def write_ensemble_views(folder, rows):
                 temporary.unlink(missing_ok=True)
 
 
-def read_tiles(folder: Path, *, include_ensembles=True):
+def read_tiles(folder: Path, *, include_ensembles=True, read_only=False):
     folder = Path(folder)
     request = read_json(folder / "request.json", {})
     status = read_json(folder / "status.json", {})
@@ -505,5 +506,5 @@ def read_tiles(folder: Path, *, include_ensembles=True):
                 "running_generation": progress.get("generation") if running else None,
             }
         )
-    ensembles = read_ensemble_rows(folder)[:5] if include_ensembles else []
+    ensembles = read_ensemble_rows(folder, read_only=read_only)[:5] if include_ensembles else []
     return sorted(models + ensembles, key=rank_tile)

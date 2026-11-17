@@ -916,7 +916,7 @@ def _require_done(run_dir: Path) -> dict:
     return result
 
 
-def _select_model(run_dir: Path, result: dict, query: dict) -> dict:
+def _select_model(run_dir: Path, result: dict, query: dict, *, read_only=False) -> dict:
     recipe = _read_json(run_dir / "recipe.json", {})
     winner = result.get("winner") or {}
     winner_family = _winner_family(result, recipe)
@@ -925,7 +925,7 @@ def _select_model(run_dir: Path, result: dict, query: dict) -> dict:
     saved_model = "ensemble" if recipe.get("family") == "ensemble" else "winner"
     model = query.get("model") or default_model
     if model.startswith(("model:", "ensemble:")):
-        tile, tiles = _select_tile(run_dir, model)
+        tile, tiles = _select_tile(run_dir, model, read_only=read_only)
         return {
             "model": model,
             "family": tile["family"],
@@ -983,10 +983,10 @@ def _mark_viewable(run_dir: Path, tiles: list[dict], winner_family: str) -> list
     return tiles
 
 
-def _select_tile(run_dir: Path, model: str):
+def _select_tile(run_dir: Path, model: str, *, read_only=False):
     from smolsmort.forecast.tiles import read_tiles
 
-    tiles = read_tiles(run_dir)
+    tiles = read_tiles(run_dir, read_only=read_only)
     tile = next((tile for tile in tiles if tile["tile_id"] == model), None)
     if tile is None:
         raise ViewError("model must name a tile in this run")
