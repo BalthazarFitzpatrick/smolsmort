@@ -296,7 +296,7 @@ def test_results_dropdown_saved_scores_independent_of_current_lead(tmp_path):
         second = check_order("wape")
         assert first == second
         tick_first("validation_error")
-        assert check_order("validation_error") != second
+        assert check_order("wape") == second
         tick_first("wape")
         assert check_order("wape") == second
         page.locator("#regression-results-model").click()

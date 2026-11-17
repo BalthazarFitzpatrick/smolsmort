@@ -2,8 +2,66 @@
 
 from pathlib import Path
 
+import pytest
 from forecast_ui_audit import settle_menu
 from test_forecast_horizon_browser import horizon_session, open_horizon_run
+
+
+@pytest.mark.parametrize("selection", [None, ["test_ratio", "mae"], ["test_mae"], []])
+def test_results_model_resolves_tile_metric(tmp_path, selection):
+    with horizon_session(tmp_path) as (page, run_id):
+        page.evaluate("localStorage.clear()")
+        page.reload()
+        open_horizon_run(page, run_id)
+        assert page.evaluate("forecastTopics.get('regression').selectedMetricIds") == [
+            "validation_error",
+            "test_ratio",
+        ]
+        page.evaluate(
+            """selection => {
+              const topic = forecastTopics.get('regression');
+              if (selection !== null) topic.selectedMetricIds = selection;
+              topic.metricRegistry.push({id: 'test_mae', name: 'mae', scope: 'test'});
+              topic.resultsView.ensemble = null;
+              topic.resultsView.run_tiles = [
+                {tile_id: 'ridge', family: 'ridge', kind: 'model', test_ratio: 0.9,
+                  selection_metrics: {wape: 0.18, mae: 100},
+                  metrics: {ape: {}, mape: {}, ae: {}, wape: {validation: 0.3, test: 0.18}}},
+                {tile_id: 'snaive', family: 'snaive', kind: 'model',
+                  metrics: {ape: {}, mape: {}, ae: {}, wape: {validation: 0.2, test: 0.2}}},
+              ];
+              if (selection?.length) {
+                topic.resultsView.run_tiles[0].metrics = {mae: {validation: 150, test: 100}};
+                topic.resultsView.run_tiles[1].metrics = {mae: {validation: 200, test: 200}};
+              } else if (selection !== null) {
+                topic.resultsView.run_tiles.forEach(tile => {
+                  tile.metrics = {unknown: {validation: 3, test: 2}};
+                  delete tile.test_ratio;
+                });
+              }
+            }""",
+            selection,
+        )
+        page.click("#regression-results-model")
+        settle_menu(page)
+        ridge = page.locator('.forecast-results-menu .menu-item[data-id="ridge"]')
+        values = [
+            ridge.locator(f".forecast-results-{column}").inner_text()
+            for column in ("val", "test", "ratio")
+        ]
+        if selection is None:
+            assert values == ["0.3000", "0.1800", "0.90"]
+            assert ridge.get_attribute("title") == "wape 0.1800 at lead 3"
+            screenshot = (
+                Path(__file__).resolve().parents[1] / "artifacts/results-model-default-metric.png"
+            )
+            screenshot.parent.mkdir(exist_ok=True)
+            page.screenshot(path=str(screenshot))
+        elif selection:
+            assert values == ["150", "100", "0.50"]
+            assert ridge.get_attribute("title") == "mae 100.0000 at lead 3"
+        else:
+            assert values == ["–", "–", "–"]
 
 
 def test_results_model_columns(tmp_path):
