@@ -3407,7 +3407,14 @@ class ForecastTopic {
     document.getElementById(`${this.topic}-results-model`).onclick = evt => {
       if (!this.resultsView) return;
       const tiles = this.resultsView.run_tiles;
-      const metric = this.selectedMetricIds[0];
+      const metricKeys = new Set((tiles || []).flatMap(tile => Object.keys(tile.metrics || {})));
+      const registry = this.resultsView.metric_registry || this.metricRegistry;
+      const metric = this.selectedMetricIds.map(id => {
+        if (id === 'test_ratio') return null;
+        if (id === 'validation_error') return 'wape';
+        const name = registry.find(entry => entry.id === id)?.name;
+        return metricKeys.has(name) ? name : metricKeys.has(id) ? id : null;
+      }).find(Boolean) || 'wape';
       const baseline = tiles?.find(tile => tile.family === 'snaive' && tile.kind !== 'ensemble')
         ?.metrics?.[metric]?.test;
       const selection = this.resultsView.view;
