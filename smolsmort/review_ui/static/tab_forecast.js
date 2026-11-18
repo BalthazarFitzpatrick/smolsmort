@@ -3340,6 +3340,7 @@ class ForecastTopic {
           <button class="toggle dropdown-head forecast-info-head" id="${this.topic}-info" type="button" aria-expanded="false"><span>info</span></button>
           <a class="hidden" id="${this.topic}-export" download>csv</a>
           <a class="hidden" id="${this.topic}-export-wide" download>csv wide</a>
+          <button class="toggle hidden" id="${this.topic}-export-dialog" type="button">export</button>
         </div>
         <section class="forecast-pane forecast-chart-panel">
           <div class="run-controls forecast-chart-heading">
@@ -3400,6 +3401,7 @@ class ForecastTopic {
       }
     };
     document.getElementById(`${this.topic}-results-run`).onclick = evt => this.openRunPicker(evt.currentTarget);
+    document.getElementById(`${this.topic}-export-dialog`).onclick = () => this.openExportDialog();
     document.getElementById(`${this.topic}-breakdown-head`).onclick = evt => this.openBreakdownPicker(evt.currentTarget);
     document.getElementById(`${this.topic}-filter`).onclick = evt => this.openFilterPicker(evt.currentTarget);
     document.getElementById(`${this.topic}-group-head`).onclick = evt => this.openGroupPicker(evt.currentTarget);
@@ -3528,6 +3530,7 @@ class ForecastTopic {
     this.resultsLoading = true;
     this.resultsWideExportReady = false;
     document.getElementById(`${this.topic}-export-wide`).classList.add('hidden');
+    document.getElementById(`${this.topic}-export-dialog`).classList.add('hidden');
     const runId = this.resultsRunId;
     if (this.infoRunId !== runId) {
       this.infoRunId = runId;
@@ -3548,6 +3551,7 @@ class ForecastTopic {
       if (load !== this.resultsLoad || runId !== this.resultsRunId) return;
       this.resultsSpec = state.spec;
       this.resultsWideExportReady = state.state === 'done' && state.spec?.mode === 'timeseries';
+      document.getElementById(`${this.topic}-export-dialog`).classList.toggle('hidden', state.state !== 'done');
       this.acceptMetricRegistry(state, 'results');
       this.resultsModel = null;
       this.importanceFamily = null;
@@ -3570,6 +3574,116 @@ class ForecastTopic {
       this.setResultsNotes('load', [err.message]);
     } finally {
       if (load === this.resultsLoad) this.resultsLoading = false;
+    }
+  }
+
+  async openExportDialog() {
+    if (!this.resultsView || document.getElementById(`${this.topic}-export-popup`)) return;
+    const runId = this.resultsRunId;
+    const view = this.resultsView;
+    let tiles = view.run_tiles || [];
+    try {
+      const saved = await api(`/api/forecast-run-tiles?run=${encodeURIComponent(runId)}`);
+      tiles = [...new Map([...tiles, ...(saved.tiles || []), ...(saved.ensembles || [])]
+        .map(tile => [tile.tile_id, tile])).values()];
+    } catch (err) { /* legacy runs retain the models already shown in results */ }
+    if (document.getElementById(`${this.topic}-export-popup`)) return;
+    const models = tiles.length ? tiles.map(tile => ({id: tile.tile_id,
+      label: forecastRunTileLabel(tile, tiles)})) : [
+      ...Object.keys(view.families || {}).map(family => ({id: family, label: family})),
+      ...(view.ensemble ? [{id: 'ensemble', label: forecastModelLabel({...view, model: 'ensemble'})}] : []),
+    ];
+    if (!models.length) models.push({id: 'winner', label: 'winner'});
+    if (this.resultsModel && !models.some(item => item.id === this.resultsModel)) {
+      models.unshift({id: this.resultsModel, label: forecastModelLabel(view)});
+    }
+    let model = models.some(item => item.id === this.resultsModel) ? this.resultsModel : models[0].id;
+    let include = 'details only';
+    const storageKey = 'smolsmort:forecast:export-folder';
+    const backdrop = forecastNode('div', 'modal-backdrop');
+    const dialog = forecastNode('div', 'panel-floating modal-dialog forecast-export-dialog');
+    dialog.id = `${this.topic}-export-popup`;
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-label', 'export run');
+    dialog.append(forecastNode('div', 'popup-title', 'export run'), forecastNode('div', 'h-divider'));
+    const addField = (label, input) => {
+      const row = forecastNode('div', 'settings-field');
+      row.append(forecastNode('span', 'field-label', label), input);
+      dialog.append(row);
+    };
+    const modelHead = forecastDropdown(models.map(item => item.id), model, value => { model = value; },
+      'model', value => models.find(item => item.id === value)?.label || value);
+    modelHead.id = `${this.topic}-export-model`;
+    addField('model', modelHead);
+    const includeHead = forecastDropdown(['details only', 'details + predictions', 'everything'], include,
+      value => { include = value; }, 'include');
+    includeHead.id = `${this.topic}-export-include`;
+    addField('include', includeHead);
+    const folder = forecastNode('input', 'text-field');
+    folder.id = `${this.topic}-export-folder`;
+    folder.type = 'text';
+    folder.disabled = true;
+    folder.spellcheck = false;
+    folder.setAttribute('aria-label', 'folder');
+    addField('folder', folder);
+    const status = forecastNode('div', 'stat forecast-export-status');
+    status.id = `${this.topic}-export-status`;
+    status.setAttribute('role', 'status');
+    dialog.append(status);
+    const buttons = forecastNode('div', 'run-controls modal-buttons');
+    const close = forecastNode('button', 'toggle', 'close');
+    close.type = 'button';
+    close.id = `${this.topic}-export-close`;
+    const submit = forecastNode('button', 'toggle adds', 'export');
+    submit.type = 'button';
+    submit.id = `${this.topic}-export-submit`;
+    const dismiss = () => {
+      backdrop.remove();
+      document.removeEventListener('keydown', escape);
+      document.getElementById(`${this.topic}-export-dialog`).focus({preventScroll: true});
+    };
+    const escape = event => {
+      if (event.key === 'Escape' && !document.querySelector('.menu-panel')) dismiss();
+    };
+    close.onclick = dismiss;
+    submit.onclick = async () => {
+      submit.disabled = true;
+      status.textContent = 'exporting';
+      try {
+        const metricKeys = new Set(tiles.flatMap(tile => Object.keys(tile.metrics || {})));
+        const registry = view.metric_registry || this.metricRegistry;
+        const metric = this.selectedMetricIds.map(id => {
+          if (id === 'test_ratio') return null;
+          if (id === 'validation_error') return 'wape';
+          const name = registry.find(entry => entry.id === id)?.name;
+          return metricKeys.has(name) ? name : metricKeys.has(id) ? id : null;
+        }).find(Boolean) || 'wape';
+        const result = await api('/api/forecast-export-bundle', {id: runId, model, include,
+          folder: folder.value, metric});
+        if (result.error) throw new Error(result.error);
+        status.textContent = result.path;
+        try { localStorage.setItem(storageKey, folder.value); } catch (err) { /* storage may be disabled */ }
+      } catch (err) {
+        status.textContent = err.message;
+      } finally {
+        submit.disabled = false;
+      }
+    };
+    buttons.append(close, submit);
+    dialog.append(buttons);
+    backdrop.append(dialog);
+    document.body.append(backdrop);
+    document.addEventListener('keydown', escape);
+    close.focus();
+    try {
+      let saved;
+      try { saved = localStorage.getItem(storageKey); } catch (err) { /* storage may be disabled */ }
+      folder.value = saved || (await api('/api/forecast-export-settings')).folder;
+    } catch (err) {
+      status.textContent = err.message;
+    } finally {
+      folder.disabled = false;
     }
   }
 

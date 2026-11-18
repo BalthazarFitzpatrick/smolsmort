@@ -104,6 +104,10 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .settings-field { display: flex; align-items: center; gap: var(--gap); }
 .settings-field .field-label { width: 96px; flex: 0 0 auto; }
 .settings-field input { flex: 1 1 auto; }
+.forecast-export-dialog { width: min(540px, calc(100vw - 48px)); }
+.forecast-export-dialog .dropdown-head { flex: 1 1 auto; min-width: 0; }
+.forecast-export-dialog .text-field { min-width: 0; }
+.forecast-export-status { white-space: normal; overflow-wrap: anywhere; }
 #settings-popup { min-width: 520px; }
 .base-path { display: block; }
 
