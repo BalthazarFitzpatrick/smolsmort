@@ -64,6 +64,22 @@ def test_export_dialog_shows_bad_folder_error(tmp_path):
         assert page.get_by_role("dialog", name="export run").is_visible()
 
 
+def test_export_dialog_shows_input_warning_with_written_path(tmp_path):
+    with horizon_session(tmp_path) as (page, run_id):
+        open_horizon_run(page, run_id)
+        open_export(page)
+        open_export_models(page).first.click()
+        warning = "input.csv not written: dataset file missing"
+        path = str(tmp_path / "exports" / "saved-run")
+        page.route(
+            "**/api/forecast-export-bundle",
+            lambda route: route.fulfill(json={"path": path, "warning": warning}),
+        )
+        export_posts(page, tmp_path)
+        assert page.locator("#regression-export-status").inner_text() == f"{path} · {warning}"
+        assert page.get_by_role("dialog", name="export run").is_visible()
+
+
 def make_tiles_viewable(tmp_path, run_id):
     """give every family saved predictions so ensemble tiles open in the results picker"""
     from smolsmort.forecast.tables import read_table, write_table

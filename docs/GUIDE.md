@@ -1039,7 +1039,12 @@ the model starts on the row the results model picker shows as current; with no r
 reads `pick a model` and `export` stays off until one is chosen. choose an include level and an
 absolute folder path; the last folder is remembered locally. exports create `<run_id>_<local-date>` folders, adding a numeric suffix when needed.
 `details only` writes `README.md` and `recipe.json`; `details + predictions` adds results and
-wide csv files; `everything` also converts the selected model's saved prediction tables to csv.
+wide csv files and `input.csv`, the original history at the forecast date and dimension grain;
+`everything` also converts the selected model's saved prediction tables to csv.
+`input.csv` uses the run's preparation panel, including its filters, cut date, aggregation and
+gap filling, and is the same for every model. a missing or changed dataset skips this file;
+the dialog and readme give the reason, and the readme records the dataset size and mtime.
+entity runs omit input history with a readme note.
 ensemble exports list the saved member recipes and equal weighting; model weights are not
 stored. the dialog stays open with the written path or error.
 the chart shows the total, narrowed by dimension filters and split by up to three dimensions,

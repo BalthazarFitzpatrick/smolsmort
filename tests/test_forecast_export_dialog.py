@@ -381,3 +381,149 @@ def test_route_refuses_bare_family_name(saved_run, tmp_path, monkeypatch):
     with pytest.raises(RequestError) as error:
         route(None, {"id": folder.name, "folder": str(tmp_path / "exports"), "model": "ridge"})
     assert error.value.status == 400
+
+
+@pytest.fixture
+def input_run(saved_run, tmp_path):
+    from smolsmort.forecast.prep import prepare
+    from smolsmort.forecast.spec import spec_from_dict
+
+    folder, request, models, ensemble = saved_run
+    source = Path(request["spec"]["source"])
+    source.write_text(
+        "week,region,units,keep\n"
+        "2026-01-06,north,2,yes\n"
+        "2026-01-07,north,3,yes\n"
+        "2026-01-20,north,7,yes\n"
+        "2026-01-06,south,11,yes\n"
+        "2026-01-20,south,13,yes\n"
+        "2026-01-13,north,100,no\n"
+        "2026-01-27,north,200,yes\n",
+        encoding="utf-8",
+    )
+    request["spec"].pop("unit")
+    request["spec"].update(task="regression", step="week", where="keep = 'yes'", as_of="2026-01-28")
+    request["spec"]["columns"][1]["aggregation"] = "sum"
+    prepared = prepare(spec_from_dict(request["spec"]), tmp_path / "cache")
+    request["prepared"] = str(prepared.folder)
+    write_json(folder / "request.json", request)
+    return folder, request, models, ensemble
+
+
+@pytest.mark.parametrize("include", ["details + predictions", "everything"])
+def test_input_history_matches_panel_and_is_model_independent(input_run, tmp_path, include):
+    folder, _, models, ensemble = input_run
+    histories = []
+    for tile in [*models, ensemble]:
+        target = export_bundle(
+            folder,
+            {"folder": str(tmp_path / "exports"), "include": include, "model": tile["tile_id"]},
+        )
+        histories.append((target / "input.csv").read_bytes())
+    assert len(set(histories)) == 1
+    rows = list(csv.DictReader(io.StringIO(histories[0].decode())))
+    assert list(rows[0]) == ["week", "region", "units"]
+    assert {(row["week"], row["region"]): float(row["units"]) for row in rows} == {
+        ("2026-01-05", "north"): 5,
+        ("2026-01-12", "north"): 0,
+        ("2026-01-19", "north"): 7,
+        ("2026-01-05", "south"): 11,
+        ("2026-01-12", "south"): 0,
+        ("2026-01-19", "south"): 13,
+    }
+    readme = (target / "README.md").read_text()
+    assert "size_bytes" in readme and "mtime" in readme
+
+
+@pytest.mark.parametrize("change", ["missing", "changed"])
+def test_input_dataset_failure_keeps_export_and_reports_reason(
+    input_run, tmp_path, monkeypatch, change
+):
+    folder, request, models, _ = input_run
+    source = Path(request["spec"]["source"])
+    if change == "missing":
+        source.unlink()
+    else:
+        source.write_text(source.read_text().replace(",2,yes", ",9,yes"))
+    monkeypatch.setattr(tab, "_runs_root", lambda app: folder.parent)
+    route = tab.forecast_tab().post["/api/forecast-export-bundle"]
+    result = route(
+        None,
+        {
+            "id": folder.name,
+            "folder": str(tmp_path / "exports"),
+            "include": "everything",
+            "model": models[0]["tile_id"],
+        },
+    )
+    target = Path(result["path"])
+    assert not (target / "input.csv").exists()
+    assert (target / "results.csv").is_file()
+    assert result["warning"].startswith("input.csv not written:")
+    assert change in result["warning"]
+    assert result["warning"] in (target / "README.md").read_text()
+
+
+def test_input_details_only_does_not_read_dataset(input_run, tmp_path, monkeypatch):
+    from smolsmort.forecast import export_bundle as bundle
+
+    folder, _, models, _ = input_run
+    monkeypatch.setattr(bundle, "_input_csv", lambda recipe: pytest.fail("read dataset"))
+    target = export_bundle(
+        folder, {"folder": str(tmp_path / "exports"), "model": models[0]["tile_id"]}
+    )
+    assert not (target / "input.csv").exists()
+
+
+def test_entity_input_skip_is_silent(saved_run, tmp_path, monkeypatch):
+    folder, request, models, _ = saved_run
+    request["spec"]["mode"] = "entity"
+    write_json(folder / "request.json", request)
+    monkeypatch.setattr(views, "export_csv", lambda *args: b"target\n1\n")
+    monkeypatch.setattr(tab, "_runs_root", lambda app: folder.parent)
+    route = tab.forecast_tab().post["/api/forecast-export-bundle"]
+    result = route(
+        None,
+        {
+            "id": folder.name,
+            "folder": str(tmp_path / "exports"),
+            "include": "everything",
+            "model": models[0]["tile_id"],
+        },
+    )
+    target = Path(result["path"])
+    assert result["warning"] == ""
+    assert not (target / "input.csv").exists()
+    assert "input.csv not written: entity run" in (target / "README.md").read_text()
+
+
+def test_real_run_input_smoke(tmp_path):
+    from smolsmort.forecast.prep import _literal, _quote
+    from smolsmort.forecast.tables import connect, read_table
+
+    workspace = Path.home() / "Documents" / "dev" / "ai_lab" / "forecast_workspace"
+    folder = workspace / ".forecast-runs" / "20261115-155627-6f006a"
+    if not (folder / "request.json").is_file():
+        pytest.skip("real run absent")
+    request = json.loads((folder / "request.json").read_text())
+    source = Path(request["spec"]["source"])
+    if not source.is_file() or not (Path(request["prepared"]) / "panel.parquet").is_file():
+        pytest.skip("real dataset or panel absent")
+    target = export_bundle(
+        folder, {"folder": str(tmp_path), "include": "everything", "model": "winner"}
+    )
+    rows = list(csv.DictReader((target / "input.csv").open()))
+    panel = read_table(Path(request["prepared"]) / "panel.parquet")
+    assert len(rows) == len(panel["__step"])
+    assert len({(row["swo_date"], row["client_group"]) for row in rows}) == len(rows)
+    assert {(row["swo_date"], row["client_group"]) for row in rows} == {
+        (str(step.astype("datetime64[D]")), group)
+        for step, group in zip(panel["__step"], panel["client_group"], strict=True)
+    }
+    spec = request["spec"]
+    with connect() as con:
+        expected = con.execute(
+            f"SELECT SUM(unit) FROM read_csv({_literal(str(source))}, header=true) "
+            f"WHERE ({spec['where']}) AND {_quote('swo_date')} < date_trunc('week', CAST({_literal(spec['as_of'])} AS DATE))"
+        ).fetchone()[0]
+    assert sum(float(row["unit"]) for row in rows) == pytest.approx(expected)

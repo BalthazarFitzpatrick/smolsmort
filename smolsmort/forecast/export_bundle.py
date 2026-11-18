@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import shutil
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
 from smolsmort.forecast import views
 from smolsmort.forecast.export_wide import _format_cell, export_wide_csv
 from smolsmort.forecast.features import split_family_name
+from smolsmort.forecast.prep import prepare
+from smolsmort.forecast.spec import STEP, spec_from_dict
 from smolsmort.forecast.tables import read_table
 from smolsmort.forecast.tiles import read_ensemble_rows, read_json, read_tiles, table_metrics
 
@@ -217,6 +221,10 @@ def render_readme(recipe: dict) -> str:
         if key in request
     ]
     lines += ["## data and spec", ""] + _table(data)
+    if recipe.get("input_data"):
+        lines += ["## input history", ""] + _table(recipe["input_data"].items())
+        if recipe.get("input_status"):
+            lines += [recipe["input_status"], ""]
     if recipe.get("holdout"):
         lines += ["## splits and cut dates", ""] + _table(recipe["holdout"].items())
     for member in recipe["members"]:
@@ -299,6 +307,56 @@ def _table_csv(columns):
     return buffer.getvalue().encode("utf-8")
 
 
+def _input_csv(recipe: dict) -> bytes | None:
+    """rebuild the run's original panel without modifying its saved cache"""
+    request = recipe["request"]
+    if request["spec"].get("mode") != "timeseries":
+        recipe["input_data"] = {"mode": "entity"}
+        recipe["input_status"] = "input.csv not written: entity run"
+        return None
+    source = Path(request["spec"]["source"])
+    facts = recipe["input_data"] = {
+        "dataset": source.name,
+        "size_bytes": "unavailable",
+        "mtime": "unavailable",
+    }
+    try:
+        stat = source.stat()
+        facts.update(
+            size_bytes=stat.st_size,
+            mtime=datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(),
+        )
+        fingerprint = hashlib.sha256(source.read_bytes()).hexdigest()[:12]
+        saved_hash = Path(request.get("prepared", "")).name.rsplit("-", 1)[-1]
+        facts["saved source hash"] = saved_hash
+        facts["current source hash"] = fingerprint
+        if saved_hash != fingerprint:
+            reason = "dataset changed or saved source fingerprint unavailable"
+        else:
+            spec = spec_from_dict(request["spec"])
+            with tempfile.TemporaryDirectory(prefix="smolsmort-export-") as cache:
+                prepared = prepare(spec, Path(cache))
+                if (
+                    prepared.folder.name.rsplit("-", 1)[-1] != fingerprint
+                    or hashlib.sha256(source.read_bytes()).hexdigest()[:12] != fingerprint
+                ):
+                    reason = "dataset changed during export"
+                else:
+                    panel = read_table(prepared.folder / "panel.parquet", order_by=STEP)
+                    columns = {spec.named("time")[0]: panel[STEP]}
+                    columns.update(
+                        (name, panel[name])
+                        for name in spec.named("dimension") + spec.named("target")
+                    )
+                    return _table_csv(columns)
+    except FileNotFoundError:
+        reason = "dataset file missing"
+    except OSError as exc:
+        reason = f"dataset could not be read ({exc.strerror})"
+    recipe["input_status"] = f"input.csv not written: {reason}"
+    return None
+
+
 def export_bundle(run_dir: Path, query: dict) -> Path:
     include = query.get("include", "details only")
     if include not in INCLUDE_LEVELS:
@@ -317,6 +375,9 @@ def export_bundle(run_dir: Path, query: dict) -> Path:
     model_query = {"model": recipe["model"]}
     files = {}
     if include != "details only":
+        history = _input_csv(recipe)
+        if history is not None:
+            files["input.csv"] = history
         files["results.csv"] = views.export_csv(run_dir, recipe["request"], model_query)
         if recipe["request"]["spec"].get("mode") == "timeseries":
             files["wide.csv"] = export_wide_csv(run_dir, recipe["request"], model_query)
