@@ -326,11 +326,12 @@ def test_ensemble_alias_scores_use_requested_metric(saved_run):
     "include,extra",
     [
         ("details only", set()),
-        ("details + predictions", {"results.csv", "wide.csv"}),
+        ("details + predictions", {"demo_dataset.csv", "results.csv", "wide.csv"}),
         (
             "everything",
             {
                 "results.csv",
+                "demo_dataset.csv",
                 "wide.csv",
                 "validation.csv",
                 "test.csv",
@@ -600,7 +601,10 @@ def test_input_dataset_failure_keeps_export_and_reports_reason(
     assert (target / "results.csv").is_file()
     assert result["warning"].startswith("input.csv not written:")
     assert change in result["warning"]
-    assert result["warning"] in (target / "README.md").read_text()
+    readme = (target / "README.md").read_text()
+    for warning in result["warning"].split("; "):
+        assert warning in readme
+    assert "demo_dataset.csv written without input slice:" in result["warning"]
 
 
 def test_input_details_only_does_not_read_dataset(input_run, tmp_path, monkeypatch):
@@ -628,6 +632,14 @@ def test_every_bundle_csv_has_only_grouping_keys_and_numeric_measures(input_run,
     values = ["forecast", "actual", "lower_80", "upper_80"]
     expected = {
         "input.csv": ["week", "region", "actual"],
+        "demo_dataset.csv": [
+            "week",
+            "region",
+            "actual",
+            "prediction",
+            "horizon_step",
+            "dataset_slice",
+        ],
         "results.csv": [*keys, *values],
         "wide.csv": [
             *keys,
@@ -656,7 +668,7 @@ def test_every_bundle_csv_has_only_grouping_keys_and_numeric_measures(input_run,
             assert reader.fieldnames == header, filename
             for row in reader:
                 for name, value in row.items():
-                    if name not in keys and value:
+                    if name not in [*keys, "dataset_slice"] and value:
                         assert np.isfinite(float(value)), (filename, name, value)
                     if name == "horizon" and value:
                         assert str(int(value)) == value
@@ -683,7 +695,9 @@ def test_entity_input_skip_is_silent(saved_run, tmp_path, monkeypatch):
     target = Path(result["path"])
     assert result["warning"] == ""
     assert not (target / "input.csv").exists()
+    assert not (target / "demo_dataset.csv").exists()
     assert "input.csv not written: entity run" in (target / "README.md").read_text()
+    assert "demo_dataset.csv not written: entity run" in (target / "README.md").read_text()
 
 
 def test_real_run_input_smoke(tmp_path):

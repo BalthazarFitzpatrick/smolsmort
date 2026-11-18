@@ -686,6 +686,8 @@ def _export_bundle(app, payload: dict) -> dict:
         target = export_bundle(run_dir, payload)
         recipe = json.loads((target / "recipe.json").read_text(encoding="utf-8"))
         warning = recipe.get("input_status", "")
+        if recipe.get("demo_status"):
+            warning = "; ".join(filter(None, (warning, recipe["demo_status"])))
         if recipe.get("input_data", {}).get("mode") == "entity":
             warning = ""
         return {"path": str(target), "warning": warning}
