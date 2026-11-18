@@ -1047,12 +1047,19 @@ the dialog and readme give the reason, and the readme records the dataset size a
 entity runs omit input history with a readme note.
 `demo_dataset.csv` stacks the selected model's input, validation, test and future prediction
 rows, in that order. its columns are the spec's date and dimensions, `actual`, `prediction`,
-`horizon_step` and `dataset_slice`. input contains every row of `input.csv`, including the
+`lower_50`, `upper_50`, `lower_80`, `upper_80`, `wape`, `horizon_step` and `dataset_slice`.
+bands keep the saved 50% and 80% edges, matching `wide.csv`; input bands are blank.
+wape repeats the unrounded fraction per group, slice and horizon step: sum of absolute
+actual-minus-prediction errors divided by sum of absolute actuals over finite pairs from
+the saved validation or test table, pooling dates and origins. this is the results-tab
+formula at group grain, without display rounding or averaging row percentages. wape is
+blank for input, prediction, no finite pairs or zero absolute actuals.
+input contains every row of `input.csv`, including the
 periods covered by validation and test, with blank predictions and horizon 0. validation,
 test and prediction retain every saved prediction and horizon, with blank actuals on every row.
 actuals appear once in the input slice, predictions per horizon step in the other slices;
 join or blend on date and dims to compare. mixed mode keeps each table's saved horizon value.
-no bands, naive columns or forecast origin are included. when input history
+unavailable bands are blank; naive columns and forecast origin are omitted. when input history
 cannot be written, the demo file still contains the saved prediction slices; the dialog and
 readme explain the missing input slice. entity runs omit the demo file with a readme note.
 all bundle csvs use the spec's own date and grouping names, with iso dates and unchanged group

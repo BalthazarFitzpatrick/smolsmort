@@ -22,6 +22,7 @@ from smolsmort.forecast.export_wide import (
     normalize_columns,
 )
 from smolsmort.forecast.features import split_family_name
+from smolsmort.forecast.metrics import prediction_metrics
 from smolsmort.forecast.prep import prepare
 from smolsmort.forecast.spec import STEP, spec_from_dict
 from smolsmort.forecast.tables import read_table
@@ -454,6 +455,7 @@ def _describe_column(name, filename, spec):
         "prediction": "selected model prediction in original target units; blank for input history",
         "horizon_step": "0 for input history; otherwise the saved table's horizon, in time steps",
         "dataset_slice": "input, validation, test or prediction, in that order",
+        "wape": "sum of absolute actual-minus-prediction errors divided by sum of absolute actuals over finite pairs within this group, slice and horizon_step; repeated on every prediction row, as an unrounded fraction; blank for input, prediction, no finite pairs or zero absolute actuals",
         "lower_50": "lower edge of the 50% validation-calibrated prediction band",
         "upper_50": "upper edge of the 50% validation-calibrated prediction band",
         "lower_80": "lower edge of the 80% validation-calibrated prediction band",
@@ -514,6 +516,7 @@ def _file_sections(recipe):
         if name == "demo_dataset.csv":
             lines += [
                 "actuals appear once in the input slice, predictions per horizon step in the other slices; join or blend on date and dims to compare. input contains all rows of input.csv, including validation and test periods, with blank predictions and horizon_step 0. validation, test and prediction have blank actuals and keep every saved prediction and horizon step.",
+                "lower_50, upper_50, lower_80 and upper_80 keep the selected model's saved 50% and 80% band edges, with the same names and values as wide.csv; blank for input or unavailable bands. wape uses the results-tab formula per group, slice and horizon_step over the saved validation or test actual/prediction pairs, pooling all dates and origins at that grain; it is not an average of row percentages or validation-window scores. csv fractions are not rounded or multiplied by 100; display rounding does not apply. wape is blank for input and prediction, no finite pairs or zero absolute actuals.",
                 "",
             ]
     return lines
@@ -858,15 +861,23 @@ def _demo_csv(run_dir: Path, recipe: dict, history: bytes | None) -> bytes | Non
     spec = request["spec"]
     date = next(column["name"] for column in spec["columns"] if column["role"] == "time")
     keys = [date, *views._spec_dims(spec)]
+    bands = ("lower_50", "upper_50", "lower_80", "upper_80")
     columns = {
-        name: [] for name in [*keys, "actual", "prediction", "horizon_step", "dataset_slice"]
+        name: []
+        for name in [*keys, "actual", "prediction", *bands, "wape", "horizon_step", "dataset_slice"]
     }
 
-    def append_row(row, phase):
+    def group_key(row):
+        return (*[row.get(dim, "") for dim in keys[1:]], row.get("horizon", ""))
+
+    def append_row(row, phase, wape=None):
         for name in keys:
             columns[name].append(row.get(name, ""))
         columns["actual"].append(row.get("actual", "") if phase == "input" else "")
         columns["prediction"].append("" if phase == "input" else row.get("forecast", ""))
+        for name in bands:
+            columns[name].append("" if phase == "input" else row.get(name, ""))
+        columns["wape"].append(wape)
         columns["horizon_step"].append(0 if phase == "input" else row.get("horizon", ""))
         columns["dataset_slice"].append(phase)
 
@@ -877,9 +888,25 @@ def _demo_csv(run_dir: Path, recipe: dict, history: bytes | None) -> bytes | Non
         for row in csv.DictReader(io.StringIO(history.decode("utf-8"))):
             append_row(row, "input")
     for phase, table in tables.items():
-        for values in zip(*table.values(), strict=True):
-            row = dict(zip(table, values, strict=True))
-            append_row(row, "prediction" if phase == "forecast" else phase)
+        rows = [
+            dict(zip(table, values, strict=True)) for values in zip(*table.values(), strict=True)
+        ]
+        groups = {}
+        if phase != "forecast":
+            for row in rows:
+                actuals, predictions = groups.setdefault(group_key(row), ([], []))
+                actual = row.get("actual", "")
+                prediction = row.get("forecast", "")
+                actuals.append(actual if actual != "" else float("nan"))
+                predictions.append(prediction if prediction != "" else float("nan"))
+        scores = {
+            key: prediction_metrics(actuals, predictions)["wape"]
+            for key, (actuals, predictions) in groups.items()
+        }
+        for row in rows:
+            append_row(
+                row, "prediction" if phase == "forecast" else phase, scores.get(group_key(row))
+            )
     return _table_csv(columns)
 
 

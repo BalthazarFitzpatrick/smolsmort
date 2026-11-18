@@ -14,6 +14,9 @@ from test_forecast_export_dialog import saved_run as saved_run
 from smolsmort.forecast import export_bundle as bundle
 from smolsmort.forecast.export_bundle import export_bundle
 
+BANDS = ["lower_50", "upper_50", "lower_80", "upper_80"]
+MEASURES = ["actual", "prediction", *BANDS, "wape", "horizon_step", "dataset_slice"]
+
 
 def read_rows(path):
     with path.open(newline="", encoding="utf-8") as stream:
@@ -31,7 +34,8 @@ def test_demo_stacks_selected_model_with_history(input_run, tmp_path, include, f
         {"folder": str(tmp_path / "export"), "include": include, "model": model["tile_id"]},
     )
     header, rows = read_rows(target / "demo_dataset.csv")
-    assert header == ["week", "region", "actual", "prediction", "horizon_step", "dataset_slice"]
+    assert header == ["week", "region", *MEASURES]
+    assert all(list(row) == header and None not in row.values() for row in rows)
     assert Counter(row["dataset_slice"] for row in rows) == {
         "input": 6,
         "validation": 2,
@@ -48,6 +52,12 @@ def test_demo_stacks_selected_model_with_history(input_run, tmp_path, include, f
     assert all(row["horizon_step"] == "1" for row in rows if row not in history)
     assert all(float(row["prediction"]) == prediction for row in rows if row not in history)
     assert all(row["actual"] == "" for row in rows if row not in history)
+    assert all(row[name] == "" for row in history for name in [*BANDS, "wape"])
+    assert all(row["wape"] == "" for row in rows if row["dataset_slice"] == "prediction")
+    _, wide = read_rows(target / "wide.csv")
+    assert [[row[name] for name in BANDS] for row in rows if row not in history] == [
+        [row[name] for name in BANDS] for row in wide
+    ]
     assert {row["region"] for row in rows} <= {row["region"] for row in inputs}
     readme = (target / "README.md").read_text()
     assert (
@@ -56,6 +66,10 @@ def test_demo_stacks_selected_model_with_history(input_run, tmp_path, include, f
     ) in readme
     assert "before the first validation date" not in readme
     assert "plain sum of actual over-counts" not in readme
+    assert "within this group, slice and horizon_step" in readme
+    assert (
+        "wape is blank for input and prediction, no finite pairs or zero absolute actuals" in readme
+    )
 
 
 def test_demo_details_only_writes_none(input_run, tmp_path):
@@ -114,10 +128,7 @@ def test_demo_keeps_dimensions_missing_groups_and_mixed_horizons(monkeypatch, em
         "date",
         "region",
         "channel",
-        "actual",
-        "prediction",
-        "horizon_step",
-        "dataset_slice",
+        *MEASURES,
     ]
     assert len(rows) == (9 if empty_validation else 12)
     for phase in ("input", "validation", "test", "prediction"):
@@ -139,6 +150,73 @@ def test_demo_keeps_dimensions_missing_groups_and_mixed_horizons(monkeypatch, em
         "2026-01-12",
         "2026-01-19",
     ]
+
+
+@pytest.mark.parametrize("dimensions", [[], ["region", "channel"]])
+def test_demo_wape_pools_dates_per_group_slice_and_step(monkeypatch, dimensions):
+    request = {
+        "spec": {
+            "mode": "timeseries",
+            "columns": [
+                {"name": "date", "role": "time"},
+                *[{"name": name, "role": "dimension"} for name in dimensions],
+            ],
+        }
+    }
+    tables = {}
+    for phase, predictions in (
+        ("validation", [8, 24, 3, 9, 9, 1, 2, 100, np.inf]),
+        ("test", [5, 20, 2, 12, 3, 4, 5, 100, np.inf]),
+        ("forecast", [8, 24, 0, 9, 9, 1, 2, 100, np.inf]),
+    ):
+        tables[phase] = {
+            "step": [f"2026-01-{day:02d}" for day in range(1, 10)],
+            **(
+                {"region": ["a"] * 5 + ["zero"] * 2 + ["a"] * 2, "channel": ["web"] * 9}
+                if dimensions
+                else {}
+            ),
+            "actual": [10, 20, 0, -10, 30, 0, 0, np.nan, 5],
+            "prediction": predictions,
+            "weeks_ahead": [1, 1, 1, 12, 12, 1, 1, 1, 1],
+            "lower_50": [value - 1 for value in predictions],
+            "upper_50": [value + 1 for value in predictions],
+            "lower": [value - 2 for value in predictions],
+            "upper": [value + 2 for value in predictions],
+        }
+    monkeypatch.setattr(bundle.views, "_require_done", lambda _: {})
+    monkeypatch.setattr(bundle, "_select_predictions", lambda *args: ({}, None))
+    monkeypatch.setattr(
+        bundle, "_read_predictions", lambda run, selected, phase, tiles: tables[phase]
+    )
+    history = bundle._table_csv({"date": ["2025-01-01"], "actual": [10]})
+    data = bundle._demo_csv(Path("unused"), {"request": request, "model": "winner"}, history)
+    reader = csv.DictReader(io.StringIO(data.decode()))
+    rows = list(reader)
+    assert reader.fieldnames == ["date", *dimensions, *MEASURES]
+    assert all(list(row) == reader.fieldnames and None not in row.values() for row in rows)
+    for row in rows:
+        phase = row["dataset_slice"]
+        if phase in ("input", "prediction"):
+            assert row["wape"] == ""
+            if phase == "input":
+                assert all(row[name] == "" for name in BANDS)
+            continue
+        step = int(row["horizon_step"])
+        if dimensions and row["region"] == "zero":
+            assert row["wape"] == ""
+        else:
+            # hand sums include zero-actual errors and exclude nonfinite pairs
+            expected = {"validation": {1: 9 / 30, 12: 40 / 40}, "test": {1: 7 / 30, 12: 49 / 40}}[
+                phase
+            ][step]
+            if not dimensions and step == 1:
+                expected = (12 if phase == "validation" else 16) / 30
+            assert float(row["wape"]) == pytest.approx(expected)
+        index = int(row["date"][-2:]) - 1
+        for output, saved in zip(BANDS, ["lower_50", "upper_50", "lower", "upper"], strict=True):
+            value = tables[phase][saved][index]
+            assert row[output] == (str(float(value)) if np.isfinite(value) else "")
 
 
 def test_real_run_demo_smoke(tmp_path):
@@ -166,10 +244,7 @@ def test_real_run_demo_smoke(tmp_path):
     assert header == [
         "swo_date",
         "client_group",
-        "actual",
-        "prediction",
-        "horizon_step",
-        "dataset_slice",
+        *MEASURES,
     ]
     _, inputs = read_rows(target / "input.csv")
     tables = {
@@ -193,6 +268,9 @@ def test_real_run_demo_smoke(tmp_path):
             if row["dataset_slice"] == ("prediction" if phase == "forecast" else phase)
         ]
         assert all(row["actual"] == "" for row in selected)
+        assert [[row[name] for name in BANDS] for row in selected] == [
+            [row.get(name, "") for name in BANDS] for row in table
+        ]
         assert [
             (row["swo_date"], row["client_group"], row["horizon_step"], row["prediction"])
             for row in selected
