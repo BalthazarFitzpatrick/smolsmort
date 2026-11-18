@@ -470,6 +470,11 @@ def _describe_column(name, filename, spec):
     }
     if name == "ratio" and filename == "lead_errors.csv":
         return "model_wape/naive_wape at this horizon; undefined or nonfinite values are blank"
+    if filename == "demo_dataset.csv" and name.startswith("total_"):
+        measure = name.removeprefix("total_")
+        if measure == "wape":
+            return "sum of absolute errors divided by sum of absolute actuals over finite saved pairs across all groups and weeks in this slice and horizon_step; unrounded fraction repeated on every prediction row; blank for input, prediction, no finite pairs or zero denominator"
+        return f"plain sum of group {measure} values at the same date, horizon_step and dataset_slice, repeated on every row; missing groups and blank values do not add; all blank gives blank"
     if name.startswith("total_"):
         measure = name.removeprefix("total_")
         if measure in ("forecast", "actual"):
@@ -515,6 +520,7 @@ def _file_sections(recipe):
             lines += _total_definitions()
         if name == "demo_dataset.csv":
             lines += [
+                "total_actual, total_prediction, total_lower_50, total_upper_50, total_lower_80 and total_upper_80 are plain sums of the group columns at the same date, horizon_step and slice, repeated on every row. missing groups and blank values do not add; all blank gives blank. total_actual is populated only in input; input prediction and band totals are blank. total bands are the sum of the group bounds, wider than a band fitted on the total itself, and differ from wide.csv total bands, which are calibrated on the total. total_wape pools finite saved actual/prediction pairs across all groups and weeks within each validation or test slice and horizon_step; it is a ratio of sums, not a sum of group ratios, and is blank for input, prediction or zero denominator.",
                 "actuals appear once in the input slice, predictions per horizon step in the other slices; join or blend on date and dims to compare. input contains all rows of input.csv, including validation and test periods, with blank predictions and horizon_step 0. validation, test and prediction have blank actuals and keep every saved prediction and horizon step.",
                 "lower_50, upper_50, lower_80 and upper_80 keep the selected model's saved 50% and 80% band edges, with the same names and values as wide.csv; blank for input or unavailable bands. wape uses the results-tab formula per group, slice and horizon_step over the saved validation or test actual/prediction pairs, pooling all dates and origins at that grain; it is not an average of row percentages or validation-window scores. csv fractions are not rounded or multiplied by 100; display rounding does not apply. wape is blank for input and prediction, no finite pairs or zero absolute actuals.",
                 "",
@@ -862,10 +868,13 @@ def _demo_csv(run_dir: Path, recipe: dict, history: bytes | None) -> bytes | Non
     date = next(column["name"] for column in spec["columns"] if column["role"] == "time")
     keys = [date, *views._spec_dims(spec)]
     bands = ("lower_50", "upper_50", "lower_80", "upper_80")
+    measures = ("actual", "prediction", *bands)
+    total_names = [f"total_{name}" for name in (*measures, "wape")]
     columns = {
         name: []
-        for name in [*keys, "actual", "prediction", *bands, "wape", "horizon_step", "dataset_slice"]
+        for name in [*keys, *measures, "wape", *total_names, "horizon_step", "dataset_slice"]
     }
+    total_scores = {}
 
     def group_key(row):
         return (*[row.get(dim, "") for dim in keys[1:]], row.get("horizon", ""))
@@ -892,6 +901,7 @@ def _demo_csv(run_dir: Path, recipe: dict, history: bytes | None) -> bytes | Non
             dict(zip(table, values, strict=True)) for values in zip(*table.values(), strict=True)
         ]
         groups = {}
+        horizons = {}
         if phase != "forecast":
             for row in rows:
                 actuals, predictions = groups.setdefault(group_key(row), ([], []))
@@ -899,6 +909,13 @@ def _demo_csv(run_dir: Path, recipe: dict, history: bytes | None) -> bytes | Non
                 prediction = row.get("forecast", "")
                 actuals.append(actual if actual != "" else float("nan"))
                 predictions.append(prediction if prediction != "" else float("nan"))
+                pooled_actuals, pooled_predictions = horizons.setdefault(
+                    row.get("horizon", ""), ([], [])
+                )
+                pooled_actuals.append(actuals[-1])
+                pooled_predictions.append(predictions[-1])
+        for horizon, (actuals, predictions) in horizons.items():
+            total_scores[phase, horizon] = prediction_metrics(actuals, predictions)["wape"]
         scores = {
             key: prediction_metrics(actuals, predictions)["wape"]
             for key, (actuals, predictions) in groups.items()
@@ -907,6 +924,21 @@ def _demo_csv(run_dir: Path, recipe: dict, history: bytes | None) -> bytes | Non
             append_row(
                 row, "prediction" if phase == "forecast" else phase, scores.get(group_key(row))
             )
+    totals = {}
+    row_keys = list(
+        zip(columns[date], columns["horizon_step"], columns["dataset_slice"], strict=True)
+    )
+    for index, key in enumerate(row_keys):
+        sums = totals.setdefault(key, {})
+        for name in measures:
+            value = columns[name][index]
+            if value is not None and value != "" and math.isfinite(float(value)):
+                sums[name] = sums.get(name, 0.0) + float(value)
+    for key in row_keys:
+        for name in measures:
+            columns[f"total_{name}"].append(totals[key].get(name, ""))
+        _, horizon, phase = key
+        columns["total_wape"].append(total_scores.get((phase, horizon)))
     return _table_csv(columns)
 
 

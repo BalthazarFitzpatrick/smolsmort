@@ -1047,7 +1047,17 @@ the dialog and readme give the reason, and the readme records the dataset size a
 entity runs omit input history with a readme note.
 `demo_dataset.csv` stacks the selected model's input, validation, test and future prediction
 rows, in that order. its columns are the spec's date and dimensions, `actual`, `prediction`,
-`lower_50`, `upper_50`, `lower_80`, `upper_80`, `wape`, `horizon_step` and `dataset_slice`.
+`lower_50`, `upper_50`, `lower_80`, `upper_80`, `wape`, `total_actual`, `total_prediction`,
+`total_lower_50`, `total_upper_50`, `total_lower_80`, `total_upper_80`, `total_wape`,
+`horizon_step` and `dataset_slice`.
+total measure columns are plain sums of group values at the same date, horizon step and slice,
+repeated on every row. missing groups and blank values do not add; all blank gives blank.
+total actuals appear only in input; input prediction and band totals are blank.
+total bands sum the group bounds, are wider than a band fitted on the total itself, and differ
+from the calibrated total bands in `wide.csv`, which stays unchanged.
+total wape divides total absolute error by total absolute actuals over finite saved pairs across
+all groups and weeks within the slice and horizon step; it is not a sum of group ratios.
+it is blank for input, prediction, no finite pairs or zero denominator.
 bands keep the saved 50% and 80% edges, matching `wide.csv`; input bands are blank.
 wape repeats the unrounded fraction per group, slice and horizon step: sum of absolute
 actual-minus-prediction errors divided by sum of absolute actuals over finite pairs from
