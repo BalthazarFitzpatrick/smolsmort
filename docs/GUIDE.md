@@ -1035,8 +1035,9 @@ a long horizon widens the spacing so windows never overlap. short history uses f
 the results banner shows the ratio and better/worse reading above the chart. the csv export
 carries the accuracy summary in its first line and the ratio on every row.
 the `export` button beside `csv` and `csv wide` opens a dialog for a finished run.
-choose a model, an include level, and an absolute folder path; the last folder is remembered
-locally. exports create `<run_id>_<local-date>` folders, adding a numeric suffix when needed.
+the model starts on the row the results model picker shows as current; with no row picked it
+reads `pick a model` and `export` stays off until one is chosen. choose an include level and an
+absolute folder path; the last folder is remembered locally. exports create `<run_id>_<local-date>` folders, adding a numeric suffix when needed.
 `details only` writes `README.md` and `recipe.json`; `details + predictions` adds results and
 wide csv files; `everything` also converts the selected model's saved prediction tables to csv.
 ensemble exports list the saved member recipes and equal weighting; model weights are not

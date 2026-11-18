@@ -3433,26 +3433,7 @@ class ForecastTopic {
         return {...option, metric, val, test, ratio,
           hint: Number.isFinite(value) ? `${metric} ${value.toFixed(4)} at ${scope}` : undefined};
       };
-      // only tiles with saved predictions can open; older runs keep their saved ensemble entry
-      const shown = (tiles || []).filter(tile => tile.viewable !== false);
-      const savedMembers = new Set(this.resultsView.ensemble?.members || []);
-      const matchingEnsemble = this.resultsView.ensemble && shown.find(tile => {
-        if (tile.kind !== 'ensemble') return false;
-        const members = new Set((tile.members || []).map(id =>
-          tiles.find(member => member.tile_id === id)?.family));
-        return members.size === savedMembers.size && [...members].every(family => savedMembers.has(family));
-      });
-      const options = shown.map(tile => rankOption({
-        id: tile.tile_id, label: forecastRunTileLabel(tile, tiles),
-        state: { 'forecast-results-ensemble': tile.kind === 'ensemble' },
-        on: this.resultsModel === tile.tile_id || (this.resultsModel === 'ensemble' && tile === matchingEnsemble),
-      }, tile));
-      if (!tiles?.length) options.push(rankOption({id: 'winner', label: this.resultsView.winner_family || 'xgboost', on: this.resultsModel === 'winner'}, this.resultsView.winner));
-      if (this.resultsView.ensemble && !matchingEnsemble) {
-        options.push(rankOption({id: 'ensemble', label: `ensemble of ${(this.resultsView.ensemble.members || []).join(', ')}`,
-          state: {'forecast-results-ensemble': true}, on: this.resultsModel === 'ensemble'}, this.resultsView.ensemble));
-      }
-      if (!options.length) options.push(rankOption({id: 'winner', label: this.resultsView.winner_family || 'xgboost', on: this.resultsModel === 'winner'}, this.resultsView.winner));
+      const options = this.resultsModelChoices().map(({entry, ...option}) => rankOption(option, entry));
       const onPick = async item => {
         this.resultsModel = item.id;
         this.importanceFamily = null;
@@ -3493,6 +3474,36 @@ class ForecastTopic {
       })), item => { this.importanceFamily = item.id; this.refreshView(); }).openAt(evt.currentTarget);
     };
     return {enter: () => this.enterResults()};
+  }
+
+  // rows of the results model picker; `on` marks the row it shows as current, aliases resolved
+  // ['ensemble' lights its matching tile, 'winner' lights only its own row on runs without tiles]
+  resultsModelChoices() {
+    const view = this.resultsView;
+    const tiles = view.run_tiles;
+    // only tiles with saved predictions can open; older runs keep their saved ensemble entry
+    const shown = (tiles || []).filter(tile => tile.viewable !== false);
+    const savedMembers = new Set(view.ensemble?.members || []);
+    const matchingEnsemble = view.ensemble && shown.find(tile => {
+      if (tile.kind !== 'ensemble') return false;
+      const members = new Set((tile.members || []).map(id =>
+        tiles.find(member => member.tile_id === id)?.family));
+      return members.size === savedMembers.size && [...members].every(family => savedMembers.has(family));
+    });
+    const winner = {id: 'winner', label: view.winner_family || 'xgboost', on: this.resultsModel === 'winner', entry: view.winner};
+    const choices = shown.map(tile => ({
+      id: tile.tile_id, label: forecastRunTileLabel(tile, tiles),
+      state: { 'forecast-results-ensemble': tile.kind === 'ensemble' },
+      on: this.resultsModel === tile.tile_id || (this.resultsModel === 'ensemble' && tile === matchingEnsemble),
+      entry: tile,
+    }));
+    if (!tiles?.length) choices.push(winner);
+    if (view.ensemble && !matchingEnsemble) {
+      choices.push({id: 'ensemble', label: `ensemble of ${(view.ensemble.members || []).join(', ')}`,
+        state: {'forecast-results-ensemble': true}, on: this.resultsModel === 'ensemble', entry: view.ensemble});
+    }
+    if (!choices.length) choices.push(winner);
+    return choices;
   }
 
   async enterResults() {
@@ -3588,16 +3599,12 @@ class ForecastTopic {
         .map(tile => [tile.tile_id, tile])).values()];
     } catch (err) { /* legacy runs retain the models already shown in results */ }
     if (document.getElementById(`${this.topic}-export-popup`)) return;
-    const models = tiles.length ? tiles.map(tile => ({id: tile.tile_id,
-      label: forecastRunTileLabel(tile, tiles)})) : [
-      ...Object.keys(view.families || {}).map(family => ({id: family, label: family})),
-      ...(view.ensemble ? [{id: 'ensemble', label: forecastModelLabel({...view, model: 'ensemble'})}] : []),
-    ];
-    if (!models.length) models.push({id: 'winner', label: 'winner'});
-    if (this.resultsModel && !models.some(item => item.id === this.resultsModel)) {
-      models.unshift({id: this.resultsModel, label: forecastModelLabel(view)});
-    }
-    let model = models.some(item => item.id === this.resultsModel) ? this.resultsModel : models[0].id;
+    // the export is for the row the results picker shows as current; with none lit, the user picks
+    const choices = this.resultsModelChoices();
+    const models = tiles.map(tile => ({id: tile.tile_id, label: forecastRunTileLabel(tile, tiles)}));
+    models.unshift(...choices.filter(choice => !models.some(item => item.id === choice.id))
+      .map(({id, label}) => ({id, label})));
+    let model = choices.find(choice => choice.on)?.id || null;
     let include = 'details only';
     const storageKey = 'smolsmort:forecast:export-folder';
     const backdrop = forecastNode('div', 'modal-backdrop');
@@ -3612,9 +3619,13 @@ class ForecastTopic {
       row.append(forecastNode('span', 'field-label', label), input);
       dialog.append(row);
     };
-    const modelHead = forecastDropdown(models.map(item => item.id), model, value => { model = value; },
-      'model', value => models.find(item => item.id === value)?.label || value);
+    const modelHead = forecastDropdown(models.map(item => item.id), model ?? '', value => {
+      model = value;
+      modelHead.classList.remove('placeholder');
+      submit.disabled = false;
+    }, 'model', value => value ? models.find(item => item.id === value)?.label || value : 'pick a model');
     modelHead.id = `${this.topic}-export-model`;
+    modelHead.classList.toggle('placeholder', !model);
     addField('model', modelHead);
     const includeHead = forecastDropdown(['details only', 'details + predictions', 'everything'], include,
       value => { include = value; }, 'include');
@@ -3638,6 +3649,7 @@ class ForecastTopic {
     const submit = forecastNode('button', 'toggle adds', 'export');
     submit.type = 'button';
     submit.id = `${this.topic}-export-submit`;
+    submit.disabled = !model;
     const dismiss = () => {
       backdrop.remove();
       document.removeEventListener('keydown', escape);
@@ -3648,6 +3660,7 @@ class ForecastTopic {
     };
     close.onclick = dismiss;
     submit.onclick = async () => {
+      if (!model) return;
       submit.disabled = true;
       status.textContent = 'exporting';
       try {

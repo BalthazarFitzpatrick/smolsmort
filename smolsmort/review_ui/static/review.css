@@ -107,6 +107,9 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 .forecast-export-dialog { width: min(540px, calc(100vw - 48px)); }
 .forecast-export-dialog .dropdown-head { flex: 1 1 auto; min-width: 0; }
 .forecast-export-dialog .text-field { min-width: 0; }
+/* menus opened from a modal sit above its backdrop [base.css puts menus at 58, the backdrop at 60]
+   and stay below an expanding panel at 70 */
+body:has(.modal-backdrop) .menu-panel { z-index: 65; }
 .forecast-export-status { white-space: normal; overflow-wrap: anywhere; }
 #settings-popup { min-width: 520px; }
 .base-path { display: block; }

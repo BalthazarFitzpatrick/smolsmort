@@ -340,3 +340,44 @@ def test_route_roundtrip_and_bad_requests(saved_run, tmp_path, monkeypatch):
         assert error.value.status == 400
     with pytest.raises(RequestError):
         route(None, {**payload, "id": "../outside"})
+
+
+@pytest.mark.parametrize("family,prediction", [("ridge", 8.0), ("snaive", 6.0), ("ensemble", 7.0)])
+def test_route_exports_exactly_the_posted_model(
+    saved_run, tmp_path, monkeypatch, family, prediction
+):
+    folder, _, models, ensemble = saved_run
+    monkeypatch.setattr(tab, "_runs_root", lambda app: folder.parent)
+    route = tab.forecast_tab().post["/api/forecast-export-bundle"]
+    tile = ensemble if family == "ensemble" else next(m for m in models if m["family"] == family)
+    result = route(
+        None,
+        {
+            "id": folder.name,
+            "folder": str(tmp_path / "exports"),
+            "model": tile["tile_id"],
+            "include": "everything",
+        },
+    )
+    target = Path(result["path"])
+    recipe = json.loads((target / "recipe.json").read_text())
+    assert recipe["model"] == tile["tile_id"]
+    assert recipe["selected"]["tile_id"] == tile["tile_id"]
+    by_id = {model["tile_id"]: model for model in models}
+    expected = [by_id[member] for member in tile["members"]] if family == "ensemble" else [tile]
+    assert [member["recipe_key"] for member in recipe["members"]] == [
+        model["recipe_key"] for model in expected
+    ]
+    if family != "ensemble":
+        assert recipe["members"][0]["genome"]["params"] == tile["recipe"]["params"]
+    rows = list(csv.DictReader(io.StringIO((target / "test.csv").read_text())))
+    assert [float(row["prediction"]) for row in rows] == [prediction, prediction]
+
+
+def test_route_refuses_bare_family_name(saved_run, tmp_path, monkeypatch):
+    folder, _, _, _ = saved_run
+    monkeypatch.setattr(tab, "_runs_root", lambda app: folder.parent)
+    route = tab.forecast_tab().post["/api/forecast-export-bundle"]
+    with pytest.raises(RequestError) as error:
+        route(None, {"id": folder.name, "folder": str(tmp_path / "exports"), "model": "ridge"})
+    assert error.value.status == 400
