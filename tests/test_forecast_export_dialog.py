@@ -10,7 +10,12 @@ import numpy as np
 import pytest
 
 from smolsmort.forecast import tab, tiles, views
-from smolsmort.forecast.export_bundle import build_recipe, export_bundle, render_readme
+from smolsmort.forecast.export_bundle import (
+    _feature_kind,
+    build_recipe,
+    export_bundle,
+    render_readme,
+)
 from smolsmort.forecast.export_wide import export_wide_csv
 from smolsmort.forecast.tables import write_table
 from smolsmort.review.routes import RequestError
@@ -160,6 +165,78 @@ def test_readme_groups_legacy_feature_names(saved_run):
         ("dimensions", "dim:region"),
     ):
         assert f'| {kind} | ["{feature}"] |' in readme
+
+
+def assert_feature_definitions(recipe, readme):
+    assert readme.count("## feature definitions\n") == 1
+    section = readme.split("## feature definitions\n", 1)[1].split("\n## ", 1)[0]
+    for member in recipe["members"]:
+        for feature in member["genome"].get("families", []):
+            kind = _feature_kind(feature)
+            row = next(line for line in section.splitlines() if line.startswith(f"| {kind} |"))
+            assert "see smolsmort/" not in row, f"missing definition for {feature}"
+    return section
+
+
+def test_fixture_readme_defines_every_member_feature_kind(saved_run):
+    folder, _, _, ensemble = saved_run
+    recipe = build_recipe(folder, {"model": ensemble["tile_id"]})
+    section = assert_feature_definitions(recipe, render_readme(recipe))
+    assert "| ewm |" not in section
+    assert "| mix |" not in section
+    assert "| cal:week |" not in section
+    assert "| cal:month |" in section
+    assert "target transform: log1p: z_t = log(1+y_t)" in section
+    assert "after each member's inverse target transform" in section
+    assert "4..19 pairs" in section
+    assert "total_forecast = sum(series forecasts)" in section
+    assert "results-tab ratio = sum(abs(y-p))/sum(abs(y-naive))" in section
+
+
+def test_undocumented_feature_kind_fails_definition_check(saved_run):
+    folder, _, models, _ = saved_run
+    recipe = build_recipe(folder, {"model": models[0]["tile_id"]})
+    recipe["members"][0]["genome"]["families"].append("units@week:new_kind:4")
+    readme = render_readme(recipe)
+    with pytest.raises(AssertionError, match="missing definition for units@week:new_kind:4"):
+        assert_feature_definitions(recipe, readme)
+
+
+def test_readme_defines_dynamics_and_calendar_variants(saved_run):
+    folder, _, models, _ = saved_run
+    recipe = build_recipe(folder, {"model": models[0]["tile_id"]})
+    recipe["members"][0]["genome"]["families"] += [
+        "units@week:lag+0",
+        "units@week:lag+1",
+        "units@week:diff:13",
+        "units@week:ewm:0.1",
+        "units@week:momentum:8",
+        "units@week:slope:4",
+        "units@week:season",
+        "units@week:cycle_ratio",
+        "units@week:roll:52:zeros",
+        "units@week:roll:13:q10",
+        "country@week:mix",
+        "site@week:spread",
+        "week:cal:cyclic",
+        "week:cal:holiday",
+        "week:cal:week",
+        "week:cal:quarter",
+        "week:cal:weekday",
+        "week:cal:dom",
+        "week:cal:trend",
+        "weeks_ahead",
+        "country:freq",
+        "price:log",
+    ]
+    recipe["members"].append({**recipe["members"][0], "genome": {"transform": "logdiff"}})
+    section = assert_feature_definitions(recipe, render_readme(recipe))
+    assert "single mode: y_(o-k); bucket mode: y_(t-k)" in section
+    assert "y_(o-j), including y_o for lag+0" in section
+    assert "zeros = count(y = 0)/n" in section
+    assert "mean(y in [o-m+1, o]) - mean(y in [o-2*m+1, o-m])" in section
+    assert "missing values retain the previous level" in section
+    assert "logdiff: z_t = log(1+y_t)-log(1+y_o)" in section
 
 
 def test_readme_explains_omitted_member_target_transform(saved_run):
@@ -562,6 +639,9 @@ def test_real_run_input_smoke(tmp_path):
         pytest.skip("real dataset or panel absent")
     target = export_bundle(
         folder, {"folder": str(tmp_path), "include": "everything", "model": "winner"}
+    )
+    assert_feature_definitions(
+        json.loads((target / "recipe.json").read_text()), (target / "README.md").read_text()
     )
     rows = list(csv.DictReader((target / "input.csv").open()))
     panel = read_table(Path(request["prepared"]) / "panel.parquet")

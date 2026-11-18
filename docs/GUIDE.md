@@ -1055,6 +1055,9 @@ bucket, family, future or other label columns are included. bundle `results.csv`
 a clean header; the results tab's csv download keeps its verdict comment and existing columns.
 ensemble exports list the saved member recipes and equal weighting; model weights are not
 stored. the dialog stays open with the written path or error.
+the readme's `feature definitions` section explains only the selected members' feature kinds,
+with plain text math, origin visibility, missing-history rules and raw versus transformed scales.
+it also defines target transforms, validation bands, ensemble means, wide totals, wape and ratios.
 the chart shows the total, narrowed by dimension filters and split by up to three dimensions,
 with group ranges combined at the aggregate on screen; the table below pages, sorts and, per row,
 groups by a dimension with each group's earliest and latest predicted date.

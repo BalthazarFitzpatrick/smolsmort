@@ -200,6 +200,194 @@ def _feature_groups(features):
     return groups.items()
 
 
+def _feature_kind(feature):
+    operation = split_family_name(feature)[2]
+    if operation.startswith(("cal:", "date:")):
+        return operation.replace("date:", "cal:", 1)
+    return "lag+" if operation.startswith("lag+") else operation.partition(":")[0]
+
+
+def _feature_definitions(recipe):
+    # features.py: _timeseries_base, stacked_timeseries_features, timeseries_features, _shift
+    definitions = {
+        "lag": (
+            "target@clock:lag:k",
+            "single mode: y_(o-k); bucket mode: y_(t-k), present only if k >= b. unavailable history is missing; zeros remain zero",
+        ),
+        "lag+": (
+            "target@clock:lag+j",
+            "y_(o-j), including y_o for lag+0 and y_(o-1) for lag+1. unavailable history is missing; zeros remain zero",
+        ),
+        "diff": (
+            "target@clock:diff:k",
+            "y_o - y_(o-k); both values must be finite, otherwise missing. zeros are ordinary values",
+        ),
+        "season": (
+            "target@clock:season",
+            "single mode: y_(t-p), mean(y_(t-p-1), y_(t-p), y_(t-p+1)), plus y_(t-P) if a period P was detected; p = 52 weeks (365 days, 12 months, 4 quarters, 1 year). each read must be <= o; any missing neighbor makes the mean missing. bucket mode: y_(t-P), only if P >= b; unavailable history is missing; zeros remain zero",
+        ),
+        "measure": (
+            "source@clock:measure",
+            "time series: raw source x_(o-j) for j = 0, 1, 2, 3; entity mode: raw input x. unavailable history is missing; zeros remain zero",
+        ),
+        "lead": (
+            "source@clock:lead",
+            "with detected source lag k, single mode reads x_(o-k); bucket mode reads x_(t-k) only if k >= b. unavailable history is missing; zeros remain zero",
+        ),
+        "weeks_ahead": (
+            "weeks_ahead",
+            "h = t - o, known without target reads; always added to single-mode designs (ridge also gets one indicator per lead). no missing history or zero handling needed",
+        ),
+    }
+    # features.py: _rolling, _rolling_mean, _slope, _ewm, _timeseries_base
+    definitions.update(
+        {
+            "roll": (
+                "target@clock:roll:k:stat",
+                "over finite y in [o-k+1, o], n >= max(floor(k/2), 1) is required, else missing. mean = sum(y)/n; std = sqrt(max(mean(y*y)-mean(y)^2, 0)); min/max are extrema; median/q10/q90 are linearly interpolated quantiles at 0.5/0.1/0.9; zeros = count(y = 0)/n. zeros count as observations; legacy roll:k selects mean/std/max/zeros",
+            ),
+            "slope": (
+                "target@clock:slope:k",
+                "over [o-k+1, o], x is the original position 0..k-1 of each finite y: (n*sum(x*y)-sum(x)*sum(y))/(n*sum(x*x)-sum(x)^2). require n >= max(floor(k/2), 2) and positive denominator, else missing; gaps retain their positions, zeros remain observations",
+            ),
+            "momentum": (
+                "target@clock:momentum:k",
+                "m = floor(k/2); mean(y in [o-m+1, o]) - mean(y in [o-2*m+1, o-m]). each mean needs max(floor(m/2), 1) finite values, else missing; zeros count as observations",
+            ),
+            "ewm": (
+                "target@clock:ewm:a",
+                "first finite y initializes e; each later finite y_s sets e_s = a*y_s + (1-a)*e_previous, returned at o. missing values retain the previous level; before the first finite value the result is missing; zeros update the level",
+            ),
+            "cycle_ratio": (
+                "target@clock:cycle_ratio",
+                "y_o / y_(o-p), for detected or fallback cycle p; missing/nonfinite numerator or denominator, or zero denominator, gives missing. zero numerator with nonzero denominator gives zero",
+            ),
+        }
+    )
+    # features.py: _calendar, _timeseries_calendar, _codes, entity_features
+    definitions.update(
+        {
+            "cal:week": (
+                "clock:cal:week",
+                "floor(day_of_year_zero_based/7)+1 at t; this is not iso week numbering",
+            ),
+            "cal:month": ("clock:cal:month", "calendar month 1..12 at t"),
+            "cal:quarter": ("clock:cal:quarter", "floor((month-1)/3)+1 at t"),
+            "cal:weekday": ("clock:cal:weekday", "weekday at t, monday = 0 through sunday = 6"),
+            "cal:cyclic": (
+                "clock:cal:cyclic",
+                "sin(2*pi*c), cos(2*pi*c): c = (month-1)/12 and day_of_year_zero_based/days_in_year; daily data also uses weekday/7. weekly dates are aligned to monday",
+            ),
+            "cal:holiday": (
+                "clock:cal:holiday",
+                "holiday indicator at t, min(days until next holiday, 30), min(days since previous holiday, 30), from the configured country's calendar. weekly data uses monday only",
+            ),
+            "cal:dom": (
+                "clock:cal:dom",
+                "day of month d, indicators for first/last day of month, and floor((d-1)/7)+1, at t",
+            ),
+            "cal:trend": (
+                "clock:cal:trend",
+                "entity anchor days since earliest training anchor divided by 365.25; if training is empty, earliest anchor is used",
+            ),
+            "dim": (
+                "source:dim",
+                "sorted nonempty training categories map to integer codes 0..n-1; null, nan, empty or unseen categories are missing. series dimensions are constant; no target history or target transform is used; a literal category 0 is a category",
+            ),
+            "freq": (
+                "source:freq",
+                "training count of category / max(training row count, 1); missing/unseen categories give zero. training levels only; raw categories, no target transform",
+            ),
+            "log": (
+                "source:log",
+                "entity input log(1+x), offered only when finite training inputs exist and their minimum is nonnegative. missing x remains missing and zero maps to zero; no future target reads or target transform",
+            ),
+        }
+    )
+    # features.py: _build_input_values, timeseries_features, stacked_timeseries_features
+    definitions.update(
+        {
+            "mix": (
+                "source@clock:mix",
+                "at o-j, level share = raw target total for level / raw target total across levels; top five levels by training target total get separate shares, others are summed. observed zero total gives zero shares; no source rows gives missing; skip_missing excludes (none) when configured",
+            ),
+            "spread": (
+                "source@clock:spread",
+                "at o-j, count = number of retained level rows; hhi = sum(level_share^2), with mix's raw target shares. observed zero total gives hhi = 0; no source rows gives missing; skip_missing excludes (none) when configured",
+            ),
+        }
+    )
+    kinds = sorted(
+        {
+            _feature_kind(feature)
+            for member in recipe["members"]
+            for feature in member["genome"].get("families", [])
+        }
+    )
+    # features.py: _extend, _fill_value, fill_shutdown_weeks; pipeline.py: _timeseries_fit
+    lines = [
+        "## feature definitions",
+        "",
+        "y_t is the raw series target at week t; x_t is a raw source measure; o is the feature origin; h = t-o; k is a window or lag; b is the bucket's upper lead. other time units use steps instead of weeks.",
+        "id patterns use source and clock column names; legacy ids omit those prefixes. relative lag j = 0, 1, 2, 3 for mix/spread as well as measure features.",
+        "single mode uses o = t-h; bucket mode uses o = t-b, which can precede the displayed forecast origin. history features read only weeks <= o; calendar features may read the known date t. all history features use raw values before the member's target transform, including log1p.",
+        "short histories are not padded before series start. after series end, sum/count extend with zero, last carries the last finite value, other aggregations stay missing. if history_fill is configured, m is the median of finite, unflagged targets in the prior median_weeks; with at least four such values, m >= min_level and y_s < below*m, replace y_s with m for features only; labels remain unchanged.",
+        "calendar features use dates only, no transformed target, history minimum or zero exclusion. missing numeric feature values stay missing here; the fitted estimator handles them.",
+        "",
+        "| kind | id pattern | definition |",
+        "| --- | --- | --- |",
+    ]
+    for kind in kinds:
+        pattern, definition = definitions.get(
+            kind, (kind, "see smolsmort/forecast/features.py: family_aliases")
+        )
+        lines.append(f"| {kind} | `{pattern}` | {definition} |")
+    lines += [""]
+    # transform.py: TargetTransform.fwd, TargetTransform.inv, TargetTransform._log_base
+    transforms = {
+        "none": "z_t = y_t; inverse yhat_t = zhat_t",
+        "log1p": "z_t = log(1+y_t); inverse yhat_t = exp(zhat_t)-1",
+        "logdiff": "z_t = log(1+y_t)-log(1+y_o); inverse yhat_t = exp(zhat_t+log(1+y_o))-1; origin target must be finite",
+    }
+    used = sorted({member["genome"].get("transform", "none") for member in recipe["members"]})
+    lines += [
+        "target transform: "
+        + "; ".join(
+            f"{name}: {transforms.get(name, 'see smolsmort/forecast/transform.py: get_transform')}"
+            for name in used
+        )
+        + ". log transforms reject negative targets; zero maps to log(1) = 0 before any origin subtraction. target labels may be missing; nonfinite inverse log predictions are rejected.",
+        "",
+    ]
+    # evaluate.py: fit_band, apply_band, fit_lead_bands, apply_lead_bands
+    # pipeline.py: _finish_timeseries
+    lines += [
+        "bands: fit raw validation pairs separately per horizon in single mode; bucket mode shares calibration within each bucket. fewer than four finite pairs gives missing bounds. if min(y) >= 0 and median(y) > 0, f = max(0.1*median(abs(y)), 0.000001), s(p) = max(abs(p), f); otherwise s(p) = 1. residual r = (y-p)/s(p).",
+        "for coverage c, at least 20 pairs use q_low = quantile(r, (1-c)/2), q_high = quantile(r, 1-(1-c)/2); 4..19 pairs use q_high = quantile(abs(r), c), q_low = -q_high. lower = p+q_low*s(p), upper = p+q_high*s(p); nonnegative mode clips lower to max(lower, 0). a series/horizon with at least 20 finite pairs overrides the pooled horizon band; otherwise it uses the pooled band. zeros are included and protected by the scale floor.",
+        "lower/upper denote c = 0.8; lower_50/upper_50 denote c = 0.5. exported csv renames lower/upper to lower_80/upper_80. calibration uses validation residuals only; test/future actuals do not fit bands.",
+        "",
+    ]
+    # evaluate.py: mean_predictions; pipeline.py: _timeseries_fit, _timeseries_predict
+    lines += [
+        "ensemble combination: p = sum(available member raw predictions)/count(available members), after each member's inverse target transform; each available member has equal weight. nan members are excluded per row, all missing gives missing; zeros participate. only predictions for the same saved row are combined.",
+        "",
+    ]
+    # export_wide.py: _sum_totals, export_wide_csv; evaluate.py: wape
+    lines += [
+        "wide.csv totals: within each phase, total_forecast = sum(series forecasts) and total_actual = sum(series actuals) for the same target week, forecast_made_week and horizon. zeros participate; any missing summand makes that total missing. totals repeat on every series row; do not sum the repeated totals. total bounds are recalibrated by horizon from validation total residuals using the band rule above, with lower clipped at zero; they are not sums of series bounds.",
+        "",
+        "wape = sum(abs(y-p))/sum(abs(y)) over finite raw actual/prediction pairs. zeros contribute error but no denominator; zero denominator gives missing. no target transform is used for scoring.",
+        "",
+    ]
+    # views.py: _horizon_metrics, _horizon_baseline; tiles.py: score_ensembles
+    # export_bundle.py: build_recipe; evaluate.py: judge
+    lines += [
+        "results-tab ratio = sum(abs(y-p))/sum(abs(y-naive)) on the selected test rows and horizon selection, after filters/blending. missing actual/prediction pairs are excluded; any missing naive prediction on those rows or zero naive error gives missing. naive uses saved predictions, otherwise the visible seasonal target (52 weeks for weekly data), falling back to y_o. ratio < 1 beats naive; 1 ties. the bundle scores ratio compares the selected test metric with snaive's test metric, falling back to the saved wape verdict ratio when needed; it does not apply results-tab filters.",
+        "",
+    ]
+    return lines
+
+
 def render_readme(recipe: dict) -> str:
     request = recipe["request"]
     spec = request["spec"]
@@ -236,6 +424,7 @@ def render_readme(recipe: dict) -> str:
             lines += [recipe["input_status"], ""]
     if recipe.get("holdout"):
         lines += ["## splits and cut dates", ""] + _table(recipe["holdout"].items())
+    lines += _feature_definitions(recipe)
     for member in recipe["members"]:
         genome = member["genome"]
         lines += [f"## member: {member['family']}", ""]
