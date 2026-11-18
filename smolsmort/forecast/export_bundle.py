@@ -277,14 +277,11 @@ def render_readme(recipe: dict) -> str:
                 (key, value) for key, value in exit_test.items() if key != "verdict"
             )
     if recipe["kind"] == "ensemble":
-        from smolsmort.forecast.export_recreate import recreation_steps
-
         lines += ["## ensemble", ""] + _table(recipe["weighting"].items())
-        lines += ["## recreate", ""]
-        lines += [f"{index}. {step}" for index, step in enumerate(recreation_steps(), 1)]
         lines += [
+            "members use equal weights, saved in `ensembles.json`.",
             "",
-            "no model weights are stored. refitting can differ across dependency versions and machines.",
+            "no model weights are stored.",
             "",
         ]
     if recipe.get("missing_tables"):
@@ -336,10 +333,6 @@ def export_bundle(run_dir: Path, query: dict) -> Path:
             else:
                 missing.append(kind)
         recipe["missing_tables"] = missing
-    if recipe["kind"] == "ensemble":
-        from smolsmort.forecast.export_recreate import recreate_script
-
-        files["recreate.py"] = recreate_script().encode("utf-8")
     files["README.md"] = render_readme(recipe).encode("utf-8")
     files["recipe.json"] = (json.dumps(recipe, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     folder.mkdir(parents=True, exist_ok=True)

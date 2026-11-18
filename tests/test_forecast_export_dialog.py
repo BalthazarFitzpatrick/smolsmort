@@ -233,23 +233,29 @@ def test_run_name_local_date_and_collision_suffix(saved_run, tmp_path):
     assert (first / "README.md").is_file()
 
 
-def test_ensemble_recipe_and_recreate_steps(saved_run, tmp_path):
+@pytest.mark.parametrize("include", ("details only", "details + predictions", "everything"))
+def test_ensemble_export_preserves_recipe_without_refit_script(saved_run, tmp_path, include):
     folder, _, _, ensemble = saved_run
     target = export_bundle(
-        folder, {"folder": str(tmp_path / "exports"), "model": ensemble["tile_id"]}
+        folder,
+        {"folder": str(tmp_path / "exports"), "model": ensemble["tile_id"], "include": include},
     )
     recipe = json.loads((target / "recipe.json").read_text())
     assert recipe["kind"] == "ensemble"
     assert {member["family"] for member in recipe["members"]} == {"ridge", "snaive"}
     assert recipe["weighting"] == ensemble["recipe"]
+    for member in recipe["members"]:
+        assert member["recipe_key"]
+        genome = member["genome"]
+        assert genome["params"] == ({"alpha": 0.75} if member["family"] == "ridge" else {})
+        assert genome["transform"] == "log1p"
+        assert "target@time:lag:1" in genome["families"]
     readme = (target / "README.md").read_text()
     assert "## ensemble" in readme
-    assert "## recreate" in readme
-    assert "1. install" in readme
-    assert "uv run" in readme
-    assert "recreate.py" in readme
-    assert "no model weights are stored" in readme
-    compile((target / "recreate.py").read_text(), "recreate.py", "exec")
+    assert "recreate" not in readme
+    assert "members use equal weights, saved in `ensembles.json`." in readme
+    assert readme.count("no model weights are stored") == 1
+    assert not (target / "recreate.py").exists()
 
 
 def test_saved_ensemble_beyond_top_five_can_export(saved_run, tmp_path):

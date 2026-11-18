@@ -1039,9 +1039,8 @@ choose a model, an include level, and an absolute folder path; the last folder i
 locally. exports create `<run_id>_<local-date>` folders, adding a numeric suffix when needed.
 `details only` writes `README.md` and `recipe.json`; `details + predictions` adds results and
 wide csv files; `everything` also converts the selected model's saved prediction tables to csv.
-ensemble exports include `recreate.py` to refit the saved member recipes with an installed
-smolsmort checkout and a supplied dataset. the readme lists the command and required extras;
-model weights are not stored. the dialog stays open with the written path or error.
+ensemble exports list the saved member recipes and equal weighting; model weights are not
+stored. the dialog stays open with the written path or error.
 the chart shows the total, narrowed by dimension filters and split by up to three dimensions,
 with group ranges combined at the aggregate on screen; the table below pages, sorts and, per row,
 groups by a dimension with each group's earliest and latest predicted date.
