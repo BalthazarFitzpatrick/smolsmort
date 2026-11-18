@@ -513,7 +513,7 @@ def _file_sections(recipe):
             lines += _total_definitions()
         if name == "demo_dataset.csv":
             lines += [
-                "input contains only history before the first validation date. prediction rows have blank actuals. no rows are deduplicated: validation and test contain one row per (date, group, horizon) by design. a plain sum of actual over-counts; filter horizon_step to 1 or use a fixed level of detail in the bi tool.",
+                "actuals appear once in the input slice, predictions per horizon step in the other slices; join or blend on date and dims to compare. input contains all rows of input.csv, including validation and test periods, with blank predictions and horizon_step 0. validation, test and prediction have blank actuals and keep every saved prediction and horizon step.",
                 "",
             ]
     return lines
@@ -865,23 +865,17 @@ def _demo_csv(run_dir: Path, recipe: dict, history: bytes | None) -> bytes | Non
     def append_row(row, phase):
         for name in keys:
             columns[name].append(row.get(name, ""))
-        columns["actual"].append("" if phase == "prediction" else row.get("actual", ""))
-        columns["prediction"].append(row.get("forecast", ""))
+        columns["actual"].append(row.get("actual", "") if phase == "input" else "")
+        columns["prediction"].append("" if phase == "input" else row.get("forecast", ""))
         columns["horizon_step"].append(0 if phase == "input" else row.get("horizon", ""))
         columns["dataset_slice"].append(phase)
 
-    validation_start = min(tables["validation"].get(date, []), default=None)
     if history is None:
         reason = recipe["input_status"].partition(": ")[2]
         recipe["demo_status"] = f"demo_dataset.csv written without input slice: {reason}"
-    elif validation_start is None:
-        recipe["demo_status"] = (
-            "demo_dataset.csv written without input slice: no validation dates saved"
-        )
     else:
         for row in csv.DictReader(io.StringIO(history.decode("utf-8"))):
-            if row[date] < validation_start:
-                append_row(row, "input")
+            append_row(row, "input")
     for phase, table in tables.items():
         for values in zip(*table.values(), strict=True):
             row = dict(zip(table, values, strict=True))

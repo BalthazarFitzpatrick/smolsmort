@@ -605,6 +605,10 @@ def test_input_dataset_failure_keeps_export_and_reports_reason(
     for warning in result["warning"].split("; "):
         assert warning in readme
     assert "demo_dataset.csv written without input slice:" in result["warning"]
+    with (target / "demo_dataset.csv").open(newline="", encoding="utf-8") as stream:
+        rows = list(csv.DictReader(stream))
+    assert {row["dataset_slice"] for row in rows} == {"validation", "test", "prediction"}
+    assert all(row["actual"] == "" for row in rows)
 
 
 def test_input_details_only_does_not_read_dataset(input_run, tmp_path, monkeypatch):

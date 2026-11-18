@@ -1047,12 +1047,12 @@ the dialog and readme give the reason, and the readme records the dataset size a
 entity runs omit input history with a readme note.
 `demo_dataset.csv` stacks the selected model's input, validation, test and future prediction
 rows, in that order. its columns are the spec's date and dimensions, `actual`, `prediction`,
-`horizon_step` and `dataset_slice`. input stops before the first validation date, has blank
-predictions and horizon 0. validation and test retain every saved row and horizon; future
-rows have blank actuals and the slice name `prediction`. mixed mode keeps each table's saved
-horizon value. no bands, naive columns or forecast origin are included. validation and test
-contain one row per (date, group, horizon) by design; a plain sum of actual over-counts.
-filter `horizon_step` to 1 or use a fixed level of detail in the bi tool. when input history
+`horizon_step` and `dataset_slice`. input contains every row of `input.csv`, including the
+periods covered by validation and test, with blank predictions and horizon 0. validation,
+test and prediction retain every saved prediction and horizon, with blank actuals on every row.
+actuals appear once in the input slice, predictions per horizon step in the other slices;
+join or blend on date and dims to compare. mixed mode keeps each table's saved horizon value.
+no bands, naive columns or forecast origin are included. when input history
 cannot be written, the demo file still contains the saved prediction slices; the dialog and
 readme explain the missing input slice. entity runs omit the demo file with a readme note.
 all bundle csvs use the spec's own date and grouping names, with iso dates and unchanged group

@@ -1,4 +1,4 @@
-"""stacked exports preserve selected predictions, history boundaries and group labels"""
+"""stacked exports keep actuals once and preserve predictions, horizons and group labels"""
 
 import csv
 import io
@@ -33,31 +33,29 @@ def test_demo_stacks_selected_model_with_history(input_run, tmp_path, include, f
     header, rows = read_rows(target / "demo_dataset.csv")
     assert header == ["week", "region", "actual", "prediction", "horizon_step", "dataset_slice"]
     assert Counter(row["dataset_slice"] for row in rows) == {
-        "input": 2,
+        "input": 6,
         "validation": 2,
         "test": 2,
         "prediction": 2,
     }
-    assert [row["dataset_slice"] for row in rows] == [
-        "input",
-        "input",
-        "validation",
-        "validation",
-        "test",
-        "test",
-        "prediction",
-        "prediction",
-    ]
+    assert [row["dataset_slice"] for row in rows] == (
+        ["input"] * 6 + ["validation"] * 2 + ["test"] * 2 + ["prediction"] * 2
+    )
     history = [row for row in rows if row["dataset_slice"] == "input"]
-    validation_start = min(row["week"] for row in rows if row["dataset_slice"] == "validation")
-    assert all(row["week"] < validation_start for row in history)
-    assert {row["region"]: float(row["actual"]) for row in history} == {"north": 5, "south": 11}
+    _, inputs = read_rows(target / "input.csv")
+    assert [{key: row[key] for key in inputs[0]} for row in history] == inputs
     assert all(row["horizon_step"] == "0" and row["prediction"] == "" for row in history)
     assert all(row["horizon_step"] == "1" for row in rows if row not in history)
     assert all(float(row["prediction"]) == prediction for row in rows if row not in history)
-    assert all(row["actual"] == "" for row in rows if row["dataset_slice"] == "prediction")
-    _, inputs = read_rows(target / "input.csv")
+    assert all(row["actual"] == "" for row in rows if row not in history)
     assert {row["region"] for row in rows} <= {row["region"] for row in inputs}
+    readme = (target / "README.md").read_text()
+    assert (
+        "actuals appear once in the input slice, predictions per horizon step in the other slices; "
+        "join or blend on date and dims to compare"
+    ) in readme
+    assert "before the first validation date" not in readme
+    assert "plain sum of actual over-counts" not in readme
 
 
 def test_demo_details_only_writes_none(input_run, tmp_path):
@@ -66,7 +64,8 @@ def test_demo_details_only_writes_none(input_run, tmp_path):
     assert not (target / "demo_dataset.csv").exists()
 
 
-def test_demo_keeps_dimensions_missing_groups_and_mixed_horizons(monkeypatch):
+@pytest.mark.parametrize("empty_validation", [False, True])
+def test_demo_keeps_dimensions_missing_groups_and_mixed_horizons(monkeypatch, empty_validation):
     request = {
         "spec": {
             "mode": "timeseries",
@@ -93,6 +92,8 @@ def test_demo_keeps_dimensions_missing_groups_and_mixed_horizons(monkeypatch):
         }
         for phase in ("validation", "test", "forecast")
     }
+    if empty_validation:
+        tables["validation"] = {}
     monkeypatch.setattr(bundle.views, "_require_done", lambda _: {})
     monkeypatch.setattr(bundle, "_select_predictions", lambda *args: ({}, None))
     monkeypatch.setattr(
@@ -100,7 +101,7 @@ def test_demo_keeps_dimensions_missing_groups_and_mixed_horizons(monkeypatch):
     )
     history = bundle._table_csv(
         {
-            "date": ["2026-01-05"] * 3,
+            "date": ["2026-01-05", "2026-01-12", "2026-01-19"],
             "region": [None, np.nan, "none"],
             "channel": ["web"] * 3,
             "actual": [5, 5, 5],
@@ -118,14 +119,26 @@ def test_demo_keeps_dimensions_missing_groups_and_mixed_horizons(monkeypatch):
         "horizon_step",
         "dataset_slice",
     ]
-    assert len(rows) == 12
+    assert len(rows) == (9 if empty_validation else 12)
     for phase in ("input", "validation", "test", "prediction"):
         selected = [row for row in rows if row["dataset_slice"] == phase]
+        if phase == "validation" and empty_validation:
+            assert selected == []
+            continue
         assert [row["region"] for row in selected] == ["", "", "none"]
         assert [row["channel"] for row in selected] == ["web"] * 3
         assert [row["horizon_step"] for row in selected] == (
             ["0"] * 3 if phase == "input" else ["1", "2", "2"]
         )
+        assert [row["actual"] for row in selected] == (["5"] * 3 if phase == "input" else [""] * 3)
+        assert [row["prediction"] for row in selected] == (
+            [""] * 3 if phase == "input" else ["6.0", "7.0", "8.0"]
+        )
+    assert [row["date"] for row in rows if row["dataset_slice"] == "input"] == [
+        "2026-01-05",
+        "2026-01-12",
+        "2026-01-19",
+    ]
 
 
 def test_real_run_demo_smoke(tmp_path):
@@ -162,15 +175,16 @@ def test_real_run_demo_smoke(tmp_path):
     tables = {
         phase: read_rows(target / f"{phase}.csv")[1] for phase in ("validation", "test", "forecast")
     }
-    start = min(row["swo_date"] for row in tables["validation"])
-    expected_input = [row for row in inputs if row["swo_date"] < start]
-    assert len(rows) == len(expected_input) + sum(len(table) for table in tables.values())
+    assert len(rows) == len(inputs) + sum(len(table) for table in tables.values())
     assert Counter(row["dataset_slice"] for row in rows) == {
-        "input": len(expected_input),
+        "input": len(inputs),
         "validation": len(tables["validation"]),
         "test": len(tables["test"]),
         "prediction": len(tables["forecast"]),
     }
+    history = [row for row in rows if row["dataset_slice"] == "input"]
+    assert [{key: row[key] for key in inputs[0]} for row in history] == inputs
+    assert all(row["prediction"] == "" and row["horizon_step"] == "0" for row in history)
     assert {row["client_group"] for row in rows} <= {row["client_group"] for row in inputs}
     for phase, table in tables.items():
         selected = [
@@ -178,6 +192,7 @@ def test_real_run_demo_smoke(tmp_path):
             for row in rows
             if row["dataset_slice"] == ("prediction" if phase == "forecast" else phase)
         ]
+        assert all(row["actual"] == "" for row in selected)
         assert [
             (row["swo_date"], row["client_group"], row["horizon_step"], row["prediction"])
             for row in selected
