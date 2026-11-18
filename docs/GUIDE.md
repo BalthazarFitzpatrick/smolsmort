@@ -1058,6 +1058,9 @@ stored. the dialog stays open with the written path or error.
 the readme's `feature definitions` section explains only the selected members' feature kinds,
 with plain text math, origin visibility, missing-history rules and raw versus transformed scales.
 it also defines target transforms, validation bands, ensemble means, wide totals, wape and ratios.
+the readme is a report with a plain-language summary, data settings, model details, a glossary
+for each included csv, limitations and reproduction steps. displayed floats use four significant
+digits; recipe.json keeps the full saved values.
 the chart shows the total, narrowed by dimension filters and split by up to three dimensions,
 with group ranges combined at the aggregate on screen; the table below pages, sorts and, per row,
 groups by a dimension with each group's earliest and latest predicted date.
