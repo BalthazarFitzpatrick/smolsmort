@@ -210,15 +210,14 @@ def test_include_levels_reuse_selected_exports(saved_run, tmp_path, include, ext
     assert {path.name for path in target.iterdir()} == {"README.md", "recipe.json"} | extra
     assert json.loads((target / "recipe.json").read_text())["model"] == model
     if extra:
-        assert (target / "results.csv").read_bytes() == views.export_csv(
-            folder, request, {"model": model}
-        )
+        assert not (target / "results.csv").read_text().startswith("#")
+        assert views.export_csv(folder, request, {"model": model}).startswith(b"# verdict:")
         assert (target / "wide.csv").read_bytes() == export_wide_csv(
             folder, request, {"model": model}
         )
     if include == "everything":
         rows = list(csv.DictReader(io.StringIO((target / "test.csv").read_text())))
-        assert [float(row["prediction"]) for row in rows] == [8.0, 8.0]
+        assert [float(row["forecast"]) for row in rows] == [8.0, 8.0]
 
 
 def test_run_name_local_date_and_collision_suffix(saved_run, tmp_path):
@@ -371,7 +370,7 @@ def test_route_exports_exactly_the_posted_model(
     if family != "ensemble":
         assert recipe["members"][0]["genome"]["params"] == tile["recipe"]["params"]
     rows = list(csv.DictReader(io.StringIO((target / "test.csv").read_text())))
-    assert [float(row["prediction"]) for row in rows] == [prediction, prediction]
+    assert [float(row["forecast"]) for row in rows] == [prediction, prediction]
 
 
 def test_route_refuses_bare_family_name(saved_run, tmp_path, monkeypatch):
@@ -402,7 +401,9 @@ def input_run(saved_run, tmp_path):
         encoding="utf-8",
     )
     request["spec"].pop("unit")
-    request["spec"].update(task="regression", step="week", where="keep = 'yes'", as_of="2026-01-28")
+    request["spec"].update(
+        task="regression", step="week", horizon=1, where="keep = 'yes'", as_of="2026-01-28"
+    )
     request["spec"]["columns"][1]["aggregation"] = "sum"
     prepared = prepare(spec_from_dict(request["spec"]), tmp_path / "cache")
     request["prepared"] = str(prepared.folder)
@@ -422,8 +423,8 @@ def test_input_history_matches_panel_and_is_model_independent(input_run, tmp_pat
         histories.append((target / "input.csv").read_bytes())
     assert len(set(histories)) == 1
     rows = list(csv.DictReader(io.StringIO(histories[0].decode())))
-    assert list(rows[0]) == ["week", "region", "units"]
-    assert {(row["week"], row["region"]): float(row["units"]) for row in rows} == {
+    assert list(rows[0]) == ["week", "region", "actual"]
+    assert {(row["week"], row["region"]): float(row["actual"]) for row in rows} == {
         ("2026-01-05", "north"): 5,
         ("2026-01-12", "north"): 0,
         ("2026-01-19", "north"): 7,
@@ -473,6 +474,56 @@ def test_input_details_only_does_not_read_dataset(input_run, tmp_path, monkeypat
         folder, {"folder": str(tmp_path / "exports"), "model": models[0]["tile_id"]}
     )
     assert not (target / "input.csv").exists()
+
+
+def test_every_bundle_csv_has_only_grouping_keys_and_numeric_measures(input_run, tmp_path):
+    folder, _, models, _ = input_run
+    target = export_bundle(
+        folder,
+        {
+            "folder": str(tmp_path / "exports"),
+            "include": "everything",
+            "model": models[0]["tile_id"],
+        },
+    )
+    keys = ["week", "region", "forecast_made_week", "horizon"]
+    values = ["forecast", "actual", "lower_80", "upper_80"]
+    expected = {
+        "input.csv": ["week", "region", "actual"],
+        "results.csv": [*keys, *values],
+        "wide.csv": [
+            *keys,
+            "forecast",
+            "actual",
+            "lower_50",
+            "upper_50",
+            "lower_80",
+            "upper_80",
+            "total_forecast",
+            "total_actual",
+            "total_lower_50",
+            "total_upper_50",
+            "total_lower_80",
+            "total_upper_80",
+        ],
+        "validation.csv": [*keys, *values],
+        "test.csv": [*keys, *values],
+        "forecast.csv": [*keys, "forecast", "lower_80", "upper_80"],
+        "lead_errors.csv": ["horizon", "error"],
+    }
+    assert {path.name for path in target.glob("*.csv")} == set(expected)
+    for filename, header in expected.items():
+        with (target / filename).open(newline="", encoding="utf-8") as stream:
+            reader = csv.DictReader(stream)
+            assert reader.fieldnames == header, filename
+            for row in reader:
+                for name, value in row.items():
+                    if name not in keys and value:
+                        assert np.isfinite(float(value)), (filename, name, value)
+                    if name == "horizon" and value:
+                        assert str(int(value)) == value
+    readme = (target / "README.md").read_text()
+    assert readme.index("- `input.csv`") < readme.index("- `results.csv`")
 
 
 def test_entity_input_skip_is_silent(saved_run, tmp_path, monkeypatch):
@@ -526,4 +577,16 @@ def test_real_run_input_smoke(tmp_path):
             f"SELECT SUM(unit) FROM read_csv({_literal(str(source))}, header=true) "
             f"WHERE ({spec['where']}) AND {_quote('swo_date')} < date_trunc('week', CAST({_literal(spec['as_of'])} AS DATE))"
         ).fetchone()[0]
-    assert sum(float(row["unit"]) for row in rows) == pytest.approx(expected)
+    assert sum(float(row["actual"]) for row in rows) == pytest.approx(expected)
+    history = {(row["swo_date"], row["client_group"]): float(row["actual"]) for row in rows}
+    with (target / "wide.csv").open(newline="", encoding="utf-8") as stream:
+        wide = list(csv.DictReader(stream))
+    observed = [row for row in wide if row["actual"]]
+    assert observed
+    assert all((row["swo_date"], row["client_group"]) in history for row in observed)
+    assert all(
+        float(row["actual"]) == history[row["swo_date"], row["client_group"]] for row in observed
+    )
+    for filename in ("results.csv", "wide.csv", "validation.csv", "test.csv", "forecast.csv"):
+        with (target / filename).open(newline="", encoding="utf-8") as stream:
+            assert next(csv.reader(stream))[:2] == ["swo_date", "client_group"]

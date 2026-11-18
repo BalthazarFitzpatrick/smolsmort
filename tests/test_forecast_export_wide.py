@@ -3,7 +3,6 @@
 import csv
 import io
 import json
-from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -11,12 +10,11 @@ import pytest
 
 from smolsmort.forecast import evaluate as ev
 from smolsmort.forecast import tab, views
-from smolsmort.forecast.export_wide import export_wide_csv
+from smolsmort.forecast.export_wide import export_wide_csv, normalize_columns
 from smolsmort.forecast.tables import read_table, write_table
 
 HEADER = [
-    "phase",
-    "week",
+    "swo_date",
     "client_group",
     "region",
     "forecast_made_week",
@@ -54,6 +52,7 @@ def saved_run(tmp_path):
         "spec": {
             "mode": "timeseries",
             "columns": [
+                {"name": "swo_date", "role": "time"},
                 {"name": "client_group", "role": "dimension"},
                 {"name": "region", "role": "dimension"},
                 {"name": "units", "role": "target"},
@@ -124,17 +123,20 @@ def test_wide_rows_dimensions_bands_and_totals(saved_run):
     data = export_wide_csv(folder, request, {})
     assert next(csv.reader(io.StringIO(data.decode()))) == HEADER
     rows = read_csv(data)
-    assert Counter(row["phase"] for row in rows) == {"validation": 17, "test": 9, "forecast": 4}
+    assert len(rows) == 30
     assert {row["client_group"] for row in rows} == {"a|special", "b"}
     validation = tables["validation"]
     total_predictions = np.array([30 + 2 * origin for origin in range(4)])
     total_actuals = total_predictions + np.array([5 + 2 * origin for origin in range(4)])
+    offset = 0
     for phase in tables:
-        phase_rows = [row for row in rows if row["phase"] == phase]
+        count = len(tables[phase]["prediction"])
+        phase_rows = rows[offset : offset + count]
+        offset += count
         for i, row in enumerate(phase_rows):
             assert row["forecast_made_week"] == str(tables[phase]["origin"][i])
             assert row["horizon"] == str(tables[phase]["weeks_ahead"][i])
-            assert row["week"] == str(tables[phase]["step"][i])
+            assert row["swo_date"] == str(tables[phase]["step"][i])
             for output, saved in (
                 ("lower_50", "lower_50"),
                 ("upper_50", "upper_50"),
@@ -145,7 +147,9 @@ def test_wide_rows_dimensions_bands_and_totals(saved_run):
             peers = [
                 peer
                 for peer in phase_rows
-                if all(peer[key] == row[key] for key in ("week", "forecast_made_week", "horizon"))
+                if all(
+                    peer[key] == row[key] for key in ("swo_date", "forecast_made_week", "horizon")
+                )
             ]
             assert float(row["total_forecast"]) == sum(float(peer["forecast"]) for peer in peers)
             if any(not peer["actual"] for peer in peers):
@@ -168,6 +172,46 @@ def test_wide_rows_dimensions_bands_and_totals(saved_run):
                     assert float(row[f"total_lower_{suffix}"]) == pytest.approx(lo[0])
                     assert float(row[f"total_upper_{suffix}"]) == pytest.approx(hi[0])
     assert len(validation["prediction"]) == 17
+
+
+def test_normalized_saved_tables_keep_exact_dimensions_and_numeric_measures(saved_run):
+    _, request, tables = saved_run
+    source = tables["test"]
+    count = len(source["prediction"])
+    normalized = normalize_columns(
+        request,
+        {
+            **source,
+            "bucket": np.ones(count),
+            "family": ["ridge"] * count,
+            "phase": ["test"] * count,
+            "future": [False] * count,
+            "other_label": ["label"] * count,
+            "ratio": ["unknown"] * count,
+            "naive_prediction": np.ones(count),
+            "band_width_pct": np.full(count, np.nan),
+        },
+    )
+    assert list(normalized) == [
+        "swo_date",
+        "client_group",
+        "region",
+        "forecast_made_week",
+        "horizon",
+        "forecast",
+        "actual",
+        "lower_50",
+        "upper_50",
+        "lower_80",
+        "upper_80",
+        "naive_prediction",
+    ]
+    assert normalized["client_group"][:2] == ["a|special", "b"]
+    assert normalized["region"][:2] == ["north", "south"]
+    assert all(type(value) is int for value in normalized["horizon"])
+    assert normalized["swo_date"][0] == "2026-01-12"
+    assert normalized["actual"][0] == ""
+    assert normalize_columns(request, {"ratio": ["0.5", "1"]}) == {"ratio": [0.5, 1.0]}
 
 
 @pytest.mark.parametrize("validation", ["missing", "short", "unknown"])
@@ -200,8 +244,7 @@ def test_insufficient_validation_and_absent_group_bands(saved_run, validation):
     )
     assert all(
         row[key] == ""
-        for row in rows
-        if row["phase"] == "forecast"
+        for row in rows[-4:]
         for key in ("lower_50", "upper_50", "lower_80", "upper_80")
     )
 
@@ -213,7 +256,7 @@ def test_selected_model(saved_run, model):
     write_table(folder / "ensemble_forecast.parquet", columns)
     rows = read_csv(export_wide_csv(folder, request, {"model": model}))
     expected = 10 if model == "winner" else 999
-    assert float(next(row for row in rows if row["phase"] == "forecast")["forecast"]) == expected
+    assert float(rows[-4]["forecast"]) == expected
 
 
 def test_invalid_run_and_entity(saved_run):
@@ -292,7 +335,7 @@ def test_real_run_row_count_and_required_cells():
         for phase in ("validation", "test", "forecast")
     }
     rows = read_csv(export_wide_csv(REAL_RUN, request, {}))
-    assert Counter(row["phase"] for row in rows) == {
-        phase: len(read_table(path)["prediction"]) for phase, path in paths.items()
-    }
+    assert len(rows) == sum(len(read_table(path)["prediction"]) for path in paths.values())
+    assert "phase" not in rows[0]
+    assert "swo_date" in rows[0]
     assert all(row["forecast"] and row["horizon"] for row in rows)

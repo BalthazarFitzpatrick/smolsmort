@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from smolsmort.forecast import views
-from smolsmort.forecast.export_wide import _format_cell, export_wide_csv
+from smolsmort.forecast.export_wide import _format_cell, export_wide_csv, normalize_columns
 from smolsmort.forecast.features import split_family_name
 from smolsmort.forecast.prep import prepare
 from smolsmort.forecast.spec import STEP, spec_from_dict
@@ -205,6 +205,15 @@ def render_readme(recipe: dict) -> str:
     spec = request["spec"]
     columns = spec.get("columns", [])
     lines = ["# run export", ""]
+    if recipe.get("files"):
+        lines += ["## files", "", *(f"- `{name}`" for name in recipe["files"]), ""]
+        lines += [
+            "csv date and grouping columns use the spec's own names; all other columns are numeric measures.",
+            "input history names the target `actual`. output tables use `forecast`, `actual` where known,",
+            "`forecast_made_week` and integer `horizon` where saved. pooled lead errors have no date or groups.",
+            "phase and other labels are omitted; bundle results have a clean csv header.",
+            "",
+        ]
     lines += _table((key, recipe[key]) for key in ("run_id", "made", "name", "kind"))
     lines += ["## scores", ""] + _table(recipe["scores"].items())
     data = [("dataset", Path(spec["source"]).name)] if spec.get("source") else []
@@ -344,10 +353,8 @@ def _input_csv(recipe: dict) -> bytes | None:
                 else:
                     panel = read_table(prepared.folder / "panel.parquet", order_by=STEP)
                     columns = {spec.named("time")[0]: panel[STEP]}
-                    columns.update(
-                        (name, panel[name])
-                        for name in spec.named("dimension") + spec.named("target")
-                    )
+                    columns.update((name, panel[name]) for name in spec.named("dimension"))
+                    columns["actual"] = panel[spec.named("target")[0]]
                     return _table_csv(columns)
     except FileNotFoundError:
         reason = "dataset file missing"
@@ -378,7 +385,13 @@ def export_bundle(run_dir: Path, query: dict) -> Path:
         history = _input_csv(recipe)
         if history is not None:
             files["input.csv"] = history
-        files["results.csv"] = views.export_csv(run_dir, recipe["request"], model_query)
+        download = views.export_csv(run_dir, recipe["request"], model_query).decode("utf-8")
+        if download.startswith("# verdict:"):
+            download = download.partition("\n")[2]
+        reader = csv.DictReader(io.StringIO(download))
+        rows = list(reader)
+        columns = {name: [row[name] for row in rows] for name in reader.fieldnames or []}
+        files["results.csv"] = _table_csv(normalize_columns(recipe["request"], columns))
         if recipe["request"]["spec"].get("mode") == "timeseries":
             files["wide.csv"] = export_wide_csv(run_dir, recipe["request"], model_query)
     if include == "everything":
@@ -390,10 +403,13 @@ def export_bundle(run_dir: Path, query: dict) -> Path:
             else:
                 path = views._optional_prediction_path(run_dir, model_query, kind)
             if path is not None:
-                files[f"{kind}.csv"] = _table_csv(read_table(path))
+                files[f"{kind}.csv"] = _table_csv(
+                    normalize_columns(recipe["request"], read_table(path))
+                )
             else:
                 missing.append(kind)
         recipe["missing_tables"] = missing
+    recipe["files"] = [*files, "README.md", "recipe.json"]
     files["README.md"] = render_readme(recipe).encode("utf-8")
     files["recipe.json"] = (json.dumps(recipe, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     folder.mkdir(parents=True, exist_ok=True)
