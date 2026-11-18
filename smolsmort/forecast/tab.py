@@ -683,7 +683,12 @@ def _export_bundle(app, payload: dict) -> dict:
 
     run_dir = _run_dir(app, payload.get("id", ""))
     try:
-        return {"path": str(export_bundle(run_dir, payload))}
+        target = export_bundle(run_dir, payload)
+        recipe = json.loads((target / "recipe.json").read_text(encoding="utf-8"))
+        warning = recipe.get("input_status", "")
+        if recipe.get("input_data", {}).get("mode") == "entity":
+            warning = ""
+        return {"path": str(target), "warning": warning}
     except (views.ViewError, ValueError, OSError) as exc:
         raise RequestError(str(exc), 400) from exc
 

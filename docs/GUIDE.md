@@ -477,8 +477,8 @@ the work:
   click val, test or ratio to sort ascending; missing scores stay last, and ratio is the default.
 
   finished time series runs also offer `csv wide` for the selected model: one row per group,
-  target `week`, `forecast_made_week` and integer `horizon`. `phase` separates validation, test
-  and forecast. scaffold dimensions keep their spec names. columns contain `forecast`, `actual`,
+  target date, `forecast_made_week` and integer `horizon`. date and scaffold dimensions keep
+  their spec names; no phase column is written. columns contain `forecast`, `actual`,
   `lower_50`, `upper_50`, `lower_80`, `upper_80`, plus the same six with a `total_` prefix.
   totals sum groups present at each phase, target, origin and horizon, repeating on each group
   row; total actual stays empty if any actual is unknown. total bands fit the total's own
@@ -1039,9 +1039,28 @@ the model starts on the row the results model picker shows as current; with no r
 reads `pick a model` and `export` stays off until one is chosen. choose an include level and an
 absolute folder path; the last folder is remembered locally. exports create `<run_id>_<local-date>` folders, adding a numeric suffix when needed.
 `details only` writes `README.md` and `recipe.json`; `details + predictions` adds results and
-wide csv files; `everything` also converts the selected model's saved prediction tables to csv.
+wide csv files and `input.csv`, the original history at the forecast date and dimension grain;
+`everything` also converts the selected model's saved prediction tables to csv.
+`input.csv` names the target measure `actual` and uses the run's preparation panel, including its filters, cut date, aggregation and
+gap filling, and is the same for every model. a missing or changed dataset skips this file;
+the dialog and readme give the reason, and the readme records the dataset size and mtime.
+entity runs omit input history with a readme note.
+all bundle csvs use the spec's own date and grouping names, with iso dates and unchanged group
+strings, followed by numeric measures. saved output columns share `forecast_made_week`, integer
+`horizon`, `forecast`, `actual`, `lower_50`, `upper_50`, `lower_80`, `upper_80`,
+`naive_prediction` and `band_width_pct` where available. empty columns are omitted from the
+individual saved tables; forecast actuals stay absent when unknown. pooled `lead_errors.csv`
+contains horizon and numeric errors, without invented dates or groups. no phase, series,
+bucket, family, future or other label columns are included. bundle `results.csv` starts with
+a clean header; the results tab's csv download keeps its verdict comment and existing columns.
 ensemble exports list the saved member recipes and equal weighting; model weights are not
 stored. the dialog stays open with the written path or error.
+the readme's `feature definitions` section explains only the selected members' feature kinds,
+with plain text math, origin visibility, missing-history rules and raw versus transformed scales.
+it also defines target transforms, validation bands, ensemble means, wide totals, wape and ratios.
+the readme is a report with a plain-language summary, data settings, model details, a glossary
+for each included csv, limitations and reproduction steps. displayed floats use four significant
+digits; recipe.json keeps the full saved values.
 the chart shows the total, narrowed by dimension filters and split by up to three dimensions,
 with group ranges combined at the aggregate on screen; the table below pages, sorts and, per row,
 groups by a dimension with each group's earliest and latest predicted date.

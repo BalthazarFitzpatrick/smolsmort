@@ -18,6 +18,58 @@ VALUES = ("prediction", "actual", "lower_50", "upper_50", "lower", "upper")
 VALUE_COLUMNS = ("forecast", "actual", "lower_50", "upper_50", "lower_80", "upper_80")
 
 
+def normalize_columns(request: dict, columns: dict) -> dict:
+    """keep the spec's grouping keys and populated numeric measures in a shared order"""
+    spec = request["spec"]
+    date = next(c["name"] for c in spec["columns"] if c["role"] in ("time", "anchor"))
+    dims = views._spec_dims(spec)
+    aliases = {
+        "step": date,
+        "anchor": date,
+        "origin": "forecast_made_week",
+        "weeks_ahead": "horizon",
+        "prediction": "forecast",
+        "lower": "lower_80",
+        "upper": "upper_80",
+    }
+    labels = {"bucket", "family", "future", "series", "phase", "row", "__row"}
+    output = {}
+    for name, values in columns.items():
+        if name in dims or name == date:
+            output[name] = values
+        elif name not in labels:
+            output[aliases.get(name, name)] = values
+    if "series" in columns and dims and not all(dim in output for dim in dims):
+        keymap = _read_dimensions(request, dims)
+        for index, dim in enumerate(dims):
+            try:
+                output[dim] = [keymap[str(key)][index] for key in columns["series"]]
+            except KeyError as exc:
+                raise views.ViewError(f"no prepared dimensions for series {exc.args[0]!r}") from exc
+    keys = [date, *dims, "forecast_made_week", "horizon"]
+    measures = [*VALUE_COLUMNS, "naive_prediction", "band_width_pct", "ratio"]
+    ordered = {}
+    for name in dict.fromkeys([*keys, *measures, *output]):
+        if name not in output:
+            continue
+        values = [_format_cell(value) for value in output[name]]
+        if name in (date, "forecast_made_week"):
+            values = [str(value)[:10] if value != "" else "" for value in values]
+        if name not in (date, *dims, "forecast_made_week"):
+            try:
+                numbers = [float(value) if value != "" else None for value in values]
+            except (TypeError, ValueError):
+                continue
+            values = [
+                value if value is not None and np.isfinite(value) else "" for value in numbers
+            ]
+            if name == "horizon":
+                values = [int(value) if value != "" else "" for value in values]
+        if name in (date, *dims) or any(value != "" for value in values):
+            ordered[name] = values
+    return ordered
+
+
 def _read_predictions(run_dir, selected, phase, tiles=None):
     """resolve the same saved models as results without creating tile caches"""
     model = selected["model"]
@@ -129,8 +181,7 @@ def export_wide_csv(run_dir: Path, request: dict, query: dict) -> bytes:
     writer = csv.writer(buffer)
     writer.writerow(
         [
-            "phase",
-            "week",
+            next(c["name"] for c in request["spec"]["columns"] if c["role"] == "time"),
             *dims,
             "forecast_made_week",
             "horizon",
@@ -159,7 +210,6 @@ def export_wide_csv(run_dir: Path, request: dict, query: dict) -> bytes:
                 raise views.ViewError(f"no prepared dimensions for series {series!r}")
             values = [columns[name][index] if name in columns else None for name in VALUES]
             row = [
-                phase,
                 columns["step"][index],
                 *keymap.get(series, []),
                 columns["origin"][index],

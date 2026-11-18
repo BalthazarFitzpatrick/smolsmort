@@ -3675,7 +3675,7 @@ class ForecastTopic {
         const result = await api('/api/forecast-export-bundle', {id: runId, model, include,
           folder: folder.value, metric});
         if (result.error) throw new Error(result.error);
-        status.textContent = result.path;
+        status.textContent = result.path + (result.warning ? ` · ${result.warning}` : '');
         try { localStorage.setItem(storageKey, folder.value); } catch (err) { /* storage may be disabled */ }
       } catch (err) {
         status.textContent = err.message;
