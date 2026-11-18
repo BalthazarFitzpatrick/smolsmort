@@ -13,7 +13,14 @@ from datetime import datetime
 from pathlib import Path
 
 from smolsmort.forecast import views
-from smolsmort.forecast.export_wide import _format_cell, export_wide_csv, normalize_columns
+from smolsmort.forecast.export_wide import (
+    PHASES,
+    _format_cell,
+    _read_predictions,
+    _select_predictions,
+    export_wide_csv,
+    normalize_columns,
+)
 from smolsmort.forecast.features import split_family_name
 from smolsmort.forecast.prep import prepare
 from smolsmort.forecast.spec import STEP, spec_from_dict
@@ -444,6 +451,9 @@ def _describe_column(name, filename, spec):
         "horizon": "integer number of time steps from origin to target; weeks for weekly data",
         "forecast": "selected model prediction in the target's original units",
         "actual": "observed target in original units; unknown future actuals are blank or omitted",
+        "prediction": "selected model prediction in original target units; blank for input history",
+        "horizon_step": "0 for input history; otherwise the saved table's horizon, in time steps",
+        "dataset_slice": "input, validation, test or prediction, in that order",
         "lower_50": "lower edge of the 50% validation-calibrated prediction band",
         "upper_50": "upper edge of the 50% validation-calibrated prediction band",
         "lower_80": "lower edge of the 80% validation-calibrated prediction band",
@@ -472,6 +482,7 @@ def _describe_column(name, filename, spec):
 def _file_sections(recipe):
     descriptions = {
         "input.csv": "original prepared target history, independent of the selected model; reflects saved filters, aggregation and gap filling",
+        "demo_dataset.csv": "selected model's input history, validation, test and future predictions stacked with a shared header",
         "results.csv": "selected model's results-table csv; the ratio is a saved test summary, not a per-row score",
         "wide.csv": "validation, test and future predictions together, with calibrated totals; no phase label is included",
         "validation.csv": "saved validation predictions used for model assessment and band calibration",
@@ -500,6 +511,11 @@ def _file_sections(recipe):
         lines += [""]
         if name == "wide.csv":
             lines += _total_definitions()
+        if name == "demo_dataset.csv":
+            lines += [
+                "actuals appear once in the input slice, predictions per horizon step in the other slices; join or blend on date and dims to compare. input contains all rows of input.csv, including validation and test periods, with blank predictions and horizon_step 0. validation, test and prediction have blank actuals and keep every saved prediction and horizon step.",
+                "",
+            ]
     return lines
 
 
@@ -718,6 +734,8 @@ def render_readme(recipe: dict) -> str:
         lines += [f"- tables not saved: {_cell(recipe['missing_tables'])}."]
     if recipe.get("input_status"):
         lines += [f"- {recipe['input_status']}."]
+    if recipe.get("demo_status"):
+        lines += [f"- {recipe['demo_status']}."]
     lines += ["", "## how to reproduce the numbers", ""]
     lines += [
         f"source dataset: {source_name}. use the saved preparation settings above. the as-of date is {_cell(spec.get('as_of', 'not recorded'))}; the source filter is shown below. do not treat the report date as the training cutoff.",
@@ -824,6 +842,47 @@ def _input_csv(recipe: dict) -> bytes | None:
     return None
 
 
+def _demo_csv(run_dir: Path, recipe: dict, history: bytes | None) -> bytes | None:
+    """stack the selected model's saved phases without collapsing repeated targets"""
+    request = recipe["request"]
+    if request["spec"].get("mode") != "timeseries":
+        recipe["demo_status"] = "demo_dataset.csv not written: entity run"
+        return None
+    selected, tiles = _select_predictions(
+        run_dir, views._require_done(run_dir), {"model": recipe["model"]}
+    )
+    tables = {
+        phase: normalize_columns(request, _read_predictions(run_dir, selected, phase, tiles))
+        for phase in PHASES
+    }
+    spec = request["spec"]
+    date = next(column["name"] for column in spec["columns"] if column["role"] == "time")
+    keys = [date, *views._spec_dims(spec)]
+    columns = {
+        name: [] for name in [*keys, "actual", "prediction", "horizon_step", "dataset_slice"]
+    }
+
+    def append_row(row, phase):
+        for name in keys:
+            columns[name].append(row.get(name, ""))
+        columns["actual"].append(row.get("actual", "") if phase == "input" else "")
+        columns["prediction"].append("" if phase == "input" else row.get("forecast", ""))
+        columns["horizon_step"].append(0 if phase == "input" else row.get("horizon", ""))
+        columns["dataset_slice"].append(phase)
+
+    if history is None:
+        reason = recipe["input_status"].partition(": ")[2]
+        recipe["demo_status"] = f"demo_dataset.csv written without input slice: {reason}"
+    else:
+        for row in csv.DictReader(io.StringIO(history.decode("utf-8"))):
+            append_row(row, "input")
+    for phase, table in tables.items():
+        for values in zip(*table.values(), strict=True):
+            row = dict(zip(table, values, strict=True))
+            append_row(row, "prediction" if phase == "forecast" else phase)
+    return _table_csv(columns)
+
+
 def export_bundle(run_dir: Path, query: dict) -> Path:
     include = query.get("include", "details only")
     if include not in INCLUDE_LEVELS:
@@ -845,6 +904,9 @@ def export_bundle(run_dir: Path, query: dict) -> Path:
         history = _input_csv(recipe)
         if history is not None:
             files["input.csv"] = history
+        demo = _demo_csv(run_dir, recipe, history)
+        if demo is not None:
+            files["demo_dataset.csv"] = demo
         download = views.export_csv(run_dir, recipe["request"], model_query).decode("utf-8")
         if download.startswith("# verdict:"):
             download = download.partition("\n")[2]

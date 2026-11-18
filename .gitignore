@@ -47,6 +47,7 @@ build/
 # outputs and logs
 output/
 outputs/
+artifacts/
 *.log
 *.tmp
 *.bak

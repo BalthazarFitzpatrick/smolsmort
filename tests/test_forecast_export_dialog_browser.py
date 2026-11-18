@@ -69,7 +69,10 @@ def test_export_dialog_shows_input_warning_with_written_path(tmp_path):
         open_horizon_run(page, run_id)
         open_export(page)
         open_export_models(page).first.click()
-        warning = "input.csv not written: dataset file missing"
+        warning = (
+            "input.csv not written: dataset file missing; "
+            "demo_dataset.csv written without input slice: dataset file missing"
+        )
         path = str(tmp_path / "exports" / "saved-run")
         page.route(
             "**/api/forecast-export-bundle",

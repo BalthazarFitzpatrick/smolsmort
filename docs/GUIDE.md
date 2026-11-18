@@ -1039,19 +1039,30 @@ the model starts on the row the results model picker shows as current; with no r
 reads `pick a model` and `export` stays off until one is chosen. choose an include level and an
 absolute folder path; the last folder is remembered locally. exports create `<run_id>_<local-date>` folders, adding a numeric suffix when needed.
 `details only` writes `README.md` and `recipe.json`; `details + predictions` adds results and
-wide csv files and `input.csv`, the original history at the forecast date and dimension grain;
+wide csv files, `input.csv`, and `demo_dataset.csv`;
 `everything` also converts the selected model's saved prediction tables to csv.
 `input.csv` names the target measure `actual` and uses the run's preparation panel, including its filters, cut date, aggregation and
 gap filling, and is the same for every model. a missing or changed dataset skips this file;
 the dialog and readme give the reason, and the readme records the dataset size and mtime.
 entity runs omit input history with a readme note.
+`demo_dataset.csv` stacks the selected model's input, validation, test and future prediction
+rows, in that order. its columns are the spec's date and dimensions, `actual`, `prediction`,
+`horizon_step` and `dataset_slice`. input contains every row of `input.csv`, including the
+periods covered by validation and test, with blank predictions and horizon 0. validation,
+test and prediction retain every saved prediction and horizon, with blank actuals on every row.
+actuals appear once in the input slice, predictions per horizon step in the other slices;
+join or blend on date and dims to compare. mixed mode keeps each table's saved horizon value.
+no bands, naive columns or forecast origin are included. when input history
+cannot be written, the demo file still contains the saved prediction slices; the dialog and
+readme explain the missing input slice. entity runs omit the demo file with a readme note.
 all bundle csvs use the spec's own date and grouping names, with iso dates and unchanged group
 strings, followed by numeric measures. saved output columns share `forecast_made_week`, integer
 `horizon`, `forecast`, `actual`, `lower_50`, `upper_50`, `lower_80`, `upper_80`,
 `naive_prediction` and `band_width_pct` where available. empty columns are omitted from the
 individual saved tables; forecast actuals stay absent when unknown. pooled `lead_errors.csv`
 contains horizon and numeric errors, without invented dates or groups. no phase, series,
-bucket, family, future or other label columns are included. bundle `results.csv` starts with
+bucket, family, future or other label columns are included, except the demo file's
+`dataset_slice`. bundle `results.csv` starts with
 a clean header; the results tab's csv download keeps its verdict comment and existing columns.
 ensemble exports list the saved member recipes and equal weighting; model weights are not
 stored. the dialog stays open with the written path or error.
