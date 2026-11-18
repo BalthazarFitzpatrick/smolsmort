@@ -672,6 +672,22 @@ def _export_wide(app, name: str) -> bytes | None:
     return _export_file(app, name, export_wide_csv)
 
 
+def _export_settings(app, query: dict) -> dict:
+    from smolsmort.forecast.export_bundle import default_folder
+
+    return {"folder": default_folder()}
+
+
+def _export_bundle(app, payload: dict) -> dict:
+    from smolsmort.forecast.export_bundle import export_bundle
+
+    run_dir = _run_dir(app, payload.get("id", ""))
+    try:
+        return {"path": str(export_bundle(run_dir, payload))}
+    except (views.ViewError, ValueError, OSError) as exc:
+        raise RequestError(str(exc), 400) from exc
+
+
 def _export_file(app, name: str, exporter) -> bytes | None:
     if not name.endswith(".csv"):
         return None
@@ -753,6 +769,7 @@ def forecast_tab() -> Tab:
             "/api/forecast-run-tiles": _run_tiles,
             "/api/forecast-view": _view,
             "/api/forecast-table": _table,
+            "/api/forecast-export-settings": _export_settings,
         },
         post={
             "/api/forecast-plan": _save_plan,
@@ -763,6 +780,7 @@ def forecast_tab() -> Tab:
             "/api/forecast-runs": _start,
             "/api/forecast-refit": _refit,
             "/api/forecast-cancel": _cancel,
+            "/api/forecast-export-bundle": _export_bundle,
         },
         images={
             "/api/forecast-export/": (_export, "text/csv"),

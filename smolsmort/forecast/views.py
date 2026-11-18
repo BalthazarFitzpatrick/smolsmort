@@ -984,9 +984,10 @@ def _mark_viewable(run_dir: Path, tiles: list[dict], winner_family: str) -> list
 
 
 def _select_tile(run_dir: Path, model: str, *, read_only=False):
-    from smolsmort.forecast.tiles import read_tiles
+    from smolsmort.forecast.tiles import read_ensemble_rows, read_tiles
 
-    tiles = read_tiles(run_dir, read_only=read_only)
+    tiles = read_tiles(run_dir, include_ensembles=False, read_only=read_only)
+    tiles += read_ensemble_rows(run_dir, read_only=read_only)
     tile = next((tile for tile in tiles if tile["tile_id"] == model), None)
     if tile is None:
         raise ViewError("model must name a tile in this run")
