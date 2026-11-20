@@ -208,3 +208,25 @@ PIN_TILE_PATH = "10ab9f6fd83e9042"
 PIN_PICK = "8a17ee353d6622dd"
 PIN_TOTALS = "5f17d0f35014c825"
 PIN_BANDS = "06584ce583939ccf"
+
+
+def test_family_readers_agree_on_the_best_leaderboard_entry(tmp_path):
+    """nonfinite and sample rows never win: views.family_tiles was right, read_tiles was not"""
+    members = fixture_tables()
+    save_run(tmp_path, {"ridge": members["ridge"]})
+    good = {"family": "ridge", "families": ["y:lag"], "objective": "squared", "params": {"k": 3}}
+    other = {**good, "params": {"k": 9}}
+    board = [
+        {"genome": other, "fitness": NAN, "generation": 1},
+        {"genome": other, "fitness": 0.05, "generation": 1, "note": "sample"},
+        {"genome": good, "fitness": 0.3, "generation": 2},
+        {"genome": other, "fitness": 0.4, "generation": 3},
+    ]
+    (tmp_path / "families" / "ridge" / "leaderboard.json").write_text(json.dumps(board))
+    request = json.loads((tmp_path / "request.json").read_text())
+    saved = tiles.read_tiles(tmp_path, include_ensembles=False)[0]
+    shown = views.family_tiles(tmp_path, request, {"state": "done"})["ridge"]
+    assert saved["recipe"] == good
+    assert shown["genome"] == good
+    assert saved["best_generation"] == 2
+    assert shown["generation"] == 2

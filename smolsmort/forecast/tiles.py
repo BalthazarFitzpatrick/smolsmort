@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
+import math
 import os
 import threading
 from pathlib import Path
@@ -26,6 +27,31 @@ from smolsmort.forecast.metrics import CURVE_METRICS, error_metrics, prediction_
 from smolsmort.forecast.tables import read_table
 
 _ENSEMBLE_LOCK = threading.RLock()
+
+
+def finite_number(value):
+    """the value when it is a real finite number, else none"""
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+        return value
+    return None
+
+
+def best_board_entry(board):
+    """lowest finite fitness on a leaderboard; sample rows and nonfinite scores never win"""
+    return min(
+        (
+            entry
+            for entry in board
+            if finite_number(entry.get("fitness")) is not None and entry.get("note") != "sample"
+        ),
+        key=lambda entry: entry["fitness"],
+        default={},
+    )
+
+
+def winner_summary(result, winner, recipe):
+    """the winner family's saved summary; an ensemble recipe keeps only the winner block"""
+    return {**result, **winner} if recipe.get("family") != "ensemble" else winner
 
 
 def read_json(path, default):
@@ -418,11 +444,7 @@ def read_tiles(folder: Path, *, include_ensembles=True, read_only=False):
         board = read_json(target / "leaderboard.json", [])
         if not board and request.get("version") != 2:
             board = read_json(folder / "leaderboard.json", [])
-        best = min(
-            (entry for entry in board if entry.get("fitness") is not None),
-            key=lambda entry: entry["fitness"],
-            default={},
-        )
+        best = best_board_entry(board)
         recipe = best.get("genome") or read_json(target / "winner.json", {})
         if not recipe and (saved_recipe.get("genome") or {}).get("family", "xgboost") == family:
             recipe = saved_recipe.get("genome") or request.get("recipe") or {}
@@ -505,7 +527,7 @@ def read_tiles(folder: Path, *, include_ensembles=True, read_only=False):
         )
         summary = result.get("families", {}).get(family, {})
         if family == winner_family:
-            summary = {**result, **winner} if saved_recipe.get("family") != "ensemble" else winner
+            summary = winner_summary(result, winner, saved_recipe)
         fitness = best.get(
             "fitness", summary.get("fitness", progress.get("best_error", summary.get("val_error")))
         )

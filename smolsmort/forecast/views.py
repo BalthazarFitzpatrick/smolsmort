@@ -33,6 +33,8 @@ from smolsmort.forecast.horizon_view import (
 )
 from smolsmort.forecast.spec import normalize_mode, normalize_saved_modes, spec_from_dict
 from smolsmort.forecast.tables import _unmask, connect, sql_literal
+from smolsmort.forecast.tiles import best_board_entry, winner_summary
+from smolsmort.forecast.tiles import finite_number as _finite_number
 
 
 def write_json_atomic(path: Path, data) -> None:
@@ -469,12 +471,6 @@ def multi_run_state(run_dir, request, status, *, since_generation=None, since_ev
     return out
 
 
-def _finite_number(value):
-    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
-        return value
-    return None
-
-
 def _tile_elapsed(progress):
     wall_s = _finite_number(progress.get("wall_s"))
     if wall_s is not None:
@@ -658,18 +654,13 @@ def family_tiles(
             **(status if legacy else status.get("families", {}).get(name, {})),
         }
         board = _read_json(target / "leaderboard.json", [])
-        entries = [
-            entry
-            for entry in board
-            if _finite_number(entry.get("fitness")) is not None and entry.get("note") != "sample"
-        ]
-        best = min(entries, key=lambda entry: entry["fitness"], default={})
+        best = best_board_entry(board)
         genome = best.get("genome") or _read_json(target / "winner.json") or {}
         if name == winner_family and not genome:
             genome = recipe.get("genome") or {}
         summary = saved
         if name == winner_family:
-            summary = {**result, **winner} if recipe.get("family") != "ensemble" else winner
+            summary = winner_summary(result, winner, recipe)
         path = target / "test.parquet"
         if (legacy or not path.exists()) and name == winner_family:
             path = run_dir / "winner_test.parquet"
