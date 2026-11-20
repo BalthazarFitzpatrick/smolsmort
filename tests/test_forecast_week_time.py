@@ -2,11 +2,13 @@
 
 from datetime import date
 
-import duckdb
 import pytest
 
 from smolsmort.forecast.prep import _infer_step, _time_expression, prepare
 from smolsmort.forecast.spec import Column, PrepSpec
+
+# needs the forecast extra [skips in the minimal ci job]
+duckdb = pytest.importorskip("duckdb")
 
 
 @pytest.mark.parametrize("kind", ["INTEGER", "VARCHAR"])
