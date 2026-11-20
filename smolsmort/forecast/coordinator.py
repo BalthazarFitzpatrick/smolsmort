@@ -86,8 +86,34 @@ def stop_processes(processes):
         process.wait(timeout=max(0, cleanup_deadline - time.monotonic()))
 
 
+# one parsed snapshot per checkpoint path, keyed by inode, mtime and size; callers only read it
+_SNAPSHOTS: dict = {}
+SNAPSHOT_LIMIT = 8
+
+
+def read_checkpoint(folder, name):
+    """parse a family checkpoint once per revision instead of once per caller and poll"""
+    path = folder / "families" / name / "checkpoint.json"
+    try:
+        stat = path.stat()
+    except OSError:
+        _SNAPSHOTS.pop(path, None)
+        return {}
+    key = (stat.st_ino, stat.st_mtime_ns, stat.st_size)
+    cached = _SNAPSHOTS.get(path)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    # the key is taken before the read, so a write in between only costs one extra reload
+    data = read_json(path, {})
+    _SNAPSHOTS.pop(path, None)
+    _SNAPSHOTS[path] = (key, data)
+    while len(_SNAPSHOTS) > SNAPSHOT_LIMIT:
+        _SNAPSHOTS.pop(next(iter(_SNAPSHOTS)))
+    return data
+
+
 def best_entry(folder, name):
-    entries = read_json(folder / "families" / name / "checkpoint.json", {}).get("entries", [])
+    entries = read_checkpoint(folder, name).get("entries", [])
     viable = [e for e in entries if e["fitness"] is not None and e.get("note") != "sample"]
     return min(viable, key=lambda e: (e["fitness"], e["families"]), default=None)
 
@@ -123,7 +149,7 @@ def paired_entry(data):
 
 def calibrate_families(folder, states, calibration, remaining_s):
     for name, status in states.items():
-        checkpoint = read_json(folder / "families" / name / "checkpoint.json", {})
+        checkpoint = read_checkpoint(folder, name)
         entries = checkpoint.get("candidate_times", checkpoint.get("entries", []))
         measured = [entry for entry in entries if entry.get("elapsed_s", 0) > 0]
         broad = [
@@ -227,6 +253,8 @@ def launch_families(folder, request, job):
         return _launch_families(folder, request, job, exits)
     finally:
         exits.close()
+        # the finish phase should not inherit large parsed checkpoints
+        _SNAPSHOTS.clear()
 
 
 def _launch_families(folder, request, job, exits):
@@ -293,7 +321,7 @@ def _launch_families(folder, request, job, exits):
         states[name].update(
             {k: v for k, v in status.items() if k not in ("state", "phase", "pid", "nthread")}
         )
-        checkpoint = read_json(target / "checkpoint.json", {})
+        checkpoint = read_checkpoint(folder, name)
         states[name].update(
             generation=checkpoint.get("generation", 0),
             candidates_done=len(checkpoint.get("entries", [])),
@@ -320,7 +348,7 @@ def _launch_families(folder, request, job, exits):
             job.event({"event": "terminated", "family": name, "reason": states[name]["reason"]})
 
     for name in names:
-        checkpoint = read_json(folder / "families" / name / "checkpoint.json", {})
+        checkpoint = read_checkpoint(folder, name)
         states[name].update(
             generation=checkpoint.get("generation", 0),
             candidates_done=len(checkpoint.get("entries", [])),
@@ -357,7 +385,7 @@ def _launch_families(folder, request, job, exits):
                     queued = exits.enqueue(name, entry, len(states[name].get("slice_history", [])))
                     if queued:
                         # a terminated partial generation may be newer than its published board
-                        checkpoint = read_json(folder / "families" / name / "checkpoint.json", {})
+                        checkpoint = read_checkpoint(folder, name)
                         job.save(
                             f"families/{name}/leaderboard.json", build_family_board(checkpoint)[:10]
                         )
@@ -584,7 +612,7 @@ def _launch_families(folder, request, job, exits):
     board = []
     winners = {}
     for name in names:
-        checkpoint = read_json(folder / "families" / name / "checkpoint.json", {})
+        checkpoint = read_checkpoint(folder, name)
         checkpoint_entries = checkpoint.get("entries", [])
         slice_times = [item.get("wall_s") for item in states[name].get("slice_history", [])]
         states[name].update(
