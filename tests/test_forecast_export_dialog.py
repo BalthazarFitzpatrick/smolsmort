@@ -738,8 +738,8 @@ def test_entity_input_skip_is_silent(saved_run, tmp_path, monkeypatch):
 
 
 def test_real_run_input_smoke(tmp_path):
-    from smolsmort.forecast.prep import _literal, _quote
-    from smolsmort.forecast.tables import connect, read_table
+    from smolsmort.forecast.prep import _quote
+    from smolsmort.forecast.tables import connect, read_table, sql_literal
 
     workspace = Path.home() / "Documents" / "dev" / "ai_lab" / "forecast_workspace"
     folder = workspace / ".forecast-runs" / "20261115-155627-6f006a"
@@ -766,8 +766,8 @@ def test_real_run_input_smoke(tmp_path):
     spec = request["spec"]
     with connect() as con:
         expected = con.execute(
-            f"SELECT SUM(unit) FROM read_csv({_literal(str(source))}, header=true) "
-            f"WHERE ({spec['where']}) AND {_quote('swo_date')} < date_trunc('week', CAST({_literal(spec['as_of'])} AS DATE))"
+            f"SELECT SUM(unit) FROM read_csv({sql_literal(str(source))}, header=true) "
+            f"WHERE ({spec['where']}) AND {_quote('swo_date')} < date_trunc('week', CAST({sql_literal(spec['as_of'])} AS DATE))"
         ).fetchone()[0]
     assert sum(float(row["actual"]) for row in rows) == pytest.approx(expected)
     history = {(row["swo_date"], row["client_group"]): float(row["actual"]) for row in rows}

@@ -9,6 +9,7 @@ from smolsmort.forecast.tables import (
     number_format,
     read_table,
     resolve_encoding,
+    sql_literal,
     type_source,
     write_table,
 )
@@ -89,3 +90,14 @@ def test_write_table_takes_numpy_strings_with_non_ascii_text(tmp_path):
     path = write_table(tmp_path / "band.parquet", {"series": names, "rows": np.array([3, 1, 2])})
     rows = duckdb.sql(f"SELECT series FROM read_parquet('{path}') ORDER BY rows").fetchall()
     assert [r[0] for r in rows] == ["Terrassendächer & Pergolen", "Lamellenstoren", "all"]
+
+
+def test_tables_round_trip_through_a_path_with_an_apostrophe(tmp_path):
+    folder = tmp_path / "bob's data"
+    folder.mkdir()
+    path = write_table(folder / "t.parquet", {"x": np.array([1.0, 2.0])})
+    assert read_table(path)["x"].tolist() == [1.0, 2.0]
+
+
+def test_sql_literal_escapes_quotes():
+    assert sql_literal("it's") == "'it''s'"
