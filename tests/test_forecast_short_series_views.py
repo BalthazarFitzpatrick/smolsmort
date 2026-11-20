@@ -64,7 +64,7 @@ def test_horizon_metrics_use_covered_rows_and_matching_baseline(single_run):
     skip_second_series(folder)
     with connect() as con:
         metrics = views._horizon_metrics(
-            con, folder, request, {}, folder / "test.parquet", {"mode": "lead", "n": 1}
+            con, request, {}, folder / "test.parquet", {"mode": "lead", "n": 1}
         )
     assert metrics["wape"]["value"] == pytest.approx(3 / 10)
     assert metrics["mae"]["value"] == 3

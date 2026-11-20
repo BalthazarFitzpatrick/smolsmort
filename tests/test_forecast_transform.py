@@ -195,7 +195,7 @@ def test_lag_family_receives_transformed_targets(workspace, monkeypatch, name):
 
     monkeypatch.setattr(family, "fit", fit)
     genome = make_genome(["y@day:lag+0"], "squared", {"alpha": 1.0}, family="ridge", transform=name)
-    _timeseries_fit(ws, genome, frame, rows, 1)
+    _timeseries_fit(genome, frame, rows, 1)
     order = np.flatnonzero(rows)[np.argsort(frame.step[rows], kind="stable")]
 
     expected = get_transform(name).fwd(frame.y[order], frame.base[order])
@@ -403,7 +403,7 @@ def test_logdiff_refuses_positive_only_fit_objectives(workspace, objective):
     genome = make_genome(["y@day:lag+0"], objective, {}, transform="logdiff")
 
     with pytest.raises(PipelineError, match=rf"logdiff.*signed-target objective.*{objective}"):
-        _timeseries_fit(ws, genome, ws.frames[bucket], ws.series_masks[bucket]["train"], 1)
+        _timeseries_fit(genome, ws.frames[bucket], ws.series_masks[bucket]["train"], 1)
 
 
 def test_logdiff_search_filters_positive_only_objectives_without_changing_none(workspace):

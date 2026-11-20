@@ -103,7 +103,7 @@ def test_search_preserves_family_in_variation_and_warm_starts(other_family):
     genome = make_genome(ws.families, "squared", DEFAULTS, family=other_family.name)
     assert variation.mutate(genome).family == other_family.name
     assert variation.crossover(genome, genome).family == other_family.name
-    assert _seed_population(ws, variation, 1, [genome.to_dict()]) == [genome]
+    assert _seed_population(variation, 1, [genome.to_dict()]) == [genome]
 
 
 def test_unknown_family_names_the_family_and_install_command():
@@ -117,7 +117,7 @@ def test_unavailable_family_names_its_install_extra(other_family):
     genome = Genome(("units@day:lag+0",), "squared", (), family=other_family.name)
     assert genome_from_dict(genome.to_dict()) == genome
     with pytest.raises(PipelineError, match="test-family.*uv sync --extra test-extra"):
-        _timeseries_fit(None, genome, None, None, 1)
+        _timeseries_fit(genome, None, None, 1)
 
 
 def test_genome_construction_and_search_never_probe_availability(other_family):
@@ -133,7 +133,7 @@ def test_genome_construction_and_search_never_probe_availability(other_family):
     variation = _Variation(ws, np.random.default_rng(0))
     assert variation.mutate(genome).family == other_family.name
     assert variation.crossover(genome, genome).family == other_family.name
-    assert _seed_population(ws, variation, 1, [genome.to_dict()]) == [genome]
+    assert _seed_population(variation, 1, [genome.to_dict()]) == [genome]
 
 
 def test_missing_xgboost_is_reported_only_at_fit_with_one_install_command(monkeypatch):
@@ -141,7 +141,7 @@ def test_missing_xgboost_is_reported_only_at_fit_with_one_install_command(monkey
     genome = make_genome(["units@day:lag+0"], "squared", {})
     assert genome_from_dict(genome.to_dict()) == genome
     with pytest.raises(PipelineError, match="family 'xgboost' is unavailable") as error:
-        _timeseries_fit(None, genome, None, None, 1)
+        _timeseries_fit(genome, None, None, 1)
     assert str(error.value).count("uv sync --extra forecast") == 1
 
 
@@ -212,7 +212,7 @@ def test_timeseries_fit_dispatches_sorted_rows_to_the_selected_family(other_fami
         weeks_ahead=None,
     )
     genome = make_genome(["units@day:lag+0"], "squared", {"eta": 0.1}, family=other_family.name)
-    actual, design = _timeseries_fit(None, genome, frame, np.ones(4, dtype=bool), 2)
+    actual, design = _timeseries_fit(genome, frame, np.ones(4, dtype=bool), 2)
     assert actual is fitted and design is x
     np.testing.assert_array_equal(captured.pop("x"), x[[1, 3, 2, 0]])
     np.testing.assert_array_equal(captured.pop("y"), [10, 20, 30, 40])

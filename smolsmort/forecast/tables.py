@@ -71,6 +71,11 @@ def type_source(con, read_expr: str) -> str:
     return f"(SELECT * REPLACE ({', '.join(replaced)}) FROM {read_expr})"
 
 
+def sql_literal(value) -> str:
+    """single-quote a sql string literal, escaping embedded quotes"""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
 def connect():
     """a duckdb connection, importing duckdb only now: the vision half and the cli must run on a
     plain install without the forecast extra"""
@@ -85,7 +90,9 @@ def read_table(path: Path, order_by: str | None = None) -> dict[str, np.ndarray]
     order = f" ORDER BY {order_by}" if order_by else ""
     # route threads must not share duckdb's default connection and result cursor
     with duckdb.connect() as connection:
-        columns = connection.sql(f"SELECT * FROM read_parquet('{path}'){order}").fetchnumpy()
+        columns = connection.sql(
+            f"SELECT * FROM read_parquet({sql_literal(path)}){order}"
+        ).fetchnumpy()
     return {name: _unmask(values) for name, values in columns.items()}
 
 
@@ -127,6 +134,6 @@ def write_table(path: Path, columns: dict[str, np.ndarray]) -> Path:
         data[name] = array
     con = duckdb.connect()
     con.register("frame", data)
-    con.execute(f"COPY frame TO '{path}' (FORMAT PARQUET)")
+    con.execute(f"COPY frame TO {sql_literal(path)} (FORMAT PARQUET)")
     con.close()
     return path

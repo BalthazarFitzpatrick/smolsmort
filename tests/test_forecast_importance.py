@@ -161,7 +161,7 @@ def test_finish_persists_all_family_winners_and_reuses_final_fits(
         (tmp_path / filename).write_text(json.dumps(data))
     calls = []
 
-    def fit_model(ws, genome, frame, rows, nthread):
+    def fit_model(genome, frame, rows, nthread):
         calls.append((genome.family, int(rows.sum())))
         fitted = get_family(genome.family).fit(
             x[rows], y=y[rows], objective="squared", max_rounds=15, patience=0

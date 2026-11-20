@@ -438,7 +438,7 @@ def _family_population(var, size, warm, method):
     return seeds[:size]
 
 
-def _seed_population(ws, var: _Variation, size: int, warm) -> list[Genome]:
+def _seed_population(var: _Variation, size: int, warm) -> list[Genome]:
     everything = var.birth_families
     seeds = [var.make_genome(everything, o, var.params_for(o)) for o in var.objectives]
     first = var.objectives[0]
@@ -680,7 +680,7 @@ def search(
         warm = [data for data in warm or [] if data.get("family", "xgboost") == family.name]
     warm = [data for data in warm or [] if data.get("transform", "none") == var.transform]
     population = (
-        _seed_population(ws, var, budget.population, warm)
+        _seed_population(var, budget.population, warm)
         if legacy
         else _family_population(var, budget.population, warm, method)
     )

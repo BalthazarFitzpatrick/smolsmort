@@ -6,7 +6,7 @@ import math
 from functools import lru_cache
 from pathlib import Path
 
-from smolsmort.forecast.tables import connect
+from smolsmort.forecast.tables import connect, sql_literal
 
 CURVE_METRICS = ("ape", "mape", "wape", "ae", "mae", "wae")
 
@@ -172,7 +172,7 @@ def _read_test_metrics(path, modified_ns, size):
         return _unavailable_test("duckdb is unavailable to read saved test predictions")
     try:
         with connect() as con:
-            source = "read_parquet('" + path.replace("'", "''") + "')"
+            source = f"read_parquet({sql_literal(path)})"
             columns = {row[0] for row in con.execute(f"DESCRIBE SELECT * FROM {source}").fetchall()}
             actual = "actual" if "actual" in columns else "truth"
             if not {actual, "prediction"} <= columns:

@@ -326,3 +326,39 @@ def test_real_run_row_count_and_required_cells():
     assert "phase" not in rows[0]
     assert "swo_date" in rows[0]
     assert all(row["forecast"] and row["horizon"] for row in rows)
+
+
+def test_stale_ensemble_cache_is_not_exported(saved_run):
+    import os
+
+    from smolsmort.forecast import tiles
+
+    folder, request, tables = saved_run
+    request.update(version=2, families=[{"name": "ridge"}, {"name": "snaive"}])
+    (folder / "request.json").write_text(json.dumps(request))
+    for family, offset in (("ridge", 0), ("snaive", 4)):
+        target = folder / "families" / family
+        target.mkdir(parents=True)
+        for phase, columns in tables.items():
+            write_table(
+                target / f"{phase}.parquet",
+                {**columns, "prediction": columns["prediction"] + offset},
+            )
+    ensemble = tiles.ensemble_rows(folder)[0]
+    (folder / "ensembles.json").write_text(json.dumps([ensemble]))
+    cache = folder / "tile_views" / ensemble["recipe_key"]
+    cache.mkdir(parents=True)
+    for phase, columns in tables.items():
+        write_table(
+            cache / f"{phase}.parquet", {**columns, "prediction": columns["prediction"] + 2}
+        )
+    # a member rewritten after the cache was built makes the cache stale
+    for phase, columns in tables.items():
+        member = folder / "families" / "ridge" / f"{phase}.parquet"
+        write_table(member, {**columns, "prediction": columns["prediction"] + 100})
+        stamp = (cache / f"{phase}.parquet").stat().st_mtime_ns + 10**9
+        os.utime(member, ns=(stamp, stamp))
+    before = {path: path.read_bytes() for path in folder.rglob("*") if path.is_file()}
+    rows = read_csv(export_wide_csv(folder, request, {"model": ensemble["tile_id"]}))
+    assert float(rows[0]["forecast"]) == (110 + 14) / 2
+    assert before == {path: path.read_bytes() for path in folder.rglob("*") if path.is_file()}

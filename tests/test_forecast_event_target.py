@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from smolsmort.forecast.prep import prepare
+from smolsmort.forecast.prep import SERIES_ENCODING, prepare
 from smolsmort.forecast.spec import (
     LOWER,
     ROW,
@@ -160,7 +160,7 @@ def test_default_event_keeps_the_prepared_cache_key_and_duration_bounds(tmp_path
     assert replace(spec, censor=replace(spec.censor, event="completed")).digest() != digest
     source_digest = hashlib.sha256(source.read_bytes()).hexdigest()[:12]
     prepared = prepare(spec, tmp_path / "cache")
-    assert prepared.folder.name == f"{digest}-{source_digest}"
+    assert prepared.folder.name == f"{digest}-s{SERIES_ENCODING}-{source_digest}"
     rows = read_table(prepared.folder / "rows.parquet", order_by=ROW)
     np.testing.assert_array_equal(rows[LOWER], [3, 0, 4, 1.5])
     np.testing.assert_array_equal(rows[UPPER], [3, 0, np.inf, 1.5])
