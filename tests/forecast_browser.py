@@ -84,4 +84,8 @@ def switch_to_regression(page: Page) -> None:
     page.click('#topic-switch .topic-tab:has-text("regression")')
     page.locator('#topic-switch .topic-tab.on:has-text("regression")').wait_for()
     page.select_option("#topic-flavour", "entity")
-    page.locator("#nav-bar .nav-tab").first.wait_for()
+    page.wait_for_function(
+        "document.getElementById('topic-flavour').value === 'entity'"
+        " && !!document.querySelector('#nav-bar .nav-tab.active')"
+        " && typeof forecastTopics !== 'undefined' && forecastTopics.has('regression')"
+    )

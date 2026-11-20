@@ -181,6 +181,8 @@ def select_timeseries(page):
     choose_forecast_source(page, "panel.csv")
     choose_timeseries_target(page, "units")
     show_tab(page, "regression-search")
+    # the family catalog loads on entering the tab; wait for it to settle
+    page.wait_for_function("!forecastTopics.get('regression').models.loading")
 
 
 def open_families(page, topic="regression"):
