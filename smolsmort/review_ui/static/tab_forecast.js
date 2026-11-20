@@ -3338,8 +3338,6 @@ class ForecastTopic {
           <button class="toggle dropdown-head" id="${this.topic}-breakdown-head"><span>break down by</span></button>
           <span class="spacer"></span>
           <button class="toggle dropdown-head forecast-info-head" id="${this.topic}-info" type="button" aria-expanded="false"><span>info</span></button>
-          <a class="hidden" id="${this.topic}-export" download>csv</a>
-          <a class="hidden" id="${this.topic}-export-wide" download>csv wide</a>
           <button class="toggle hidden" id="${this.topic}-export-dialog" type="button">export</button>
         </div>
         <section class="forecast-pane forecast-chart-panel">
@@ -3539,8 +3537,6 @@ class ForecastTopic {
     if (!this.resultsRunId) return;
     const load = ++this.resultsLoad;
     this.resultsLoading = true;
-    this.resultsWideExportReady = false;
-    document.getElementById(`${this.topic}-export-wide`).classList.add('hidden');
     document.getElementById(`${this.topic}-export-dialog`).classList.add('hidden');
     const runId = this.resultsRunId;
     if (this.infoRunId !== runId) {
@@ -3561,7 +3557,6 @@ class ForecastTopic {
       }
       if (load !== this.resultsLoad || runId !== this.resultsRunId) return;
       this.resultsSpec = state.spec;
-      this.resultsWideExportReady = state.state === 'done' && state.spec?.mode === 'timeseries';
       document.getElementById(`${this.topic}-export-dialog`).classList.toggle('hidden', state.state !== 'done');
       this.acceptMetricRegistry(state, 'results');
       this.resultsModel = null;
@@ -3569,9 +3564,6 @@ class ForecastTopic {
       this.paintExcludedSeries(state.excluded_series || []);
       this.setResultsNotes('load', []);
       this.paintResultsRunName();
-      const exportLink = document.getElementById(`${this.topic}-export`);
-      exportLink.href = `/api/forecast-export/${encodeURIComponent(this.resultsRunId)}.csv`;
-      exportLink.classList.remove('hidden');
       this.filters = {};
       this.breakdown = [];
       this.tableState = {page: 0, sort: null, desc: false, group: null};
@@ -3932,11 +3924,6 @@ class ForecastTopic {
     modelHead.classList.toggle('hidden', !view.ensemble && !view.run_tiles?.length);
     const selectedTile = view.run_tiles?.find(tile => tile.tile_id === this.resultsModel);
     setHead(modelHead, selectedTile ? forecastRunTileLabel(selectedTile, view.run_tiles) : forecastModelLabel(view));
-    const exportSuffix = view.ensemble || selectedTile ? `/${encodeURIComponent(this.resultsModel)}` : '';
-    document.getElementById(`${this.topic}-export`).href = `/api/forecast-export/${encodeURIComponent(this.resultsRunId)}${exportSuffix}.csv`;
-    const wideExportLink = document.getElementById(`${this.topic}-export-wide`);
-    wideExportLink.href = `/api/forecast-export-wide/${encodeURIComponent(this.resultsRunId)}${exportSuffix}.csv`;
-    wideExportLink.classList.toggle('hidden', !this.resultsWideExportReady);
     const families = Object.entries(view.families || {});
     document.getElementById(`${this.topic}-results-models`).classList.remove('hidden');
     document.getElementById(`${this.topic}-family-comparison-wrap`).classList.toggle('hidden', !families.length);

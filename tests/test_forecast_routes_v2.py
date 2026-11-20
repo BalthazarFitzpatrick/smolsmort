@@ -181,7 +181,7 @@ def test_results_compare_validation_scores_without_loser_test_verdicts(app, comp
     "model,prediction,family,ratio",
     [("winner", 10, "xgboost", 0.95), ("ensemble", 20, "ensemble", 1.0)],
 )
-def test_selected_result_model_matches_chart_table_and_export(
+def test_selected_result_model_matches_chart_and_table(
     app, completed_models, model, prediction, family, ratio
 ):
     view = get(app, "/api/forecast-view", id=completed_models.name, model=model)
@@ -197,14 +197,6 @@ def test_selected_result_model_matches_chart_table_and_export(
     assert table["family"] == family and table["columns"][-1] == "family"
     assert all(row[-1] == family for row in table["rows"])
     assert {row[table["columns"].index("prediction")] for row in table["rows"]} == {prediction}
-    exported = (
-        forecast_tab()
-        .images["/api/forecast-export/"][0](app, f"{completed_models.name}/{model}.csv")
-        .decode()
-    )
-    assert exported.splitlines()[0] == f"# verdict: {view['verdict']['summary']}"
-    assert exported.splitlines()[1].endswith(",family,ratio")
-    assert f",{family},{ratio}" in exported
 
 
 def test_saved_ensemble_is_default_but_winner_can_still_be_selected(app, completed_models):

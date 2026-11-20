@@ -363,7 +363,7 @@ The review server is a small json api; the page and any host tab speak it. All p
 | folders, settings | `GET dir-list`, `GET dir-tree`, `POST set-bases` |
 | housekeeping | `GET housekeeping-recordings`, `GET housekeeping-assets`, `POST housekeeping-archive`, `POST housekeeping-delete` |
 | images | `/tile/<name>`, `/crop/<index>` (png) |
-| forecast | `GET forecast-sources`, `POST forecast-columns`, `GET forecast-column-values`, `POST forecast-prep`, `POST forecast-runs`, `GET forecast-runs`, `GET forecast-run`, `POST forecast-cancel`, `POST forecast-refit`, `GET forecast-view`, `GET forecast-table`, `/forecast-export/<run>.csv` |
+| forecast | `GET forecast-sources`, `POST forecast-columns`, `GET forecast-column-values`, `POST forecast-prep`, `POST forecast-runs`, `GET forecast-runs`, `GET forecast-run`, `POST forecast-cancel`, `POST forecast-refit`, `GET forecast-view`, `GET forecast-table`, `POST forecast-export-bundle` |
 | host | `GET tabs` |
 
 Two shapes worth knowing: `train-info` reports `capture_width`, `capture_override`,
@@ -471,12 +471,12 @@ the work:
   minutes) and start; the tab shows each generation as it lands and the best ten recipes when it
   stops. earlier runs are listed with *open*, *refit* on the current file, and *warm start*.
 - **results** - the verdict above everything, then dimension filters and a *break down by* picker
-  (up to three), the chart, and below it the paged table with an export link.
+  (up to three), the chart, and below it the paged table. exports go through the `export` button.
   the model menu shows saved val, test and ratio columns for the first picked error metric.
   ratio divides test error by the naive tile's test error; missing naive scores use saved wape ratios only.
   click val, test or ratio to sort ascending; missing scores stay last, and ratio is the default.
 
-  finished time series runs also offer `csv wide` for the selected model: one row per group,
+  finished time series bundles include `wide.csv` for the selected model: one row per group,
   target date, `forecast_made_week` and integer `horizon`. date and scaffold dimensions keep
   their spec names; no phase column is written. columns contain `forecast`, `actual`,
   `lower_50`, `upper_50`, `lower_80`, `upper_80`, plus the same six with a `total_` prefix.
@@ -1032,9 +1032,8 @@ a long horizon widens the spacing so windows never overlap. short history uses f
 (6, then 4, never under 2 + 2) and `result.json` records `holdout` with the origin dates,
 `fell_back` and the requested count. entity mode only supports block for now.
 
-the results banner shows the ratio and better/worse reading above the chart. the csv export
-carries the accuracy summary in its first line and the ratio on every row.
-the `export` button beside `csv` and `csv wide` opens a dialog for a finished run.
+the results banner shows the ratio and better/worse reading above the chart.
+the `export` button opens a dialog for a finished run.
 the model starts on the row the results model picker shows as current; with no row picked it
 reads `pick a model` and `export` stays off until one is chosen. choose an include level and an
 absolute folder path; the last folder is remembered locally. exports create `<run_id>_<local-date>` folders, adding a numeric suffix when needed.
