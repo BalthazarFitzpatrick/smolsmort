@@ -476,13 +476,15 @@ def test_four_family_budget_prunes_and_finishes_ensemble(tmp_path):
         spec,
         prepared,
         families=[{"name": name} for name in names],
-        time_budget_s=60,
+        # the finish reserve is 30% of the budget; stacked single-mode finishing of four
+        # families needs more than the 18 s that 60 s left (mixed mode finished in 46 s total)
+        time_budget_s=120,
         nthread=4,
         ensemble={"enabled": True, "top": 3},
     )
-    status = wait_run(root, run_id, timeout=70)
+    status = wait_run(root, run_id, timeout=130)
     assert status["state"] == "done", status
-    assert time.monotonic() - started <= 64
+    assert time.monotonic() - started <= 124
     result = assert_final_artifacts(root / run_id, names)
     snaive = result["families"]["snaive"]
     assert snaive["state"] == "done", result["families"]
