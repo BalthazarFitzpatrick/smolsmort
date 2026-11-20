@@ -8,8 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from test_forecast_export_dialog import input_run as input_run
-from test_forecast_export_dialog import saved_run as saved_run
+from saved_runs import real_run_folder
 
 from smolsmort.forecast import export_bundle as bundle
 from smolsmort.forecast.export_bundle import export_bundle
@@ -287,17 +286,7 @@ def test_demo_totals_sum_group_values_and_pool_wape(monkeypatch):
 
 
 def test_real_run_demo_smoke(tmp_path):
-    folder = (
-        Path.home()
-        / "Documents"
-        / "dev"
-        / "ai_lab"
-        / "forecast_workspace"
-        / ".forecast-runs"
-        / "20261115-155627-6f006a"
-    )
-    if not (folder / "request.json").is_file():
-        pytest.skip("real run absent")
+    folder = real_run_folder("20261115-155627-6f006a")
     request = json.loads((folder / "request.json").read_text())
     if (
         not Path(request["spec"]["source"]).is_file()

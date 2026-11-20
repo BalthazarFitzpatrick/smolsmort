@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from forecast_browser import show_tab, switch_to_regression
+from shots import shot_dir
 from test_forecast_horizon_browser import horizon_session
-from test_forecast_ui_browser import session, show_tab, switch_to_regression, with_error_metrics
+from test_forecast_ui_browser import session, with_error_metrics
 
 pytest.importorskip("duckdb")
 
@@ -99,8 +100,7 @@ def test_results_stacked_report_and_shared_metric_picker(tmp_path, width):
             assert importance["y"] + importance["height"] <= errors["y"]
             assert abs(importance["x"] - errors["x"]) < 1
         assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
-        artifacts = Path(__file__).resolve().parents[1] / "outputs" / "results-layout"
-        artifacts.mkdir(parents=True, exist_ok=True)
+        artifacts = shot_dir("results-layout")
         page.screenshot(
             path=artifacts / f"results-{width}.png", full_page=True, animations="disabled"
         )
@@ -196,8 +196,7 @@ def test_filter_menu_kept_dimension_selections_and_refreshed_chart_and_table(
         box = menu.bounding_box()
         assert box["x"] >= 0 and box["x"] + box["width"] <= width
         assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
-        artifacts = Path(__file__).resolve().parents[1] / "outputs" / "results-layout"
-        artifacts.mkdir(parents=True, exist_ok=True)
+        artifacts = shot_dir("results-layout")
         page.screenshot(
             path=artifacts / f"filter-{len(dimensions)}-{width}.png",
             full_page=True,

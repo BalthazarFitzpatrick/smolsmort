@@ -6,8 +6,7 @@ from __future__ import annotations
 
 import csv
 import json
-import threading
-import time
+import re
 from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -19,21 +18,15 @@ import pytest
 pytest.importorskip("playwright")
 pytest.importorskip("xgboost")
 
-import review_world
+from forecast_browser import TOPIC, forecast_page, open_info, show_tab, switch_to_regression
 from forecast_fixtures import write_bike_daily, write_panel, write_rows
 from forecast_ui_audit import CONTROL_SIZES, settle_menu, visit_control_states
-from playwright.sync_api import Page, sync_playwright
+from playwright.sync_api import Page
 
-from smolsmort.forecast import runs
 from smolsmort.forecast.metrics import error_metrics, metric_registry
-from smolsmort.forecast.tab import forecast_tab
 from smolsmort.forecast.tables import read_table, write_table
-from smolsmort.review.server import build_app, serve
-from smolsmort.review_ui.server import STATIC
 
 pytest.importorskip("duckdb")
-
-TOPIC = "regression"
 
 
 def with_error_metrics(run, task="regression"):
@@ -134,27 +127,10 @@ def save_synthetic_search(runs_root, spec, prepared, **_options):
     return run_id
 
 
-def show_tab(page: Page, name: str) -> None:
-    page.click(f'.nav-tab[data-tab="{name}"]')
-    page.wait_for_timeout(250)
-
-
-def open_info(page: Page, topic: str = TOPIC):
-    """open the read-only results menu before checking its facts"""
-    panel = page.locator(f"#{topic}-info-menu")
-    if not panel.is_visible():
-        page.locator(f"#{topic}-info").click()
-    panel.wait_for()
-    settle_menu(page)
-    return panel
-
-
 @contextmanager
-def session(tmp_path: Path, *, width: int = 1280, numeric: bool = False, port: int = 0):
+def session(tmp_path: Path, *, width: int = 1280, numeric: bool = False):
     """the real review server, its forecast root holding the synthetic rows fixture, and a
     headless page on it"""
-    errors: list[str] = []
-    review_world.register_world_backend()
     root = tmp_path / "forecast_root"
     root.mkdir()
     write_rows(root, n=600)
@@ -168,43 +144,11 @@ def session(tmp_path: Path, *, width: int = 1280, numeric: bool = False, port: i
         writer = csv.writer(source)
         writer.writerow([*rows[0], "other_day"])
         writer.writerows([*row, row[0]] for row in rows[1:])
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(runs, "start_run", save_synthetic_search)
-        world = review_world.make_world(tmp_path / "review", patch)
-        app = build_app(
-            backend="world",
-            ui_dir=STATIC,
-            tabs=[forecast_tab()],
-            pool=world.tiles,
-            bases_file=world.root / "bases.json",
-            crop_file=world.root / "crop.json",
-        )
-        app.state.set_bases({"forecast": str(root)})
-        server = serve(app, port=port)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        base = f"http://127.0.0.1:{server.server_port}"
-        try:
-            time.sleep(0.2)
-            with sync_playwright() as pw:
-                browser = pw.chromium.launch(headless=True)
-                page = browser.new_page(viewport={"width": width, "height": 900})
-                page.on("pageerror", lambda exc: errors.append(str(exc)))
-                page.goto(base + "/")
-                page.wait_for_timeout(400)
-                yield page, base
-                browser.close()
-        finally:
-            server.shutdown()
-            server.server_close()
-            review_world.unregister_world_backend()
-    assert not errors, errors
-
-
-def switch_to_regression(page: Page) -> None:
-    page.click('#topic-switch .topic-tab:has-text("regression")')
-    page.wait_for_timeout(150)
-    page.select_option("#topic-flavour", "entity")
-    page.wait_for_timeout(150)
+    with forecast_page(
+        tmp_path, root, width=width, start_run=save_synthetic_search, settle_s=0.2
+    ) as (page, base):
+        page.wait_for_timeout(400)
+        yield page, base
 
 
 def set_role(page: Page, column: str, role: str) -> None:
@@ -573,7 +517,7 @@ def test_forecast_regression_entity_flow(tmp_path):
 
 def test_results_chart_showed_both_ranges(tmp_path):
     """saved-view payloads draw nested shades and name each range on hover"""
-    with session(tmp_path, port=0) as (page, _base):
+    with session(tmp_path) as (page, _base):
         page.evaluate("""() => {
           const el = document.createElement('div');
           el.id = 'synthetic-range-chart';
@@ -1721,18 +1665,14 @@ def test_forecast_controls_follow_the_shared_row_height(tmp_path, width):
         show_tab(page, "regression-search")
         rows = page.locator(f"#{TOPIC}-runs-list .forecast-run-row")
         assert rows.count() == 3
-        assert page.locator(
-            f'#{TOPIC}-runs-list [data-run-id="{old}"] > span:not(.forecast-run-bar, .forecast-run-metrics)'
-        ).all_text_contents() == ["older1", "done"]
-        assert page.locator(
-            f'#{TOPIC}-runs-list [data-run-id="{cancelled}"] > span:not(.forecast-run-bar, .forecast-run-metrics)'
-        ).all_text_contents() == ["stop01", "cancelled"]
-        assert page.locator(
-            f'#{TOPIC}-runs-list [data-run-id="{refit}"] > span:not(.forecast-run-bar, .forecast-run-metrics)'
-        ).all_text_contents() == ["refit1", "done"]
+        for run_id, status in ((old, "done"), (cancelled, "stopped"), (refit, "done")):
+            row = page.locator(f'#{TOPIC}-runs-list [data-run-id="{run_id}"]')
+            assert row.locator(":scope > .forecast-run-status").inner_text() == status
+            assert re.fullmatch(r"[0-9a-z]{5} \| .+", row.locator(":scope > .name").inner_text())
+            assert row.locator(":scope > .forecast-run-subtitle").count() == 1
         columns = []
         for row in rows.all():
-            spans = row.locator(":scope > span:not(.forecast-run-bar, .forecast-run-metrics)")
+            spans = row.locator(":scope > .name, :scope > .forecast-run-status")
             assert spans.count() == 2
             positions = [span.bounding_box() for span in spans.all()]
             assert len({position["y"] for position in positions}) == 1

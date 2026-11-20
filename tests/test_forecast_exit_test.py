@@ -1,14 +1,14 @@
 """exit scoring is isolated from search and shares finish's exact prediction cache"""
 
-import inspect
 import json
 from dataclasses import asdict
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-from smolsmort.forecast import coordinator, ensemble, exit_test, pipeline, search
+from smolsmort.forecast import coordinator, ensemble, exit_test, pipeline
 from smolsmort.forecast.spec import Column, PrepSpec
 from smolsmort.forecast.tables import read_table
 
@@ -324,18 +324,30 @@ def test_one_shot_exit_starts_during_broad_while_other_family_runs(
     assert clock[0] < 160
 
 
-def test_search_prune_and_rank_have_no_exit_artifact_reads():
-    # keep held-out artifacts out of validation selection, even as scheduling evolves
-    assert "exit_test" not in inspect.getsource(search)
-    assert "exit_scores" not in inspect.getsource(search)
-    source = inspect.getsource(coordinator._launch_families)
-    prune = source.split("    def prune_families():", 1)[1].split("    def run_slices", 1)[0]
-    for text in (
-        prune,
-        inspect.getsource(coordinator.rank_families),
-        inspect.getsource(coordinator.best_entry),
-    ):
-        assert "exit_test" not in text and "exit_scores" not in text
+def test_validation_selection_never_reads_exit_artifacts(tmp_path, monkeypatch):
+    # held-out exit scores must not steer which candidate or family wins validation
+    folder = tmp_path / "run"
+    for name, fitness in (("ridge", 0.3), ("snaive", 0.2)):
+        target = folder / "families" / name
+        target.mkdir(parents=True)
+        entry = {"fitness": fitness, "families": [name], "note": None}
+        (target / "checkpoint.json").write_text(json.dumps({"entries": [entry]}))
+        # the held-out score ranks the other way around, so a leak would flip the winner
+        (target / "exit_test.json").write_text(json.dumps({"score": 1 - fitness}))
+        (target / "exit_scores.json").write_text(json.dumps({"score": 1 - fitness}))
+    opened = []
+    real_open = Path.open
+
+    def recording_open(path, *args, **kwargs):
+        opened.append(Path(path).name)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", recording_open)
+    winners = {name: coordinator.best_entry(folder, name) for name in ("ridge", "snaive")}
+    states = {name: {"best_error": winners[name]["fitness"]} for name in winners}
+    ranked = coordinator.rank_families(["ridge", "snaive"], states)
+    assert ranked == ["snaive", "ridge"]
+    assert not [name for name in opened if name.startswith("exit_")]
 
 
 @pytest.mark.parametrize(

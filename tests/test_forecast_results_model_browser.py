@@ -1,9 +1,8 @@
 """saved model columns use shared menu selection and dismissal"""
 
-from pathlib import Path
-
 import pytest
 from forecast_ui_audit import settle_menu
+from shots import shot_dir
 from test_forecast_horizon_browser import horizon_session, open_horizon_run
 
 
@@ -62,10 +61,7 @@ def test_results_model_resolves_tile_metric(tmp_path, selection):
         if selection is None:
             assert values == ["0.3000", "0.1800", "0.90"]
             assert ridge.get_attribute("title") == "wape 0.1800 at lead 3"
-            screenshot = (
-                Path(__file__).resolve().parents[1] / "artifacts/results-model-default-metric.png"
-            )
-            screenshot.parent.mkdir(exist_ok=True)
+            screenshot = shot_dir("results-model") / "default-metric.png"
             page.screenshot(path=str(screenshot))
         elif selection:
             assert values == ["150", "100", "0.50"]
@@ -141,8 +137,7 @@ def test_results_model_columns(tmp_path):
           probe.remove();
           return matches;
         }""")
-        screenshot = Path(__file__).resolve().parents[1] / "artifacts/results-model-columns.png"
-        screenshot.parent.mkdir(exist_ok=True)
+        screenshot = shot_dir("results-model") / "columns.png"
         page.screenshot(path=str(screenshot))
         for column, expected in [
             ("val", ["missing", "ensemble", "snaive", "ridge", "worse"]),

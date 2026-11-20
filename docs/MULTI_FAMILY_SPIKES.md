@@ -214,6 +214,8 @@ verifies: first/last true-mode forecasts equal standalone fits; perturbing a fut
 
 ## reproduction
 
+note: tree_fits.py and stats_rolling.py are archived under scripts/spikes/archive/. their adapter-proving role moved into the production lightgbm and stats families; they stay only to reproduce the recorded measurements. platform_wheels.py is still live.
+
 run from the specified worktree. each command is independent; no command installs into a repo venv. variables below keep every writable cache outside the repo. dependency versions above identify the measured resolution; unpinned installs may choose newer releases later. stats scripts enforce a 480-second posix timer; use `--bucket` and then `--max-windows` if a slower host needs a smaller probe, and report the changed rows.
 
 ```sh
@@ -228,9 +230,9 @@ du -sk /private/tmp/multifamily-spike-venv
 uv pip install --python /private/tmp/multifamily-spike-venv/bin/python numba llvmlite
 /private/tmp/multifamily-spike-venv/bin/python scripts/spikes/platform_wheels.py
 /private/tmp/multifamily-spike-venv/bin/python scripts/spikes/platform_wheels.py --imports-only
-/private/tmp/multifamily-spike-venv/bin/python scripts/spikes/tree_fits.py --unit day --output /private/tmp/multifamily-tree-day.json
-/private/tmp/multifamily-spike-venv/bin/python scripts/spikes/tree_fits.py --unit week --output /private/tmp/multifamily-tree-week.json
-/private/tmp/multifamily-spike-venv/bin/python scripts/spikes/tree_fits.py --unit week --horizon 8 --output /private/tmp/multifamily-tree-week8.json
+/private/tmp/multifamily-spike-venv/bin/python scripts/spikes/archive/tree_fits.py --unit day --output /private/tmp/multifamily-tree-day.json
+/private/tmp/multifamily-spike-venv/bin/python scripts/spikes/archive/tree_fits.py --unit week --output /private/tmp/multifamily-tree-week.json
+/private/tmp/multifamily-spike-venv/bin/python scripts/spikes/archive/tree_fits.py --unit week --horizon 8 --output /private/tmp/multifamily-tree-week8.json
 ```
 
 wheel script runs all six equivalents of this command, replacing platform and python version:
@@ -242,21 +244,21 @@ uv pip install --dry-run --only-binary :all: --python-platform x86_64-pc-windows
 stats commands (one model per process, bounded arima settings are in the script):
 
 ```sh
-/private/tmp/multifamily-spike-venv/bin/python scripts/spikes/stats_rolling.py --source /Users/fabianzimmer/Documents/dev/ai_lab/smolsmort/sample_data/bikes/day.csv --unit day --horizon 30 --model ets --output /private/tmp/multifamily-stats-day-ets.json
-/private/tmp/multifamily-spike-venv/bin/python scripts/spikes/stats_rolling.py --source /Users/fabianzimmer/Documents/dev/ai_lab/smolsmort/sample_data/bikes/day.csv --unit day --horizon 30 --model theta --output /private/tmp/multifamily-stats-day-theta.json
-/private/tmp/multifamily-spike-venv/bin/python scripts/spikes/stats_rolling.py --source /Users/fabianzimmer/Documents/dev/ai_lab/smolsmort/sample_data/bikes/day.csv --unit day --horizon 30 --model arima --output /private/tmp/multifamily-stats-day-arima.json
-/private/tmp/multifamily-spike-venv/bin/python scripts/spikes/stats_rolling.py --source /Users/fabianzimmer/Documents/dev/ai_lab/smolsmort/sample_data/bikes/day.csv --unit week --horizon 30 --model ets --output /private/tmp/multifamily-stats-week-ets.json
-/private/tmp/multifamily-spike-venv/bin/python scripts/spikes/stats_rolling.py --source /Users/fabianzimmer/Documents/dev/ai_lab/smolsmort/sample_data/bikes/day.csv --unit week --horizon 30 --model theta --output /private/tmp/multifamily-stats-week-theta.json
-/private/tmp/multifamily-spike-venv/bin/python scripts/spikes/stats_rolling.py --source /Users/fabianzimmer/Documents/dev/ai_lab/smolsmort/sample_data/bikes/day.csv --unit week --horizon 30 --model arima --output /private/tmp/multifamily-stats-week-arima.json
-/private/tmp/multifamily-spike-venv/bin/python scripts/spikes/stats_rolling.py --source /Users/fabianzimmer/Documents/dev/ai_lab/smolsmort/sample_data/bikes/day.csv --unit week --horizon 8 --model ets --output /private/tmp/multifamily-stats-week8-ets.json
-/private/tmp/multifamily-spike-venv/bin/python scripts/spikes/stats_rolling.py --source /Users/fabianzimmer/Documents/dev/ai_lab/smolsmort/sample_data/bikes/day.csv --unit week --horizon 8 --model theta --output /private/tmp/multifamily-stats-week8-theta.json
-/private/tmp/multifamily-spike-venv/bin/python scripts/spikes/stats_rolling.py --source /Users/fabianzimmer/Documents/dev/ai_lab/smolsmort/sample_data/bikes/day.csv --unit week --horizon 8 --model arima --output /private/tmp/multifamily-stats-week8-arima.json
+/private/tmp/multifamily-spike-venv/bin/python scripts/spikes/archive/stats_rolling.py --source /Users/fabianzimmer/Documents/dev/ai_lab/smolsmort/sample_data/bikes/day.csv --unit day --horizon 30 --model ets --output /private/tmp/multifamily-stats-day-ets.json
+/private/tmp/multifamily-spike-venv/bin/python scripts/spikes/archive/stats_rolling.py --source /Users/fabianzimmer/Documents/dev/ai_lab/smolsmort/sample_data/bikes/day.csv --unit day --horizon 30 --model theta --output /private/tmp/multifamily-stats-day-theta.json
+/private/tmp/multifamily-spike-venv/bin/python scripts/spikes/archive/stats_rolling.py --source /Users/fabianzimmer/Documents/dev/ai_lab/smolsmort/sample_data/bikes/day.csv --unit day --horizon 30 --model arima --output /private/tmp/multifamily-stats-day-arima.json
+/private/tmp/multifamily-spike-venv/bin/python scripts/spikes/archive/stats_rolling.py --source /Users/fabianzimmer/Documents/dev/ai_lab/smolsmort/sample_data/bikes/day.csv --unit week --horizon 30 --model ets --output /private/tmp/multifamily-stats-week-ets.json
+/private/tmp/multifamily-spike-venv/bin/python scripts/spikes/archive/stats_rolling.py --source /Users/fabianzimmer/Documents/dev/ai_lab/smolsmort/sample_data/bikes/day.csv --unit week --horizon 30 --model theta --output /private/tmp/multifamily-stats-week-theta.json
+/private/tmp/multifamily-spike-venv/bin/python scripts/spikes/archive/stats_rolling.py --source /Users/fabianzimmer/Documents/dev/ai_lab/smolsmort/sample_data/bikes/day.csv --unit week --horizon 30 --model arima --output /private/tmp/multifamily-stats-week-arima.json
+/private/tmp/multifamily-spike-venv/bin/python scripts/spikes/archive/stats_rolling.py --source /Users/fabianzimmer/Documents/dev/ai_lab/smolsmort/sample_data/bikes/day.csv --unit week --horizon 8 --model ets --output /private/tmp/multifamily-stats-week8-ets.json
+/private/tmp/multifamily-spike-venv/bin/python scripts/spikes/archive/stats_rolling.py --source /Users/fabianzimmer/Documents/dev/ai_lab/smolsmort/sample_data/bikes/day.csv --unit week --horizon 8 --model theta --output /private/tmp/multifamily-stats-week8-theta.json
+/private/tmp/multifamily-spike-venv/bin/python scripts/spikes/archive/stats_rolling.py --source /Users/fabianzimmer/Documents/dev/ai_lab/smolsmort/sample_data/bikes/day.csv --unit week --horizon 8 --model arima --output /private/tmp/multifamily-stats-week8-arima.json
 ```
 
 the update perturbation check runs automatically for bucket 1. inspect the first weekly ets fit with:
 
 ```sh
-/private/tmp/multifamily-spike-venv/bin/python scripts/spikes/stats_rolling.py --source /Users/fabianzimmer/Documents/dev/ai_lab/smolsmort/sample_data/bikes/day.csv --unit week --horizon 8 --model ets --inspect-initial --output /private/tmp/multifamily-stats-inspect-week8-ets.json
+/private/tmp/multifamily-spike-venv/bin/python scripts/spikes/archive/stats_rolling.py --source /Users/fabianzimmer/Documents/dev/ai_lab/smolsmort/sample_data/bikes/day.csv --unit week --horizon 8 --model ets --inspect-initial --output /private/tmp/multifamily-stats-inspect-week8-ets.json
 ```
 
 api checks and measurements are written to json outside the repo; the committed tables above retain the findings after large temporary files are removed.

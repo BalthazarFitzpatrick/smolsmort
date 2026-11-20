@@ -3,13 +3,18 @@
 import argparse
 import json
 import platform
+import sys
 from pathlib import Path
 from time import perf_counter
 
 import lightgbm as lgb
 import numpy as np
 import xgboost
-from common import SOURCE, bike_workspace
+
+# the shared helpers sit one folder up
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# noqa below: the path insert has to run before this import
+from common import SOURCE, bike_workspace  # noqa: E402
 
 from smolsmort.forecast.evaluate import wape
 from smolsmort.forecast.model import fit_model, predict

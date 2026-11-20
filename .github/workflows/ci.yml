@@ -14,6 +14,11 @@ on:
     branches: [main]
   pull_request:
 
+# a newer push to the same ref supersedes the older run; the answer is about the branch tip
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -26,26 +31,97 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # docs-only changes skip the toolchain steps below; the job itself still runs and reports,
+      # so a required check never stays pending. manifests, workflows and code never count as docs
+      - name: detect docs-only change
+        id: changes
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          docs_only=false
+          if [ -n "$base" ] && [ "$base" != "0000000000000000000000000000000000000000" ] \
+              && git cat-file -e "$base^{commit}" 2>/dev/null; then
+            other=$(git diff --name-only "$base" "${{ github.sha }}" \
+              | grep -v -E '^(docs/.*|[^/]+\.md|LICENSE)$' || true)
+            if [ -z "$other" ]; then docs_only=true; fi
+          fi
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
 
       - uses: astral-sh/setup-uv@v5
+        if: steps.changes.outputs.docs_only != 'true'
         with:
           enable-cache: true
 
       - name: sync
+        if: steps.changes.outputs.docs_only != 'true'
         run: uv sync --dev --python ${{ matrix.python }}
 
       - name: ruff check
+        if: steps.changes.outputs.docs_only != 'true'
         run: uv run ruff check .
 
       - name: ruff format --check
+        if: steps.changes.outputs.docs_only != 'true'
         run: uv run ruff format --check .
 
       - name: pytest
+        if: steps.changes.outputs.docs_only != 'true'
         run: uv run pytest -q
 
       - name: browser check
         # one python is enough: the page does not change with the interpreter, chromium does the work
-        if: matrix.python == '3.14'
+        if: matrix.python == '3.14' && steps.changes.outputs.docs_only != 'true'
         run: |
           uv run --with playwright playwright install --with-deps chromium
           uv run --with playwright pytest tests/test_review_ui_browser.py -q -rs
+
+  # the minimal job above skips every test that needs an optional backend; this one installs the
+  # forecast extras so those tests run instead of skipping
+  test-forecast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: detect docs-only change
+        id: changes
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          docs_only=false
+          if [ -n "$base" ] && [ "$base" != "0000000000000000000000000000000000000000" ] \
+              && git cat-file -e "$base^{commit}" 2>/dev/null; then
+            other=$(git diff --name-only "$base" "${{ github.sha }}" \
+              | grep -v -E '^(docs/.*|[^/]+\.md|LICENSE)$' || true)
+            if [ -z "$other" ]; then docs_only=true; fi
+          fi
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+
+      - uses: astral-sh/setup-uv@v5
+        if: steps.changes.outputs.docs_only != 'true'
+        with:
+          enable-cache: true
+
+      - name: sync with forecast extras
+        if: steps.changes.outputs.docs_only != 'true'
+        # python 3.12: unverified that every optional wheel (catboost, statsforecast) exists for 3.14
+        run: >
+          uv sync --dev --python 3.12
+          --extra forecast --extra lightgbm --extra stats --extra holidays
+          --extra catboost --extra trees
+
+      - name: pytest forecast
+        if: steps.changes.outputs.docs_only != 'true'
+        run: uv run pytest -q

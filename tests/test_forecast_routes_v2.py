@@ -648,7 +648,15 @@ def test_v1_route_passes_the_same_budget_and_warm_arguments(app, tmp_path, monke
     monkeypatch.setattr(runs, "start_run", lambda *args, **kwargs: calls.append(kwargs) or "new")
     budget = {"population": 6, "max_generations": 2, "plateau": 1, "nthread": 1}
     started = post(app, payload={"spec": make_spec(), "budget": budget, "warm_from": "old"})
-    assert calls == [{"budget": budget, "warm_from": "old"}]
+    expected = {
+        "budget": budget,
+        "warm_from": "old",
+        "aggregate": "none",
+        "aggregate_weight": None,
+        "horizon_mode": "single",
+    }
+    assert len(calls) == 1
+    assert {key: calls[0][key] for key in expected} == expected
     assert set(started) == {"run_id", "prepared"}
 
 
@@ -668,13 +676,17 @@ def test_v2_route_passes_all_coordinator_controls(app, tmp_path, monkeypatch):
         nthread=4,
     )
     assert post(app, payload=payload)["run_id"] == "new"
-    assert calls == [
-        {
-            "version": 2,
-            "warm_from": None,
-            **{key: value for key, value in payload.items() if key != "spec"},
-        }
-    ]
+    # normalized defaults are added by the route; only the keys named here are pinned
+    expected = {
+        "version": 2,
+        "warm_from": None,
+        **{key: value for key, value in payload.items() if key != "spec"},
+        "holdout": "block",
+        "horizon_mode": "single",
+        "aggregate": "none",
+    }
+    assert len(calls) == 1
+    assert {key: calls[0][key] for key in expected} == expected
 
 
 def test_v2_route_passes_the_holdout_through(app, tmp_path, monkeypatch):
