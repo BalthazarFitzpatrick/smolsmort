@@ -309,14 +309,17 @@ def test_a_fixed_seed_gives_the_same_leaderboard(series_ws):
 
 def test_a_plateau_waits_for_the_minimum_generations(series_ws):
     ws, _ = series_ws
-    early = search(ws, Budget(**{**TINY, "max_generations": 30, "plateau": 1}))
-    late = search(ws, Budget(**{**TINY, "max_generations": 30, "plateau": 1, "min_generations": 6}))
+    # time_cap is wall clock: a starved host must not end the search before its plateau
+    patient = {**TINY, "max_generations": 30, "plateau": 1, "time_cap": 3600}
+    early = search(ws, Budget(**patient))
+    late = search(ws, Budget(**{**patient, "min_generations": 6}))
     assert late["stopped"] == "plateau" and late["generations"] >= 6 > early["generations"]
 
 
 def test_the_search_stops_on_a_plateau_before_the_cap(series_ws):
     ws, _ = series_ws
-    result = search(ws, Budget(**{**TINY, "max_generations": 30, "plateau": 1}))
+    patient = {**TINY, "max_generations": 30, "plateau": 1, "time_cap": 3600}
+    result = search(ws, Budget(**patient))
     assert result["stopped"] == "plateau" and result["generations"] < 30
 
 
@@ -383,7 +386,8 @@ def test_a_cancelled_run_still_leaves_a_readable_leaderboard(tmp_path):
     budget = {**TINY, "max_generations": 200, "plateau": 200, "population": 8}
     runs = tmp_path / "runs"
     run_id = start_run(runs, spec, prepared, budget=budget, nthread=1)
-    for _ in range(600):
+    # a generation can take minutes on a starved host; running out of polls fails here, not at the end
+    for _ in range(3000):
         live_state = run_state(runs, run_id)
         if live_state["generations"]:
             assert live_state["eval_history"]["training"]
@@ -392,6 +396,8 @@ def test_a_cancelled_run_still_leaves_a_readable_leaderboard(tmp_path):
             assert live_board[0]["fitness"] <= live_state["best_error"]
             break
         time.sleep(0.1)
+    else:
+        pytest.fail("no generation finished before the cancel")
     cancel_run(runs, run_id)
     state = wait_run(runs, run_id, timeout=300)
     assert state["state"] == "cancelled" and state["stopped"] == "cancelled", state
