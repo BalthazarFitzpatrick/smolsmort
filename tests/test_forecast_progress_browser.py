@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -13,6 +12,7 @@ pytest.importorskip("playwright")
 pytest.importorskip("xgboost")
 
 from forecast_ui_audit import assert_family_layout, settle_menu
+from shots import shot_dir
 from test_forecast_ui_browser import (
     open_info,
     session,
@@ -526,8 +526,7 @@ def test_multifamily_saved_run_named_models_and_explained_importance(tmp_path):
         page.locator('.menu-panel .menu-item[data-id="xgboost"]').click()
         assert page.locator("#regression-loss-chart .chart-line").count() == 2
         assert_family_layout(page)
-        artifacts = Path(__file__).resolve().parents[1] / "outputs" / "u10"
-        artifacts.mkdir(parents=True, exist_ok=True)
+        artifacts = shot_dir("u10")
         page.screenshot(path=artifacts / "training.png", full_page=True)
         page.click("#regression-config-mode-warm")
         page.click("#regression-run-open")

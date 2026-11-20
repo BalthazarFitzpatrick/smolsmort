@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from shots import shot_dir
 
 pytest.importorskip("playwright")
 pytest.importorskip("xgboost")
@@ -230,7 +231,7 @@ def test_training_config_shared_new_and_warm_request_values(tmp_path):
         mock_catalog(page)
         select_timeseries(page)
         assert_config_rows(page)
-        page.locator("#regression-config").screenshot(path="/private/tmp/training-config-new.png")
+        page.locator("#regression-config").screenshot(path=shot_dir("training-config") / "new.png")
         assert page.locator("#regression-config-mode-warm").is_disabled()
         for key, value in (
             ("minutes", 30),
@@ -269,7 +270,7 @@ def test_training_config_shared_new_and_warm_request_values(tmp_path):
         }
         page.click("#regression-config-mode-warm")
         assert_config_rows(page)
-        page.locator("#regression-config").screenshot(path="/private/tmp/training-config-warm.png")
+        page.locator("#regression-config").screenshot(path=shot_dir("training-config") / "warm.png")
         assert page.locator("#regression-config-families").is_disabled()
         assert "xgboost" in page.locator("#regression-config-families").inner_text()
         for key, value in (
@@ -303,7 +304,7 @@ def test_training_config_shared_new_and_warm_request_values(tmp_path):
         assert saved["population"] == 24
         assert saved["minutes"] == 30
         page.set_viewport_size({"width": 800, "height": 1000})
-        page.screenshot(path="/private/tmp/training-config-narrow.png", full_page=True)
+        page.screenshot(path=shot_dir("training-config") / "narrow.png", full_page=True)
 
 
 def test_training_catalog_reloaded_when_data_changed_and_guarded_stale_spec(tmp_path):

@@ -2,9 +2,9 @@
 
 import json
 import re
-from pathlib import Path
 
 import pytest
+from shots import shot_dir
 from test_forecast_progress_browser import make_run, mock_saved_run
 from test_forecast_ui_browser import session
 
@@ -55,8 +55,7 @@ def test_timeline_status_rows(tmp_path, phase, state, label, next_step):
         assert not re.search(r"\d+s\b", time_row)
         assert page.locator("#regression-run-progress-next").inner_text() == next_step
         if state in ("running", "done") and phase in ("pruning", "finish"):
-            image_dir = Path(__file__).resolve().parents[1] / ".venv" / "progress-screenshots"
-            image_dir.mkdir(exist_ok=True)
+            image_dir = shot_dir("progress-screenshots")
             page.locator(".forecast-run-progress-panel").filter(
                 has=page.locator("#regression-run-progress")
             ).screenshot(path=str(image_dir / f"{phase}-{state}.png"))

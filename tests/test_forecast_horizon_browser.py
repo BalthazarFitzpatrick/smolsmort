@@ -14,6 +14,7 @@ import pytest
 import review_world
 from forecast_fixtures import write_panel
 from forecast_ui_audit import settle_menu
+from shots import shot_dir
 from test_forecast_progress_browser import write_multifamily_run
 from test_forecast_ui_browser import open_info, show_tab, switch_to_regression
 
@@ -168,7 +169,7 @@ def horizon_session(
             crop_file=world.root / "crop.json",
         )
         app.state.set_bases({"forecast": str(root)})
-        server = serve(app, port=8111)
+        server = serve(app, port=0)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
@@ -176,7 +177,7 @@ def horizon_session(
                 browser = playwright.chromium.launch(headless=True)
                 page = browser.new_page(viewport={"width": width, "height": 900})
                 page.on("pageerror", lambda error: errors.append(str(error)))
-                page.goto("http://127.0.0.1:8111/")
+                page.goto(f"http://127.0.0.1:{server.server_port}/")
                 yield page, run_id
                 browser.close()
         finally:
@@ -473,8 +474,7 @@ def read_bounds(payload: dict) -> dict:
 
 
 def save_horizon(page, name: str) -> None:
-    folder = Path(__file__).resolve().parents[1] / "outputs" / "lead-blend"
-    folder.mkdir(parents=True, exist_ok=True)
+    folder = shot_dir("lead-blend")
     page.locator(CONTROLS).scroll_into_view_if_needed()
     page.screenshot(path=folder / f"{name}.png", full_page=True, animations="disabled")
     page.locator("#regression-chart").screenshot(
@@ -486,8 +486,7 @@ def save_horizon(page, name: str) -> None:
 
 
 def save_blend_menu(page, name: str) -> None:
-    folder = Path(__file__).resolve().parents[1] / "outputs"
-    folder.mkdir(parents=True, exist_ok=True)
+    folder = shot_dir("blend-menu")
     page.screenshot(path=folder / f"blend-weights-{name}.png", animations="disabled")
 
 

@@ -29,3 +29,10 @@ def isolate_forecast_run_lock(tmp_path, monkeypatch):
 @pytest.fixture(autouse=True)
 def isolate_forecast_machine_config(tmp_path, monkeypatch):
     monkeypatch.setenv("SMOLSMORT_FORECAST_CONFIG", str(tmp_path / "forecast.toml"))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def screenshot_root(tmp_path_factory):
+    from shots import set_shot_root
+
+    set_shot_root(tmp_path_factory.mktemp("shots"))

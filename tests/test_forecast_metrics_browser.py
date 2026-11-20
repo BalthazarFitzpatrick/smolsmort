@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from forecast_ui_audit import settle_menu
+from shots import shot_dir
 from test_forecast_progress_browser import write_multifamily_run
 from test_forecast_ui_browser import session, show_tab, switch_to_regression
 
@@ -94,8 +95,7 @@ def assert_metric_lines(locator, selected: list[str]) -> None:
 
 
 def save_metrics(page, name: str) -> None:
-    folder = Path(__file__).resolve().parents[1] / "outputs" / "error-metric-picker"
-    folder.mkdir(parents=True, exist_ok=True)
+    folder = shot_dir("error-metric-picker")
     viewport = page.viewport_size
     if not name.startswith("phone-"):
         page.set_viewport_size({**viewport, "height": 1800})
