@@ -12,6 +12,8 @@ import sys
 
 import pytest
 
+pytest_plugins = ["saved_runs"]
+
 # macos only: the clash is torch's bundled openmp against homebrew's libomp. linux (the ci image)
 # has one runtime, and single-threading every torch op there just made the suite slower
 if sys.platform == "darwin":

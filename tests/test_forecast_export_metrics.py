@@ -4,8 +4,6 @@ import csv
 import io
 
 import pytest
-from test_forecast_export_dialog import input_run as input_run
-from test_forecast_export_dialog import saved_run as saved_run
 
 from smolsmort.forecast.export_bundle import export_bundle
 from smolsmort.forecast.export_metrics import MEASURES, metric_columns, score_rows, table_rows

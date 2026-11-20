@@ -8,8 +8,6 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from test_forecast_export_dialog import input_run as input_run
-from test_forecast_export_dialog import saved_run as saved_run
 
 from smolsmort.forecast import export_bundle as bundle
 from smolsmort.forecast.export_bundle import export_bundle
