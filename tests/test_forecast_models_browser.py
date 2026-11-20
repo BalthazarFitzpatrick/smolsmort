@@ -11,14 +11,13 @@ pytest.importorskip("playwright")
 pytest.importorskip("xgboost")
 pytest.importorskip("duckdb")
 
+from forecast_browser import show_tab, switch_to_regression
 from test_forecast_ui_browser import (
     choose_forecast_source,
     choose_timeseries_target,
     mock_prepared_searches,
     session,
     set_config_number,
-    show_tab,
-    switch_to_regression,
 )
 
 
@@ -29,7 +28,7 @@ def test_tile_generation_picker_keeps_recipes_and_selection_on_poll(tmp_path, mo
     from smolsmort.forecast.tiles import recipe_key
 
     monkeypatch.setattr(runs, "_alive", lambda _folder: True)
-    with session(tmp_path, port=0) as (page, _base):
+    with session(tmp_path) as (page, _base):
         run_id = make_contract_tiles(tmp_path / "forecast_root")
         run = tmp_path / "forecast_root/.forecast-runs" / run_id
         path = run / "families/xgboost/generation_curves.jsonl"

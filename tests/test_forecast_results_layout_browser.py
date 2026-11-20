@@ -6,9 +6,10 @@ import json
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from forecast_browser import show_tab, switch_to_regression
 from shots import shot_dir
 from test_forecast_horizon_browser import horizon_session
-from test_forecast_ui_browser import session, show_tab, switch_to_regression, with_error_metrics
+from test_forecast_ui_browser import session, with_error_metrics
 
 pytest.importorskip("duckdb")
 

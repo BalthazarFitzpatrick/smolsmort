@@ -15,9 +15,10 @@ import pytest
 pytest.importorskip("playwright")
 pytest.importorskip("xgboost")
 
+from forecast_browser import show_tab, switch_to_regression
 from forecast_ui_audit import settle_menu
 from test_forecast_progress_browser import write_multifamily_run
-from test_forecast_ui_browser import session, show_tab, switch_to_regression, with_error_metrics
+from test_forecast_ui_browser import session, with_error_metrics
 
 from smolsmort.forecast.tables import write_table
 
@@ -184,7 +185,7 @@ def test_contract_tiles_masonry_curves_filters_and_ensembles(tmp_path, monkeypat
     from smolsmort.forecast import runs
 
     monkeypatch.setattr(runs, "_alive", lambda _folder: True)
-    with session(tmp_path, port=0) as (page, _base):
+    with session(tmp_path) as (page, _base):
         run_id = make_contract_tiles(tmp_path / "forecast_root")
         open_tiles(page, contract=True)
         page.locator(".forecast-run-tile").first.wait_for()
@@ -281,7 +282,7 @@ def test_contract_tiles_masonry_curves_filters_and_ensembles(tmp_path, monkeypat
 
 
 def test_native_loss_curves_and_results_run_names(tmp_path):
-    with session(tmp_path, port=0) as (page, _base):
+    with session(tmp_path) as (page, _base):
         run_id = make_saved_tiles(tmp_path / "forecast_root")
         open_tiles(page)
         name = page.locator(f'.forecast-run-row[data-run-id="{run_id}"] .name').inner_text()
@@ -330,7 +331,7 @@ def test_native_loss_curves_and_results_run_names(tmp_path):
 
 
 def test_contract_curve_drawing_and_loading(tmp_path):
-    with session(tmp_path, port=0) as (page, _base):
+    with session(tmp_path) as (page, _base):
         run_id = make_saved_tiles(tmp_path / "forecast_root")
         run_path = tmp_path / "forecast_root/.forecast-runs" / run_id
         result = json.loads((run_path / "result.json").read_text())
@@ -428,7 +429,7 @@ def test_contract_curve_drawing_and_loading(tmp_path):
 
 
 def test_ensemble_ratio_states_and_repaint(tmp_path):
-    with session(tmp_path, port=0) as (page, _base):
+    with session(tmp_path) as (page, _base):
         page.wait_for_function("() => typeof forecastCreateRunTile === 'function'")
         for ratio, baseline in ((0.81, True), (1.2, True), (1.0, True), (None, False)):
             result = page.evaluate(
@@ -467,7 +468,7 @@ def test_ensemble_ratio_states_and_repaint(tmp_path):
 
 
 def test_pruned_run_tiles_show_exit_score_and_pending_colour(tmp_path):
-    with session(tmp_path, port=0) as (page, _base):
+    with session(tmp_path) as (page, _base):
         page.wait_for_function("() => typeof forecastCreateRunTile === 'function'")
         result = page.evaluate(
             """() => {
@@ -494,7 +495,7 @@ def test_pruned_run_tiles_show_exit_score_and_pending_colour(tmp_path):
 
 
 def test_ensemble_cards_list_members_without_charts_or_menus(tmp_path):
-    with session(tmp_path, port=0) as (page, _base):
+    with session(tmp_path) as (page, _base):
         page.wait_for_function("() => typeof forecastCreateRunTile === 'function'")
         page.evaluate(
             """() => {
@@ -526,7 +527,7 @@ def test_ensemble_cards_list_members_without_charts_or_menus(tmp_path):
 
 @pytest.mark.parametrize("tile_state", ["matching", "different", "hidden", "absent"])
 def test_results_picker_saved_ensemble_has_one_selected_option(tmp_path, tile_state):
-    with session(tmp_path, port=0) as (page, _base):
+    with session(tmp_path) as (page, _base):
         write_multifamily_run(tmp_path / "forecast_root")
         open_tiles(page, contract=True)
         page.click("#regression-config-mode-warm")
@@ -569,7 +570,7 @@ def test_results_picker_lists_and_selects_every_saved_tile(tmp_path, better_ense
     from smolsmort.forecast.tables import read_table
     from smolsmort.forecast.tiles import read_tiles
 
-    with session(tmp_path, port=0) as (page, _base):
+    with session(tmp_path) as (page, _base):
         run_id = write_multifamily_run(tmp_path / "forecast_root")
         run = tmp_path / "forecast_root/.forecast-runs" / run_id
         if better_ensemble:
@@ -1432,7 +1433,7 @@ def test_chart_missing_latest_metric_did_not_highlight_older_generation(tmp_path
 
 
 def test_run_panels_fit_config_and_keep_layout_across_views(tmp_path):
-    with session(tmp_path, width=1600, port=0) as (page, _base):
+    with session(tmp_path, width=1600) as (page, _base):
         make_saved_tiles(tmp_path / "forecast_root")
         open_tiles(page)
         progress = page.locator(".forecast-run-progress-panel:has(#regression-run-title)")

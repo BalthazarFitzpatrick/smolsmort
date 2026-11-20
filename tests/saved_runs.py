@@ -1,6 +1,7 @@
 """saved-run builders shared by the export tests; registered as fixtures through conftest"""
 
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -121,3 +122,15 @@ def input_run(saved_run, tmp_path):
     request["prepared"] = str(prepared.folder)
     write_json(folder / "request.json", request)
     return folder, request, models, ensemble
+
+
+def real_run_folder(run_id: str) -> Path:
+    """a saved run from a real workspace; opt in by naming its .forecast-runs folder in
+    SMOLSMORT_REAL_RUNS, otherwise the test skips with that reason"""
+    root = os.environ.get("SMOLSMORT_REAL_RUNS")
+    if not root:
+        pytest.skip("real-data test; set SMOLSMORT_REAL_RUNS to a .forecast-runs folder")
+    folder = Path(root) / run_id
+    if not folder.is_dir():
+        pytest.skip(f"run {run_id} not found under SMOLSMORT_REAL_RUNS")
+    return folder

@@ -11,16 +11,11 @@ import pytest
 pytest.importorskip("playwright")
 pytest.importorskip("xgboost")
 
+from forecast_browser import open_info, show_tab, switch_to_regression
 from forecast_ui_audit import assert_family_layout, settle_menu
 from playwright.sync_api import expect
 from shots import shot_dir
-from test_forecast_ui_browser import (
-    open_info,
-    session,
-    show_tab,
-    switch_to_regression,
-    with_error_metrics,
-)
+from test_forecast_ui_browser import session, with_error_metrics
 
 from smolsmort.forecast.tables import write_table
 

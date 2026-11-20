@@ -7,8 +7,9 @@ import pytest
 
 pytest.importorskip("playwright")
 
+from forecast_browser import show_tab, switch_to_regression
 from playwright.sync_api import expect
-from test_forecast_ui_browser import session, show_tab, switch_to_regression
+from test_forecast_ui_browser import session
 
 
 def test_grid_controls_save_selected_axes_and_keep_sources(tmp_path):
@@ -23,7 +24,7 @@ def test_grid_controls_save_selected_axes_and_keep_sources(tmp_path):
             {"name": "value", "role": "target", "aggregation": "sum"},
         ],
     }
-    with session(tmp_path, port=0) as (page, _base):
+    with session(tmp_path) as (page, _base):
         root = tmp_path / "forecast_root"
         (root / "request.json").write_text(json.dumps({"spec": spec}))
         grid = {"horizon": [8, 12], "grouping": {"client groups": spec, "total": "request.json"}}
@@ -70,7 +71,7 @@ def test_plan_controls_saved_edits_and_polled_without_replacing_form(tmp_path):
     }
     calls = []
     saved = []
-    with session(tmp_path, port=0) as (page, _base):
+    with session(tmp_path) as (page, _base):
 
         def handle(route):
             request = route.request

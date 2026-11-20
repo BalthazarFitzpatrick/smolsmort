@@ -3,10 +3,10 @@
 import csv
 import io
 import json
-from pathlib import Path
 
 import numpy as np
 import pytest
+from saved_runs import real_run_folder
 
 from smolsmort.forecast import evaluate as ev
 from smolsmort.forecast import views
@@ -32,11 +32,7 @@ HEADER = [
     "total_lower_80",
     "total_upper_80",
 ]
-REAL_RUN = (
-    Path.home()
-    / "Documents/dev/ai_lab/forecast_workspace/.forecast-runs"
-    / "20261115-155627-6f006a"
-)
+REAL_RUN_ID = "20261115-155627-6f006a"
 
 
 def read_csv(data):
@@ -313,8 +309,8 @@ def test_tile_selection_does_not_write_caches(saved_run, cached):
     assert before == {path: path.read_bytes() for path in folder.rglob("*") if path.is_file()}
 
 
-@pytest.mark.skipif(not REAL_RUN.exists(), reason="real run fixture is local")
 def test_real_run_row_count_and_required_cells():
+    REAL_RUN = real_run_folder(REAL_RUN_ID)
     request = views.read_request(REAL_RUN)
     selected = views._select_model(REAL_RUN, views._require_done(REAL_RUN), {})
     paths = {

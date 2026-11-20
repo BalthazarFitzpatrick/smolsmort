@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import threading
 from contextlib import contextmanager
 from pathlib import Path
 from shutil import copytree
@@ -11,18 +10,13 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 import pytest
-import review_world
+from forecast_browser import forecast_page, open_info, show_tab, switch_to_regression
 from forecast_fixtures import write_panel
 from forecast_ui_audit import settle_menu
 from shots import shot_dir
 from test_forecast_progress_browser import write_multifamily_run
-from test_forecast_ui_browser import open_info, show_tab, switch_to_regression
 
-from smolsmort.forecast import runs
-from smolsmort.forecast.tab import forecast_tab
 from smolsmort.forecast.tables import read_table, write_table
-from smolsmort.review.server import build_app, serve
-from smolsmort.review_ui.server import STATIC
 
 pytest.importorskip("duckdb")
 sync_playwright = pytest.importorskip("playwright.sync_api").sync_playwright
@@ -140,8 +134,6 @@ def horizon_session(
     horizon=3,
     short_validation=False,
 ):
-    errors = []
-    review_world.register_world_backend()
     root = tmp_path / "forecast_root"
     root.mkdir()
     write_panel(root, weeks=60)
@@ -156,36 +148,14 @@ def horizon_session(
     def reject_worker(*_args, **_kwargs):
         pytest.fail("browser checks must not launch forecast workers")
 
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(runs, "start_run", reject_worker)
-        patch.setattr(runs, "_alive", lambda folder: running and folder.name == run_id)
-        world = review_world.make_world(tmp_path / "review", patch)
-        app = build_app(
-            backend="world",
-            ui_dir=STATIC,
-            tabs=[forecast_tab()],
-            pool=world.tiles,
-            bases_file=world.root / "bases.json",
-            crop_file=world.root / "crop.json",
-        )
-        app.state.set_bases({"forecast": str(root)})
-        server = serve(app, port=0)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(headless=True)
-                page = browser.new_page(viewport={"width": width, "height": 900})
-                page.on("pageerror", lambda error: errors.append(str(error)))
-                page.goto(f"http://127.0.0.1:{server.server_port}/")
-                yield page, run_id
-                browser.close()
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=5)
-            review_world.unregister_world_backend()
-    assert not errors, errors
+    with forecast_page(
+        tmp_path,
+        root,
+        width=width,
+        start_run=reject_worker,
+        alive=lambda folder: running and folder.name == run_id,
+    ) as (page, _base):
+        yield page, run_id
 
 
 def open_horizon_run(page, run_id: str) -> None:

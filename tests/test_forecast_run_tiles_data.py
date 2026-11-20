@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from saved_runs import real_run_folder
 
 from smolsmort.forecast import plan_sets, runs, tiles
 from smolsmort.forecast.tables import write_table
@@ -103,12 +104,7 @@ def test_saved_ensemble_views_have_calibrated_bands(tmp_path, monkeypatch):
 
 
 def test_real_ensemble_scores_match_original_golden():
-    folder = (
-        Path.home()
-        / "Documents/dev/ai_lab/forecast_workspace/.forecast-runs/20261104-140018-573593"
-    )
-    if not folder.exists():
-        pytest.skip("real run fixture is local")
+    folder = real_run_folder("20261104-140018-573593")
     golden = json.loads(
         (Path(__file__).parent / "fixtures/ensemble_scores_golden.json").read_text()
     )

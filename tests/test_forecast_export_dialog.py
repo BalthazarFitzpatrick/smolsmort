@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from saved_runs import write_json
+from saved_runs import real_run_folder, write_json
 
 from smolsmort.forecast import tab, views
 from smolsmort.forecast.export_bundle import (
@@ -629,10 +629,7 @@ def test_real_run_input_smoke(tmp_path):
     from smolsmort.forecast.prep import _literal, _quote
     from smolsmort.forecast.tables import connect, read_table
 
-    workspace = Path.home() / "Documents" / "dev" / "ai_lab" / "forecast_workspace"
-    folder = workspace / ".forecast-runs" / "20261115-155627-6f006a"
-    if not (folder / "request.json").is_file():
-        pytest.skip("real run absent")
+    folder = real_run_folder("20261115-155627-6f006a")
     request = json.loads((folder / "request.json").read_text())
     source = Path(request["spec"]["source"])
     if not source.is_file() or not (Path(request["prepared"]) / "panel.parquet").is_file():
