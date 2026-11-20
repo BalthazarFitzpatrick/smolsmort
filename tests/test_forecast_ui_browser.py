@@ -273,6 +273,10 @@ def test_forecast_results_warned_about_excluded_series(tmp_path, width):
                 json={"columns": ["day"], "rows": [], "page": 0, "total": 0}
             ),
         )
+        page.route(
+            "**/api/forecast-filter-values?**",
+            lambda route: route.fulfill(json={"values": {}}),
+        )
         switch_to_regression(page)
         page.select_option("#topic-flavour", "timeseries")
         show_tab(page, "regression-results")
@@ -1560,6 +1564,10 @@ def test_forecast_controls_follow_the_shared_row_height(tmp_path, width):
                     "total": 1,
                 }
             ),
+        )
+        page.route(
+            "**/api/forecast-filter-values?**",
+            lambda route: route.fulfill(json={"values": {"project": ["one"]}}),
         )
 
         def capture(state):

@@ -192,19 +192,57 @@ function forecastModelLabel(view) {
     : view.family || 'xgboost';
 }
 
-function forecastFillTable(table, columns, rows) {
+// keyed dom reconcile: rebuild changed nodes (capture/restore keeps open menus and focus), reorder, drop leftovers
+function reconcileForecastTiles(grid, entries, {dataKey, keyOf, signature, create, capture, restore}) {
+  const existing = new Map([...grid.children].map(node => [node.dataset[dataKey], node]));
+  entries.forEach((tile, index) => {
+    const old = existing.get(keyOf(tile));
+    const sig = signature(tile, index);
+    let node = old;
+    if (!node || node.dataset.signature !== sig) {
+      const state = old ? capture(old) : {openMenus: [], open: [], focus: null, focusedMenu: null};
+      node = create(tile, index);
+      node.dataset.signature = sig;
+      if (old) old.replaceWith(node); else grid.append(node);
+      restore(node, state);
+    }
+    if (grid.children[index] !== node) grid.insertBefore(node, grid.children[index] || null);
+    existing.delete(keyOf(tile));
+  });
+  existing.forEach(node => node.remove());
+}
+
+// first selected metric that has tile data, wape when none does
+function forecastResolveTileMetric(selectedIds, registry, tiles) {
+  const metricKeys = new Set((tiles || []).flatMap(tile => Object.keys(tile.metrics || {})));
+  return selectedIds.map(id => {
+    if (id === 'test_ratio') return null;
+    if (id === 'validation_error') return 'wape';
+    const name = registry.find(entry => entry.id === id)?.name;
+    return metricKeys.has(name) ? name : metricKeys.has(id) ? id : null;
+  }).find(Boolean) || 'wape';
+}
+
+// options: caption text, missing marker for empty cells, decorateHead(th, index), decorateRow(tr, values, index)
+function forecastFillTable(table, columns, rows, {caption, missing = '-', decorateHead, decorateRow} = {}) {
   table.replaceChildren();
+  if (caption) table.append(forecastNode('caption', 'field-label', caption));
   const head = table.createTHead().insertRow();
-  columns.forEach(label => head.append(label instanceof Node ? label : forecastNode('th', '', label)));
+  columns.forEach((label, index) => {
+    const th = label instanceof Node ? label : forecastNode('th', '', label);
+    if (decorateHead) decorateHead(th, index);
+    head.append(th);
+  });
   const body = table.createTBody();
-  rows.forEach(values => {
+  rows.forEach((values, index) => {
     const row = body.insertRow();
     values.forEach(value => {
-      const cell = value instanceof Node ? value : forecastNode('td', '', String(value ?? '-'));
-      if (value instanceof Node) { row.append(cell); return; }
+      if (value instanceof Node) { row.append(value); return; }
+      const cell = forecastNode('td', '', String(value ?? missing));
       cell.title = cell.textContent;
       row.append(cell);
     });
+    if (decorateRow) decorateRow(row, values, index);
   });
 }
 
@@ -285,8 +323,8 @@ function forecastFamilyGroups(families) {
   });
 }
 
-function forecastNumber(value) {
-  return Number.isFinite(value) ? String(Number(value.toPrecision(4))) : '-';
+function forecastNumber(value, missing = '-') {
+  return Number.isFinite(value) ? String(Number(value.toPrecision(4))) : missing;
 }
 
 function forecastMetricNumber(metric, value) {
@@ -493,7 +531,7 @@ function forecastRunTileChart(tile, tiles, metric, training, selected = 'best') 
     const oneShot = generations.length && generations.every(([, curve]) => valuesFor(curve).length <= 1);
     const shown = member.curves?.[selected === 'best' ? member.best_generation : selected];
     const current = shown ? valuesFor(shown).filter(Number.isFinite).at(-1) : null;
-    currentValue.textContent = Number.isFinite(current) ? Number(current.toPrecision(4)) : '–';
+    currentValue.textContent = forecastNumber(current, '–');
     const allValues = generations.flatMap(([, curve]) => valuesFor(curve)).filter(Number.isFinite);
     if (!allValues.length) return;
     recorded = true;
@@ -538,7 +576,7 @@ function forecastRunTileChart(tile, tiles, metric, training, selected = 'best') 
           dot.setAttribute('cx', '6'); dot.setAttribute('cy', '6'); dot.setAttribute('r', '3');
           dot.style.fill = `var(${colour})`;
           dotSvg.append(dot);
-          marker.append(dotSvg, document.createTextNode(`${curveMetric} ${Number(values.find(Number.isFinite).toPrecision(4))}`));
+          marker.append(dotSvg, document.createTextNode(`${curveMetric} ${forecastNumber(values.find(Number.isFinite))}`));
           chart.append(marker);
           segment = [];
           return;
@@ -571,7 +609,7 @@ function forecastRunTileChart(tile, tiles, metric, training, selected = 'best') 
         marker.dataset.generation = generation;
         if (generation === selected) marker.dataset.selected = 'true';
         const title = document.createElementNS(svg.namespaceURI, 'title');
-        title.textContent = `gen ${generation} · ${curveMetric} ${Number(values.find(Number.isFinite).toPrecision(4))}`;
+        title.textContent = `gen ${generation} · ${curveMetric} ${forecastNumber(values.find(Number.isFinite))}`;
         marker.append(title);
         svg.append(marker);
       }
@@ -627,7 +665,7 @@ function forecastCreateRunTile(tile, index, tiles, metric, legacy, metrics, sele
   const score = tile.metrics?.wape || {
     validation: tile.curves?.[tile.best_generation]?.validation?.wape?.at(-1),
   };
-  const format = value => Number.isFinite(value) ? Number(value.toPrecision(4)) : '–';
+  const format = value => forecastNumber(value, '–');
   title.append(forecastNode('span', 'forecast-tile-name', `#${index + 1} ${forecastRunTileLabel(tile, tiles)}`));
   title.title = forecastRunTileLabel(tile, tiles);
   title.append(forecastNode('span', 'forecast-tile-score',
@@ -712,7 +750,7 @@ function forecastGenerationMenu(tile, selected, onGeneration) {
     const curve = tile.curves?.[generation === 'best' ? tile.best_generation : generation];
     const wape = curve?.validation?.wape?.filter(Number.isFinite).at(-1);
     button.append(forecastNode('span', '', generation === 'best' ? 'best' : `gen ${generation}`),
-      forecastNode('span', 'forecast-tile-dim', `${generation === 'best' ? `gen ${tile.best_generation} · ` : ''}${Number.isFinite(wape) ? Number(wape.toPrecision(4)) : '–'}`));
+      forecastNode('span', 'forecast-tile-dim', `${generation === 'best' ? `gen ${tile.best_generation} · ` : ''}${forecastNumber(wape, '–')}`));
     button.type = 'button';
     button.dataset.generation = generation;
     button.setAttribute('aria-pressed', String(generation === selected));
@@ -1218,13 +1256,23 @@ function forecastInlineSelect(options, value, onPick, label) {
   return wrap;
 }
 
-// extend shared rows with score cells; shared menu owns selection, focus and dismissal
-class ForecastResultsMenu extends Menu {
+// forecast menus add css classes (and optionally row tooltips) on top of the shared Menu build
+class ForecastDecoratedMenu extends Menu {
+  get menuClasses() { return []; }
+
+  get titledRows() { return false; }
+
   _build() {
-    const el = super._build();
-    el.classList.add('forecast-results-menu');
-    return el;
+    const panel = super._build();
+    panel.classList.add(...this.menuClasses);
+    if (this.titledRows) panel.querySelectorAll('.menu-item').forEach(row => { row.title = row.textContent; });
+    return panel;
   }
+}
+
+// extend shared rows with score cells; shared menu owns selection, focus and dismissal
+class ForecastResultsMenu extends ForecastDecoratedMenu {
+  get menuClasses() { return ['forecast-results-menu']; }
 
   _row(item, section) {
     const row = super._row(item, section);
@@ -1243,33 +1291,28 @@ class ForecastResultsMenu extends Menu {
   }
 }
 
-class ForecastSetupMenu extends Menu {
+class ForecastSetupMenu extends ForecastDecoratedMenu {
   constructor(key, options) {
     super(options);
     this.key = key;
   }
 
-  _build() {
-    const panel = super._build();
-    panel.classList.add('forecast-setup-menu', `forecast-setup-${this.key}`);
-    panel.querySelectorAll('.menu-item').forEach(row => { row.title = row.textContent; });
-    return panel;
-  }
+  get menuClasses() { return ['forecast-setup-menu', `forecast-setup-${this.key}`]; }
+
+  get titledRows() { return true; }
 }
 
-class ForecastFieldMenu extends Menu {
-  _build() {
-    const panel = super._build();
-    panel.classList.add('forecast-field-menu');
-    panel.querySelectorAll('.menu-item').forEach(row => { row.title = row.textContent; });
-    return panel;
-  }
+class ForecastFieldMenu extends ForecastDecoratedMenu {
+  get menuClasses() { return ['forecast-field-menu']; }
+
+  get titledRows() { return true; }
 }
 
-class ForecastBlendMenu extends Menu {
+class ForecastBlendMenu extends ForecastDecoratedMenu {
+  get menuClasses() { return ['forecast-blend-menu']; }
+
   _build() {
     const panel = super._build();
-    panel.classList.add('forecast-blend-menu');
     if (this._trigger?.id) panel.id = `${this._trigger.id}-menu`;
     return panel;
   }
@@ -1288,12 +1331,8 @@ class ForecastBlendMenu extends Menu {
   }
 }
 
-class ForecastInfoMenu extends Menu {
-  _build() {
-    const panel = super._build();
-    panel.classList.add('forecast-info-menu');
-    return panel;
-  }
+class ForecastInfoMenu extends ForecastDecoratedMenu {
+  get menuClasses() { return ['forecast-info-menu']; }
 }
 
 function forecastMountPlan(rail) {
@@ -2929,35 +2968,30 @@ class ForecastTopic {
       size: forecastTileSize(entries, metrics)};
     grid.style.setProperty('--tile-size', `${rounds.size}px`);
     setText(`${this.topic}-tiles-count`, `candidates · ${entries.length}`);
-    const existing = new Map([...grid.children].map(node => [node.dataset.family, node]));
-    entries.forEach((tile, index) => {
-      let node = existing.get(tile.name);
-      const signature = JSON.stringify([tile, index, metrics, scale, searchScale, rounds]);
-      if (!node || node.dataset.signature !== signature) {
-        const openMenus = [...(node?.querySelectorAll('details[open]') || [])].map(details => ({
+    reconcileForecastTiles(grid, entries, {
+      dataKey: 'family', keyOf: tile => tile.name,
+      signature: (tile, index) => JSON.stringify([tile, index, metrics, scale, searchScale, rounds]),
+      create: (tile, index) => forecastCreateTile(tile, index, metrics, scale, searchScale, rounds),
+      capture: node => {
+        const openMenus = [...node.querySelectorAll('details[open]')].map(details => ({
           side: details.closest('.forecast-tile-back') ? 'back' : 'front',
           key: details.dataset.menu, scroll: details.querySelector('.forecast-tile-menu').scrollTop,
         }));
-        const active = node?.contains(document.activeElement) ? document.activeElement.closest('details') : null;
+        const active = node.contains(document.activeElement) ? document.activeElement.closest('details') : null;
         const focus = active ? {
           side: active.closest('.forecast-tile-back') ? 'back' : 'front', key: active.dataset.menu,
         } : null;
-        const fresh = forecastCreateTile(tile, index, metrics, scale, searchScale, rounds);
-        fresh.dataset.signature = signature;
-        if (node) node.replaceWith(fresh);
-        else grid.append(fresh);
-        node = fresh;
+        return {openMenus, focus};
+      },
+      restore: (node, {openMenus, focus}) => {
         openMenus.forEach(({side, key, scroll}) => {
           const details = node.querySelector(`.forecast-tile-${side} details[data-menu="${key}"]`);
           details.open = true;
           details.querySelector('.forecast-tile-menu').scrollTop = scroll;
         });
         if (focus) node.querySelector(`.forecast-tile-${focus.side} details[data-menu="${focus.key}"] summary`).focus({preventScroll: true});
-      }
-      if (grid.children[index] !== node) grid.insertBefore(node, grid.children[index] || null);
-      existing.delete(tile.name);
+      },
     });
-    existing.forEach(node => node.remove());
     if (run && !entries.length) grid.append(forecastNode('div', 'forecast-tile-dim', 'family details not saved yet'));
     this.paintTileFlip();
   }
@@ -3005,28 +3039,25 @@ class ForecastTopic {
         : Number.isFinite(value) && Number.isFinite(baseline) && baseline > 0 ? value / baseline : undefined;
       if (tile.metrics) tile.metrics.test_ratio = {test: tile.test_ratio};
     });
-    const existing = new Map([...grid.children].map(node => [node.dataset.tileId, node]));
-    entries.forEach((tile, index) => {
-      const old = existing.get(tile.tile_id);
-      const selected = this.tileGenerations.get(tile.tile_id) || 'best';
-      const signature = JSON.stringify([tile, index, this.tileMetric, tiles, metrics, selected]);
-      let node = old;
-      if (!node || node.dataset.signature !== signature) {
-        const open = [...(node?.querySelectorAll('details[open]') || [])].map(item => item.dataset.menu);
-        const focusedMenu = node?.contains(document.activeElement) ? document.activeElement.closest('details')?.dataset.menu : null;
-        node = forecastCreateRunTile(tile, index, tiles, this.tileMetric, legacy.find(item => item.name === tile.family), metrics, selected, generation => {
+    reconcileForecastTiles(grid, entries, {
+      dataKey: 'tileId', keyOf: tile => tile.tile_id,
+      signature: (tile, index) => JSON.stringify(
+        [tile, index, this.tileMetric, tiles, metrics, this.tileGenerations.get(tile.tile_id) || 'best']),
+      create: (tile, index) => forecastCreateRunTile(tile, index, tiles, this.tileMetric,
+        legacy.find(item => item.name === tile.family), metrics,
+        this.tileGenerations.get(tile.tile_id) || 'best', generation => {
           this.tileGenerations.set(tile.tile_id, generation);
           this.paintContractTiles(run, grid);
-        });
-        node.dataset.signature = signature;
+        }),
+      capture: node => ({
+        open: [...node.querySelectorAll('details[open]')].map(item => item.dataset.menu),
+        focusedMenu: node.contains(document.activeElement) ? document.activeElement.closest('details')?.dataset.menu : null,
+      }),
+      restore: (node, {open, focusedMenu}) => {
         open.forEach(key => { const menu = node.querySelector(`details[data-menu="${key}"]`); if (menu) menu.open = true; });
-        if (old) old.replaceWith(node); else grid.append(node);
         if (focusedMenu) node.querySelector(`details[data-menu="${focusedMenu}"] summary`)?.focus({preventScroll: true});
-      }
-      if (grid.children[index] !== node) grid.insertBefore(node, grid.children[index] || null);
-      existing.delete(tile.tile_id);
+      },
     });
-    existing.forEach(node => node.remove());
   }
 
   paintTileFlip() {
@@ -3111,7 +3142,7 @@ class ForecastTopic {
     wrap.classList.remove('hidden');
     if (!this.lossChart) this.lossChart = timeChart(
       document.getElementById(`${this.topic}-loss-chart`), {
-        height: 220, yFormat: value => String(Number(value.toPrecision(4))),
+        height: 220, yFormat: value => forecastNumber(value),
       }
     );
     const style = getComputedStyle(document.documentElement);
@@ -3139,8 +3170,8 @@ class ForecastTopic {
   paintLeaderboard(rows) {
     const wrap = document.getElementById(`${this.topic}-leaderboard`);
     const table = document.getElementById(`${this.topic}-leaderboard-table`);
-    table.innerHTML = '';
     wrap.classList.toggle('hidden', !rows.length);
+    if (!rows.length) table.replaceChildren();
     if (!rows.length) return;
     const entries = rows.slice(0, 10);
     const metrics = this.selectedMetrics(this.runCache.get(this.selectedRunId));
@@ -3149,46 +3180,24 @@ class ForecastTopic {
     lossHeader.title = FORECAST_LOSS_HELP;
     const columns = ['rank', 'family', 'generation found', ...metrics.map(forecastMetricHeader),
       lossHeader, 'tree depth', 'learning rate (eta)', 'features'];
-    const caption = forecastNode('caption', 'field-label',
-      'best ten recipes, ranked by validation error; lower is better. recipe wape and mae use saved validation values; test metrics are unavailable');
-    table.appendChild(caption);
-    const thead = document.createElement('thead');
-    const head = document.createElement('tr');
-    columns.forEach(c => {
-      if (c instanceof Node) { head.appendChild(c); return; }
-      const th = document.createElement('th');
-      th.textContent = c;
-      head.appendChild(th);
-    });
-    thead.appendChild(head);
-    table.appendChild(thead);
-    const tbody = document.createElement('tbody');
-    entries.forEach((entry, index) => {
-      const row = document.createElement('tr');
-      row.classList.toggle('on', index === 0);
+    const caption = 'best ten recipes, ranked by validation error; lower is better. recipe wape and mae use saved validation values; test metrics are unavailable';
+    const rowValues = entries.map((entry, index) => {
       const genome = entry.genome || {};
       const params = genome.params || {};
       const count = Array.isArray(genome.families) ? new Set(genome.families).size : entry.families;
       const loss = forecastNode('td', '', FORECAST_OBJECTIVES[genome.objective] || genome.objective || '-');
       loss.title = FORECAST_LOSS_HELP;
-      const values = [String(index + 1), forecastModelFamily(entry), integer(entry.generation),
-        ...metrics.map(metric => forecastMetricValue(metric, entry)), loss,
-        integer(params.max_depth), forecastNumber(params.eta)];
-      values.forEach(value => {
-        if (value instanceof Node) { row.appendChild(value); return; }
-        const td = document.createElement('td');
-        td.textContent = value;
-        td.title = String(value);
-        row.appendChild(td);
-      });
       const features = forecastNode('td');
-      const head = forecastNode('button', 'toggle dropdown-head', `${integer(count)} features`);
-      head.onclick = () => this.openRecipeMenu(head, entry, index + 1);
-      features.append(head);
-      row.append(features);
-      tbody.appendChild(row);
+      const toggle = forecastNode('button', 'toggle dropdown-head', `${integer(count)} features`);
+      toggle.onclick = () => this.openRecipeMenu(toggle, entry, index + 1);
+      features.append(toggle);
+      return [String(index + 1), forecastModelFamily(entry), integer(entry.generation),
+        ...metrics.map(metric => forecastMetricValue(metric, entry)), loss,
+        integer(params.max_depth), forecastNumber(params.eta), features];
     });
-    table.appendChild(tbody);
+    forecastFillTable(table, columns, rowValues, {
+      caption, decorateRow: (row, values, index) => row.classList.toggle('on', index === 0),
+    });
   }
 
   async loadRuns() {
@@ -3412,14 +3421,8 @@ class ForecastTopic {
     document.getElementById(`${this.topic}-results-model`).onclick = evt => {
       if (!this.resultsView) return;
       const tiles = this.resultsView.run_tiles;
-      const metricKeys = new Set((tiles || []).flatMap(tile => Object.keys(tile.metrics || {})));
-      const registry = this.resultsView.metric_registry || this.metricRegistry;
-      const metric = this.selectedMetricIds.map(id => {
-        if (id === 'test_ratio') return null;
-        if (id === 'validation_error') return 'wape';
-        const name = registry.find(entry => entry.id === id)?.name;
-        return metricKeys.has(name) ? name : metricKeys.has(id) ? id : null;
-      }).find(Boolean) || 'wape';
+      const metric = forecastResolveTileMetric(this.selectedMetricIds,
+        this.resultsView.metric_registry || this.metricRegistry, tiles);
       const baseline = tiles?.find(tile => tile.family === 'snaive' && tile.kind !== 'ensemble')
         ?.metrics?.[metric]?.test;
       const selection = this.resultsView.view;
@@ -3603,13 +3606,11 @@ class ForecastTopic {
     let model = choices.find(choice => choice.on)?.id || null;
     let include = 'details only';
     const storageKey = 'smolsmort:forecast:export-folder';
-    const backdrop = forecastNode('div', 'modal-backdrop');
-    const dialog = forecastNode('div', 'panel-floating modal-dialog forecast-export-dialog');
-    dialog.id = `${this.topic}-export-popup`;
-    dialog.setAttribute('role', 'dialog');
-    dialog.setAttribute('aria-modal', 'true');
-    dialog.setAttribute('aria-label', 'export run');
-    dialog.append(forecastNode('div', 'popup-title', 'export run'), forecastNode('div', 'h-divider'));
+    const {panel: dialog, close: dismiss} = openModal({
+      id: `${this.topic}-export-popup`, title: 'export run', className: 'forecast-export-dialog',
+      divider: true, label: 'export run', escape: true,
+      restoreFocus: document.getElementById(`${this.topic}-export-dialog`),
+    });
     const addField = (label, input) => {
       const row = forecastNode('div', 'settings-field');
       row.append(forecastNode('span', 'field-label', label), input);
@@ -3646,28 +3647,14 @@ class ForecastTopic {
     submit.type = 'button';
     submit.id = `${this.topic}-export-submit`;
     submit.disabled = !model;
-    const dismiss = () => {
-      backdrop.remove();
-      document.removeEventListener('keydown', escape);
-      document.getElementById(`${this.topic}-export-dialog`).focus({preventScroll: true});
-    };
-    const escape = event => {
-      if (event.key === 'Escape' && !document.querySelector('.menu-panel')) dismiss();
-    };
     close.onclick = dismiss;
     submit.onclick = async () => {
       if (!model) return;
       submit.disabled = true;
       status.textContent = 'exporting';
       try {
-        const metricKeys = new Set(tiles.flatMap(tile => Object.keys(tile.metrics || {})));
-        const registry = view.metric_registry || this.metricRegistry;
-        const metric = this.selectedMetricIds.map(id => {
-          if (id === 'test_ratio') return null;
-          if (id === 'validation_error') return 'wape';
-          const name = registry.find(entry => entry.id === id)?.name;
-          return metricKeys.has(name) ? name : metricKeys.has(id) ? id : null;
-        }).find(Boolean) || 'wape';
+        const metric = forecastResolveTileMetric(this.selectedMetricIds,
+          view.metric_registry || this.metricRegistry, tiles);
         const result = await api('/api/forecast-export-bundle', {id: runId, model, include,
           folder: folder.value, metric});
         if (result.error) throw new Error(result.error);
@@ -3681,9 +3668,6 @@ class ForecastTopic {
     };
     buttons.append(close, submit);
     dialog.append(buttons);
-    backdrop.append(dialog);
-    document.body.append(backdrop);
-    document.addEventListener('keydown', escape);
     close.focus();
     try {
       let saved;
@@ -3725,21 +3709,15 @@ class ForecastTopic {
       : [forecastNode('div', '', 'no notes')]));
   }
 
-  // one page of the table, unfiltered, just to learn what values each dimension carries
+  // distinct values per dimension over the whole saved result
   async loadFilterChoices() {
     const load = this.resultsLoad;
     this.filterChoices = {};
     const dims = this.dims();
     if (!dims.length) { this.paintFilterHead(); return; }
-    const data = await api(
-      `/api/forecast-table?id=${encodeURIComponent(this.resultsRunId)}&page=0&size=2000`
-    );
+    const data = await api(`/api/forecast-filter-values?id=${encodeURIComponent(this.resultsRunId)}`);
     if (load !== this.resultsLoad) return;
-    dims.forEach(dim => {
-      const idx = data.columns.indexOf(dim);
-      if (idx < 0) return;
-      this.filterChoices[dim] = [...new Set(data.rows.map(r => r[idx]))].filter(v => v != null);
-    });
+    dims.forEach(dim => { this.filterChoices[dim] = data.values?.[dim] || []; });
     this.paintFilterHead();
   }
 
@@ -4050,31 +4028,19 @@ class ForecastTopic {
 
   paintTable(data) {
     const table = document.getElementById(`${this.topic}-results-table`);
-    table.innerHTML = '';
-    const head = document.createElement('tr');
     const labels = data.objective === 'hazard'
       ? {median_weeks: 'median weeks', p10_weeks: 'p10 weeks', p90_weeks: 'p90 weeks', predicted_date: 'predicted date'} : {};
-    data.columns.forEach(col => {
-      const th = document.createElement('th');
-      th.textContent = labels[col] || col;
-      th.classList.add('sortable');
-      th.onclick = () => {
-        this.tableState.desc = this.tableState.sort === col ? !this.tableState.desc : false;
-        this.tableState.sort = col;
-        this.refreshTable();
-      };
-      head.appendChild(th);
-    });
-    table.appendChild(head);
-    data.rows.forEach(row => {
-      const tr = document.createElement('tr');
-      row.forEach(value => {
-        const td = document.createElement('td');
-        td.textContent = value === null || value === undefined ? '' : String(value);
-        td.title = td.textContent;
-        tr.appendChild(td);
-      });
-      table.appendChild(tr);
+    forecastFillTable(table, data.columns.map(col => labels[col] || col), data.rows, {
+      missing: '',
+      decorateHead: (th, index) => {
+        const col = data.columns[index];
+        th.classList.add('sortable');
+        th.onclick = () => {
+          this.tableState.desc = this.tableState.sort === col ? !this.tableState.desc : false;
+          this.tableState.sort = col;
+          this.refreshTable();
+        };
+      },
     });
     const pages = Math.max(1, Math.ceil(data.total / FORECAST_PAGE_SIZE));
     setText(`${this.topic}-page-info`, `page ${data.page + 1} / ${pages} - ${data.total} rows`);

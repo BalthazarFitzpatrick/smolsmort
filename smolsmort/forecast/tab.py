@@ -664,6 +664,17 @@ def _table(app, query: dict) -> dict:
         raise RequestError(str(exc), 400) from exc
 
 
+def _filter_values(app, query: dict) -> dict:
+    run_dir = _run_dir(app, query.get("id", ""))
+    request = views.read_request(run_dir)
+    try:
+        return views.filter_values(run_dir, request, query)
+    except views.ViewError as exc:
+        raise RequestError(str(exc), 409) from exc
+    except ValueError as exc:
+        raise RequestError(str(exc), 400) from exc
+
+
 def _export_settings(app, query: dict) -> dict:
     from smolsmort.forecast.export_bundle import default_folder
 
@@ -749,6 +760,7 @@ def forecast_tab() -> Tab:
             "/api/forecast-run-tiles": _run_tiles,
             "/api/forecast-view": _view,
             "/api/forecast-table": _table,
+            "/api/forecast-filter-values": _filter_values,
             "/api/forecast-export-settings": _export_settings,
         },
         post={

@@ -67,8 +67,11 @@ async function pickDirectory(type, anchor) {
   if (menu) wireField();
 }
 
+let settingsModal = null;
+
 function closeSettings() {
-  document.getElementById('settings-popup')?.parentElement.remove();
+  settingsModal?.close();
+  settingsModal = null;
 }
 
 async function openSettings() {
@@ -77,11 +80,8 @@ async function openSettings() {
   baseRoot = bases.root || '';
   Object.keys(bases).forEach(type => { baseChosen[type] = asList(bases[type]); });
   const types = Object.keys(bases).filter(type => type !== 'root');
-  const backdrop = document.createElement('div');
-  backdrop.className = 'modal-backdrop';
-  backdrop.innerHTML = `<div class="panel-floating modal-dialog" id="settings-popup">
-    <div class="popup-title">where each kind of data lives</div>
-    <div class="h-divider"></div>
+  settingsModal = openModal({id: 'settings-popup', title: 'where each kind of data lives', divider: true});
+  settingsModal.panel.insertAdjacentHTML('beforeend', `
     <div class="settings-field"><span class="field-label">base path</span>
       <input id="base-root" class="text-field" type="text" spellcheck="false" readonly></div>
     ${types.map(type => `<div class="settings-field"><span class="field-label">${type}</span>
@@ -89,8 +89,7 @@ async function openSettings() {
     <div class="run-controls modal-buttons">
       <div class="toggle adds" id="settings-save">apply</div>
       <div class="toggle" id="settings-close">close</div>
-    </div></div>`;
-  document.body.appendChild(backdrop);
+    </div>`);
   document.getElementById('base-root').value = baseRoot;
   types.filter(type => EDITABLE_BASES.has(type)).forEach(type => {
     const head = document.getElementById(`base-${type}`);
