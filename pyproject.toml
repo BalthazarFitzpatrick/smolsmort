@@ -82,10 +82,12 @@ known-first-party = ["smolsmort"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
+# one worker per core; -n0 puts a run back on one process for a debugger
+addopts = "-n auto"
 
 [tool.uv.sources]
 # temporary commit pin until smortui is tagged
 ui-base = { git = "https://github.com/BalthazarFitzpatrick/smortui.git", rev = "7817ce17bd4ad44caabafe03e912a8159bdeddd2" }
 
 [dependency-groups]
-dev = ["ruff>=0.11.0", "pytest>=8.0", "torch>=2.0"]
+dev = ["ruff>=0.11.0", "pytest>=8.0", "pytest-xdist>=3.5", "torch>=2.0"]
