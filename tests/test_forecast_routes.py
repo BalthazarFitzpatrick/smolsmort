@@ -4,8 +4,6 @@ every forecast test uses (forecast_fixtures.py), never real data."""
 
 from __future__ import annotations
 
-import csv
-import io
 import json
 import time
 
@@ -560,23 +558,6 @@ def test_table_pages_and_sorts(series_run):
     assert "step" in page0["columns"] and "prediction" in page0["columns"]
     future_idx = page0["columns"].index("future")
     assert any(row[future_idx] for row in page0["rows"])
-
-
-def test_export_carries_the_ratio_on_every_row(series_run):
-    app, tab, run_id, _root = series_run
-    data = tab.images["/api/forecast-export/"][0](app, f"{run_id}.csv")
-    assert data is not None
-    text = data.decode()
-    lines = text.splitlines()
-    assert lines[0].startswith("# verdict:")
-    reader = csv.reader(io.StringIO("\n".join(lines[1:])))
-    header = next(reader)
-    assert "ratio" in header and "verdict" not in header
-    ratio_idx = header.index("ratio")
-    body = list(reader)
-    assert body
-    view = _get(app, tab, "/api/forecast-view", {"id": run_id})
-    assert all(float(row[ratio_idx]) == view["verdict"]["accuracy"]["ratio"] for row in body)
 
 
 def test_cancel_stops_a_run(app, tab):

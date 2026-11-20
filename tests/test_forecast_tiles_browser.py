@@ -638,10 +638,6 @@ def test_results_picker_lists_and_selects_every_saved_tile(tmp_path, better_ense
             )
             assert table_response.status == 200, table_response.text()
             assert table_response.json()["family"] == tile["family"]
-            export = page.request.get(
-                _base + page.locator("#regression-export").get_attribute("href")
-            )
-            assert export.status == 200, export.text()
 
 
 def test_saved_tile_states_scores_and_token_colours(tmp_path):

@@ -8,7 +8,6 @@ import csv
 import json
 import threading
 import time
-import urllib.request
 from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -365,7 +364,7 @@ def test_forecast_results_warned_about_excluded_series(tmp_path, width):
                 "node => node.closest('.forecast-results-header').nextElementSibling"
                 ".querySelector('[id$=\"-chart\"]') !== null"
             )
-            assert head.evaluate("node => node.nextElementSibling.id") == f"{TOPIC}-export"
+            assert head.evaluate("node => node.nextElementSibling.id") == f"{TOPIC}-export-dialog"
             sections = panel.locator(":scope > .menu-column-row > .menu-section")
             assert sections.count() == 2
             assert sections.nth(0).locator(":scope > .field-label").inner_text() == "verdict"
@@ -567,12 +566,9 @@ def test_forecast_regression_entity_flow(tmp_path):
         )
         assert page.locator(f"#{TOPIC}-results-table tr").count() > 1
 
-        export_href = page.get_attribute(f"#{TOPIC}-export", "href")
-        assert export_href
-        with urllib.request.urlopen(base + export_href, timeout=20) as response:
-            csv_bytes = response.read()
-        first_line = csv_bytes.decode().splitlines()[0]
-        assert first_line.startswith("# verdict:"), first_line
+        assert page.locator(f"#{TOPIC}-export-dialog").is_visible()
+        assert page.locator(f"#{TOPIC}-export").count() == 0
+        assert page.locator(f"#{TOPIC}-export-wide").count() == 0
 
 
 def test_results_chart_showed_both_ranges(tmp_path):

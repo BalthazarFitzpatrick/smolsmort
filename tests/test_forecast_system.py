@@ -14,6 +14,7 @@ import pytest
 from forecast_fixtures import write_panel, write_rows
 from test_forecast_routes import _entity_spec, _run_to_done, _timeseries_spec
 
+from smolsmort.forecast import views
 from smolsmort.forecast.features import buckets_for
 from smolsmort.forecast.tables import read_table
 
@@ -29,10 +30,9 @@ def _outcome(app, run_id):
     return run, request, json.loads((run / "result.json").read_text())
 
 
-def _export(app, tab, run_id) -> list[str]:
-    getter, content_type = tab.images["/api/forecast-export/"]
-    assert content_type == "text/csv"
-    return getter(app, f"{run_id}.csv").decode().splitlines()
+def _export(app, run_id) -> list[str]:
+    run, request, _ = _outcome(app, run_id)
+    return views.export_csv(run, request).decode().splitlines()
 
 
 @pytest.fixture(scope="module")
@@ -76,7 +76,7 @@ def test_entity_mode_predicts_every_open_row_and_exports_the_ratio(row_system):
     run, request, result = _outcome(app, run_id)
     forecast = read_table(run / "forecast.parquet")
     assert len(forecast["prediction"]) == request["summary"]["predict_rows"] > 0
-    lines = _export(app, tab, run_id)
+    lines = _export(app, run_id)
     assert lines[0].startswith("# verdict:")
     rows = list(csv.DictReader(io.StringIO("\n".join(lines[1:]))))
     assert len(rows) == len(forecast["prediction"])
@@ -103,5 +103,5 @@ def test_timeseries_mode_view_and_export_agree_with_the_run(series_system):
     assert view["verdict"] == result["verdict"]
     assert {s["id"].split(":")[0] for s in view["series"]} >= {"actual", "forecast"}
     assert view["bands"] and view["markers"]
-    lines = _export(app, tab, run_id)
+    lines = _export(app, run_id)
     assert lines[0] == f"# verdict: {result['verdict']['summary']}"

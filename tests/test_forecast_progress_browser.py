@@ -599,7 +599,7 @@ def test_multifamily_saved_run_named_models_and_explained_importance(tmp_path):
             page.locator("#regression-results-table tr").nth(1).locator("td").nth(1).inner_text()
             == "19"
         )
-        assert "/ensemble%3A" in page.locator("#regression-export").get_attribute("href")
+        assert page.locator("#regression-export-dialog").is_visible()
         assert page.locator("#regression-importance-family").inner_text() == "xgboost"
         page.screenshot(path=artifacts / "results-ensemble.png", full_page=True)
 

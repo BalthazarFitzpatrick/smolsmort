@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from smolsmort.forecast import evaluate as ev
-from smolsmort.forecast import tab, views
+from smolsmort.forecast import views
 from smolsmort.forecast.export_wide import export_wide_csv, normalize_columns
 from smolsmort.forecast.tables import read_table, write_table
 
@@ -311,19 +311,6 @@ def test_tile_selection_does_not_write_caches(saved_run, cached):
     assert float(rows[0]["forecast"]) == 12
     assert bool(rows[0]["lower_50"]) == cached
     assert before == {path: path.read_bytes() for path in folder.rglob("*") if path.is_file()}
-
-
-def test_route_selection_and_containment(saved_run, monkeypatch):
-    folder, request, _ = saved_run
-    monkeypatch.setattr(tab, "_runs_root", lambda app: folder.parent)
-    getter, mime = tab.forecast_tab().images["/api/forecast-export-wide/"]
-    assert mime == "text/csv"
-    assert getter(None, f"{folder.name}/winner.csv") == export_wide_csv(
-        folder, request, {"model": "winner"}
-    )
-    assert getter(None, "../outside.csv") is None
-    assert getter(None, f"{folder.name}.txt") is None
-    assert getter(None, f"{folder.name}/invalid.csv") is None
 
 
 @pytest.mark.skipif(not REAL_RUN.exists(), reason="real run fixture is local")
