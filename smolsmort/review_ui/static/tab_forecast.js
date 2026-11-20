@@ -192,6 +192,17 @@ function forecastModelLabel(view) {
     : view.family || 'xgboost';
 }
 
+// first selected metric that has tile data, wape when none does
+function forecastResolveTileMetric(selectedIds, registry, tiles) {
+  const metricKeys = new Set((tiles || []).flatMap(tile => Object.keys(tile.metrics || {})));
+  return selectedIds.map(id => {
+    if (id === 'test_ratio') return null;
+    if (id === 'validation_error') return 'wape';
+    const name = registry.find(entry => entry.id === id)?.name;
+    return metricKeys.has(name) ? name : metricKeys.has(id) ? id : null;
+  }).find(Boolean) || 'wape';
+}
+
 function forecastFillTable(table, columns, rows) {
   table.replaceChildren();
   const head = table.createTHead().insertRow();
@@ -3412,14 +3423,8 @@ class ForecastTopic {
     document.getElementById(`${this.topic}-results-model`).onclick = evt => {
       if (!this.resultsView) return;
       const tiles = this.resultsView.run_tiles;
-      const metricKeys = new Set((tiles || []).flatMap(tile => Object.keys(tile.metrics || {})));
-      const registry = this.resultsView.metric_registry || this.metricRegistry;
-      const metric = this.selectedMetricIds.map(id => {
-        if (id === 'test_ratio') return null;
-        if (id === 'validation_error') return 'wape';
-        const name = registry.find(entry => entry.id === id)?.name;
-        return metricKeys.has(name) ? name : metricKeys.has(id) ? id : null;
-      }).find(Boolean) || 'wape';
+      const metric = forecastResolveTileMetric(this.selectedMetricIds,
+        this.resultsView.metric_registry || this.metricRegistry, tiles);
       const baseline = tiles?.find(tile => tile.family === 'snaive' && tile.kind !== 'ensemble')
         ?.metrics?.[metric]?.test;
       const selection = this.resultsView.view;
@@ -3660,14 +3665,8 @@ class ForecastTopic {
       submit.disabled = true;
       status.textContent = 'exporting';
       try {
-        const metricKeys = new Set(tiles.flatMap(tile => Object.keys(tile.metrics || {})));
-        const registry = view.metric_registry || this.metricRegistry;
-        const metric = this.selectedMetricIds.map(id => {
-          if (id === 'test_ratio') return null;
-          if (id === 'validation_error') return 'wape';
-          const name = registry.find(entry => entry.id === id)?.name;
-          return metricKeys.has(name) ? name : metricKeys.has(id) ? id : null;
-        }).find(Boolean) || 'wape';
+        const metric = forecastResolveTileMetric(this.selectedMetricIds,
+          view.metric_registry || this.metricRegistry, tiles);
         const result = await api('/api/forecast-export-bundle', {id: runId, model, include,
           folder: folder.value, metric});
         if (result.error) throw new Error(result.error);
