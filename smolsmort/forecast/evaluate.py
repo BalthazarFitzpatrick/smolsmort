@@ -21,12 +21,22 @@ def mean_predictions(predictions):
     )
 
 
-def wape(y, p) -> float:
-    """sum of absolute errors over absolute actuals, on finite prediction pairs"""
+def abs_error_sums(y, p) -> tuple[float, float, int]:
+    """sum abs error, sum abs actual and pair count over finite actual and prediction pairs
+
+    the one primitive behind every wape; callers adapt zero and empty results to their own
+    missing-value contract
+    """
     y, p = np.asarray(y, dtype=float), np.asarray(p, dtype=float)
     known = np.isfinite(y) & np.isfinite(p)
-    total = np.abs(y[known]).sum()
-    return float(np.abs(y[known] - p[known]).sum() / total) if total else float("nan")
+    error = float(np.abs(y[known] - p[known]).sum())
+    return error, float(np.abs(y[known]).sum()), int(known.sum())
+
+
+def wape(y, p) -> float:
+    """wape contract: nan when no finite pair carries actual volume"""
+    error, total, _ = abs_error_sums(y, p)
+    return error / total if total else float("nan")
 
 
 def mae(y, p) -> float:

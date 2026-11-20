@@ -21,15 +21,18 @@ def prediction_metrics(actual, prediction):
     """
     import numpy as np
 
+    from smolsmort.forecast.evaluate import abs_error_sums
+
     actual, prediction = np.asarray(actual, dtype=float), np.asarray(prediction, dtype=float)
     keep = np.isfinite(actual) & np.isfinite(prediction)
     actual, prediction = actual[keep], prediction[keep]
     errors = np.abs(actual - prediction)
     positive = actual > 0
-    absolute = float(errors.sum()) if len(errors) else None
+    # wape contract: none when no pair or zero actual volume
+    absolute, denominator, count = abs_error_sums(actual, prediction)
+    absolute = absolute if count else None
     mean = float(errors.mean()) if len(errors) else None
     percentage = float(np.mean(errors[positive] / actual[positive])) if positive.any() else None
-    denominator = float(np.abs(actual).sum())
     return {
         "ape": percentage,
         "mape": percentage,
@@ -179,6 +182,7 @@ def _read_test_metrics(path, modified_ns, size):
                 return _unavailable_test(
                     "saved test predictions have no actual and prediction pair"
                 )
+            # sql form of evaluate.abs_error_sums, none on zero volume like prediction_metrics
             # use every saved holdout row, including horizon buckets, as the test verdict does
             known = f"isfinite({actual})"
             valid = f"{known} AND isfinite(prediction)"
