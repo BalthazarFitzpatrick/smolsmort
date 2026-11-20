@@ -1041,6 +1041,7 @@ absolute folder path; the last folder is remembered locally. exports create `<ru
 `details only` writes `README.md` and `recipe.json`; `details + predictions` adds results and
 wide csv files, `input.csv`, and `demo_dataset.csv`;
 `everything` also converts the selected model's saved prediction tables to csv.
+both prediction include levels add `error_metrics.csv`: validation and test metrics by group, all groups pooled and total weekly sum, per horizon and all horizons; entity runs omit it. validation.csv and test.csv append unrounded group `wape` and pooled `total_wape`, matching demo_dataset.csv at each horizon; forecast.csv has no wape.
 `input.csv` names the target measure `actual` and uses the run's preparation panel, including its filters, cut date, aggregation and
 gap filling, and is the same for every model. a missing or changed dataset skips this file;
 the dialog and readme give the reason, and the readme records the dataset size and mtime.

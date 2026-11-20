@@ -326,7 +326,10 @@ def test_ensemble_alias_scores_use_requested_metric(saved_run):
     "include,extra",
     [
         ("details only", set()),
-        ("details + predictions", {"demo_dataset.csv", "results.csv", "wide.csv"}),
+        (
+            "details + predictions",
+            {"demo_dataset.csv", "results.csv", "wide.csv", "error_metrics.csv"},
+        ),
         (
             "everything",
             {
@@ -337,6 +340,7 @@ def test_ensemble_alias_scores_use_requested_metric(saved_run):
                 "test.csv",
                 "forecast.csv",
                 "lead_errors.csv",
+                "error_metrics.csv",
             },
         ),
     ],
@@ -672,8 +676,23 @@ def test_every_bundle_csv_has_only_grouping_keys_and_numeric_measures(input_run,
             "total_lower_80",
             "total_upper_80",
         ],
-        "validation.csv": [*keys, *values],
-        "test.csv": [*keys, *values],
+        "validation.csv": [*keys, *values, "wape", "total_wape"],
+        "test.csv": [*keys, *values, "wape", "total_wape"],
+        "error_metrics.csv": [
+            "dataset_slice",
+            "region",
+            "horizon_step",
+            "wape",
+            "naive_wape",
+            "ratio",
+            "mae",
+            "bias",
+            "actual_sum",
+            "prediction_sum",
+            "rows",
+            "coverage_50",
+            "coverage_80",
+        ],
         "forecast.csv": [*keys, "forecast", "lower_80", "upper_80"],
         "lead_errors.csv": ["horizon", "error"],
     }
@@ -684,7 +703,7 @@ def test_every_bundle_csv_has_only_grouping_keys_and_numeric_measures(input_run,
             assert reader.fieldnames == header, filename
             for row in reader:
                 for name, value in row.items():
-                    if name not in [*keys, "dataset_slice"] and value:
+                    if name not in [*keys, "dataset_slice", "horizon_step"] and value:
                         assert np.isfinite(float(value)), (filename, name, value)
                     if name == "horizon" and value:
                         assert str(int(value)) == value
@@ -714,6 +733,8 @@ def test_entity_input_skip_is_silent(saved_run, tmp_path, monkeypatch):
     assert not (target / "demo_dataset.csv").exists()
     assert "input.csv not written: entity run" in (target / "README.md").read_text()
     assert "demo_dataset.csv not written: entity run" in (target / "README.md").read_text()
+    assert not (target / "error_metrics.csv").exists()
+    assert "error_metrics.csv not written: entity run" in (target / "README.md").read_text()
 
 
 def test_real_run_input_smoke(tmp_path):
