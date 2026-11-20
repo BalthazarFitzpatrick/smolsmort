@@ -307,7 +307,6 @@ body:has(.modal-backdrop) .menu-panel { z-index: 65; }
 .forecast-tile-mark { position: absolute; top: -3px; height: 14px; border-left: 2px solid var(--cream); transform: translateX(-1px); }
 .forecast-tile-bar-value { min-width: 48px; flex: 0 0 auto; text-align: right; color: var(--tile-tone); }
 .forecast-tile-bar[data-state="unknown"] .forecast-tile-bar-value { color: var(--text-dim); }
-.forecast-tile-note { font-size: 10px; margin-top: 5px; }
 .forecast-tiles-grid:has(> .forecast-run-tile) { display: block; column-width: 306px; column-gap: 12px; }
 .forecast-run-tile { width: 100%; break-inside: avoid; margin-bottom: 12px; }
 .forecast-run-tile .forecast-tile-face { min-height: 0; gap: 4px; }
@@ -409,7 +408,6 @@ body:has(.modal-backdrop) .menu-panel { z-index: 65; }
 }
 .forecast-chart { flex: 2 1 0; min-height: 160px; }
 .forecast-chart .chart-band.forecast-band-inner { fill-opacity: .32; }
-.forecast-results > .forecast-chart { flex: 0 0 auto; }
 .forecast-table-wrap { flex: 3 1 0; min-height: 0; overflow: auto; }
 
 .forecast-config-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
