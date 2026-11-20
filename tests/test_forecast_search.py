@@ -140,7 +140,7 @@ def test_candidate_births_and_seeds_stay_legacy_but_mutation_explores(unit, fami
     births = [var.random() for _ in range(500)]
     assert all(genome.families and set(genome.families) <= legacy for genome in births)
     seeds = (
-        _seed_population(ws, var, 16, [])
+        _seed_population(var, 16, [])
         if family is None
         else _family_population(var, 16, [], "genetic")
     )
@@ -181,7 +181,7 @@ def test_candidate_warm_seeds_keep_aliases_and_previously_selected_new_families(
         family or "xgboost",
     )
     seeds = (
-        _seed_population(ws, var, 16, [saved.to_dict()])
+        _seed_population(var, 16, [saved.to_dict()])
         if family is None
         else _family_population(var, 16, [saved.to_dict()], "genetic")
     )
@@ -273,13 +273,14 @@ def test_a_genome_scores_in_both_modes_and_the_leak_is_never_offered(
         assert not np.any(rows & ws.masks["test"])
         return entity_fit(ws, genome, rows, phase, nthread)
 
-    def check_timeseries_fit(ws, genome, frame, rows, nthread):
+    # ws is the loop variable below, read through the closure
+    def check_timeseries_fit(genome, frame, rows, nthread):
         bucket = next(key for key, value in ws.frames.items() if value is frame)
         assert any(
             np.array_equal(rows, fit_rows) for fit_rows, _ in pipeline._validation_masks(ws, bucket)
         )
         assert not np.any(rows & ws.series_masks[bucket]["test"])
-        return timeseries_fit(ws, genome, frame, rows, nthread)
+        return timeseries_fit(genome, frame, rows, nthread)
 
     monkeypatch.setattr(pipeline, "_entity_fit", check_entity_fit)
     monkeypatch.setattr(pipeline, "_timeseries_fit", check_timeseries_fit)

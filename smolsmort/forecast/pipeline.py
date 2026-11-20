@@ -730,7 +730,7 @@ def _timeseries_design(genome, frame):
     return x, names, types
 
 
-def _timeseries_fit(ws, genome, frame, rows, nthread):
+def _timeseries_fit(genome, frame, rows, nthread):
     if genome.objective == "hazard":
         raise PipelineError("hazard requires censored entity regression")
     family = get_family(genome.family)
@@ -827,7 +827,7 @@ def _timeseries_predict(
                 values = values - np.log1p(base)
             prediction[finite] = transform.inv(values, base)
     else:
-        fitted, x = _timeseries_fit(ws, genome, frame, fit_rows, nthread)
+        fitted, x = _timeseries_fit(genome, frame, fit_rows, nthread)
         if importance is not None:
             _, names, _ = _timeseries_design(genome, frame)
             importance.append(
@@ -877,7 +877,7 @@ def fit_importance(ws, genome, *, nthread=1):
     for bucket, frame in ws.frames.items():
         masks = ws.series_masks[bucket]
         rows = _known_rows(masks)
-        fitted, x = _timeseries_fit(ws, genome, frame, rows, nthread)
+        fitted, x = _timeseries_fit(genome, frame, rows, nthread)
         _, names, _ = _timeseries_design(genome, frame)
         scores.append(
             measure_importance(genome.family, fitted, names, x[rows & np.isfinite(frame.y)])

@@ -1458,7 +1458,7 @@ def _horizon_baseline(con, request, table):
     return {**table, "naive_prediction": np.asarray(predictions, dtype=float)}
 
 
-def _horizon_metrics(con, run_dir, request, query, path, selection):
+def _horizon_metrics(con, request, query, path, selection):
     scope = _horizon_label(selection)
 
     def metric(value=None, reason=None, **extra):
@@ -1548,7 +1548,7 @@ def _horizon_result_metrics(run_dir, request, query, details, selection):
     scope = _horizon_label(selection)
     with connect() as con:
         path = _optional_prediction_path(run_dir, {**query, "model": model}, "test")
-        selected_metrics = _horizon_metrics(con, run_dir, request, query, path, selection)
+        selected_metrics = _horizon_metrics(con, request, query, path, selection)
     unavailable = {
         name: {
             "value": None,
@@ -1573,7 +1573,7 @@ def _horizon_result_metrics(run_dir, request, query, details, selection):
             if not path.exists() and family == details["winner_family"]:
                 path = _optional_prediction_path(run_dir, {**query, "model": "winner"}, "test")
             with connect() as con:
-                metrics = _horizon_metrics(con, run_dir, request, query, path, selection)
+                metrics = _horizon_metrics(con, request, query, path, selection)
             if path is None or not path.exists():
                 saved = _require_done(run_dir).get("families", {}).get(family, {})
                 lead_errors = saved.get("lead_errors") or {}
@@ -1826,43 +1826,6 @@ def _horizon_band(con, keymap_sql, sources, where, suffix=""):
     lo = {_iso(step): _finite_number(low) for step, low, _ in rows}
     hi = {_iso(step): _finite_number(high) for step, _, high in rows}
     return lo, hi
-
-
-def _timeseries_band(
-    con, keymap_sql, validation, forecast, combo_where, future_rows, nonnegative, single=False
-):
-    """fit aggregate validation bands separately by lead in single mode or bucket in mixed"""
-    buckets = sorted({b for _s, b, _p in future_rows})
-    lo_by_step: dict[str, float] = {}
-    hi_by_step: dict[str, float] = {}
-    for bucket in buckets:
-        predicate = (
-            f"v.weeks_ahead = {int(bucket)}" if single else f"v.bucket = {sql_literal(bucket)}"
-        )
-        val_sql = f"""
-            WITH keymap AS ({keymap_sql}),
-            joined AS (
-                SELECT v.step, v.actual, v.prediction, k.*
-                FROM read_parquet({sql_literal(str(validation))}) v JOIN keymap k USING (series)
-                WHERE {predicate}
-            )
-            SELECT step, SUM(actual) FILTER (WHERE isfinite(prediction)), SUM(prediction) FROM joined WHERE {combo_where}
-            GROUP BY step ORDER BY step
-        """
-        rows = con.execute(val_sql).fetchall()
-        if not rows:
-            continue
-        actual_arr = np.array([r[1] for r in rows], dtype=float)
-        pred_arr = np.array([r[2] for r in rows], dtype=float)
-        band = ev.fit_band(actual_arr, pred_arr)
-        bucket_future = [(s, p) for s, b, p in future_rows if b == bucket]
-        steps = np.array([_iso(s) for s, _p in bucket_future])
-        preds = np.array([p for _s, p in bucket_future], dtype=float)
-        lo, hi = ev.apply_band(band, preds, nonnegative)
-        for day, lv, hv in zip(steps, lo, hi, strict=True):
-            lo_by_step[day] = None if not np.isfinite(lv) else float(lv)
-            hi_by_step[day] = None if not np.isfinite(hv) else float(hv)
-    return lo_by_step, hi_by_step
 
 
 def _timeseries_markers(con, validation: Path, test: Path, forecast: Path) -> list[dict]:
@@ -2165,7 +2128,7 @@ def _set_selection_metrics(run_dir, request, query, details, selection):
                 else:
                     # read saved ensemble views only; opening a menu must not refit a tile
                     path = run_dir / "tile_views" / tile["recipe_key"] / "test.parquet"
-                metrics.update(_horizon_metrics(con, run_dir, request, query, path, selection))
+                metrics.update(_horizon_metrics(con, request, query, path, selection))
             tile["selection_metrics"] = {
                 metric["id"]: _finite_number(metrics.get(metric["id"], {}).get("value"))
                 for metric in registry
@@ -2177,7 +2140,7 @@ def _set_selection_metrics(run_dir, request, query, details, selection):
             metrics = dict(entry["error_metrics"])
             if selection:
                 path = _optional_prediction_path(run_dir, {**query, "model": name}, "test")
-                metrics.update(_horizon_metrics(con, run_dir, request, query, path, selection))
+                metrics.update(_horizon_metrics(con, request, query, path, selection))
             entry["selection_metrics"] = {
                 metric["id"]: _finite_number(metrics.get(metric["id"], {}).get("value"))
                 for metric in registry
