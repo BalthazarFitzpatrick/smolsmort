@@ -139,7 +139,10 @@ class ForecastTrainingConfig {
         ...this.catalog.map(f => ({id: f.name, label: f.label || f.name, on: draft.has(f.name),
           disabled: !this.canSelect(f), stats: this.canSelect(f) ? f.coverage_note || '' : f.reason || f.install_command || 'unavailable'}))],
       onPick: (item, on, menu) => {
-        if (item.id === 'all-suitable') this.catalog.filter(f => this.canSelect(f)).forEach(f => draft.add(f.name));
+        if (item.id === 'all-suitable') {
+          const names = this.catalog.filter(f => this.canSelect(f)).map(f => f.name);
+          names.forEach(name => (on ? draft.add(name) : draft.delete(name)));
+        }
         else if (this.catalog.some(f => f.name === item.id && this.canSelect(f))) {
           if (on) draft.add(item.id); else draft.delete(item.id);
         }
