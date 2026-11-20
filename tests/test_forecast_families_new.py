@@ -28,6 +28,8 @@ def test_missing_library_gives_the_install_hint(monkeypatch):
         raise ImportError(f"no {name}")
 
     monkeypatch.setattr(base, "import_module", refuse)
+    # with xgboost loaded the neural probe runs in a subprocess, which this patch cannot reach
+    monkeypatch.setattr(base, "guard_process_family", lambda name: None)
     for name, (_needs, extra) in NEW.items():
         available, hint = get_family(name).available()
         assert not available

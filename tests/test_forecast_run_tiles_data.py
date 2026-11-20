@@ -11,6 +11,8 @@ import numpy as np
 import pytest
 from saved_runs import real_run_folder
 
+pytest.importorskip("duckdb")
+
 from smolsmort.forecast import plan_sets, runs, tiles
 from smolsmort.forecast.tables import write_table
 

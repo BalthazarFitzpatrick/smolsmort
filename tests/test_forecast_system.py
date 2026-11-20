@@ -80,7 +80,12 @@ def test_entity_mode_predicts_every_open_row_and_exports_the_ratio(row_system):
     assert lines[0].startswith("# verdict:")
     rows = list(csv.DictReader(io.StringIO("\n".join(lines[1:]))))
     assert len(rows) == len(forecast["prediction"])
-    assert {"prediction", "lower", "upper", "ratio"} <= set(rows[0])
+    # a winner with the hazard objective exports weeks columns instead of prediction and bounds
+    hazard = views._is_hazard_entity(run, {})
+    value_columns = (
+        {"median_weeks", "p10_weeks", "p90_weeks"} if hazard else {"prediction", "lower", "upper"}
+    )
+    assert {*value_columns, "ratio"} <= set(rows[0])
     expected = result["verdict"]["accuracy"]["ratio"]
     assert {float(r["ratio"]) for r in rows} == {expected}
 
@@ -92,7 +97,13 @@ def test_timeseries_mode_forecasts_active_combinations_and_beats_seasonal_naive(
     forecast = read_table(run / "forecast.parquet")
     active = request["summary"]["series"] - len(result["excluded_series"])
     assert len(forecast["prediction"]) == active * horizon
-    assert set(forecast["bucket"]) == {f"{lo}-{hi}" for lo, hi in buckets_for(horizon)}
+    # single horizon mode (the default since c81d518) stacks every lead into one bucket
+    buckets = (
+        [(1, horizon)]
+        if request.get("horizon_mode", "single") == "single"
+        else buckets_for(horizon)
+    )
+    assert set(forecast["bucket"]) == {f"{lo}-{hi}" for lo, hi in buckets}
     assert result["model_error"] < result["baseline_error"]
 
 

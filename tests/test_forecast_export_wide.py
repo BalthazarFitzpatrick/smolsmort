@@ -41,6 +41,7 @@ def read_csv(data):
 
 @pytest.fixture
 def saved_run(tmp_path):
+    pytest.importorskip("duckdb")
     prepared = tmp_path / "prepared"
     prepared.mkdir()
     request = {

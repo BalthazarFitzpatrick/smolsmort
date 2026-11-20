@@ -49,7 +49,7 @@ echo "==> ruff format --check ."
 uv run ruff format --check .
 
 echo "==> pytest"
-uv run pytest -q
+uv run python scripts/run_tests.py -q
 
 echo
 echo "PASSED parity for $ref (macOS - the linux-only differences are still untested)"

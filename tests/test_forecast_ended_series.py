@@ -112,7 +112,15 @@ def test_panel_without_ended_series_kept_identical_forecasts(tmp_path):
     assert actual["excluded_series"] == []
     for name in expected["forecast"]:
         np.testing.assert_array_equal(actual["forecast"][name], expected["forecast"][name])
-    run_id = start_run(tmp_path / "runs", spec, prepared, recipe=genome.to_dict(), nthread=1)
+    run_id = start_run(
+        tmp_path / "runs",
+        spec,
+        prepared,
+        recipe=genome.to_dict(),
+        nthread=1,
+        # the expected tables above are mixed buckets; the default single mode stacks the leads
+        horizon_mode="mixed",
+    )
     state = wait_run(tmp_path / "runs", run_id, timeout=30)
     assert state["state"] == "done", state
     assert state["excluded_series"] == []

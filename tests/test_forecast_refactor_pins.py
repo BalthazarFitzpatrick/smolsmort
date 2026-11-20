@@ -212,6 +212,7 @@ PIN_BANDS = "06584ce583939ccf"
 
 def test_family_readers_agree_on_the_best_leaderboard_entry(tmp_path):
     """nonfinite and sample rows never win: views.family_tiles was right, read_tiles was not"""
+    pytest.importorskip("duckdb")
     members = fixture_tables()
     save_run(tmp_path, {"ridge": members["ridge"]})
     good = {"family": "ridge", "families": ["y:lag"], "objective": "squared", "params": {"k": 3}}

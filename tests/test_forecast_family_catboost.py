@@ -5,6 +5,8 @@ import os
 import numpy as np
 import pytest
 
+pytest.importorskip("catboost")
+
 from smolsmort.forecast.families import base
 from smolsmort.forecast.families.catboost import CatboostFamily
 from smolsmort.forecast.model import ModelError

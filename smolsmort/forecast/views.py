@@ -165,15 +165,33 @@ def read_prepared_spec(folder: Path, runs_root: Path):
     return spec_from_dict(data)
 
 
+# the subprocess imports every backend (about 5 s cpu with all extras, 20-70 s wall on a loaded
+# host), so a good answer is kept for the life of the server: installing a library needs a restart
+_PROBE_BUDGET_S = 120
+_probe_cache: dict[str, dict] = {}
+_probe_lock = threading.Lock()
+
+
 def probe_families() -> dict:
-    """native library probes stay out of the host's torch process"""
+    """native library probes stay out of the host's torch process; a good result is cached"""
+    with _probe_lock:
+        if sys.executable not in _probe_cache:
+            _probe_cache[sys.executable] = _run_family_probe()
+        return dict(_probe_cache[sys.executable])
+
+
+def _run_family_probe() -> dict:
     code = (
         "import json; from smolsmort.forecast.families import registered_families; "
         "print(json.dumps({family.name: family.available() for family in registered_families()}))"
     )
     try:
         process = subprocess.run(
-            [sys.executable, "-c", code], capture_output=True, text=True, timeout=30, check=True
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=_PROBE_BUDGET_S,
+            check=True,
         )
         return json.loads(process.stdout)
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:

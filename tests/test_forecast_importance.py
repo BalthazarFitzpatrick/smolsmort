@@ -13,7 +13,7 @@ from smolsmort.forecast.families import get_family
 from smolsmort.forecast.features import Features
 from smolsmort.forecast.importance import combine_importance, measure_importance
 from smolsmort.forecast.pipeline import make_genome
-from smolsmort.forecast.spec import Column, PrepSpec
+from smolsmort.forecast.spec import SERIES, STEP, Column, PrepSpec
 
 
 @pytest.mark.parametrize("family,objective", [("xgboost", "squared"), ("lightgbm", "regression")])
@@ -114,6 +114,7 @@ def test_finish_persists_all_family_winners_and_reuses_final_fits(
         y=y,
         step=position,
         series=np.zeros(len(y), dtype=int),
+        weeks_ahead=None,
         features=Features(
             x, ["lag_1", "lag_2"], ["q", "q"], ["value@step:lag+0", "value@step:lag+1"]
         ),
@@ -126,12 +127,15 @@ def test_finish_persists_all_family_winners_and_reuses_final_fits(
     )
     ws = SimpleNamespace(
         mode="timeseries",
+        horizon_mode="mixed",
         spec=spec,
         profile={"genes": {}},
         frames={(1, 1): frame},
         series_masks={(1, 1): masks},
         test_steps=20,
         excluded_series=[],
+        unit="week",
+        panel={SERIES: np.zeros(121, dtype=int), STEP: position, "value": y},
     )
     ranked = [
         {
@@ -180,11 +184,13 @@ def test_finish_persists_all_family_winners_and_reuses_final_fits(
         assert {entry["feature"] for entry in importance["features"]} <= {"lag_1", "lag_2"}
         assert sum(entry["importance"] for entry in importance["features"]) == pytest.approx(1)
         assert calls.count((name, 120)) == 1
-        assert "verdict" not in result["families"][name]
+        # each family keeps its own held-out summary since e4b58cf
+        assert "verdict" in result["families"][name]
     assert result["families"]["snaive"]["importance"] is None
     assert not (tmp_path / "families" / "snaive" / "importance.json").exists()
     assert calls.count(("ridge", 100)) == 1
-    assert calls.count(("xgboost", 100)) == int(ensemble_enabled)
+    # every family scores its own test window once; the ensemble reuses that fit
+    assert calls.count(("xgboost", 100)) == 1
     assert result["winner"]["importance"] == result["families"]["ridge"]["importance"]
     if ensemble_enabled:
         assert result["importance"] is None

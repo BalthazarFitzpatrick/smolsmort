@@ -73,7 +73,8 @@ jobs:
 
       - name: pytest
         if: steps.changes.outputs.docs_only != 'true'
-        run: uv run pytest -q
+        # two process groups: torch and xgboost/lightgbm cannot share a process (tests/conftest.py)
+        run: uv run python scripts/run_tests.py -q
 
       - name: browser check
         # one python is enough: the page does not change with the interpreter, chromium does the work
@@ -90,6 +91,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      # workaround: tests/test_review_paths.py globs every .py under the repo root, so a repo-local
+      # .venv with the forecast extras (a big5 encoded test file) breaks it; real fix is in that test
+      - name: keep the virtualenv outside the repo
+        run: echo "UV_PROJECT_ENVIRONMENT=$RUNNER_TEMP/venv" >> "$GITHUB_ENV"
 
       - name: detect docs-only change
         id: changes
@@ -124,4 +130,4 @@ jobs:
 
       - name: pytest forecast
         if: steps.changes.outputs.docs_only != 'true'
-        run: uv run pytest -q
+        run: uv run python scripts/run_tests.py -q

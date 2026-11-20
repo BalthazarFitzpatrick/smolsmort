@@ -20,6 +20,7 @@ def save_json(path, value):
 
 @pytest.fixture
 def exit_workspace(monkeypatch):
+    pytest.importorskip("duckdb")
     spec = PrepSpec(
         "unused.csv",
         "timeseries",
@@ -410,6 +411,8 @@ def test_terminal_exit_runs_once_and_completed_event_survives_resume(
     monkeypatch.setattr(coordinator.time, "time", lambda: 100)
     monkeypatch.setattr(coordinator.time, "sleep", lambda *args: None)
     monkeypatch.setattr(coordinator.subprocess, "Popen", Process)
+    # the fake pid 123 can belong to a real process on a ci runner
+    monkeypatch.setattr(coordinator, "is_process_alive", lambda pid: False)
     job = SimpleNamespace(
         cancelled=False,
         save=lambda name, value: save_json(tmp_path / name, value),

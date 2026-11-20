@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from clock_budget import scaled
 from test_forecast_runs_v2 import make_request
 
 from smolsmort.forecast import evaluate as ev
@@ -34,6 +35,13 @@ from smolsmort.forecast.search import Budget, _FamilyVariation, _Variation, sear
 from smolsmort.forecast.spec import SERIES, STEP, Column, PrepSpec
 from smolsmort.forecast.tables import read_table
 from smolsmort.forecast.transform import TransformError, get_transform
+
+
+def band_rows(table, label):
+    """rows a saved band covers: one lead per key when stacked, else one bucket label"""
+    if "weeks_ahead" in table:
+        return table["weeks_ahead"] == int(label)
+    return table["bucket"] == label
 
 
 @pytest.fixture
@@ -270,9 +278,10 @@ def test_real_families_score_and_finish_on_raw_scale(workspace, name, family_nam
         ratio = np.median(np.abs(predictions)) / np.median(ws.panel["y"])
         assert 0.2 < ratio < 5
     for label, band in final["bands"].items():
-        rows = validation["bucket"] == label
+        rows = band_rows(validation, label)
         raw_band = ev.fit_band(validation["actual"][rows], validation["prediction"][rows])
-        assert band == raw_band.__dict__
+        # fit_band is none under 4 residuals, which the saved result keeps as none
+        assert band == (None if raw_band is None else raw_band.__dict__)
     baseline, actual = [], []
     for bucket, frame in ws.frames.items():
         rows = ws.series_masks[bucket]["test"]
@@ -289,7 +298,7 @@ def test_v2_panel_run_records_transform_and_raw_bands(tmp_path, name):
         {"name": family, "method": "grid"} for family in ("xgboost", "ridge", "ets", "snaive")
     ]
     # three validation fits must finish before this test can inspect every family's transform
-    request, spec, prepared = make_request(tmp_path, selections, duration=90)
+    request, spec, prepared = make_request(tmp_path, selections, duration=scaled(90))
     run_id = start_run(
         tmp_path / "runs",
         spec,
@@ -300,7 +309,7 @@ def test_v2_panel_run_records_transform_and_raw_bands(tmp_path, name):
         nthread=4,
         transform=name,
     )
-    state = wait_run(tmp_path / "runs", run_id, timeout=180)
+    state = wait_run(tmp_path / "runs", run_id, timeout=scaled(180))
     run = tmp_path / "runs" / run_id
 
     assert state["state"] == "done", state
@@ -318,9 +327,10 @@ def test_v2_panel_run_records_transform_and_raw_bands(tmp_path, name):
     ratio = np.median(np.abs(validation["prediction"])) / np.median(validation["actual"])
     assert 0.2 < ratio < 5
     for label, band in result["bands"].items():
-        rows = validation["bucket"] == label
+        rows = band_rows(validation, label)
         raw_band = ev.fit_band(validation["actual"][rows], validation["prediction"][rows])
-        assert band == raw_band.__dict__
+        # fit_band is none under 4 residuals, which the saved result keeps as none
+        assert band == (None if raw_band is None else raw_band.__dict__)
 
 
 @pytest.mark.parametrize("name", ["log1p", "logdiff"])
@@ -541,6 +551,7 @@ def test_v2_refit_preserves_matching_saved_transform(tmp_path, name):
     ratio = np.median(np.abs(validation["prediction"])) / np.median(validation["actual"])
     assert 0.2 < ratio < 5
     for label, band in result["bands"].items():
-        rows = validation["bucket"] == label
+        rows = band_rows(validation, label)
         raw_band = ev.fit_band(validation["actual"][rows], validation["prediction"][rows])
-        assert band == raw_band.__dict__
+        # fit_band is none under 4 residuals, which the saved result keeps as none
+        assert band == (None if raw_band is None else raw_band.__dict__)

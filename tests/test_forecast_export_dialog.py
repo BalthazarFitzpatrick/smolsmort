@@ -11,6 +11,8 @@ import numpy as np
 import pytest
 from saved_runs import real_run_folder, write_json
 
+pytest.importorskip("duckdb")
+
 from smolsmort.forecast import tab, views
 from smolsmort.forecast.export_bundle import (
     _feature_kind,
