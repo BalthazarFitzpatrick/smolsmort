@@ -452,8 +452,7 @@ def _fitness(ws, pred, truth, periods) -> Scored:
 
 def _has_volume(truth, pred) -> bool:
     """true when the finite pairs carry any actual volume, the wape denominator"""
-    finite = np.isfinite(truth) & np.isfinite(pred)
-    return bool(np.abs(truth[finite]).sum() > 0)
+    return ev.abs_error_sums(truth, pred)[1] > 0
 
 
 def _period_fitness(ws, pred, truth, periods, *, classification=None) -> Scored:
@@ -466,11 +465,11 @@ def _period_fitness(ws, pred, truth, periods, *, classification=None) -> Scored:
         metrics = {"log_loss": float(losses.mean()), "brier": ev.brier(codes, probs)}
     else:
         finite = np.isfinite(truth) & np.isfinite(pred)
-        if not finite.any():
+        _, denom, pairs = ev.abs_error_sums(truth, pred)
+        if not pairs:
             return Scored(
                 float("inf"), np.zeros(len(np.unique(periods))), {"wape": np.nan, "mae": np.nan}
             )
-        denom = float(np.abs(truth[finite]).sum())
         if not denom:
             # zero actual volume leaves wape undefined, so the candidate cannot be ranked
             return Scored(

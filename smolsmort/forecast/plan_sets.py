@@ -11,7 +11,10 @@ from pathlib import Path
 
 import numpy as np
 
-from smolsmort.forecast.evaluate import apply_lead_bands, fit_lead_bands, mean_predictions
+from smolsmort.forecast.evaluate import (
+    abs_error_sums,
+    mean_predictions,
+)
 from smolsmort.forecast.tables import read_table, write_table
 from smolsmort.forecast.views import write_json_atomic
 
@@ -61,18 +64,16 @@ def _validation_error(folder):
 
 
 def _wape(prediction, actual):
-    finite = np.isfinite(prediction) & np.isfinite(actual)
-    prediction, actual = prediction[finite], actual[finite]
-    if not len(actual):
+    """ranking contract: inf when no finite pair, zero volume ranks 0.0 if exact else inf"""
+    error, denominator, count = abs_error_sums(actual, prediction)
+    if not count:
         return math.inf
-    denominator = float(np.abs(actual).sum())
-    error = float(np.abs(prediction - actual).sum())
     return error / denominator if denominator else (0.0 if error == 0 else math.inf)
 
 
 def pick_ensemble(runs_root: Path, members: dict[str, str]):
     """choose the equal-weight subset with the lowest aligned validation wape"""
-    from smolsmort.forecast.tiles import align_tables
+    from smolsmort.forecast.tiles import align_tables, calibrate_parts, lead_values
 
     parts = {}
     stacks = {}
@@ -104,31 +105,7 @@ def pick_ensemble(runs_root: Path, members: dict[str, str]):
     )
     for part, table in parts.items():
         table["prediction"] = mean_predictions([stacks[part][name] for name in best])
-    validation = parts["validation"]
-    if "weeks_ahead" in validation:
-        leads = {part: table["weeks_ahead"] for part, table in parts.items()}
-    elif "bucket" in validation:
-        buckets = {value: index + 1 for index, value in enumerate(np.unique(validation["bucket"]))}
-        leads = {
-            part: np.asarray([buckets[value] for value in table["bucket"]])
-            for part, table in parts.items()
-        }
-    else:
-        leads = {
-            part: np.ones(len(table["prediction"]), dtype=int) for part, table in parts.items()
-        }
-    for level, suffix in ((0.8, ""), (0.5, "_50")):
-        bands = fit_lead_bands(
-            validation["actual"],
-            validation["prediction"],
-            leads["validation"],
-            validation["series"],
-            level=level,
-        )
-        for part, table in parts.items():
-            table[f"lower{suffix}"], table[f"upper{suffix}"] = apply_lead_bands(
-                bands, table["prediction"], leads[part], table["series"]
-            )
+    calibrate_parts(parts, lead_values(parts, strict=True))
     return best, parts
 
 

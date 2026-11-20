@@ -8,10 +8,10 @@ from pathlib import Path
 
 import numpy as np
 
-from smolsmort.forecast import evaluate as ev
 from smolsmort.forecast import views
 from smolsmort.forecast.spec import SERIES, normalize_mode
 from smolsmort.forecast.tables import read_table
+from smolsmort.forecast.tiles import calibrate_parts
 
 PHASES = ("validation", "test", "forecast")
 VALUES = ("prediction", "actual", "lower_50", "upper_50", "lower", "upper")
@@ -98,7 +98,7 @@ def _read_predictions(run_dir, selected, phase, tiles=None):
                 path, member_paths
             )
             if not fresh:
-                from smolsmort.forecast.tiles import align_tables
+                from smolsmort.forecast.tiles import blend_members
 
                 members = [
                     _read_predictions(run_dir, {**selected, "model": member}, phase, tiles)
@@ -106,15 +106,7 @@ def _read_predictions(run_dir, selected, phase, tiles=None):
                 ]
                 if any(not member for member in members):
                     return {}
-                members = align_tables(members)
-                columns = dict(members[0])
-                for name in ("actual", "truth"):
-                    if name in columns and not all(
-                        np.array_equal(columns[name], member[name], equal_nan=True)
-                        for member in members
-                    ):
-                        raise views.ViewError("ensemble members disagree on actuals")
-                columns["prediction"] = ev.mean_predictions([m["prediction"] for m in members])
+                columns = blend_members(members, actuals_error=views.ViewError)
                 for name in VALUES[2:]:
                     columns[name] = np.full(len(columns["prediction"]), np.nan)
                 return columns
@@ -177,24 +169,20 @@ def calibrated_totals(tables):
     """sum saved rows and calibrate total bands from validation residuals"""
     output = {}
     totals = {phase: _sum_totals(columns) for phase, columns in tables.items()}
-    validation = totals["validation"]
-    leads = np.array([key[2] for key in validation], dtype=int)
-    predictions = np.array([value[0] for value in validation.values()])
-    actuals = np.array([value[1] for value in validation.values()])
-    bands = {
-        level: ev.fit_lead_bands(actuals, predictions, leads, level=level) for level in (0.5, 0.8)
-    }
+    # pooled bands, no per series overrides: totals have no series column
+    parts, leads = {}, {}
     for phase, phase_totals in totals.items():
         keys = list(phase_totals)
-        total_predictions = np.array([phase_totals[key][0] for key in keys])
-        total_leads = np.array([key[2] for key in keys], dtype=int)
-        edges = [
-            ev.apply_lead_bands(bands[level], total_predictions, total_leads)
-            for level in (0.5, 0.8)
-        ]
+        parts[phase] = {"prediction": np.array([phase_totals[key][0] for key in keys])}
+        leads[phase] = np.array([key[2] for key in keys], dtype=int)
+    parts["validation"]["actual"] = np.array([value[1] for value in totals["validation"].values()])
+    calibrate_parts(parts, leads, per_series=False)
+    for phase, phase_totals in totals.items():
+        table = parts[phase]
+        edges = (table["lower_50"], table["upper_50"], table["lower"], table["upper"])
         output[phase] = {
-            key: [*phase_totals[key], *(edge[i] for pair in edges for edge in pair)]
-            for i, key in enumerate(keys)
+            key: [*phase_totals[key], *(edge[i] for edge in edges)]
+            for i, key in enumerate(phase_totals)
         }
     return output
 
