@@ -11,7 +11,12 @@ from pathlib import Path
 
 import numpy as np
 
-from smolsmort.forecast.evaluate import apply_lead_bands, fit_lead_bands, mean_predictions
+from smolsmort.forecast.evaluate import (
+    abs_error_sums,
+    apply_lead_bands,
+    fit_lead_bands,
+    mean_predictions,
+)
 from smolsmort.forecast.tables import read_table, write_table
 from smolsmort.forecast.views import write_json_atomic
 
@@ -61,12 +66,10 @@ def _validation_error(folder):
 
 
 def _wape(prediction, actual):
-    finite = np.isfinite(prediction) & np.isfinite(actual)
-    prediction, actual = prediction[finite], actual[finite]
-    if not len(actual):
+    """ranking contract: inf when no finite pair, zero volume ranks 0.0 if exact else inf"""
+    error, denominator, count = abs_error_sums(actual, prediction)
+    if not count:
         return math.inf
-    denominator = float(np.abs(actual).sum())
-    error = float(np.abs(prediction - actual).sum())
     return error / denominator if denominator else (0.0 if error == 0 else math.inf)
 
 
