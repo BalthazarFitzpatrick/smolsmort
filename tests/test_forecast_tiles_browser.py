@@ -659,7 +659,7 @@ def test_saved_tile_states_scores_and_token_colours(tmp_path):
         ("pruned_better", "pruned", 0.8, "better", "--lichen", "+20%"),
         ("failed", "failed", None, "unknown", "--grey-border", "-"),
     ]
-    with session(tmp_path, port=8098) as (page, _base):
+    with session(tmp_path) as (page, _base):
         root = tmp_path / "forecast_root"
         run_id = make_saved_tiles(root)
         run = root / ".forecast-runs" / run_id
@@ -721,7 +721,7 @@ def test_saved_tile_states_scores_and_token_colours(tmp_path):
 
 
 def test_saved_run_start_times(tmp_path):
-    with session(tmp_path, port=8098) as (page, _base):
+    with session(tmp_path) as (page, _base):
         run_id = make_saved_tiles(tmp_path / "forecast_root")
         runs = [
             {"id": run_id, "state": "done", "started_at": 1793627178.5},
@@ -792,7 +792,7 @@ def test_saved_run_short_titles_stable_across_paints(tmp_path):
         ({"id": "search-example", "families": {"ridge": {}}, "kind": "search"}, "ridge search"),
         ({"id": "empty-example", "label": "   "}, "run"),
     ]
-    with session(tmp_path, port=8098) as (page, _base):
+    with session(tmp_path) as (page, _base):
         make_saved_tiles(tmp_path / "forecast_root")
         open_tiles(page)
         page.evaluate("clearInterval(forecastTopics.get('regression').pollTimer)")
@@ -824,7 +824,7 @@ def test_saved_run_short_titles_stable_across_paints(tmp_path):
 
 
 def test_saved_run_labels_parts_stopped_and_view_caption(tmp_path):
-    with session(tmp_path, port=8098) as (page, _base):
+    with session(tmp_path) as (page, _base):
         root = tmp_path / "forecast_root"
         run_id = make_saved_tiles(root)
         part_id = "20261029-120000-part"
@@ -1083,7 +1083,7 @@ def assert_tall_plots(page) -> None:
 
 def test_chart_faces_compare_running_done_pruned_and_one_shot_generations(tmp_path):
     snapshot = make_live_tiles()
-    with session(tmp_path, port=8098) as (page, _base):
+    with session(tmp_path) as (page, _base):
         mock_live_tiles(page, snapshot)
         open_tiles(page)
         assert_tall_plots(page)
@@ -1129,7 +1129,7 @@ def test_chart_faces_compare_running_done_pruned_and_one_shot_generations(tmp_pa
 
 def test_y_metric_controls_both_charts_independently_of_error_metric_picker(tmp_path):
     snapshot = make_live_tiles()
-    with session(tmp_path, port=8098) as (page, _base):
+    with session(tmp_path) as (page, _base):
         mock_live_tiles(page, snapshot)
         open_tiles(page)
         tile = find_tile(page, "xgboost")
@@ -1194,7 +1194,7 @@ def test_y_metric_shared_recorded_ranges_and_separate_fallback_ranges(tmp_path):
             {"generation": index + 1, "validation_error": value}
             for index, value in enumerate(values)
         ]
-    with session(tmp_path, port=8098) as (page, _base):
+    with session(tmp_path) as (page, _base):
         mock_live_tiles(page, snapshot)
         open_tiles(page)
         native_scales = [
@@ -1233,7 +1233,7 @@ def test_y_metric_shared_recorded_ranges_and_separate_fallback_ranges(tmp_path):
 def test_y_metric_persisted_for_session_across_reload(tmp_path):
     snapshot = make_live_tiles()
     key = "smolsmort:forecast:regression:tile-metric"
-    with session(tmp_path, port=8098) as (page, _base):
+    with session(tmp_path) as (page, _base):
         mock_live_tiles(page, snapshot)
         open_tiles(page)
         select_tile_metric(page, "mae")
@@ -1252,7 +1252,7 @@ def test_y_metric_persisted_for_session_across_reload(tmp_path):
 
 def test_y_metric_open_menu_and_focus_survived_polling(tmp_path):
     snapshot = make_live_tiles()
-    with session(tmp_path, port=8098) as (page, _base):
+    with session(tmp_path) as (page, _base):
         calls = mock_live_tiles(page, snapshot)
         open_tiles(page)
         select_tile_metric(page, "wape")
@@ -1285,7 +1285,7 @@ def test_y_metric_open_menu_and_focus_survived_polling(tmp_path):
 
 
 def test_y_metric_still_worked_when_storage_was_blocked(tmp_path):
-    with session(tmp_path, port=8098) as (page, _base):
+    with session(tmp_path) as (page, _base):
         mock_live_tiles(page, make_live_tiles())
         page.add_init_script(
             """(() => {
@@ -1313,7 +1313,7 @@ def test_chart_broad_phase_single_value_and_missing_curve_message(tmp_path):
         search_curve=make_search_curve([0.45]), search_single=True, generation=None
     )
     snapshot["families"]["ridge"]["tile"]["search_curve"] = []
-    with session(tmp_path, port=8098) as (page, _base):
+    with session(tmp_path) as (page, _base):
         mock_live_tiles(page, snapshot)
         open_tiles(page)
         running = find_tile(page, "xgboost").locator(".forecast-tile-chart")
@@ -1357,7 +1357,7 @@ def make_live_legacy_tiles() -> dict:
 
 def test_live_legacy_chart_polled_generations_and_kept_menu_focus(tmp_path):
     snapshot = make_live_legacy_tiles()
-    with session(tmp_path, port=8098) as (page, _base):
+    with session(tmp_path) as (page, _base):
         calls = mock_live_tiles(page, snapshot)
         open_tiles(page)
         tile = find_tile(page, "xgboost")
@@ -1400,7 +1400,7 @@ def test_live_legacy_chart_polled_generations_and_kept_menu_focus(tmp_path):
 def test_live_legacy_chart_without_generations_showed_single_saved_value(tmp_path):
     snapshot = make_live_legacy_tiles()
     snapshot.update(generations=[], generation_curves=[], progress={"elapsed": 10})
-    with session(tmp_path, port=8098) as (page, _base):
+    with session(tmp_path) as (page, _base):
         mock_live_tiles(page, snapshot)
         open_tiles(page)
         chart = find_tile(page, "xgboost").locator(".forecast-tile-chart")
@@ -1416,7 +1416,7 @@ def test_chart_missing_latest_metric_did_not_highlight_older_generation(tmp_path
     snapshot = make_live_tiles()
     for name in ("ridge", "lightgbm"):
         snapshot["families"][name]["tile"]["search_curve"][-1][metric] = None
-    with session(tmp_path, port=8098) as (page, _base):
+    with session(tmp_path) as (page, _base):
         mock_live_tiles(page, snapshot)
         open_tiles(page)
         select_tile_metric(page, metric)
@@ -1474,7 +1474,7 @@ def test_run_panels_fit_config_and_keep_layout_across_views(tmp_path):
 
 
 def test_tiles_read_saved_winner_artifacts_and_kept_tables(tmp_path):
-    with session(tmp_path, port=8098) as (page, _base):
+    with session(tmp_path) as (page, _base):
         make_saved_tiles(tmp_path / "forecast_root")
         with page.expect_response("**/api/forecast-run?**") as response:
             open_tiles(page)
@@ -1524,7 +1524,7 @@ def test_tiles_read_saved_winner_artifacts_and_kept_tables(tmp_path):
 
 def test_tiles_polled_states_without_losing_flip_menu_or_focus(tmp_path):
     snapshot = make_live_tiles()
-    with session(tmp_path, port=8098) as (page, _base):
+    with session(tmp_path) as (page, _base):
         calls = mock_live_tiles(page, snapshot)
         open_tiles(page)
         families = page.locator("#regression-tiles-grid .forecast-tile").evaluate_all(
@@ -1609,7 +1609,7 @@ def test_tiles_polled_states_without_losing_flip_menu_or_focus(tmp_path):
 
 @pytest.mark.parametrize("seasonal", [False, True])
 def test_back_folds_fill_each_family_on_one_wape_scale(tmp_path, seasonal):
-    with session(tmp_path, port=8098) as (page, _base):
+    with session(tmp_path) as (page, _base):
         root = tmp_path / "forecast_root"
         run_id = make_saved_tiles(root)
         run = root / ".forecast-runs" / run_id
@@ -1674,7 +1674,7 @@ def test_back_folds_fill_each_family_on_one_wape_scale(tmp_path, seasonal):
 
 
 def test_tiles_mobile_layout_motion_and_palette_tokens(tmp_path):
-    with session(tmp_path, width=390, port=8098) as (page, _base):
+    with session(tmp_path, width=390) as (page, _base):
         mock_live_tiles(page, make_live_tiles())
         open_tiles(page)
         tiles = page.locator("#regression-tiles-grid .forecast-tile")
@@ -1719,7 +1719,7 @@ def test_tiles_mobile_layout_motion_and_palette_tokens(tmp_path):
 
 
 def test_legacy_tiles_loaded_saved_search_curves_and_kept_live_metadata(tmp_path):
-    with session(tmp_path, port=8098) as (page, _base):
+    with session(tmp_path) as (page, _base):
         write_multifamily_run(tmp_path / "forecast_root", version=1)
         with page.expect_response("**/api/forecast-view?**") as response:
             open_tiles(page)
