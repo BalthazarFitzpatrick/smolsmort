@@ -7,6 +7,8 @@ import os
 import numpy as np
 import pytest
 
+pytest.importorskip("sklearn")
+
 from smolsmort.forecast.families import base
 from smolsmort.forecast.families.extratrees import ExtratreesFamily
 from smolsmort.forecast.model import ModelError

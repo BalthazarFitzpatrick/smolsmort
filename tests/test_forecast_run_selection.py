@@ -5,6 +5,8 @@ import json
 import numpy as np
 import pytest
 
+pytest.importorskip("duckdb")
+
 from smolsmort.forecast.runs import list_runs
 from smolsmort.forecast.tables import write_table
 from smolsmort.forecast.views import _prediction_path, _select_model, result_details

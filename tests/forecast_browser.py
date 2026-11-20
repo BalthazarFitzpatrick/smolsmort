@@ -5,16 +5,19 @@ from __future__ import annotations
 import threading
 from contextlib import contextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 import review_world
 from forecast_ui_audit import settle_menu
-from playwright.sync_api import Page, sync_playwright
 
 from smolsmort.forecast import runs
 from smolsmort.forecast.tab import forecast_tab
 from smolsmort.review.server import build_app, serve
 from smolsmort.review_ui.server import STATIC
+
+if TYPE_CHECKING:
+    from playwright.sync_api import Page
 
 TOPIC = "regression"
 
@@ -26,6 +29,9 @@ def forecast_page(
     """the real review server over a forecast root and a headless page on it.
     start_run replaces the worker launch, alive replaces the pid check; both optional"""
     import time
+
+    # playwright is optional: browser tests skip when it is missing
+    sync_playwright = pytest.importorskip("playwright.sync_api").sync_playwright
 
     errors: list[str] = []
     review_world.register_world_backend()

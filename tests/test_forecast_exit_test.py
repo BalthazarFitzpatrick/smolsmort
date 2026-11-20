@@ -20,6 +20,7 @@ def save_json(path, value):
 
 @pytest.fixture
 def exit_workspace(monkeypatch):
+    pytest.importorskip("duckdb")
     spec = PrepSpec(
         "unused.csv",
         "timeseries",

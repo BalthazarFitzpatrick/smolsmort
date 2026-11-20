@@ -18,6 +18,7 @@ def write_json(path, value):
 
 @pytest.fixture
 def saved_run(tmp_path):
+    pytest.importorskip("duckdb")
     folder = tmp_path / "20261115-155627-6f006a"
     prepared = tmp_path / "prepared"
     prepared.mkdir()
@@ -97,6 +98,7 @@ def saved_run(tmp_path):
 
 @pytest.fixture
 def input_run(saved_run, tmp_path):
+    pytest.importorskip("duckdb")
     from smolsmort.forecast.prep import prepare
     from smolsmort.forecast.spec import spec_from_dict
 

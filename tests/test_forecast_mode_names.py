@@ -180,6 +180,7 @@ def test_saved_requests_results_and_recipes_load_canonical_modes(tmp_path, legac
 def test_legacy_requests_select_the_correct_view_and_table(
     tmp_path, monkeypatch, legacy, canonical
 ):
+    pytest.importorskip("duckdb")
     request = {"spec": {**asdict(make_spec(canonical)), "mode": legacy}}
     selected = {"model": "winner", "family": "xgboost", "members": [], "run_tiles": []}
     monkeypatch.setattr(views, "result_details", lambda *args: selected)
