@@ -12,6 +12,7 @@ pytest.importorskip("playwright")
 pytest.importorskip("xgboost")
 
 from forecast_ui_audit import assert_family_layout, settle_menu
+from playwright.sync_api import expect
 from shots import shot_dir
 from test_forecast_ui_browser import (
     open_info,
@@ -541,7 +542,7 @@ def test_multifamily_saved_run_named_models_and_explained_importance(tmp_path):
         }
         assert "best recipe" in page.locator("#regression-family-comparison").inner_text()
         open_info(page)
-        assert page.locator("#regression-info-verdict").inner_text() == (
+        expect(page.locator("#regression-info-verdict")).to_have_text(
             "xgboost: test ratio 0.95, better than naive"
         )
         page.keyboard.press("Escape")
@@ -654,7 +655,7 @@ def test_legacy_saved_run_defaulted_to_xgboost_without_comparison(tmp_path):
         page.click("#regression-config-mode-warm")
         page.click("#regression-run-open")
         open_info(page)
-        assert page.locator("#regression-info-verdict").inner_text() == (
+        expect(page.locator("#regression-info-verdict")).to_have_text(
             "xgboost: test ratio 0.95, better than naive"
         )
         assert page.locator("#regression-family-comparison tbody tr").count() == 1
@@ -688,9 +689,27 @@ def test_result_and_run_banners_compared_ratios_and_kept_plain_facts(tmp_path):
             (None, None, None),
         ):
             verdict = {"accuracy": {"ratio": ratio}, "checks": facts}
-            page.evaluate(
-                "run => { const ctl = forecastTopics.get('regression');"
-                " ctl.paintRunDetail(run); ctl.paintVerdict(run.verdict, 'xgboost'); }",
+            # paint and read in one page task: a background poll cannot repaint in between
+            shot = page.evaluate(
+                """run => {
+                  const ctl = forecastTopics.get('regression');
+                  ctl.paintRunDetail(run);
+                  ctl.paintVerdict(run.verdict, 'xgboost');
+                  const read = selector => {
+                    const node = document.querySelector(selector);
+                    const style = getComputedStyle(node);
+                    return {text: node.innerText, classes: [...node.classList],
+                      color: style.color, border: style.borderTopColor};
+                  };
+                  return {
+                    run: read('#regression-run-verdict'),
+                    info: read('#regression-info-verdict'),
+                    summary: document.querySelector(
+                      '#regression-info-verdict .forecast-verdict-summary').innerText,
+                    checks: [...document.querySelectorAll(
+                      '#regression-info-verdict .forecast-verdict-check')].map(n => n.innerText),
+                  };
+                }""",
                 with_error_metrics({**make_run(state="done"), "verdict": verdict}),
             )
             expected = (
@@ -698,27 +717,19 @@ def test_result_and_run_banners_compared_ratios_and_kept_plain_facts(tmp_path):
                 if comparison
                 else "ratio unavailable"
             )
-            assert page.locator("#regression-run-verdict").inner_text() == (
+            assert shot["run"]["text"] == (
                 f"test ratio: {ratio:.2f}" if ratio is not None else "test ratio: -"
             )
-            assert page.locator(
-                "#regression-info-verdict .forecast-verdict-summary"
-            ).inner_text() == (f"xgboost: {expected}")
-            assert page.locator(
-                "#regression-info-verdict .forecast-verdict-check"
-            ).all_text_contents() == ["band: test coverage 80%", "history: 60 periods"]
-            for selector in ("#regression-run-verdict", "#regression-info-verdict"):
-                banner = page.locator(selector)
-                classes = banner.get_attribute("class").split()
+            assert shot["summary"] == f"xgboost: {expected}"
+            assert shot["checks"] == ["band: test coverage 80%", "history: 60 periods"]
+            for key in ("run", "info"):
+                classes = shot[key]["classes"]
                 assert ("better" in classes) == (comparison == "better")
                 assert ("worse" in classes) == (comparison == "worse")
                 if colour:
-                    assert banner.evaluate("node => getComputedStyle(node).color") == colour
-                    if selector == "#regression-run-verdict":
-                        assert (
-                            banner.evaluate("node => getComputedStyle(node).borderTopColor")
-                            == colour
-                        )
+                    assert shot[key]["color"] == colour
+                    if key == "run":
+                        assert shot[key]["border"] == colour
         page.evaluate(
             "() => forecastTopics.get('regression').paintVerdict("
             "{summary: 'failed to load', checks: []})"
@@ -790,7 +801,7 @@ def test_legacy_results_kept_latest_model_importance_and_table_after_delayed_res
         )
         release_response(0)
         open_info(page)
-        assert page.locator("#regression-info-verdict").inner_text() == (
+        expect(page.locator("#regression-info-verdict")).to_have_text(
             "ensemble of xgboost, ridge: test ratio 1.05, worse than naive"
         )
         assert_ensemble_table()
@@ -821,7 +832,7 @@ def test_legacy_results_kept_latest_model_importance_and_table_after_delayed_res
             .startswith("absolute standardised coefficient")
         )
         open_info(page)
-        assert page.locator("#regression-info-verdict").inner_text() == (
+        expect(page.locator("#regression-info-verdict")).to_have_text(
             "ensemble of xgboost, ridge: test ratio 1.05, worse than naive"
         )
         assert_ensemble_table()

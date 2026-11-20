@@ -93,6 +93,8 @@ def test_plan_controls_saved_edits_and_polled_without_replacing_form(tmp_path):
             route.fulfill(content_type="application/json", body=json.dumps(result))
 
         page.route("**/api/forecast-plan*", handle)
+        # fake timers drive the 5 s plan poll without real waiting
+        page.clock.install()
         switch_to_regression(page)
         show_tab(page, "regression-search")
         section = page.locator(".forecast-plan:visible")
@@ -112,7 +114,8 @@ def test_plan_controls_saved_edits_and_polled_without_replacing_form(tmp_path):
         budget.fill("12")
         budget.focus()
         snapshot["status"]["jobs_done"] = 2
-        expect(section.locator("[data-plan-status]")).to_contain_text("2 of 3 jobs", timeout=7000)
+        page.clock.run_for(5200)
+        expect(section.locator("[data-plan-status]")).to_contain_text("2 of 3 jobs")
         expect(budget).to_have_value("12")
         expect(budget).to_be_focused()
         expect(section).to_have_attribute("open", "")
@@ -134,7 +137,7 @@ def test_plan_controls_saved_edits_and_polled_without_replacing_form(tmp_path):
         expect(stop).to_be_enabled()
         section.locator("summary").click()
         before = len(calls)
-        page.wait_for_timeout(5200)
+        page.clock.run_for(5200)
         assert len(calls) > before
         section.locator("summary").click()
         stop.click()
@@ -142,6 +145,8 @@ def test_plan_controls_saved_edits_and_polled_without_replacing_form(tmp_path):
         expect(start).to_be_enabled()
         expect(save).to_be_enabled()
         section.locator("summary").click()
+        # let a poll already queued by the running state fire once, then no further polls may follow
+        page.clock.run_for(5200)
         before = len(calls)
-        page.wait_for_timeout(5200)
+        page.clock.run_for(5200)
         assert len(calls) == before
