@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from clock_budget import scaled
 from forecast_fixtures import write_panel
 
 from smolsmort.forecast.families import available_families
@@ -483,13 +484,13 @@ def test_four_family_budget_prunes_and_finishes_ensemble(tmp_path):
         families=[{"name": name} for name in names],
         # the finish reserve is 30% of the budget; stacked single-mode finishing of four
         # families needs more than the 18 s that 60 s left (mixed mode finished in 46 s total)
-        time_budget_s=120,
+        time_budget_s=scaled(120),
         nthread=4,
         ensemble={"enabled": True, "top": 3},
     )
-    status = wait_run(root, run_id, timeout=130)
+    status = wait_run(root, run_id, timeout=scaled(120) + 10)
     assert status["state"] == "done", status
-    assert time.monotonic() - started <= 124
+    assert time.monotonic() - started <= scaled(120) + 4
     result = assert_final_artifacts(root / run_id, names)
     snaive = result["families"]["snaive"]
     assert snaive["state"] == "done", result["families"]

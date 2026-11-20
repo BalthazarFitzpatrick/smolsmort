@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from clock_budget import scaled
 from test_forecast_coordinator import assert_final_artifacts, make_trending_panel, wait_run
 
 from smolsmort.forecast.families import get_family
@@ -42,7 +43,7 @@ def test_extratrees_mlp_and_lstm_share_one_run_with_xgboost(tmp_path):
 @pytest.mark.skipif(not get_family("catboost").available()[0], reason="needs catboost")
 def test_catboost_runs_alone_with_the_baseline(tmp_path):
     # one catboost candidate is several times slower than xgboost, so it gets a roomy slice
-    result = run_families(tmp_path, ["catboost", "snaive"], 150)
+    result = run_families(tmp_path, ["catboost", "snaive"], scaled(150))
     state = result["families"]["catboost"]
     assert state["fitness"] is not None, state
     assert state["state"] != "failed", state

@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from clock_budget import scaled
 from test_forecast_runs_v2 import make_request
 
 from smolsmort.forecast import evaluate as ev
@@ -297,7 +298,7 @@ def test_v2_panel_run_records_transform_and_raw_bands(tmp_path, name):
         {"name": family, "method": "grid"} for family in ("xgboost", "ridge", "ets", "snaive")
     ]
     # three validation fits must finish before this test can inspect every family's transform
-    request, spec, prepared = make_request(tmp_path, selections, duration=90)
+    request, spec, prepared = make_request(tmp_path, selections, duration=scaled(90))
     run_id = start_run(
         tmp_path / "runs",
         spec,
@@ -308,7 +309,7 @@ def test_v2_panel_run_records_transform_and_raw_bands(tmp_path, name):
         nthread=4,
         transform=name,
     )
-    state = wait_run(tmp_path / "runs", run_id, timeout=180)
+    state = wait_run(tmp_path / "runs", run_id, timeout=scaled(180))
     run = tmp_path / "runs" / run_id
 
     assert state["state"] == "done", state
