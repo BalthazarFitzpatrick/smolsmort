@@ -23,6 +23,54 @@ if sys.platform == "darwin":
     os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 
+# test modules that import torch while pytest collects them. a process that has torch loaded cannot
+# fit xgboost or lightgbm (guard_process_family, omp error #179 in production), and every xdist
+# worker collects every module, so the suite runs as two process groups: --process-group plain and
+# --process-group torch (scripts/run_tests.py runs both). explicit file arguments always collect
+TORCH_MODULES = frozenset(
+    {
+        "test_backend_evaluate.py",
+        "test_classes.py",
+        "test_coreml_guard.py",
+        "test_coreml_runtime.py",
+        "test_forecast_family_lstm.py",
+        "test_forecast_family_mlp.py",
+        "test_forecast_new_families_run.py",
+        "test_hyperparams.py",
+        "test_lr_schedule.py",
+        "test_model.py",
+        "test_optim.py",
+        "test_review_train.py",
+        "test_review_ui_logic.py",
+        "test_review_ui_server.py",
+        "test_train.py",
+        "test_variable_boxes.py",
+        "test_window_sampling.py",
+    }
+)
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--process-group",
+        choices=("plain", "torch"),
+        help="collect only the modules that do not (plain) or do (torch) import torch",
+    )
+
+
+def pytest_ignore_collect(collection_path, config):
+    group = config.getoption("--process-group")
+    if group is None or not collection_path.name.startswith("test_"):
+        return None
+    return (collection_path.name in TORCH_MODULES) != (group == "torch") or None
+
+
+def pytest_collection_finish(session):
+    # a new torch-importing module must be added to TORCH_MODULES, or the plain group breaks
+    if session.config.getoption("--process-group") == "plain" and "torch" in sys.modules:
+        raise pytest.UsageError("a plain-group module imported torch; add it to TORCH_MODULES")
+
+
 @pytest.fixture(autouse=True)
 def isolate_forecast_run_lock(tmp_path, monkeypatch):
     monkeypatch.setenv("SMOLSMORT_RUN_LOCK", str(tmp_path / "forecast.lock"))
