@@ -975,7 +975,9 @@ def test_posted_multi_run_finishes_reports_families_and_lists_as_multi(
     make_trending_panel(tmp_path)
     payload = make_payload(
         families=[{"name": name} for name in names],
-        time_budget_s=90 if all_available else 60,
+        # a family slice is the phase window over its wave and a candidate gets a quarter of it,
+        # so the budget grows with the waves of four: eleven families in 90 s left catboost 1 s
+        time_budget_s=45 * math.ceil(len(names) / 4) + 15,
         max_concurrent_families=4,
         nthread=4,
     )
