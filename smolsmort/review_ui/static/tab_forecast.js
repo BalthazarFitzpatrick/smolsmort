@@ -1256,13 +1256,23 @@ function forecastInlineSelect(options, value, onPick, label) {
   return wrap;
 }
 
-// extend shared rows with score cells; shared menu owns selection, focus and dismissal
-class ForecastResultsMenu extends Menu {
+// forecast menus add css classes (and optionally row tooltips) on top of the shared Menu build
+class ForecastDecoratedMenu extends Menu {
+  get menuClasses() { return []; }
+
+  get titledRows() { return false; }
+
   _build() {
-    const el = super._build();
-    el.classList.add('forecast-results-menu');
-    return el;
+    const panel = super._build();
+    panel.classList.add(...this.menuClasses);
+    if (this.titledRows) panel.querySelectorAll('.menu-item').forEach(row => { row.title = row.textContent; });
+    return panel;
   }
+}
+
+// extend shared rows with score cells; shared menu owns selection, focus and dismissal
+class ForecastResultsMenu extends ForecastDecoratedMenu {
+  get menuClasses() { return ['forecast-results-menu']; }
 
   _row(item, section) {
     const row = super._row(item, section);
@@ -1281,33 +1291,28 @@ class ForecastResultsMenu extends Menu {
   }
 }
 
-class ForecastSetupMenu extends Menu {
+class ForecastSetupMenu extends ForecastDecoratedMenu {
   constructor(key, options) {
     super(options);
     this.key = key;
   }
 
-  _build() {
-    const panel = super._build();
-    panel.classList.add('forecast-setup-menu', `forecast-setup-${this.key}`);
-    panel.querySelectorAll('.menu-item').forEach(row => { row.title = row.textContent; });
-    return panel;
-  }
+  get menuClasses() { return ['forecast-setup-menu', `forecast-setup-${this.key}`]; }
+
+  get titledRows() { return true; }
 }
 
-class ForecastFieldMenu extends Menu {
-  _build() {
-    const panel = super._build();
-    panel.classList.add('forecast-field-menu');
-    panel.querySelectorAll('.menu-item').forEach(row => { row.title = row.textContent; });
-    return panel;
-  }
+class ForecastFieldMenu extends ForecastDecoratedMenu {
+  get menuClasses() { return ['forecast-field-menu']; }
+
+  get titledRows() { return true; }
 }
 
-class ForecastBlendMenu extends Menu {
+class ForecastBlendMenu extends ForecastDecoratedMenu {
+  get menuClasses() { return ['forecast-blend-menu']; }
+
   _build() {
     const panel = super._build();
-    panel.classList.add('forecast-blend-menu');
     if (this._trigger?.id) panel.id = `${this._trigger.id}-menu`;
     return panel;
   }
@@ -1326,12 +1331,8 @@ class ForecastBlendMenu extends Menu {
   }
 }
 
-class ForecastInfoMenu extends Menu {
-  _build() {
-    const panel = super._build();
-    panel.classList.add('forecast-info-menu');
-    return panel;
-  }
+class ForecastInfoMenu extends ForecastDecoratedMenu {
+  get menuClasses() { return ['forecast-info-menu']; }
 }
 
 function forecastMountPlan(rail) {
@@ -3605,13 +3606,11 @@ class ForecastTopic {
     let model = choices.find(choice => choice.on)?.id || null;
     let include = 'details only';
     const storageKey = 'smolsmort:forecast:export-folder';
-    const backdrop = forecastNode('div', 'modal-backdrop');
-    const dialog = forecastNode('div', 'panel-floating modal-dialog forecast-export-dialog');
-    dialog.id = `${this.topic}-export-popup`;
-    dialog.setAttribute('role', 'dialog');
-    dialog.setAttribute('aria-modal', 'true');
-    dialog.setAttribute('aria-label', 'export run');
-    dialog.append(forecastNode('div', 'popup-title', 'export run'), forecastNode('div', 'h-divider'));
+    const {panel: dialog, close: dismiss} = openModal({
+      id: `${this.topic}-export-popup`, title: 'export run', className: 'forecast-export-dialog',
+      divider: true, label: 'export run', escape: true,
+      restoreFocus: document.getElementById(`${this.topic}-export-dialog`),
+    });
     const addField = (label, input) => {
       const row = forecastNode('div', 'settings-field');
       row.append(forecastNode('span', 'field-label', label), input);
@@ -3648,14 +3647,6 @@ class ForecastTopic {
     submit.type = 'button';
     submit.id = `${this.topic}-export-submit`;
     submit.disabled = !model;
-    const dismiss = () => {
-      backdrop.remove();
-      document.removeEventListener('keydown', escape);
-      document.getElementById(`${this.topic}-export-dialog`).focus({preventScroll: true});
-    };
-    const escape = event => {
-      if (event.key === 'Escape' && !document.querySelector('.menu-panel')) dismiss();
-    };
     close.onclick = dismiss;
     submit.onclick = async () => {
       if (!model) return;
@@ -3677,9 +3668,6 @@ class ForecastTopic {
     };
     buttons.append(close, submit);
     dialog.append(buttons);
-    backdrop.append(dialog);
-    document.body.append(backdrop);
-    document.addEventListener('keydown', escape);
     close.focus();
     try {
       let saved;

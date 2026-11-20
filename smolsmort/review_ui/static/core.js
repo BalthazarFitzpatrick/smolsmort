@@ -46,34 +46,66 @@ async function openPicker(anchorId, build, options = {}) {
   }
 }
 
+// modal shell: backdrop, panel and title; the caller appends content and buttons to panel.
+// label adds dialog roles, escape closes unless a menu is open, restoreFocus gets focus back on close
+function openModal({id, title, className = '', divider = false, label = '', escape = false,
+  restoreFocus = null}) {
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  const panel = document.createElement('div');
+  panel.className = `panel-floating modal-dialog ${className}`.trim();
+  panel.id = id;
+  if (label) {
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'true');
+    panel.setAttribute('aria-label', label);
+  }
+  const heading = document.createElement('div');
+  heading.className = 'popup-title';
+  heading.textContent = title;
+  panel.appendChild(heading);
+  if (divider) {
+    const rule = document.createElement('div');
+    rule.className = 'h-divider';
+    panel.appendChild(rule);
+  }
+  const onKey = event => {
+    if (event.key === 'Escape' && !document.querySelector('.menu-panel')) close();
+  };
+  const close = () => {
+    backdrop.remove();
+    document.removeEventListener('keydown', onKey);
+    restoreFocus?.focus({preventScroll: true});
+  };
+  if (escape) document.addEventListener('keydown', onKey);
+  backdrop.appendChild(panel);
+  document.body.appendChild(backdrop);
+  return {backdrop, panel, close};
+}
+
 // a centred question with named answers; resolves to the pressed button's id, or 'cancel'
 function askDialog({title, lines, buttons}) {
   return new Promise(resolve => {
-    const backdrop = document.createElement('div');
-    backdrop.className = 'modal-backdrop';
-    const dialog = document.createElement('div');
-    dialog.className = 'panel-floating modal-dialog';
-    dialog.id = 'ask-dialog';
-    dialog.innerHTML = `<div class="popup-title"></div><div class="modal-body"></div>`
-      + '<div class="run-controls modal-buttons"></div>';
-    dialog.querySelector('.popup-title').textContent = title;
-    const body = dialog.querySelector('.modal-body');
+    const {panel, close} = openModal({id: 'ask-dialog', title});
+    const body = document.createElement('div');
+    body.className = 'modal-body';
     lines.forEach(line => {
       const row = document.createElement('div');
       row.textContent = line;
       body.appendChild(row);
     });
-    const done = answer => { backdrop.remove(); resolve(answer); };
+    const controls = document.createElement('div');
+    controls.className = 'run-controls modal-buttons';
+    const done = answer => { close(); resolve(answer); };
     buttons.forEach(button => {
       const el = document.createElement('div');
       el.className = `toggle ${button.tone || ''}`;
       el.id = `ask-${button.id}`;
       el.textContent = button.label;
       el.onclick = () => done(button.id);
-      dialog.querySelector('.modal-buttons').appendChild(el);
+      controls.appendChild(el);
     });
-    backdrop.appendChild(dialog);
-    document.body.appendChild(backdrop);
+    panel.append(body, controls);
   });
 }
 
