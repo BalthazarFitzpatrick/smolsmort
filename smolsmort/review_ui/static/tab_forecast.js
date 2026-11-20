@@ -3312,6 +3312,7 @@ class ForecastTopic {
       max_generations: this.searchValues.generations,
       time_cap: this.searchValues.minutes * 60,
     };
+    if (this.searchValues.atOnce !== undefined) budget.max_concurrent_families = this.searchValues.atOnce;
     try {
       if (this.source && !this.columnsInfo.length) await this.loadColumns();
       const spec = this.currentSpec();

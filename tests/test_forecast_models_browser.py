@@ -288,6 +288,7 @@ def test_training_config_shared_new_and_warm_request_values(tmp_path):
             ("generations", 100),
         ):
             set_config_number(page, key, value)
+        set_config_number(page, "atOnce", 8)
         page.click("#regression-run-warm")
         page.wait_for_function(
             "document.getElementById('regression-run-title').innerText.includes('test02')"
@@ -298,6 +299,7 @@ def test_training_config_shared_new_and_warm_request_values(tmp_path):
             "plateau": 8,
             "max_generations": 100,
             "time_cap": 1800,
+            "max_concurrent_families": 8,
         }
         saved = page.evaluate(
             "JSON.parse(localStorage.getItem('smolsmort:forecast:regression')).state.modelPlan"

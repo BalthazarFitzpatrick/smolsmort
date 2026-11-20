@@ -99,6 +99,7 @@ class ForecastTrainingConfig {
     const apply = value => {
       this.values()[key] = value;
       this.plan[key] = value;
+      if (key === 'atOnce') this.atOnceSet = true;
       this.syncBudget(); this.ctl.saveStored(); this.paintControls();
     };
     const options = [...new Set([...cfg.presets, value])].sort((a, b) => a - b);
@@ -168,6 +169,8 @@ class ForecastTrainingConfig {
   loadRun(run) {
     const budget = run.budget || {};
     this.loadedRunConfig = this.runConfigSignature(run);
+    this.atOnceSet = false;
+    this.runAtOnce = Number.isInteger(run.max_concurrent_families) ? run.max_concurrent_families : null;
     this.warmValues = {
       minutes: (run.time_budget_s || budget.time_cap || 1200) / 60,
       atOnce: run.max_concurrent_families || 1,
@@ -186,7 +189,9 @@ class ForecastTrainingConfig {
   syncBudget() {
     const values = this.values();
     this.ctl.searchValues = {population: values.population, plateau: values.patience,
-      generations: values.generations, minutes: values.minutes};
+      generations: values.generations, minutes: values.minutes,
+      // warm start sends the cap only when the user picked one or the run being warmed had one
+      atOnce: this.atOnceSet || (this.mode === 'warm' && this.runAtOnce !== null) ? values.atOnce : undefined};
   }
 
   paintFamilies() { this.paintControls(); }

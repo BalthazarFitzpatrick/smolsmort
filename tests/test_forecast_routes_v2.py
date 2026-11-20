@@ -889,6 +889,21 @@ def test_legacy_warm_on_multi_keeps_the_requested_duration_and_threads(app, tmp_
     assert calls[0]["time_budget_s"] == 240 and calls[0]["nthread"] == 2
 
 
+def test_warm_start_budget_carries_the_at_once_cap(app, tmp_path, monkeypatch):
+    pytest.importorskip("duckdb")
+    write_panel(tmp_path, weeks=60)
+    run = make_saved_run(app)
+    write_json(run / "recipe.json", {"genome": {"family": "ridge"}})
+    calls = []
+    monkeypatch.setattr(runs, "start_run", lambda *args, **kwargs: calls.append(kwargs) or "new")
+    budget = {"time_cap": 240, "max_concurrent_families": 8}
+    post(app, payload={"spec": make_spec(), "budget": budget, "warm_from": run.name})
+    post(app, payload={"spec": make_spec(), "budget": {"time_cap": 240}, "warm_from": run.name})
+    assert calls[0]["max_concurrent_families"] == 8
+    # no cap in the budget keeps the cap the source run had
+    assert "max_concurrent_families" not in calls[1]
+
+
 @pytest.mark.parametrize("explicit", [False, True])
 def test_warm_from_an_incomplete_multi_run_has_no_winner_to_seed(app, tmp_path, explicit):
     write_panel(tmp_path, weeks=60)
