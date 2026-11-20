@@ -36,7 +36,7 @@ being thrown away, and that is what makes the next model better instead of merel
 Two commands, then look before you label anything real:
 
 ```bash
-uv add "smolsmort[vision] @ git+https://github.com/BalthazarFitzpatrick/smolsmort.git@v0.5.0"
+uv add "smolsmort[vision] @ git+https://github.com/BalthazarFitzpatrick/smolsmort.git@v0.6.0"
 uv run smolsmort
 ```
 

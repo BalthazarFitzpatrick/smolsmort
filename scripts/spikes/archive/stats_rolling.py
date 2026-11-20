@@ -3,13 +3,18 @@
 import argparse
 import json
 import signal
+import sys
 import time
 import warnings
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from common import bike_workspace
+
+# the shared helpers sit one folder up
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# noqa below: the path insert has to run before this import
+from common import bike_workspace  # noqa: E402
 from statsforecast import StatsForecast
 from statsforecast.models import AutoARIMA, AutoETS, AutoTheta
 
