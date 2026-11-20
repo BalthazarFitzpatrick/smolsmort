@@ -8,37 +8,25 @@ import numpy as np
 from threadpoolctl import threadpool_limits
 
 from smolsmort.forecast.families.base import Param
+from smolsmort.forecast.families.preprocess import Preprocessor
 from smolsmort.forecast.model import ModelError
 
 
 @dataclass
 class RidgeFitted:
-    columns: int
-    numeric: np.ndarray
-    medians: np.ndarray
-    means: np.ndarray
-    scales: np.ndarray
-    missing: np.ndarray
-    categories: tuple[tuple[int, np.ndarray], ...]
+    prep: Preprocessor
     coefficients: np.ndarray
     intercept: float
     eval_history: dict | None = None
 
+    def __getattr__(self, name: str):
+        # preprocessing state (means, scales, medians, ...) reads through to the shared prep
+        if name == "prep":
+            raise AttributeError(name)
+        return getattr(self.prep, name)
+
     def transform(self, x) -> np.ndarray:
-        values = np.asarray(x, dtype=np.float64)
-        if values.ndim != 2 or values.shape[1] != self.columns:
-            raise ModelError("ridge needs a matrix with the training column count")
-        if np.isinf(values).any():
-            raise ModelError("ridge features must be finite or nan")
-        numeric = values[:, self.numeric]
-        imputed = np.where(np.isnan(numeric), self.medians, numeric)
-        blocks = [(imputed - self.means) / self.scales]
-        blocks.append(np.isnan(values[:, self.missing]).astype(float))
-        for column, levels in self.categories:
-            encoded = values[:, column, None] == levels
-            unknown = ~encoded.any(axis=1, keepdims=True)
-            blocks.extend((encoded, unknown))
-        return np.column_stack(blocks)
+        return self.prep.transform(x)
 
     def predict(self, x) -> np.ndarray:
         predictions = self.transform(x) @ self.coefficients + self.intercept
@@ -100,35 +88,9 @@ class RidgeFamily:
             raise ModelError("ridge needs at least one usable target")
         if np.isinf(values).any():
             raise ModelError("ridge features must be finite or nan")
-        numeric = np.array([i for i, kind in enumerate(types) if kind == "q"], dtype=int)
-        raw_numeric = values[:, numeric]
-        # entirely missing columns use zero; they still carry a missing indicator
-        medians = np.array(
-            [
-                np.median(column[~np.isnan(column)]) if np.isfinite(column).any() else 0.0
-                for column in raw_numeric.T
-            ]
-        )
-        imputed = np.where(np.isnan(raw_numeric), medians, raw_numeric)
-        means, scales = imputed.mean(axis=0), imputed.std(axis=0)
-        scales[scales == 0] = 1.0
-        categories = tuple(
-            (i, np.unique(values[~np.isnan(values[:, i]), i]))
-            for i, kind in enumerate(types)
-            if kind == "c"
-        )
-        fitted = RidgeFitted(
-            values.shape[1],
-            numeric,
-            medians,
-            means,
-            scales,
-            np.flatnonzero(np.isnan(values).any(axis=0)),
-            categories,
-            np.empty(0),
-            0.0,
-        )
-        design = fitted.transform(values)
+        prep = Preprocessor.fit(values, types, scale=True, label="ridge")
+        fitted = RidgeFitted(prep, np.empty(0), 0.0)
+        design = prep.transform(values)
         center, target_mean = design.mean(axis=0), float(target.mean())
         centered = design - center
         # centering solves the unpenalised intercept outside the ridge system

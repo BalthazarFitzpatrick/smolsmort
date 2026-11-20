@@ -432,6 +432,12 @@ def _start(app, payload: dict) -> dict:
                     for key in ("population", "plateau", "max_generations")
                     if key in budget
                 },
+                # the at-once cap rides inside the budget; absent keeps the run's inherited cap
+                **(
+                    {"max_concurrent_families": budget["max_concurrent_families"]}
+                    if "max_concurrent_families" in budget
+                    else {}
+                ),
             }
             multi = True
         elif not multi:

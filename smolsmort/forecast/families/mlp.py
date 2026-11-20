@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from smolsmort.forecast.families.base import Param, load_torch, probe_import
+from smolsmort.forecast.families.preprocess import Preprocessor
 from smolsmort.forecast.model import ModelError, RoundErrors
 
 OBJECTIVES = ("squared", "absolute")
@@ -15,52 +16,8 @@ INTEGER_PARAMS = ("n_layers", "width", "batch_size")
 EPOCH_CAP = 300
 
 
-@dataclass
-class Preprocessor:
-    """training-only medians, scales, missing flags and one-hot levels with an unknown slot"""
-
-    columns: int
-    numeric: np.ndarray
-    medians: np.ndarray
-    means: np.ndarray
-    scales: np.ndarray
-    missing: np.ndarray
-    categories: tuple[tuple[int, np.ndarray], ...]
-
-    @classmethod
-    def learn(cls, values: np.ndarray, types: list[str]) -> Preprocessor:
-        numeric = np.array([i for i, kind in enumerate(types) if kind == "q"], dtype=int)
-        raw = values[:, numeric]
-        # entirely missing columns use zero; they still carry a missing indicator
-        medians = np.array(
-            [np.median(col[~np.isnan(col)]) if (~np.isnan(col)).any() else 0.0 for col in raw.T]
-        )
-        imputed = np.where(np.isnan(raw), medians, raw)
-        means, scales = imputed.mean(axis=0), imputed.std(axis=0)
-        scales[scales == 0] = 1.0
-        categories = tuple(
-            (i, np.unique(values[~np.isnan(values[:, i]), i]))
-            for i, kind in enumerate(types)
-            if kind == "c"
-        )
-        missing = np.flatnonzero(np.isnan(values).any(axis=0))
-        return cls(values.shape[1], numeric, medians, means, scales, missing, categories)
-
-    def transform(self, x) -> np.ndarray:
-        values = np.asarray(x, dtype=np.float64)
-        if values.ndim != 2 or values.shape[1] != self.columns:
-            raise ModelError("mlp needs a matrix with the training column count")
-        if np.isinf(values).any():
-            raise ModelError("mlp features must be finite or nan")
-        numeric = values[:, self.numeric]
-        imputed = np.where(np.isnan(numeric), self.medians, numeric)
-        blocks = [(imputed - self.means) / self.scales]
-        blocks.append(np.isnan(values[:, self.missing]).astype(float))
-        for column, levels in self.categories:
-            encoded = values[:, column, None] == levels
-            unknown = ~encoded.any(axis=1, keepdims=True)
-            blocks.extend((encoded, unknown))
-        return np.column_stack(blocks).astype(np.float32)
+def fit_preprocessor(values: np.ndarray, types: list[str]) -> Preprocessor:
+    return Preprocessor.fit(values, types, scale=True, dtype=np.float32, label="mlp")
 
 
 @dataclass
@@ -227,7 +184,7 @@ class MlpFamily:
             best_epochs, history = epochs_cap, None
             if patience and len(head) >= 10 and len(tail) >= 10:
                 # the probe sees only head statistics, so the tail stays honest
-                prep = Preprocessor.learn(values[head], types)
+                prep = fit_preprocessor(values[head], types)
                 mean, scale = float(target[head].mean()), float(target[head].std()) or 1.0
                 check = (
                     torch.from_numpy(prep.transform(values[tail])),
@@ -262,7 +219,7 @@ class MlpFamily:
                     if curves:
                         history["curves"] = curves
             # refit on every usable row for the best epoch count, like lightgbm
-            prep = Preprocessor.learn(values[rows], types)
+            prep = fit_preprocessor(values[rows], types)
             mean, scale = float(target[rows].mean()), float(target[rows].std()) or 1.0
             model, training, _, _ = _train(
                 torch,
