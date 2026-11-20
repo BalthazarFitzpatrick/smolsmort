@@ -1643,6 +1643,13 @@ def _align(values: dict[str, float], x: list[str]) -> list[float | None]:
     return [values.get(day) for day in x]
 
 
+def _cap_lines(combos: list) -> tuple[list, str | None]:
+    """the first MAX_LINES combos and a note naming the original count when any were cut"""
+    if len(combos) <= MAX_LINES:
+        return combos, None
+    return combos[:MAX_LINES], f"capped at {MAX_LINES} of {len(combos)} lines"
+
+
 def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
     prepared = Path(request["prepared"])
     spec = request["spec"]
@@ -1663,10 +1670,7 @@ def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
     )
     where = _filter_clause(filters, dims)
     combos = _series_combos(con, panel, breakdown, where)
-    note = None
-    if len(combos) > MAX_LINES:
-        combos = combos[:MAX_LINES]
-        note = f"capped at {MAX_LINES} of {len(combos)} lines"
+    combos, note = _cap_lines(combos)
 
     keymap_sql = (
         'SELECT DISTINCT "__series" AS series'
@@ -1949,9 +1953,9 @@ def _hazard_entity_view(run_dir: Path, request: dict, query: dict) -> dict:
         rows_path = Path(request["prepared"]) / "rows.parquet"
         where = _filter_clause(filters, dims)
         combos = _series_combos(con, rows_path, breakdown, where)
-        if len(combos) > MAX_LINES:
-            out["note"] = f"capped at {MAX_LINES} of {len(combos)} lines"
-            combos = combos[:MAX_LINES]
+        combos, note = _cap_lines(combos)
+        if note:
+            out["note"] = note
         keymap_sql = _entity_keymap_sql(rows_path, dims)
         unit = (spec.get("censor") or {}).get("unit", "week")
         lines = []
@@ -2011,10 +2015,7 @@ def entity_view(run_dir: Path, request: dict, query: dict) -> dict:
     con = connect()
     where = _filter_clause(filters, dims)
     combos = _series_combos(con, rows_path, breakdown, where)
-    note = None
-    if len(combos) > MAX_LINES:
-        combos = combos[:MAX_LINES]
-        note = f"capped at {MAX_LINES} of {len(combos)} lines"
+    combos, note = _cap_lines(combos)
 
     keymap_sql = _entity_keymap_sql(rows_path, dims)
 
@@ -2383,7 +2384,7 @@ def export_csv(run_dir: Path, request: dict, query: dict | None = None) -> bytes
     result = _require_done(run_dir)
     query = query or {}
     verdict = _select_model(run_dir, result, query)["verdict"] or {}
-    payload = table(run_dir, request, {**query, "size": 10**9})
+    payload = table(run_dir, request, {**query, "size": 10**9, "page": 0})
     ratio = verdict.get("accuracy", {}).get("ratio")
 
     buf = io.StringIO()
