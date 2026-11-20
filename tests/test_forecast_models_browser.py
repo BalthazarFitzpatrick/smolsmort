@@ -63,7 +63,7 @@ def test_tile_generation_picker_keeps_recipes_and_selection_on_poll(tmp_path, mo
         assert "best_feature" in feat.text_content() and "70%" in feat.text_content()
         assert "max_depth3" in param.text_content()
         gen.locator("summary").click()
-        assert tile.locator("summary > span:first-child").all_text_contents() == ["G", "P", "F"]
+        assert tile.locator("summary > span:first-child").all_text_contents() == ["g", "p", "f"]
         assert gen.locator("button > span:first-child").all_text_contents() == [
             "best",
             "gen 0",
@@ -380,6 +380,11 @@ def test_training_families_all_suitable_and_empty_selection(tmp_path):
         mock_catalog(page)
         select_timeseries(page)
         save_families(page, ["xgboost"])
+        assert page.locator("#regression-config-start").is_disabled()
+        menu = open_families(page)
+        menu.locator('.menu-item[data-id="all-suitable"]').click()
+        menu.locator('.menu-item[data-id="all-suitable"]').click()
+        menu.locator('.menu-buttons [data-id="save"]').click()
         assert page.locator("#regression-config-start").is_disabled()
         menu = open_families(page)
         menu.locator('.menu-item[data-id="all-suitable"]').click()

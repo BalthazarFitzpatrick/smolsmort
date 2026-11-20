@@ -863,3 +863,49 @@ def test_results_run_picker_hides_part_runs_unless_selected(tmp_path):
             "items => items.map(item => item.dataset.id)"
         )
         assert ids == [parent]
+
+
+def test_cancel_posted_the_selected_live_run_only(tmp_path):
+    with session(tmp_path) as (page, _):
+        runs = {
+            name: {**make_run(), "id": f"20261009-12000{n}-{name}"}
+            for n, name in enumerate(("livea", "liveb"))
+        }
+        runs["done"] = {**make_run(state="done"), "id": "20261009-120009-done"}
+        by_id = {run["id"]: run for run in runs.values()}
+        cancels = []
+
+        def read_run(route):
+            run_id = parse_qs(urlparse(route.request.url).query)["id"][0]
+            route.fulfill(json=with_error_metrics(by_id[run_id]))
+
+        page.route(
+            "**/api/forecast-runs",
+            lambda route: route.fulfill(
+                json={"runs": [with_error_metrics(run) for run in by_id.values()]}
+            ),
+        )
+        page.route("**/api/forecast-run?**", read_run)
+        page.route(
+            "**/api/forecast-cancel",
+            lambda route: (cancels.append(route.request.post_data_json), route.fulfill(json={})),
+        )
+        switch_to_regression(page)
+        show_tab(page, "regression-search")
+        cancel = page.locator("#regression-search-cancel")
+        page.click(f'#regression-running-list [data-run-id="{runs["liveb"]["id"]}"]')
+        page.wait_for_function(
+            "id => document.getElementById('regression-run-title').innerText.includes(id)",
+            arg="liveb",
+        )
+        assert cancel.is_enabled()
+        cancel.click()
+        page.wait_for_function(
+            "document.getElementById('regression-search-status').textContent === 'cancelling...'"
+        )
+        assert cancels == [{"id": runs["liveb"]["id"]}]
+        page.click(f'#regression-runs-list [data-run-id="{runs["done"]["id"]}"]')
+        page.wait_for_function(
+            "document.getElementById('regression-run-title').innerText.includes('done')"
+        )
+        assert cancel.is_disabled()

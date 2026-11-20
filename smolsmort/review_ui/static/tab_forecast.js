@@ -652,7 +652,7 @@ function forecastCreateRunTile(tile, index, tiles, metric, legacy, metrics, sele
       generationMissing: selected !== 'best' && !genome});
     menus.prepend(forecastGenerationMenu(tile, selected, onGeneration));
     menus.append(menus.querySelector('[data-menu="feat"]'));
-    for (const [key, label] of [['param', 'P'], ['feat', 'F']]) {
+    for (const [key, label] of [['param', 'p'], ['feat', 'f']]) {
       menus.querySelector(`[data-menu="${key}"] summary > span`).textContent = label;
     }
     face.append(menus);
@@ -704,7 +704,7 @@ function forecastGenerationMenu(tile, selected, onGeneration) {
   const details = forecastNode('details');
   details.dataset.menu = 'gen';
   const summary = forecastNode('summary');
-  summary.append(forecastNode('span', '', 'G'), forecastNode('span', 'forecast-tile-dim', `${selected} ▾`));
+  summary.append(forecastNode('span', '', 'g'), forecastNode('span', 'forecast-tile-dim', `${selected} ▾`));
   const menu = forecastNode('div', 'forecast-tile-menu');
   const generations = Object.keys(tile.curves || {}).sort((a, b) => Number(a) - Number(b));
   ['best', ...generations].forEach(generation => {
@@ -2036,7 +2036,7 @@ class ForecastTopic {
           <span class="stat" id="${this.topic}-data-status"></span>
         </div>
         <div id="${this.topic}-prep-summary" class="train-facts"></div>
-        <details id="${this.topic}-sql-details">
+        <details>
           <summary>generated sql</summary>
           <pre id="${this.topic}-sql-text" class="forecast-sql"></pre>
         </details>
@@ -2670,9 +2670,10 @@ class ForecastTopic {
   }
 
   async cancelSearch() {
-    if (!this.currentRunId) return;
+    const run = this.runCache.get(this.selectedRunId);
+    if (!run || !this.isRunning(run)) return;
     try {
-      await api('/api/forecast-cancel', {id: this.currentRunId});
+      await api('/api/forecast-cancel', {id: run.id});
       this.searchSay('cancelling...');
     } catch (err) {
       this.searchSay(err.message);
@@ -2767,9 +2768,8 @@ class ForecastTopic {
       if (this.runCache.get(run.id) !== run) return;
       run.tiles = view.tiles;
       if (this.selectedRunId === run.id) this.paintRunDetail(run);
-    } catch (error) {
+    } catch {
       // legacy runs can outlive their prepared data; keep the available poll metadata
-      run.tilesError = error.message;
     }
   }
 
@@ -2831,7 +2831,7 @@ class ForecastTopic {
     document.getElementById(`${this.topic}-search-status`).classList.toggle('hidden', run?.state === 'done');
     this.models.paintControls();
     const cancel = document.getElementById(`${this.topic}-search-cancel`);
-    cancel.disabled = !this.currentRunId;
+    cancel.disabled = !(run && this.isRunning(run));
     cancel.classList.toggle('disabled', cancel.disabled);
     const verdict = document.getElementById(`${this.topic}-run-verdict`);
     const ratioMetric = this.selectedMetrics(run).find(metric => metric.id === 'test_ratio');
@@ -2844,7 +2844,6 @@ class ForecastTopic {
       this.paintLeaderboard([]);
       return;
     }
-    this.displayTask = run.spec?.task || run.task || this.task;
     const stateLabel = run.state === 'cancelled' || run.stopped === 'cancelled' ? 'stopped' : run.state;
     setText(`${this.topic}-run-title`, `${run.id.split('-').at(-1)} · ${run.kind || 'search'} · ${stateLabel}`);
     setText(`${this.topic}-run-stop`, this.stopReason(run));
@@ -3253,7 +3252,12 @@ class ForecastTopic {
     if (!box.childElementCount) box.append(forecastNode('span', 'stat', 'no finished runs yet'));
     document.getElementById(`${this.topic}-running-section`).classList.toggle('hidden', !running.childElementCount);
     document.getElementById(`${this.topic}-new-search`).classList.toggle('on', !this.selectedRunId);
-    document.getElementById(`${this.topic}-search-cancel`).classList.toggle('disabled', !this.currentRunId);
+    document.getElementById(`${this.topic}-search-cancel`).classList.toggle('disabled', !this.selectedRunLive());
+  }
+
+  selectedRunLive() {
+    const run = this.runCache.get(this.selectedRunId);
+    return Boolean(run && this.isRunning(run));
   }
 
   openRecipeMenu(head, entry, rank) {
@@ -4105,8 +4109,8 @@ window.addEventListener('smolsmort-topic', event => {
   smolsmortTabs.register({id: `${topic}-search`, label: 'training', topic, mount: p => ctl.mountSearch(p)});
   smolsmortTabs.register({id: `${topic}-results`, label: 'results', topic, mount: p => ctl.mountResults(p)});
   const flavours = topic === 'regression'
-    ? [{id: 'entity', label: 'Entity'}, {id: 'timeseries', label: 'Time series'}]
-    : [{id: 'entity', label: 'Entity'}];
+    ? [{id: 'entity', label: 'entity'}, {id: 'timeseries', label: 'time series'}]
+    : [{id: 'entity', label: 'entity'}];
   smolsmortTabs.setFlavours(topic, flavours);
   smolsmortTabs.onFlavour(topic, () => ctl.onFlavourChange());
 });

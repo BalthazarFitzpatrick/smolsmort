@@ -206,7 +206,7 @@ def test_contract_tiles_masonry_curves_filters_and_ensembles(tmp_path, monkeypat
         }
         assert heights == {64}, heights
         assert ridge.locator(".forecast-run-tile-chart > svg").count() == 2
-        assert model.locator("summary > span:first-child").all_text_contents() == ["G", "P", "F"]
+        assert model.locator("summary > span:first-child").all_text_contents() == ["g", "p", "f"]
         assert "test ratio:" in model.inner_text()
         assert "wape · validation" in model.inner_text()
         assert (
