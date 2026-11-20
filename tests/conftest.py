@@ -9,6 +9,7 @@ late, because torch tests earlier in the same run had already initialised their 
 
 import os
 import sys
+from importlib.util import find_spec
 from types import ModuleType
 
 import pytest
@@ -107,7 +108,8 @@ def pytest_collection_finish(session):
         raise pytest.UsageError("a plain-group module imported torch; add it to TORCH_MODULES")
 
 
-# one report per process: the first importer is the cause, later tests only inherit it
+# one report per process: the first importer is the cause, later tests only inherit it.
+# without xgboost or lightgbm installed there is nothing for torch to clash with
 _torch_reports: list[str] = []
 
 
@@ -119,6 +121,7 @@ def keep_torch_out_of_the_plain_group(request):
         request.config.getoption("--process-group") in NO_TORCH_GROUPS
         # a real module: some tests park a stand-in under the name on purpose
         and isinstance(sys.modules.get("torch"), ModuleType)
+        and any(find_spec(name) for name in ("xgboost", "lightgbm"))
         and not _torch_reports
     ):
         _torch_reports.append(request.node.nodeid)
