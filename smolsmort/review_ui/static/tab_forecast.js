@@ -3736,21 +3736,15 @@ class ForecastTopic {
       : [forecastNode('div', '', 'no notes')]));
   }
 
-  // one page of the table, unfiltered, just to learn what values each dimension carries
+  // distinct values per dimension over the whole saved result
   async loadFilterChoices() {
     const load = this.resultsLoad;
     this.filterChoices = {};
     const dims = this.dims();
     if (!dims.length) { this.paintFilterHead(); return; }
-    const data = await api(
-      `/api/forecast-table?id=${encodeURIComponent(this.resultsRunId)}&page=0&size=2000`
-    );
+    const data = await api(`/api/forecast-filter-values?id=${encodeURIComponent(this.resultsRunId)}`);
     if (load !== this.resultsLoad) return;
-    dims.forEach(dim => {
-      const idx = data.columns.indexOf(dim);
-      if (idx < 0) return;
-      this.filterChoices[dim] = [...new Set(data.rows.map(r => r[idx]))].filter(v => v != null);
-    });
+    dims.forEach(dim => { this.filterChoices[dim] = data.values?.[dim] || []; });
     this.paintFilterHead();
   }
 

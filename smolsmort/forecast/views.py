@@ -2366,3 +2366,32 @@ def export_csv(run_dir: Path, request: dict, query: dict | None = None) -> bytes
         row_ratio = ratio if prediction_index is None or row[prediction_index] is not None else None
         writer.writerow([*row, row_ratio])
     return buf.getvalue().encode("utf-8")
+
+
+def filter_values(run_dir: Path, request: dict, query: dict) -> dict:
+    """distinct values per dimension over every series or row the saved forecast covers"""
+    spec = request["spec"]
+    dims = _spec_dims(spec)
+    prepared = Path(request["prepared"])
+    forecast_path = _prediction_path(run_dir, query, "forecast")
+    if normalize_mode(spec["mode"]) == "entity":
+        source = _entity_keymap_sql(prepared / "rows.parquet", dims)
+        join = "f.row = k.row"
+    else:
+        keys = ", ".join(_quote(d) for d in dims)
+        source = (
+            f'SELECT "__series" AS series, {keys} FROM '
+            f"read_parquet({sql_literal(str(prepared / 'panel.parquet'))})"
+        )
+        join = "f.series = k.series"
+    con = connect()
+    values = {}
+    for dim in dims:
+        rows = con.execute(
+            f"SELECT DISTINCT k.{_quote(dim)} FROM ({source}) k WHERE EXISTS ("
+            f"SELECT 1 FROM read_parquet({sql_literal(str(forecast_path))}) f WHERE {join}) "
+            f"ORDER BY 1"
+        ).fetchall()
+        values[dim] = [_row_to_json(row)[0] for row in rows if row[0] is not None]
+    con.close()
+    return {"values": values}

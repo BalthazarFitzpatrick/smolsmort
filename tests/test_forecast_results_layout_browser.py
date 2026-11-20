@@ -183,6 +183,14 @@ def test_filter_menu_kept_dimension_selections_and_refreshed_chart_and_table(
         )
         page.route("**/api/forecast-table?**", read_table)
         page.route("**/api/forecast-view?**", read_view)
+        page.route(
+            "**/api/forecast-filter-values?**",
+            lambda route: route.fulfill(
+                json={
+                    "values": {name: sorted({row[name] for row in records}) for name in dimensions}
+                }
+            ),
+        )
         switch_to_regression(page)
         page.select_option("#topic-flavour", "timeseries")
         show_tab(page, "regression-results")
@@ -252,3 +260,69 @@ def test_filter_menu_kept_dimension_selections_and_refreshed_chart_and_table(
             pick("product", "a")
         page.keyboard.press("Escape")
         assert not menu.is_visible()
+
+
+def test_filter_menu_listed_values_past_the_first_two_thousand_rows(tmp_path):
+    run_id = "20261030-120000-wide"
+    spec = {
+        "mode": "timeseries",
+        "task": "regression",
+        "columns": [
+            {"name": "day", "role": "time"},
+            {"name": "region", "role": "dimension"},
+            {"name": "prediction", "role": "target"},
+        ],
+    }
+    requests = []
+
+    def read_table(route):
+        requests.append(route.request.url)
+        route.fulfill(
+            json={
+                "columns": ["region", "prediction"],
+                "rows": [["alpha", 1]] * 5,
+                "page": 0,
+                "total": 2001,
+            }
+        )
+
+    with session(tmp_path) as (page, _base):
+        page.route(
+            "**/api/forecast-runs",
+            lambda route: route.fulfill(json={"runs": [{"id": run_id, "state": "done"}]}),
+        )
+        page.route(
+            "**/api/forecast-run?**",
+            lambda route: route.fulfill(json=with_error_metrics({"id": run_id, "spec": spec})),
+        )
+        page.route("**/api/forecast-table?**", read_table)
+        page.route(
+            "**/api/forecast-view?**",
+            lambda route: route.fulfill(
+                json=with_error_metrics(
+                    {
+                        "mode": "timeseries",
+                        "spec": spec,
+                        "x": ["2026-01-05"],
+                        "series": [{"id": "forecast", "label": "forecast", "values": [1]}],
+                        "bands": [],
+                        "markers": [],
+                        "verdict": {"accuracy": {"ratio": 0.9}},
+                    }
+                )
+            ),
+        )
+        page.route(
+            "**/api/forecast-filter-values?**",
+            lambda route: route.fulfill(json={"values": {"region": ["alpha", "zulu"]}}),
+        )
+        switch_to_regression(page)
+        page.select_option("#topic-flavour", "timeseries")
+        show_tab(page, "regression-results")
+        page.locator("#regression-results-run").click()
+        page.locator(f'.menu-panel .menu-item[data-id="{run_id}"]').click()
+        page.locator("#regression-results-table tr").nth(4).wait_for()
+        page.locator("#regression-filter").click()
+        menu = page.locator("#regression-filter-menu")
+        assert menu.locator(".menu-item").all_inner_texts() == ["alpha", "zulu"]
+        assert not any("size=2000" in url for url in requests)
