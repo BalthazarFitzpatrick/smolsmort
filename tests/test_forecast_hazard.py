@@ -418,7 +418,9 @@ def test_one_generation_search_finishes_with_one_forecast_per_open_entity(
     assert result["verdict"]["accuracy"]["metric"] == "ibs"
     assert np.isfinite(result["model_error"])
     assert result["verdict"]["accuracy"]["model_error"] == result["model_error"]
-    assert not any(check["group"] == "band" for check in result["verdict"]["checks"])
+    # survival runs report band coverage of the survival curves since 9a1b684
+    names = {check["check"] for check in result["verdict"]["checks"] if check["group"] == "band"}
+    assert "band coverage" in names
     if objective == "hazard":
         assert best["metrics"]["log_loss"] == pytest.approx(best["fitness"])
         curves = result["curves"]
