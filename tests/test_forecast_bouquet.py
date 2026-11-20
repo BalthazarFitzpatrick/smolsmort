@@ -60,7 +60,7 @@ def make_variation(ws, family, priors=None):
 
 def seed_population(ws, var, family, size=16, warm=None):
     return (
-        _seed_population(ws, var, size, warm)
+        _seed_population(var, size, warm)
         if family is None
         else _family_population(var, size, warm, "genetic")
     )
@@ -352,5 +352,5 @@ def test_top_families_skip_wildcards_raised_to_the_same_prior(tmp_path):
     priors = read_priors(tmp_path)
     var = _Variation(make_workspace(list(priors)), np.random.default_rng(17), priors, top)
     assert var.birth_families == top
-    seeds = _seed_population(make_workspace(list(priors)), var, 4, None)
+    seeds = _seed_population(var, 4, None)
     assert set(seeds[0].families) == set(top)

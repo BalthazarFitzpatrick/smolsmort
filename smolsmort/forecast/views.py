@@ -32,7 +32,7 @@ from smolsmort.forecast.horizon_view import (
     lead_rows,
 )
 from smolsmort.forecast.spec import normalize_mode, normalize_saved_modes, spec_from_dict
-from smolsmort.forecast.tables import _unmask, connect
+from smolsmort.forecast.tables import _unmask, connect, sql_literal
 
 
 def write_json_atomic(path: Path, data) -> None:
@@ -63,17 +63,13 @@ def _quote(name: str) -> str:
     return '"' + str(name).replace('"', '""') + '"'
 
 
-def _lit(value) -> str:
-    return "'" + str(value).replace("'", "''") + "'"
-
-
 def _filter_clause(filters: dict, dims: list[str]) -> str:
     """dimension filters as sql, restricted to columns that are actually dimensions here"""
     clauses = []
     for dim, values in (filters or {}).items():
         if dim not in dims or not values:
             continue
-        clauses.append(f"{_quote(dim)} IN ({', '.join(_lit(v) for v in values)})")
+        clauses.append(f"{_quote(dim)} IN ({', '.join(sql_literal(v) for v in values)})")
     return " AND ".join(clauses) if clauses else "TRUE"
 
 
@@ -994,6 +990,13 @@ def _select_tile(run_dir: Path, model: str, *, read_only=False):
     return tile, tiles
 
 
+def cache_is_fresh(target: Path, member_paths: list[Path]) -> bool:
+    """true when the cache exists and is not older than any member prediction table"""
+    return target.exists() and all(
+        target.stat().st_mtime_ns >= path.stat().st_mtime_ns for path in member_paths
+    )
+
+
 def _tile_prediction_path(run_dir: Path, model: str, kind: str) -> Path:
     from smolsmort.forecast.tables import read_table, write_table
     from smolsmort.forecast.tiles import align_tables
@@ -1005,17 +1008,15 @@ def _tile_prediction_path(run_dir: Path, model: str, kind: str) -> Path:
             run_dir, tile["family"], kind, winner["family"], winner["saved_model"]
         )
     target = run_dir / "tile_views" / tile["recipe_key"] / f"{kind}.parquet"
-    if target.exists():
-        return target
     members = [item for item in tiles if item["tile_id"] in tile["members"]]
     paths = [_tile_prediction_path(run_dir, item["tile_id"], kind) for item in members]
-    target = run_dir / "tile_views" / tile["recipe_key"] / f"{kind}.parquet"
     if any(not path.exists() for path in paths):
         return target
+    # a cache older than any member table is stale and gets rebuilt
+    if cache_is_fresh(target, paths):
+        return target
     with _POLL_LOCK:
-        if target.exists() and all(
-            target.stat().st_mtime_ns >= path.stat().st_mtime_ns for path in paths
-        ):
+        if cache_is_fresh(target, paths):
             return target
         tables = align_tables([read_table(path) for path in paths])
         columns = dict(tables[0])
@@ -1296,7 +1297,7 @@ def _fit_blend_series_bands(validation, weights):
 
 def _horizon_sources(con, request, query, validation, test, forecast):
     sources = {
-        name: f"read_parquet({_lit(path)})"
+        name: f"read_parquet({sql_literal(path)})"
         for name, path in (("validation", validation), ("test", test), ("forecast", forecast))
     }
     table = _read_view_rows(con, sources["test"])
@@ -1336,7 +1337,9 @@ def _horizon_sources(con, request, query, validation, test, forecast):
         panel = Path(request["prepared"]) / "panel.parquet"
         target = _quote(_spec_target(request["spec"]))
         nonnegative = bool(
-            con.execute(f"SELECT MIN({target}) >= 0 FROM read_parquet({_lit(panel)})").fetchone()[0]
+            con.execute(
+                f"SELECT MIN({target}) >= 0 FROM read_parquet({sql_literal(panel)})"
+            ).fetchone()[0]
         )
         test_targets = set(zip(table["series"], table["step"], strict=True))
     sources["history"] = _horizon_history_source(sources["validation"], sources["test"])
@@ -1391,7 +1394,7 @@ def _read_lead_errors(run_dir, result, model, horizon):
         path = run_dir / "lead_errors.parquet"
     if rows is None and path.exists():
         with connect() as con:
-            columns = _read_view_rows(con, f"read_parquet({_lit(path)})")
+            columns = _read_view_rows(con, f"read_parquet({sql_literal(path)})")
         rows = [
             dict(zip(columns, values, strict=True))
             for values in zip(*columns.values(), strict=True)
@@ -1436,7 +1439,7 @@ def _horizon_baseline(con, request, table):
     panel = Path(request["prepared"]) / "panel.parquet"
     target = _quote(_spec_target(request["spec"]))
     rows = con.execute(
-        f"SELECT __series, __step, {target} FROM read_parquet({_lit(panel)}) ORDER BY __step"
+        f"SELECT __series, __step, {target} FROM read_parquet({sql_literal(panel)}) ORDER BY __step"
     ).fetchall()
     unit = request["spec"].get("step", "week")
     period = {"week": 52, "day": 365, "month": 12, "quarter": 4, "year": 1}[unit]
@@ -1455,7 +1458,7 @@ def _horizon_baseline(con, request, table):
     return {**table, "naive_prediction": np.asarray(predictions, dtype=float)}
 
 
-def _horizon_metrics(con, run_dir, request, query, path, selection):
+def _horizon_metrics(con, request, query, path, selection):
     scope = _horizon_label(selection)
 
     def metric(value=None, reason=None, **extra):
@@ -1473,7 +1476,7 @@ def _horizon_metrics(con, run_dir, request, query, path, selection):
             name: metric(reason=f"{scope}: test predictions not saved")
             for name in ("wape", "mae", "mape", "test_ratio")
         }
-    table = _read_view_rows(con, f"read_parquet({_lit(path)})")
+    table = _read_view_rows(con, f"read_parquet({sql_literal(path)})")
     if "weeks_ahead" not in table:
         return {
             name: metric(reason=f"{scope}: weeks ahead not saved")
@@ -1484,7 +1487,7 @@ def _horizon_metrics(con, run_dir, request, query, path, selection):
         validation = path.with_name(path.name.removesuffix("test.parquet") + "validation.parquet")
         if validation.exists():
             source = _horizon_history_source(
-                f"read_parquet({_lit(validation)})", f"read_parquet({_lit(path)})"
+                f"read_parquet({sql_literal(validation)})", f"read_parquet({sql_literal(path)})"
             )
             table = _read_view_rows(con, source)
     table = _horizon_baseline(con, request, table)
@@ -1500,7 +1503,7 @@ def _horizon_metrics(con, run_dir, request, query, path, selection):
         where = _filter_clause(filters, _spec_dims(request["spec"]))
         panel = Path(request["prepared"]) / "panel.parquet"
         selected = con.execute(
-            f"SELECT DISTINCT __series FROM read_parquet({_lit(panel)}) WHERE {where}"
+            f"SELECT DISTINCT __series FROM read_parquet({sql_literal(panel)}) WHERE {where}"
         ).fetchall()
         keep = np.isin(table["series"], [row[0] for row in selected])
         table = {name: values[keep] for name, values in table.items()}
@@ -1545,7 +1548,7 @@ def _horizon_result_metrics(run_dir, request, query, details, selection):
     scope = _horizon_label(selection)
     with connect() as con:
         path = _optional_prediction_path(run_dir, {**query, "model": model}, "test")
-        selected_metrics = _horizon_metrics(con, run_dir, request, query, path, selection)
+        selected_metrics = _horizon_metrics(con, request, query, path, selection)
     unavailable = {
         name: {
             "value": None,
@@ -1570,7 +1573,7 @@ def _horizon_result_metrics(run_dir, request, query, details, selection):
             if not path.exists() and family == details["winner_family"]:
                 path = _optional_prediction_path(run_dir, {**query, "model": "winner"}, "test")
             with connect() as con:
-                metrics = _horizon_metrics(con, run_dir, request, query, path, selection)
+                metrics = _horizon_metrics(con, request, query, path, selection)
             if path is None or not path.exists():
                 saved = _require_done(run_dir).get("families", {}).get(family, {})
                 lead_errors = saved.get("lead_errors") or {}
@@ -1616,7 +1619,7 @@ def _series_combos(con, panel_path: Path, breakdown: list[str], where: str) -> l
         return [()]
     cols = ", ".join(_quote(d) for d in breakdown)
     rows = con.execute(
-        f"SELECT DISTINCT {cols} FROM read_parquet({_lit(str(panel_path))}) WHERE {where}"
+        f"SELECT DISTINCT {cols} FROM read_parquet({sql_literal(str(panel_path))}) WHERE {where}"
         f" ORDER BY {cols}"
     ).fetchall()
     return rows
@@ -1625,7 +1628,9 @@ def _series_combos(con, panel_path: Path, breakdown: list[str], where: str) -> l
 def _combo_clause(breakdown: list[str], combo: tuple) -> str:
     if not breakdown:
         return "TRUE"
-    return " AND ".join(f"{_quote(d)} = {_lit(v)}" for d, v in zip(breakdown, combo, strict=True))
+    return " AND ".join(
+        f"{_quote(d)} = {sql_literal(v)}" for d, v in zip(breakdown, combo, strict=True)
+    )
 
 
 def _combo_label(combo: tuple) -> str:
@@ -1641,6 +1646,13 @@ def _fetch_series(con, sql: str) -> dict[str, float]:
 
 def _align(values: dict[str, float], x: list[str]) -> list[float | None]:
     return [values.get(day) for day in x]
+
+
+def _cap_lines(combos: list) -> tuple[list, str | None]:
+    """the first MAX_LINES combos and a note naming the original count when any were cut"""
+    if len(combos) <= MAX_LINES:
+        return combos, None
+    return combos[:MAX_LINES], f"capped at {MAX_LINES} of {len(combos)} lines"
 
 
 def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
@@ -1663,15 +1675,12 @@ def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
     )
     where = _filter_clause(filters, dims)
     combos = _series_combos(con, panel, breakdown, where)
-    note = None
-    if len(combos) > MAX_LINES:
-        combos = combos[:MAX_LINES]
-        note = f"capped at {MAX_LINES} of {len(combos)} lines"
+    combos, note = _cap_lines(combos)
 
     keymap_sql = (
         'SELECT DISTINCT "__series" AS series'
         + (f", {', '.join(_quote(d) for d in dims)}" if dims else "")
-        + f" FROM read_parquet({_lit(str(panel))})"
+        + f" FROM read_parquet({sql_literal(str(panel))})"
     )
 
     series_lines, bands, x_set = [], [], set()
@@ -1682,7 +1691,7 @@ def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
 
         actual = _fetch_series(
             con,
-            f"SELECT __step, SUM({_quote(target)}) FROM read_parquet({_lit(str(panel))}) "
+            f"SELECT __step, SUM({_quote(target)}) FROM read_parquet({sql_literal(str(panel))}) "
             f"WHERE {combo_where} GROUP BY __step ORDER BY __step",
         )
 
@@ -1691,10 +1700,10 @@ def timeseries_view(run_dir: Path, request: dict, query: dict) -> dict:
             history = f"""(
             WITH hist AS (
                 SELECT series, step, bucket, actual, prediction
-                FROM read_parquet({_lit(str(validation))})
+                FROM read_parquet({sql_literal(str(validation))})
                 UNION ALL
                 SELECT series, step, bucket, actual, prediction
-                FROM read_parquet({_lit(str(test))})
+                FROM read_parquet({sql_literal(str(test))})
             )
             SELECT series, step, AVG(prediction) AS prediction FROM hist GROUP BY series, step
             )"""
@@ -1819,41 +1828,6 @@ def _horizon_band(con, keymap_sql, sources, where, suffix=""):
     return lo, hi
 
 
-def _timeseries_band(
-    con, keymap_sql, validation, forecast, combo_where, future_rows, nonnegative, single=False
-):
-    """fit aggregate validation bands separately by lead in single mode or bucket in mixed"""
-    buckets = sorted({b for _s, b, _p in future_rows})
-    lo_by_step: dict[str, float] = {}
-    hi_by_step: dict[str, float] = {}
-    for bucket in buckets:
-        predicate = f"v.weeks_ahead = {int(bucket)}" if single else f"v.bucket = {_lit(bucket)}"
-        val_sql = f"""
-            WITH keymap AS ({keymap_sql}),
-            joined AS (
-                SELECT v.step, v.actual, v.prediction, k.*
-                FROM read_parquet({_lit(str(validation))}) v JOIN keymap k USING (series)
-                WHERE {predicate}
-            )
-            SELECT step, SUM(actual) FILTER (WHERE isfinite(prediction)), SUM(prediction) FROM joined WHERE {combo_where}
-            GROUP BY step ORDER BY step
-        """
-        rows = con.execute(val_sql).fetchall()
-        if not rows:
-            continue
-        actual_arr = np.array([r[1] for r in rows], dtype=float)
-        pred_arr = np.array([r[2] for r in rows], dtype=float)
-        band = ev.fit_band(actual_arr, pred_arr)
-        bucket_future = [(s, p) for s, b, p in future_rows if b == bucket]
-        steps = np.array([_iso(s) for s, _p in bucket_future])
-        preds = np.array([p for _s, p in bucket_future], dtype=float)
-        lo, hi = ev.apply_band(band, preds, nonnegative)
-        for day, lv, hv in zip(steps, lo, hi, strict=True):
-            lo_by_step[day] = None if not np.isfinite(lv) else float(lv)
-            hi_by_step[day] = None if not np.isfinite(hv) else float(hv)
-    return lo_by_step, hi_by_step
-
-
 def _timeseries_markers(con, validation: Path, test: Path, forecast: Path) -> list[dict]:
     markers = []
     for path, label in (
@@ -1863,7 +1837,9 @@ def _timeseries_markers(con, validation: Path, test: Path, forecast: Path) -> li
     ):
         if not path.exists():
             continue
-        row = con.execute(f"SELECT MIN(step) FROM read_parquet({_lit(str(path))})").fetchone()
+        row = con.execute(
+            f"SELECT MIN(step) FROM read_parquet({sql_literal(str(path))})"
+        ).fetchone()
         if row and row[0] is not None:
             markers.append({"x": _iso(row[0]), "label": label})
     return markers
@@ -1885,7 +1861,7 @@ def _entity_keymap_sql(rows_path: Path, dims: list[str]) -> str:
     return (
         'SELECT "__row" AS row'
         + (f", {cols}" if dims else "")
-        + f" FROM read_parquet({_lit(str(rows_path))})"
+        + f" FROM read_parquet({sql_literal(str(rows_path))})"
     )
 
 
@@ -1933,7 +1909,7 @@ def _hazard_entity_view(run_dir: Path, request: dict, query: dict) -> dict:
     con = connect()
     if not filters and not breakdown:
         values = _fetch_series(
-            con, f"SELECT step, prediction FROM read_parquet({_lit(str(aggregate_path))})"
+            con, f"SELECT step, prediction FROM read_parquet({sql_literal(str(aggregate_path))})"
         )
         lines = [("aggregate", label, values)]
     else:
@@ -1945,9 +1921,9 @@ def _hazard_entity_view(run_dir: Path, request: dict, query: dict) -> dict:
         rows_path = Path(request["prepared"]) / "rows.parquet"
         where = _filter_clause(filters, dims)
         combos = _series_combos(con, rows_path, breakdown, where)
-        if len(combos) > MAX_LINES:
-            out["note"] = f"capped at {MAX_LINES} of {len(combos)} lines"
-            combos = combos[:MAX_LINES]
+        combos, note = _cap_lines(combos)
+        if note:
+            out["note"] = note
         keymap_sql = _entity_keymap_sql(rows_path, dims)
         unit = (spec.get("censor") or {}).get("unit", "week")
         lines = []
@@ -1957,7 +1933,7 @@ def _hazard_entity_view(run_dir: Path, request: dict, query: dict) -> dict:
                 f"""
                 WITH keymap AS ({keymap_sql}),
                 selected_rows AS (SELECT row FROM keymap WHERE {combo_where})
-                SELECT c.* FROM read_parquet({_lit(str(curve_path))}) c
+                SELECT c.* FROM read_parquet({sql_literal(str(curve_path))}) c
                 JOIN selected_rows k ON c.row = k.row
                 """
             ).fetchnumpy()
@@ -2007,15 +1983,12 @@ def entity_view(run_dir: Path, request: dict, query: dict) -> dict:
     con = connect()
     where = _filter_clause(filters, dims)
     combos = _series_combos(con, rows_path, breakdown, where)
-    note = None
-    if len(combos) > MAX_LINES:
-        combos = combos[:MAX_LINES]
-        note = f"capped at {MAX_LINES} of {len(combos)} lines"
+    combos, note = _cap_lines(combos)
 
     keymap_sql = _entity_keymap_sql(rows_path, dims)
 
     resid_rows = con.execute(
-        f"SELECT truth, prediction FROM read_parquet({_lit(str(validation_path))})"
+        f"SELECT truth, prediction FROM read_parquet({sql_literal(str(validation_path))})"
     ).fetchall()
     resid_pool = np.array(
         [(t - p) / p for t, p in resid_rows if p not in (0, None) and t is not None],
@@ -2032,7 +2005,7 @@ def entity_view(run_dir: Path, request: dict, query: dict) -> dict:
         load_sql = f"""
             WITH keymap AS ({keymap_sql})
             SELECT f.predicted_date, f.prediction, k.*
-            FROM read_parquet({_lit(str(forecast_path))}) f JOIN keymap k ON f.row = k.row
+            FROM read_parquet({sql_literal(str(forecast_path))}) f JOIN keymap k ON f.row = k.row
             WHERE {combo_where}
         """
         load_rows = con.execute(load_sql).fetchall()
@@ -2047,7 +2020,7 @@ def entity_view(run_dir: Path, request: dict, query: dict) -> dict:
         actual_sql = f"""
             WITH keymap AS ({keymap_sql})
             SELECT r."__anchor", r.{_quote(target)}, k.*
-            FROM read_parquet({_lit(str(rows_path))}) r JOIN keymap k ON r."__row" = k.row
+            FROM read_parquet({sql_literal(str(rows_path))}) r JOIN keymap k ON r."__row" = k.row
             WHERE r.{_quote(target)} IS NOT NULL AND {combo_where}
         """
         actual_by_week: dict[str, int] = {}
@@ -2155,7 +2128,7 @@ def _set_selection_metrics(run_dir, request, query, details, selection):
                 else:
                     # read saved ensemble views only; opening a menu must not refit a tile
                     path = run_dir / "tile_views" / tile["recipe_key"] / "test.parquet"
-                metrics.update(_horizon_metrics(con, run_dir, request, query, path, selection))
+                metrics.update(_horizon_metrics(con, request, query, path, selection))
             tile["selection_metrics"] = {
                 metric["id"]: _finite_number(metrics.get(metric["id"], {}).get("value"))
                 for metric in registry
@@ -2167,7 +2140,7 @@ def _set_selection_metrics(run_dir, request, query, details, selection):
             metrics = dict(entry["error_metrics"])
             if selection:
                 path = _optional_prediction_path(run_dir, {**query, "model": name}, "test")
-                metrics.update(_horizon_metrics(con, run_dir, request, query, path, selection))
+                metrics.update(_horizon_metrics(con, request, query, path, selection))
             entry["selection_metrics"] = {
                 metric["id"]: _finite_number(metrics.get(metric["id"], {}).get("value"))
                 for metric in registry
@@ -2210,7 +2183,7 @@ def timeseries_table(run_dir: Path, request: dict, query: dict) -> dict:
     keymap_sql = (
         'SELECT DISTINCT "__series" AS series'
         + (f", {', '.join(_quote(d) for d in dims)}" if dims else "")
-        + f" FROM read_parquet({_lit(str(panel))})"
+        + f" FROM read_parquet({sql_literal(str(panel))})"
     )
     dims_sel = ", ".join(f"k.{_quote(d)}" for d in dims)
     hist_sql = f"""
@@ -2311,7 +2284,7 @@ def entity_table(run_dir: Path, request: dict, query: dict) -> dict:
     sql = f"""
         WITH keymap AS ({keymap_sql})
         SELECT f.row, {dims_sel + "," if dims else ""} f.anchor, f.predicted_date, {values_sql}
-        FROM read_parquet({_lit(str(forecast_path))}) f
+        FROM read_parquet({sql_literal(str(forecast_path))}) f
         JOIN keymap k ON f.row = k.row
     """
     sql = f"SELECT * FROM ({sql}) t WHERE {where}"
@@ -2379,7 +2352,7 @@ def export_csv(run_dir: Path, request: dict, query: dict | None = None) -> bytes
     result = _require_done(run_dir)
     query = query or {}
     verdict = _select_model(run_dir, result, query)["verdict"] or {}
-    payload = table(run_dir, request, {**query, "size": 10**9})
+    payload = table(run_dir, request, {**query, "size": 10**9, "page": 0})
     ratio = verdict.get("accuracy", {}).get("ratio")
 
     buf = io.StringIO()

@@ -1,5 +1,5 @@
 """search runs as folders: the server writes a request, starts the worker process, reads its
-events and results, and cancels it. every file a run leaves behind is listed in RUN_FILES"""
+events and results, and cancels it"""
 
 from __future__ import annotations
 
@@ -16,32 +16,6 @@ from pathlib import Path
 from smolsmort.forecast.prep import Prepared
 from smolsmort.forecast.requests import parse_request
 from smolsmort.forecast.spec import PrepSpec
-
-RUN_FILES = (
-    "request.json",
-    "status.json",
-    "events.jsonl",
-    "progress.json",
-    "eval_history.json",
-    "generation_curves.jsonl",
-    "ensembles.json",
-    "worker.log",
-    "profile.json",
-    "screen.json",
-    "leaderboard.json",
-    "leaderboard_generation.json",
-    "population.json",
-    "recipe.json",
-    "result.json",
-    "forecast.parquet",
-    "validation.parquet",
-    "test.parquet",
-    "band.parquet",
-    "curve.parquet",
-    "aggregate.parquet",
-    "winner_curve.parquet",
-    "winner_aggregate.parquet",
-)
 
 _PROCESSES: dict[int, subprocess.Popen] = {}
 

@@ -26,7 +26,7 @@ from smolsmort.forecast.spec import (
     PrepSpec,
     normalize_saved_modes,
 )
-from smolsmort.forecast.tables import connect, resolve_encoding, type_source
+from smolsmort.forecast.tables import connect, resolve_encoding, sql_literal, type_source
 
 # a working flag only; it never reaches the parquet files
 PREDICT = "__predict"
@@ -43,14 +43,13 @@ class Prepared:
     reused: bool
 
 
+# bump when the series string encoding changes so cached prepared data rebuilds
+SERIES_ENCODING = 2
+
+
 def _quote(name: str) -> str:
     """double-quote a sql identifier, escaping embedded quotes"""
     return '"' + name.replace('"', '""') + '"'
-
-
-def _literal(value: str) -> str:
-    """single-quote a sql string literal, escaping embedded quotes"""
-    return "'" + str(value).replace("'", "''") + "'"
 
 
 def _cols(names: list[str]) -> str:
@@ -61,7 +60,8 @@ def prepare(spec: PrepSpec, cache_root: Path) -> Prepared:
     """run (or reuse) a prep spec against its source, writing the mode's parquet tables"""
     source_path = Path(spec.source)
     source_bytes = source_path.read_bytes()
-    key = f"{spec.digest()}-{hashlib.sha256(source_bytes).hexdigest()[:12]}"
+    # the source hash stays last: saved-run checks read it back from the folder name
+    key = f"{spec.digest()}-s{SERIES_ENCODING}-{hashlib.sha256(source_bytes).hexdigest()[:12]}"
     folder = cache_root / key
 
     if _is_complete(spec, folder):
@@ -137,8 +137,8 @@ def _load_source(spec: PrepSpec, source_path: Path, source_bytes: bytes, out: Pa
         copy.write_text(text, encoding="utf-8")
         read_ref = str(copy)
     if source_path.suffix.lower() == ".json":
-        return f"read_json_auto({_literal(read_ref)})"
-    return f"read_csv({_literal(read_ref)}, header = true)"
+        return f"read_json_auto({sql_literal(read_ref)})"
+    return f"read_csv({sql_literal(read_ref)}, header = true)"
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +183,7 @@ def _prep_entity(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[str, d
     as_of_value = None
     if spec.censor and spec.task != "classification":
         if spec.censor.as_of:
-            as_of_sql = f"CAST({_literal(spec.censor.as_of)} AS DATE)"
+            as_of_sql = f"CAST({sql_literal(spec.censor.as_of)} AS DATE)"
             as_of_value = spec.censor.as_of
         else:
             as_of_sql = f"(SELECT MAX({anchor_q}) FROM valid)"
@@ -232,12 +232,12 @@ def _prep_entity(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[str, d
 
     rows_path, predict_path = str(out / "rows.parquet"), str(out / "predict.parquet")
     keep = f"* EXCLUDE ({_quote(PREDICT)})"
-    _run(f"COPY (SELECT {keep} FROM bounds) TO {_literal(rows_path)} (FORMAT PARQUET);")
+    _run(f"COPY (SELECT {keep} FROM bounds) TO {sql_literal(rows_path)} (FORMAT PARQUET);")
     _run(
         "COPY (\n"
         f"    SELECT {keep} FROM bounds\n"
         f"    WHERE {target_q} IS NULL AND {_quote(PREDICT)}\n"
-        f") TO {_literal(predict_path)} (FORMAT PARQUET);"
+        f") TO {sql_literal(predict_path)} (FORMAT PARQUET);"
     )
 
     source_rows = con.execute("SELECT count(*) FROM source").fetchone()[0]
@@ -246,7 +246,7 @@ def _prep_entity(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[str, d
     rows = con.execute("SELECT count(*) FROM bounds").fetchone()[0]
     open_rows = con.execute(f"SELECT count(*) FROM bounds WHERE {target_q} IS NULL").fetchone()[0]
     predict_rows = con.execute(
-        f"SELECT count(*) FROM read_parquet({_literal(predict_path)})"
+        f"SELECT count(*) FROM read_parquet({sql_literal(predict_path)})"
     ).fetchone()[0]
 
     summary = {
@@ -335,9 +335,15 @@ def _infer_step(con, read_expr: str, time_col: str, where: str) -> str:
 
 
 def _series_expr(dims: list[str]) -> str:
+    """one string per dimension tuple: parts joined by '|' with backslash and '|' escaped inside a
+    part and null written as \\N, so two different tuples never share a string"""
     if not dims:
         return "'all'"
-    return f"concat_ws('|', {_cols(dims)})"
+    parts = [
+        f"coalesce(replace(replace(CAST({_quote(d)} AS VARCHAR), '\\', '\\\\'), '|', '\\|'), '\\N')"
+        for d in dims
+    ]
+    return f"concat_ws('|', {', '.join(parts)})"
 
 
 def _agg_expr(col: str, aggregation: str, time_col_q: str) -> str:
@@ -381,7 +387,7 @@ def _prep_timeseries(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[st
     step_q, series_q = _quote(STEP), _quote(SERIES)
     # the step holding the export date is still running, so history ends before it
     history_sql = (
-        f"{time_q} < date_trunc({_literal(step)}, CAST({_literal(spec.as_of)} AS DATE))"
+        f"{time_q} < date_trunc({sql_literal(step)}, CAST({sql_literal(spec.as_of)} AS DATE))"
         if spec.as_of
         else "TRUE"
     )
@@ -392,7 +398,7 @@ def _prep_timeseries(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[st
         f"CREATE OR REPLACE TEMP VIEW valid AS\nSELECT * FROM timed WHERE {time_q} IS NOT NULL;",
         f"CREATE OR REPLACE TEMP VIEW history AS\nSELECT * FROM valid WHERE {history_sql};",
         "CREATE OR REPLACE TEMP VIEW stepped AS\n"
-        f"SELECT *, CAST(date_trunc({_literal(step)}, {time_q}) AS DATE) AS {step_q} FROM history;",
+        f"SELECT *, CAST(date_trunc({sql_literal(step)}, {time_q}) AS DATE) AS {step_q} FROM history;",
     ]
 
     typed_cols = [f"CAST({_quote(c)} AS VARCHAR) AS {_quote(c)}" for c in dims]
@@ -432,7 +438,7 @@ def _prep_timeseries(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[st
         # keep each input's levels at the output grain without expanding the panel or scaffold
         input_queries = [
             f"SELECT {_series_expr(dims)} AS {series_q}, {step_q}, "
-            f"{_literal(c)} AS __column, {_quote(c)} AS __level, "
+            f"{sql_literal(c)} AS __column, {_quote(c)} AS __level, "
             f"COUNT(*) AS rows, {target_agg} AS target\n"
             f"FROM typed\nGROUP BY {_series_expr(dims)}, {step_q}, {_quote(c)}"
             for c in inputs
@@ -441,7 +447,7 @@ def _prep_timeseries(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[st
             "CREATE OR REPLACE TEMP VIEW inputs AS\n" + "\nUNION ALL\n".join(input_queries) + ";"
         )
         inputs_path = str(out / "inputs.parquet")
-        stmts.append(f"COPY (SELECT * FROM inputs) TO {_literal(inputs_path)} (FORMAT PARQUET);")
+        stmts.append(f"COPY (SELECT * FROM inputs) TO {sql_literal(inputs_path)} (FORMAT PARQUET);")
 
     dims_and_series = f"{series_q}" + (f", {dims_sel}" if dims else "")
     stmts.append(
@@ -479,7 +485,7 @@ def _prep_timeseries(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[st
     )
 
     panel_path = str(out / "panel.parquet")
-    stmts.append(f"COPY (SELECT * FROM panel) TO {_literal(panel_path)} (FORMAT PARQUET);")
+    stmts.append(f"COPY (SELECT * FROM panel) TO {sql_literal(panel_path)} (FORMAT PARQUET);")
 
     stmts.append(
         "CREATE OR REPLACE TEMP VIEW dim_combos AS\n"
@@ -501,7 +507,7 @@ def _prep_timeseries(con, spec: PrepSpec, read_expr: str, out: Path) -> tuple[st
         + "\nFROM future_steps f\nCROSS JOIN dim_combos d;"
     )
     scaffold_path = str(out / "scaffold.parquet")
-    stmts.append(f"COPY (SELECT * FROM scaffold) TO {_literal(scaffold_path)} (FORMAT PARQUET);")
+    stmts.append(f"COPY (SELECT * FROM scaffold) TO {sql_literal(scaffold_path)} (FORMAT PARQUET);")
 
     for stmt in stmts:
         con.execute(stmt)

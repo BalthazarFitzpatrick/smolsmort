@@ -483,3 +483,53 @@ def test_timeseries_history_ends_before_the_step_holding_the_export_date(tmp_pat
     assert str(steps)[:10] == "2025-05-26", "the week of 2025-06-02 is still running"
     assert prepared.summary["dropped_after_as_of"] > 0
     assert prepared.summary["panel_rows"] < full.summary["panel_rows"]
+
+
+def _collision_source(tmp_path):
+    source = tmp_path / "pipes.csv"
+    rows = ["day,project,product,units"]
+    for project, product in (("a|b", "c"), ("a", "b|c"), ("x", "")):
+        for day in ("2025-01-06", "2025-01-13"):
+            rows.append(f"{day},{project},{product},1")
+    source.write_text("\n".join(rows) + "\n")
+    return source
+
+
+def test_dimension_tuples_with_pipes_keep_distinct_series(tmp_path):
+    spec = PrepSpec(
+        str(_collision_source(tmp_path)),
+        "timeseries",
+        "regression",
+        (
+            Column("day", "time"),
+            Column("project", "dimension"),
+            Column("product", "dimension"),
+            Column("units", "target", aggregation="sum"),
+        ),
+        step="week",
+        horizon=2,
+    )
+    prepared = prepare(spec, tmp_path / "cache")
+    path = prepared.folder / "panel.parquet"
+    rows = duckdb.sql(
+        f"SELECT DISTINCT __series, project, product FROM '{path}' ORDER BY project"
+    ).fetchall()
+    assert len(rows) == 3
+    assert len({row[0] for row in rows}) == 3
+    assert {row[0] for row in rows} == {"a\\|b|c", "a|b\\|c", "x|\\N"}
+
+
+def test_series_encoding_version_is_part_of_the_cache_identity(tmp_path, monkeypatch):
+    from smolsmort.forecast import prep
+
+    truth = write_rows(tmp_path, n=50)
+    spec = _entity_spec(truth.path)
+    cache = tmp_path / "cache"
+    current = prepare(spec, cache)
+    assert f"-s{prep.SERIES_ENCODING}-" in current.folder.name
+    monkeypatch.setattr(prep, "SERIES_ENCODING", prep.SERIES_ENCODING + 1)
+    rebuilt = prepare(spec, cache)
+    assert not rebuilt.reused
+    assert rebuilt.folder != current.folder
+    # the source hash stays the last name part
+    assert rebuilt.folder.name.rsplit("-", 1)[-1] == current.folder.name.rsplit("-", 1)[-1]

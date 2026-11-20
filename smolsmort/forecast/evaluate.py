@@ -48,12 +48,6 @@ def brier(codes, probs) -> float:
     return float(((probs - onehot) ** 2).sum(axis=1).mean())
 
 
-def open_consistency(p, lower) -> float:
-    """share of still-open rows predicted at or beyond what they have already waited"""
-    p, lower = np.asarray(p, dtype=float), np.asarray(lower, dtype=float)
-    return float((p >= lower).mean()) if len(p) else float("nan")
-
-
 def _survival_bounds(lower, upper):
     lower, upper = np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)
     if lower.ndim != 1 or upper.shape != lower.shape:

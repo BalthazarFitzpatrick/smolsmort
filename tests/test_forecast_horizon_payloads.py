@@ -822,3 +822,19 @@ def test_legacy_tables_leave_existing_view_and_metrics_unchanged(horizon_run):
     assert payload["families"]["snaive"]["error_metrics"]["wape"]["value"] == 0.3
     assert payload["ensemble"]["error_metrics"]["wape"]["value"] == pytest.approx(48 / 100)
     assert [line["label"] for line in payload["series"]] == ["actual", "forecast"]
+
+
+def test_export_csv_ignores_a_nonzero_page(horizon_run):
+    run, request, _ = horizon_run
+    first = views.export_csv(run, request, {})
+    assert first.count(b"\n") > 3
+    assert views.export_csv(run, request, {"page": 1}) == first
+
+
+def test_line_cap_note_reports_the_original_count(monkeypatch):
+    monkeypatch.setattr(views, "MAX_LINES", 12)
+    combos = list(range(13))
+    kept, note = views._cap_lines(combos)
+    assert kept == combos[:12]
+    assert note == "capped at 12 of 13 lines"
+    assert views._cap_lines(combos[:12]) == (combos[:12], None)

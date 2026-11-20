@@ -11,7 +11,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from smolsmort.forecast.families.lstm import LstmFamily  # noqa: E402
+from smolsmort.forecast.families.lstm import LstmFamily, cut_at_origin  # noqa: E402
 from smolsmort.forecast.families.stats import (  # noqa: E402
     RawSeriesTask,
     season_length,
@@ -167,3 +167,23 @@ def test_writes_no_files(task, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     LstmFamily().fit(copy.copy(task), objective="squared", params=PARAMS)
     assert os.listdir(tmp_path) == []
+
+
+def test_fill_values_use_history_up_to_the_origin_only():
+    steps = np.datetime64("2023-01-02") + 7 * np.arange(10).astype("timedelta64[D]")
+    early = np.array([1.0, np.nan, 3.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0])
+    late = early.copy()
+    late[5:] = 900.0
+    origin = steps[4]
+    one = cut_at_origin({"a": (steps, early)}, origin)["a"]
+    two = cut_at_origin({"a": (steps, late)}, origin)["a"]
+    np.testing.assert_array_equal(one, two)
+    assert len(one) == 5
+    assert one[1] == np.mean([1.0, 3.0, 5.0, 5.0])
+
+
+def test_series_without_finite_history_at_origin_is_skipped():
+    steps = np.datetime64("2023-01-02") + 7 * np.arange(6).astype("timedelta64[D]")
+    raw = np.array([np.nan, np.nan, np.nan, 4.0, 4.0, 4.0])
+    assert cut_at_origin({"a": (steps, raw)}, steps[2]) == {}
+    assert len(cut_at_origin({"a": (steps, raw)}, steps[3])["a"]) == 4

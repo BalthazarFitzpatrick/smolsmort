@@ -429,7 +429,8 @@ def _fitness(ws, pred, truth, periods) -> Scored:
         if rows.any():
             scored = _period_fitness(ws, pred[rows], truth[rows], periods[rows])
             scores.append(scored)
-            if (rows & covered).any():
+            # a fold without actual volume has no wape, so it never enters the average
+            if (rows & covered).any() and _has_volume(truth[rows], pred[rows]):
                 covered_scores.append(scored)
     if not covered_scores:
         return _period_fitness(ws, pred, truth, periods)
@@ -449,6 +450,12 @@ def _fitness(ws, pred, truth, periods) -> Scored:
     )
 
 
+def _has_volume(truth, pred) -> bool:
+    """true when the finite pairs carry any actual volume, the wape denominator"""
+    finite = np.isfinite(truth) & np.isfinite(pred)
+    return bool(np.abs(truth[finite]).sum() > 0)
+
+
 def _period_fitness(ws, pred, truth, periods, *, classification=None) -> Scored:
     if classification is None:
         classification = ws.spec.task == "classification"
@@ -463,8 +470,15 @@ def _period_fitness(ws, pred, truth, periods, *, classification=None) -> Scored:
             return Scored(
                 float("inf"), np.zeros(len(np.unique(periods))), {"wape": np.nan, "mae": np.nan}
             )
+        denom = float(np.abs(truth[finite]).sum())
+        if not denom:
+            # zero actual volume leaves wape undefined, so the candidate cannot be ranked
+            return Scored(
+                float("inf"),
+                np.zeros(len(np.unique(periods))),
+                {"wape": np.nan, "mae": ev.mae(truth, pred)},
+            )
         per_row = np.where(finite, np.abs(truth - pred), 0)
-        denom = max(float(np.abs(truth[finite]).sum()), 1e-12)
         metrics = {"wape": ev.wape(truth, pred), "mae": ev.mae(truth, pred)}
     unique, inverse = np.unique(periods, return_inverse=True)
     if getattr(ws, "mode", None) == "entity":
@@ -716,7 +730,7 @@ def _timeseries_design(genome, frame):
     return x, names, types
 
 
-def _timeseries_fit(ws, genome, frame, rows, nthread):
+def _timeseries_fit(genome, frame, rows, nthread):
     if genome.objective == "hazard":
         raise PipelineError("hazard requires censored entity regression")
     family = get_family(genome.family)
@@ -813,7 +827,7 @@ def _timeseries_predict(
                 values = values - np.log1p(base)
             prediction[finite] = transform.inv(values, base)
     else:
-        fitted, x = _timeseries_fit(ws, genome, frame, fit_rows, nthread)
+        fitted, x = _timeseries_fit(genome, frame, fit_rows, nthread)
         if importance is not None:
             _, names, _ = _timeseries_design(genome, frame)
             importance.append(
@@ -863,7 +877,7 @@ def fit_importance(ws, genome, *, nthread=1):
     for bucket, frame in ws.frames.items():
         masks = ws.series_masks[bucket]
         rows = _known_rows(masks)
-        fitted, x = _timeseries_fit(ws, genome, frame, rows, nthread)
+        fitted, x = _timeseries_fit(genome, frame, rows, nthread)
         _, names, _ = _timeseries_design(genome, frame)
         scores.append(
             measure_importance(genome.family, fitted, names, x[rows & np.isfinite(frame.y)])
@@ -1318,7 +1332,7 @@ def _finish_timeseries(
         test_steps=ws.test_steps,
         band_width=_median_width(np.concatenate(test_lo), np.concatenate(test_hi)),
         spread=_spread(ws.frames[first].y[seen]),
-        val_error=validation_score.fitness,
+        val_error=validation_score.fitness if np.isfinite(validation_score.fitness) else None,
         width_pcts=(
             ev.width_pct(truth, test_lo_all, test_hi_all),
             ev.median_width_pct(truth, test_lo_all, test_hi_all),

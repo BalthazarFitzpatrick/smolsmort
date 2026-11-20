@@ -16,12 +16,18 @@ from smolsmort.forecast.evaluate import (
     judge,
     log_loss,
     mae,
-    open_consistency,
     wape,
 )
 from smolsmort.forecast.model import TARGET_VALUED, ModelError, fit_model, predict
 
 pytest.importorskip("xgboost")
+
+
+def open_consistency(p, lower) -> float:
+    """share of still-open rows predicted at or beyond what they have already waited"""
+    p, lower = np.asarray(p, dtype=float), np.asarray(lower, dtype=float)
+    return float((p >= lower).mean()) if len(p) else float("nan")
+
 
 BASE = np.array([4.0, 7.0, 10.0, 5.5, 14.0])
 FTYPES = ["c", "q"]

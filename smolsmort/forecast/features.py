@@ -300,6 +300,17 @@ def step_index(steps: np.ndarray, unit: str) -> np.ndarray:
     return {"month": months, "quarter": months // 3, "year": months // 12}[unit]
 
 
+def index_dates(index: np.ndarray, unit: str) -> np.ndarray:
+    """the calendar date opening each step index, the inverse of step_index on prepared dates"""
+    index = np.asarray(index, dtype=int)
+    if unit == "day":
+        return index.astype("datetime64[D]")
+    if unit == "week":
+        return (index * 7 + 4).astype("datetime64[D]")
+    months = index * {"month": 1, "quarter": 3, "year": 12}[unit]
+    return months.astype("datetime64[M]").astype("datetime64[D]")
+
+
 def _fill_value(aggregation: str | None) -> float | None:
     """what a step past a series' end holds: nothing sold is zero, an average is unknown"""
     if aggregation in ("sum", "count"):
@@ -602,7 +613,7 @@ def timeseries_features(
                 "y": np.array([r[1] for r in rows], dtype=float),
                 "series": np.full(len(rows), key, dtype=object),
                 "step": step,
-                "origin": step - np.array(b * _unit_days(unit), dtype="timedelta64[D]"),
+                "origin": index_dates(step_index(step, unit) - b, unit),
                 "future": np.array([r[2] for r in rows]),
                 "base": series_values[target][origins],
             }
@@ -754,11 +765,6 @@ def stacked_timeseries_features(
             for name in ("y", "series", "step", "origin", "future", "base", "weeks_ahead")
         },
     )
-
-
-def _unit_days(unit: str) -> int:
-    # only used to date the origin for display and the leak test; months vary, weeks do not
-    return {"day": 1, "week": 7, "month": 30, "quarter": 91, "year": 365}[unit]
 
 
 def _step_features(unit, history, periods):

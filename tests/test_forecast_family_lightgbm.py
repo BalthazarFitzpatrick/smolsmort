@@ -78,7 +78,7 @@ def test_daily_nan_features_fit_and_predict(family, tmp_path):
     bucket = next(iter(ws.frames))
     frame = ws.frames[bucket]
     genome = make_genome(ws.families, "regression_l1", family.defaults(), family="lightgbm")
-    fitted, x = _timeseries_fit(ws, genome, frame, ws.series_masks[bucket]["train"], 1)
+    fitted, x = _timeseries_fit(genome, frame, ws.series_masks[bucket]["train"], 1)
     assert x.dtype == np.float32
     assert np.isnan(x[ws.series_masks[bucket]["train"]]).any()
     values = fitted.predict(x[ws.series_masks[bucket]["val"]])

@@ -153,6 +153,18 @@ def train_network(torch, inputs, targets, order, horizon, params, seed):
     return net, history
 
 
+def cut_at_origin(history: dict, origin) -> dict:
+    """series values up to origin, nonfinite filled with the mean of that cut only"""
+    cut = {}
+    for key, (steps, raw) in history.items():
+        end = int(np.searchsorted(steps, origin, side="right"))
+        values = raw[:end]
+        finite = np.isfinite(values)
+        if finite.any():
+            cut[key] = np.where(finite, values, values[finite].mean())
+    return cut
+
+
 def forecast_rows(task: RawSeriesTask, params: dict, seed: int, nthread: int):
     """returns predictions aligned to task.rows and the first model's epoch history"""
     torch = load_torch()
@@ -169,33 +181,25 @@ def forecast_rows(task: RawSeriesTask, params: dict, seed: int, nthread: int):
         raise ValueError("lstm forecast leads must be within the requested horizon")
     lookback = params["lookback"]
     steps_all = np.asarray(task.panel[STEP]).astype("datetime64[ns]")
-    # per series history sorted by step, nonfinite values filled with the finite mean
+    # per series raw history sorted by step; fills happen per origin so later data never leaks
     history = {}
     for key in np.unique(task.panel[SERIES]):
         mine = np.flatnonzero(task.panel[SERIES] == key)
         mine = mine[np.argsort(steps_all[mine], kind="stable")]
-        values = np.asarray(task.panel[task.target][mine], dtype=float)
-        finite = np.isfinite(values)
-        if finite.any():
-            history[key] = (steps_all[mine], np.where(finite, values, values[finite].mean()))
+        history[key] = (steps_all[mine], np.asarray(task.panel[task.target][mine], dtype=float))
     old_threads = torch.get_num_threads()
     torch.set_num_threads(max(1, nthread))
     first_history, net = None, None
     try:
         for number, origin in enumerate(np.unique(origins)):
             at = origins == origin
-            # every series is cut at this origin: nothing later is ever read
-            cut = {}
-            for key, (steps, values) in history.items():
-                end = int(np.searchsorted(steps, origin, side="right")) - 1
-                if end >= 0:
-                    cut[key] = values[: end + 1]
+            cut = cut_at_origin(history, origin)
             for key in np.unique(series[at]):
-                if key not in history:
+                if key not in cut:
                     raise ValueError(f"no finite history for series {key!r}")
                 steps = history[key][0]
                 end = int(np.searchsorted(steps, origin, side="right")) - 1
-                if end < 0 or steps[end] != origin:
+                if steps[end] != origin:
                     raise ValueError(f"unobserved origin for series {key!r}: {origin}")
             if number % REFIT_EVERY == 0:
                 xs, ys, ends = [], [], []

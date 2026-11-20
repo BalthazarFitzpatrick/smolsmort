@@ -137,9 +137,9 @@ def test_seasonal_finish_refits_per_test_origin_and_records_bands(seasonal, tmp_
     fits = []
     original = pipeline._timeseries_fit
 
-    def spy(ws_, genome, frame, rows, nthread):
+    def spy(genome, frame, rows, nthread):
         fits.append(frame.step[rows].max())
-        return original(ws_, genome, frame, rows, nthread)
+        return original(genome, frame, rows, nthread)
 
     pipeline._timeseries_fit = spy
     try:
