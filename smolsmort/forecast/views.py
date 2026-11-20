@@ -999,7 +999,7 @@ def cache_is_fresh(target: Path, member_paths: list[Path]) -> bool:
 
 def _tile_prediction_path(run_dir: Path, model: str, kind: str) -> Path:
     from smolsmort.forecast.tables import read_table, write_table
-    from smolsmort.forecast.tiles import align_tables
+    from smolsmort.forecast.tiles import blend_members
 
     tile, tiles = _select_tile(run_dir, model)
     if tile["kind"] == "model":
@@ -1018,14 +1018,7 @@ def _tile_prediction_path(run_dir: Path, model: str, kind: str) -> Path:
     with _POLL_LOCK:
         if cache_is_fresh(target, paths):
             return target
-        tables = align_tables([read_table(path) for path in paths])
-        columns = dict(tables[0])
-        for name in ("actual", "truth"):
-            if name in columns and not all(
-                np.array_equal(columns[name], table[name], equal_nan=True) for table in tables
-            ):
-                raise ViewError("ensemble members disagree on actuals")
-        columns["prediction"] = ev.mean_predictions([table["prediction"] for table in tables])
+        columns = blend_members([read_table(path) for path in paths], actuals_error=ViewError)
         # member bands are not calibrated for this new combination
         for name in ("lower", "upper", "lower_50", "upper_50"):
             columns[name] = np.full(len(columns["prediction"]), np.nan)

@@ -21,7 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
-from smolsmort.forecast.evaluate import mean_predictions, wape
+from smolsmort.forecast.evaluate import apply_lead_bands, fit_lead_bands, mean_predictions, wape
 from smolsmort.forecast.metrics import CURVE_METRICS, error_metrics, prediction_metrics
 from smolsmort.forecast.tables import read_table
 
@@ -129,6 +129,66 @@ def align_tables(tables):
         {name: values[index[common][order]] for name, values in table.items()}
         for table, index in zip(tables, indexes, strict=True)
     ]
+
+
+def blend_members(tables, *, actuals_error=ValueError):
+    """align member tables and average their predictions; the members' other columns stay
+    from the first table. a falsy actuals_error skips the check that members share actuals"""
+    tables = align_tables(tables)
+    columns = dict(tables[0])
+    if actuals_error:
+        for name in ("actual", "truth"):
+            if name in columns and not all(
+                np.array_equal(columns[name], table[name], equal_nan=True) for table in tables
+            ):
+                raise actuals_error("ensemble members disagree on actuals")
+    columns["prediction"] = mean_predictions([table["prediction"] for table in tables])
+    return columns
+
+
+def lead_values(parts, *, strict=False):
+    """per split lead numbers from weeks_ahead, else validation buckets ranked from 1, else 1.
+    lenient reads each split's own columns and defaults unseen buckets to 1; strict follows
+    the validation columns and raises on an unseen bucket"""
+    validation = parts["validation"]
+    buckets = {
+        value: index + 1 for index, value in enumerate(np.unique(validation.get("bucket", [])))
+    }
+    leads = {}
+    for split, table in parts.items():
+        source = validation if strict else table
+        if "weeks_ahead" in source:
+            leads[split] = table["weeks_ahead"]
+        elif "bucket" in source:
+            leads[split] = np.asarray(
+                [buckets[value] if strict else buckets.get(value, 1) for value in table["bucket"]]
+            )
+        else:
+            leads[split] = np.ones(len(table["prediction"]), dtype=int)
+    return leads
+
+
+def calibrate_parts(parts, leads, *, per_series=True):
+    """fit 80% and 50% lead bands on the validation split and write lower, upper, lower_50 and
+    upper_50 into every split. per_series adds series overrides, off gives pooled bands"""
+    validation = parts["validation"]
+    actual = validation.get("actual", validation.get("truth"))
+    for level, suffix in ((0.8, ""), (0.5, "_50")):
+        bands = fit_lead_bands(
+            actual,
+            validation["prediction"],
+            leads["validation"],
+            validation.get("series") if per_series else None,
+            level=level,
+        )
+        for split, table in parts.items():
+            table[f"lower{suffix}"], table[f"upper{suffix}"] = apply_lead_bands(
+                bands,
+                table["prediction"],
+                leads[split],
+                table.get("series") if per_series else None,
+            )
+    return parts
 
 
 def score_ensembles(models, tables):
@@ -309,7 +369,6 @@ def read_ensemble_rows(folder, *, read_only=False):
 
 def write_ensemble_views(folder, rows):
     """persist the kept ensembles with bands fitted on validation rows"""
-    from smolsmort.forecast.evaluate import apply_lead_bands, fit_lead_bands
     from smolsmort.forecast.tables import write_table
 
     folder = Path(folder)
@@ -323,41 +382,10 @@ def write_ensemble_views(folder, rows):
             ]
             if not all(path.exists() for path in paths):
                 break
-            tables = align_tables([read_table(path) for path in paths])
-            for name in ("actual", "truth"):
-                if name in tables[0] and not all(
-                    np.array_equal(tables[0][name], table[name], equal_nan=True) for table in tables
-                ):
-                    raise ValueError("ensemble members disagree on actuals")
-            parts[split] = dict(tables[0])
-            parts[split]["prediction"] = mean_predictions([table["prediction"] for table in tables])
+            parts[split] = blend_members([read_table(path) for path in paths])
         if len(parts) != 3 or not len(parts["validation"]["prediction"]):
             continue
-        validation = parts["validation"]
-        buckets = {
-            value: index + 1 for index, value in enumerate(np.unique(validation.get("bucket", [])))
-        }
-        leads = {
-            split: table.get(
-                "weeks_ahead",
-                np.asarray([buckets.get(value, 1) for value in table["bucket"]])
-                if "bucket" in table
-                else np.ones(len(table["prediction"]), dtype=int),
-            )
-            for split, table in parts.items()
-        }
-        for level, suffix in ((0.8, ""), (0.5, "_50")):
-            bands = fit_lead_bands(
-                validation.get("actual", validation.get("truth")),
-                validation["prediction"],
-                leads["validation"],
-                validation.get("series"),
-                level=level,
-            )
-            for split, table in parts.items():
-                table[f"lower{suffix}"], table[f"upper{suffix}"] = apply_lead_bands(
-                    bands, table["prediction"], leads[split], table.get("series")
-                )
+        calibrate_parts(parts, lead_values(parts))
         for split, table in parts.items():
             target = folder / "tile_views" / row["recipe_key"] / f"{split}.parquet"
             target.parent.mkdir(parents=True, exist_ok=True)
