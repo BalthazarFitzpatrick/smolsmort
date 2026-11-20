@@ -73,7 +73,8 @@ def test_existing_prepared_cache_is_reused_without_rewriting_it(
     spec = make_spec(canonical, source)
     saved = {**asdict(spec), "mode": legacy}
     first = prep.prepare(spec_from_dict(saved), tmp_path / "cache")
-    key = f"{legacy_digest(spec, legacy)}-{hashlib.sha256(source.read_bytes()).hexdigest()[:12]}"
+    digest = legacy_digest(spec, legacy)
+    key = f"{digest}-s{prep.SERIES_ENCODING}-{hashlib.sha256(source.read_bytes()).hexdigest()[:12]}"
     assert first.folder.name == key
     assert not first.reused
     assert first.summary["mode"] == canonical

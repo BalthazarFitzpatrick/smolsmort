@@ -239,7 +239,7 @@ def test_default_country_digest_matches_the_legacy_spec():
 
 def test_default_country_keeps_the_prepared_cache_key(tmp_path):
     pytest.importorskip("duckdb")
-    from smolsmort.forecast.prep import prepare
+    from smolsmort.forecast.prep import SERIES_ENCODING, prepare
 
     source = tmp_path / "source.csv"
     source.write_text("day,units\n2024-01-01,10\n2024-01-02,12\n", encoding="utf-8")
@@ -261,7 +261,7 @@ def test_default_country_keeps_the_prepared_cache_key(tmp_path):
     ]
     source_digest = hashlib.sha256(source.read_bytes()).hexdigest()[:12]
     prepared = prepare(spec, tmp_path / "cache")
-    assert prepared.folder.name == f"{digest}-{source_digest}"
+    assert prepared.folder.name == f"{digest}-s{SERIES_ENCODING}-{source_digest}"
     assert prepare(replace(spec, holidays_country=None), tmp_path / "cache").reused
 
 

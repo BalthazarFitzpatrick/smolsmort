@@ -43,6 +43,10 @@ class Prepared:
     reused: bool
 
 
+# bump when the series string encoding changes so cached prepared data rebuilds
+SERIES_ENCODING = 2
+
+
 def _quote(name: str) -> str:
     """double-quote a sql identifier, escaping embedded quotes"""
     return '"' + name.replace('"', '""') + '"'
@@ -56,7 +60,8 @@ def prepare(spec: PrepSpec, cache_root: Path) -> Prepared:
     """run (or reuse) a prep spec against its source, writing the mode's parquet tables"""
     source_path = Path(spec.source)
     source_bytes = source_path.read_bytes()
-    key = f"{spec.digest()}-{hashlib.sha256(source_bytes).hexdigest()[:12]}"
+    # the source hash stays last: saved-run checks read it back from the folder name
+    key = f"{spec.digest()}-s{SERIES_ENCODING}-{hashlib.sha256(source_bytes).hexdigest()[:12]}"
     folder = cache_root / key
 
     if _is_complete(spec, folder):
@@ -330,9 +335,15 @@ def _infer_step(con, read_expr: str, time_col: str, where: str) -> str:
 
 
 def _series_expr(dims: list[str]) -> str:
+    """one string per dimension tuple: parts joined by '|' with backslash and '|' escaped inside a
+    part and null written as \\N, so two different tuples never share a string"""
     if not dims:
         return "'all'"
-    return f"concat_ws('|', {_cols(dims)})"
+    parts = [
+        f"coalesce(replace(replace(CAST({_quote(d)} AS VARCHAR), '\\', '\\\\'), '|', '\\|'), '\\N')"
+        for d in dims
+    ]
+    return f"concat_ws('|', {', '.join(parts)})"
 
 
 def _agg_expr(col: str, aggregation: str, time_col_q: str) -> str:
