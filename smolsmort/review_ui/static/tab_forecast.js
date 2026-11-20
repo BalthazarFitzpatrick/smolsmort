@@ -2670,9 +2670,10 @@ class ForecastTopic {
   }
 
   async cancelSearch() {
-    if (!this.currentRunId) return;
+    const run = this.runCache.get(this.selectedRunId);
+    if (!run || !this.isRunning(run)) return;
     try {
-      await api('/api/forecast-cancel', {id: this.currentRunId});
+      await api('/api/forecast-cancel', {id: run.id});
       this.searchSay('cancelling...');
     } catch (err) {
       this.searchSay(err.message);
@@ -2831,7 +2832,7 @@ class ForecastTopic {
     document.getElementById(`${this.topic}-search-status`).classList.toggle('hidden', run?.state === 'done');
     this.models.paintControls();
     const cancel = document.getElementById(`${this.topic}-search-cancel`);
-    cancel.disabled = !this.currentRunId;
+    cancel.disabled = !(run && this.isRunning(run));
     cancel.classList.toggle('disabled', cancel.disabled);
     const verdict = document.getElementById(`${this.topic}-run-verdict`);
     const ratioMetric = this.selectedMetrics(run).find(metric => metric.id === 'test_ratio');
@@ -3253,7 +3254,12 @@ class ForecastTopic {
     if (!box.childElementCount) box.append(forecastNode('span', 'stat', 'no finished runs yet'));
     document.getElementById(`${this.topic}-running-section`).classList.toggle('hidden', !running.childElementCount);
     document.getElementById(`${this.topic}-new-search`).classList.toggle('on', !this.selectedRunId);
-    document.getElementById(`${this.topic}-search-cancel`).classList.toggle('disabled', !this.currentRunId);
+    document.getElementById(`${this.topic}-search-cancel`).classList.toggle('disabled', !this.selectedRunLive());
+  }
+
+  selectedRunLive() {
+    const run = this.runCache.get(this.selectedRunId);
+    return Boolean(run && this.isRunning(run));
   }
 
   openRecipeMenu(head, entry, rank) {
