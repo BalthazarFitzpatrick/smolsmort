@@ -87,14 +87,15 @@ jobs:
   # forecast extras so those tests run instead of skipping
   test-forecast:
     runs-on: ubuntu-latest
-    env:
-      # workaround: tests/test_review_paths.py globs every .py under the repo root, so a repo-local
-      # .venv with the forecast extras (a big5 encoded test file) breaks it; real fix is in that test
-      UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/venv
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      # workaround: tests/test_review_paths.py globs every .py under the repo root, so a repo-local
+      # .venv with the forecast extras (a big5 encoded test file) breaks it; real fix is in that test
+      - name: keep the virtualenv outside the repo
+        run: echo "UV_PROJECT_ENVIRONMENT=$RUNNER_TEMP/venv" >> "$GITHUB_ENV"
 
       - name: detect docs-only change
         id: changes
