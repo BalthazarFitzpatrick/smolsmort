@@ -69,6 +69,7 @@ def test_saved_ensemble_views_have_calibrated_bands(tmp_path, monkeypatch):
         tmp_path / "request.json",
         {"version": 2, "families": [{"name": name} for name in ("ridge", "snaive")]},
     )
+    save_json(tmp_path / "result.json", {"winner": {"family": "ridge"}})
     save_model(tmp_path, "ridge", [8, 18])
     save_model(tmp_path, "snaive", [10, 20])
     for family, prediction in (("ridge", 8.0), ("snaive", 10.0)):
@@ -683,3 +684,38 @@ def test_mark_viewable_flags_only_tiles_with_saved_predictions(tmp_path):
         "ensemble:d": True,
         "ensemble:e": False,
     }
+
+
+def test_stale_ensemble_cache_is_rebuilt_from_changed_members(tmp_path):
+    import os
+
+    from smolsmort.forecast import views
+    from smolsmort.forecast.tables import read_table
+
+    save_json(
+        tmp_path / "request.json",
+        {"version": 2, "families": [{"name": name} for name in ("ridge", "snaive")]},
+    )
+    save_json(tmp_path / "result.json", {"winner": {"family": "ridge"}})
+    save_model(tmp_path, "ridge", [8, 18])
+    save_model(tmp_path, "snaive", [10, 20])
+    rows = tiles.ensemble_rows(tmp_path)
+    save_json(tmp_path / "ensembles.json", rows)
+    tiles.write_ensemble_views(tmp_path, rows)
+    cache = tmp_path / "tile_views" / rows[0]["recipe_key"] / "test.parquet"
+    assert cache.exists()
+    # a member table newer than the cache makes the cache stale
+    member = tmp_path / "families" / "ridge" / "test.parquet"
+    write_table(
+        member,
+        {
+            "series": np.array(["a", "a"]),
+            "step": np.array([1, 2]),
+            "actual": np.array([10.0, 20.0]),
+            "prediction": np.array([0.0, 0.0]),
+        },
+    )
+    stamp = cache.stat().st_mtime_ns + 10**9
+    os.utime(member, ns=(stamp, stamp))
+    path = views._tile_prediction_path(tmp_path, rows[0]["tile_id"], "test")
+    np.testing.assert_array_equal(read_table(path)["prediction"], [5.0, 10.0])

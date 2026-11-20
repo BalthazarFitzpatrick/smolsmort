@@ -990,6 +990,13 @@ def _select_tile(run_dir: Path, model: str, *, read_only=False):
     return tile, tiles
 
 
+def cache_is_fresh(target: Path, member_paths: list[Path]) -> bool:
+    """true when the cache exists and is not older than any member prediction table"""
+    return target.exists() and all(
+        target.stat().st_mtime_ns >= path.stat().st_mtime_ns for path in member_paths
+    )
+
+
 def _tile_prediction_path(run_dir: Path, model: str, kind: str) -> Path:
     from smolsmort.forecast.tables import read_table, write_table
     from smolsmort.forecast.tiles import align_tables
@@ -1001,17 +1008,15 @@ def _tile_prediction_path(run_dir: Path, model: str, kind: str) -> Path:
             run_dir, tile["family"], kind, winner["family"], winner["saved_model"]
         )
     target = run_dir / "tile_views" / tile["recipe_key"] / f"{kind}.parquet"
-    if target.exists():
-        return target
     members = [item for item in tiles if item["tile_id"] in tile["members"]]
     paths = [_tile_prediction_path(run_dir, item["tile_id"], kind) for item in members]
-    target = run_dir / "tile_views" / tile["recipe_key"] / f"{kind}.parquet"
     if any(not path.exists() for path in paths):
         return target
+    # a cache older than any member table is stale and gets rebuilt
+    if cache_is_fresh(target, paths):
+        return target
     with _POLL_LOCK:
-        if target.exists() and all(
-            target.stat().st_mtime_ns >= path.stat().st_mtime_ns for path in paths
-        ):
+        if cache_is_fresh(target, paths):
             return target
         tables = align_tables([read_table(path) for path in paths])
         columns = dict(tables[0])

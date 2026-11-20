@@ -81,7 +81,23 @@ def _read_predictions(run_dir, selected, phase, tiles=None):
             )
         else:
             path = run_dir / "tile_views" / tile["recipe_key"] / f"{phase}.parquet"
-            if not path.exists():
+            member_tiles = [item for item in tiles if item["tile_id"] in tile["members"]]
+            member_paths = [
+                views._model_prediction_path(
+                    run_dir,
+                    item["family"],
+                    phase,
+                    selected["winner_family"],
+                    selected["saved_model"],
+                )
+                for item in member_tiles
+                if item["kind"] == "model"
+            ]
+            # a cache older than any member table is stale, so it is recomputed in memory
+            fresh = len(member_paths) == len(member_tiles) and views.cache_is_fresh(
+                path, member_paths
+            )
+            if not fresh:
                 from smolsmort.forecast.tiles import align_tables
 
                 members = [
