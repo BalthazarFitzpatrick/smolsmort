@@ -67,7 +67,9 @@ TIMED_MODULES = frozenset(
         "test_forecast_coordinator.py",
         "test_forecast_coordinator_controls.py",
         "test_forecast_family_ridge.py",
+        "test_forecast_routes.py",
         "test_forecast_routes_v2.py",
+        "test_forecast_system.py",
         "test_forecast_runs_v2.py",
         "test_forecast_transform.py",
     }

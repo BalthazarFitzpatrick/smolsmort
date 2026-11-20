@@ -299,8 +299,10 @@ def test_a_genome_scores_in_both_modes_and_the_leak_is_never_offered(
 
 def test_a_fixed_seed_gives_the_same_leaderboard(series_ws):
     ws, _ = series_ws
-    first = search(ws, Budget(**TINY))
-    second = search(ws, Budget(**TINY))
+    # time_cap is wall clock: two runs may only differ if one hits the cap on a starved host
+    patient = {**TINY, "time_cap": 3600}
+    first = search(ws, Budget(**patient))
+    second = search(ws, Budget(**patient))
     assert [e["key"] for e in first["leaderboard"]] == [e["key"] for e in second["leaderboard"]]
     assert [e["fitness"] for e in first["leaderboard"]] == [
         e["fitness"] for e in second["leaderboard"]
