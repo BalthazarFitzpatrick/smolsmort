@@ -41,7 +41,7 @@ def test_results_stacked_report_and_shared_metric_picker(tmp_path, width):
             "blend",
             "breakdown-head",
             "info",
-            "export",
+            "export-dialog",
         ):
             assert header.locator(f"#regression-{control}").is_visible()
         assert page.evaluate(
