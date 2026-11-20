@@ -137,7 +137,7 @@ def save_synthetic_search(runs_root, spec, prepared, **_options):
 
 def show_tab(page: Page, name: str) -> None:
     page.click(f'.nav-tab[data-tab="{name}"]')
-    page.wait_for_timeout(250)
+    page.locator(f'.tab-panel[data-panel="{name}"]:not(.hidden)').wait_for()
 
 
 def open_info(page: Page, topic: str = TOPIC):
@@ -203,9 +203,9 @@ def session(tmp_path: Path, *, width: int = 1280, numeric: bool = False, port: i
 
 def switch_to_regression(page: Page) -> None:
     page.click('#topic-switch .topic-tab:has-text("regression")')
-    page.wait_for_timeout(150)
+    page.locator('#topic-switch .topic-tab.on:has-text("regression")').wait_for()
     page.select_option("#topic-flavour", "entity")
-    page.wait_for_timeout(150)
+    page.locator("#nav-bar .nav-tab").first.wait_for()
 
 
 def set_role(page: Page, column: str, role: str) -> None:
