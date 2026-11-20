@@ -588,7 +588,7 @@ def test_multifamily_saved_run_named_models_and_explained_importance(tmp_path):
             "document.getElementById('regression-info-verdict').innerText === 'no verdict yet'"
         )
         page.wait_for_function(
-            "document.querySelector('#regression-results-table tr:nth-child(2) td:last-child').innerText === 'ensemble'"
+            "document.querySelector('#regression-results-table tbody tr:nth-child(1) td:last-child').innerText === 'ensemble'"
         )
         assert (
             page.locator("#regression-results-table tr").nth(1).locator("td").nth(1).inner_text()
@@ -761,7 +761,7 @@ def test_legacy_results_kept_latest_model_importance_and_table_after_delayed_res
         page.click("#regression-config-mode-warm")
         page.click("#regression-run-open")
         page.wait_for_function(
-            "document.querySelector('#regression-results-table tr:nth-child(2) td:last-child')?.innerText === 'xgboost'"
+            "document.querySelector('#regression-results-table tbody tr:nth-child(1) td:last-child')?.innerText === 'xgboost'"
         )
         pending = []
 
@@ -792,7 +792,7 @@ def test_legacy_results_kept_latest_model_importance_and_table_after_delayed_res
         select_item("results-model", "ensemble", 2)
         release_response(1)
         page.wait_for_function(
-            "document.querySelector('#regression-results-table tr:nth-child(2) td:last-child').innerText === 'ensemble'"
+            "document.querySelector('#regression-results-table tbody tr:nth-child(1) td:last-child').innerText === 'ensemble'"
         )
         release_response(0)
         open_info(page)

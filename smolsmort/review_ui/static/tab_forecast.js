@@ -223,19 +223,26 @@ function forecastResolveTileMetric(selectedIds, registry, tiles) {
   }).find(Boolean) || 'wape';
 }
 
-function forecastFillTable(table, columns, rows) {
+// options: caption text, missing marker for empty cells, decorateHead(th, index), decorateRow(tr, values, index)
+function forecastFillTable(table, columns, rows, {caption, missing = '-', decorateHead, decorateRow} = {}) {
   table.replaceChildren();
+  if (caption) table.append(forecastNode('caption', 'field-label', caption));
   const head = table.createTHead().insertRow();
-  columns.forEach(label => head.append(label instanceof Node ? label : forecastNode('th', '', label)));
+  columns.forEach((label, index) => {
+    const th = label instanceof Node ? label : forecastNode('th', '', label);
+    if (decorateHead) decorateHead(th, index);
+    head.append(th);
+  });
   const body = table.createTBody();
-  rows.forEach(values => {
+  rows.forEach((values, index) => {
     const row = body.insertRow();
     values.forEach(value => {
-      const cell = value instanceof Node ? value : forecastNode('td', '', String(value ?? '-'));
-      if (value instanceof Node) { row.append(cell); return; }
+      if (value instanceof Node) { row.append(value); return; }
+      const cell = forecastNode('td', '', String(value ?? missing));
       cell.title = cell.textContent;
       row.append(cell);
     });
+    if (decorateRow) decorateRow(row, values, index);
   });
 }
 
@@ -316,8 +323,8 @@ function forecastFamilyGroups(families) {
   });
 }
 
-function forecastNumber(value) {
-  return Number.isFinite(value) ? String(Number(value.toPrecision(4))) : '-';
+function forecastNumber(value, missing = '-') {
+  return Number.isFinite(value) ? String(Number(value.toPrecision(4))) : missing;
 }
 
 function forecastMetricNumber(metric, value) {
@@ -524,7 +531,7 @@ function forecastRunTileChart(tile, tiles, metric, training, selected = 'best') 
     const oneShot = generations.length && generations.every(([, curve]) => valuesFor(curve).length <= 1);
     const shown = member.curves?.[selected === 'best' ? member.best_generation : selected];
     const current = shown ? valuesFor(shown).filter(Number.isFinite).at(-1) : null;
-    currentValue.textContent = Number.isFinite(current) ? Number(current.toPrecision(4)) : '–';
+    currentValue.textContent = forecastNumber(current, '–');
     const allValues = generations.flatMap(([, curve]) => valuesFor(curve)).filter(Number.isFinite);
     if (!allValues.length) return;
     recorded = true;
@@ -569,7 +576,7 @@ function forecastRunTileChart(tile, tiles, metric, training, selected = 'best') 
           dot.setAttribute('cx', '6'); dot.setAttribute('cy', '6'); dot.setAttribute('r', '3');
           dot.style.fill = `var(${colour})`;
           dotSvg.append(dot);
-          marker.append(dotSvg, document.createTextNode(`${curveMetric} ${Number(values.find(Number.isFinite).toPrecision(4))}`));
+          marker.append(dotSvg, document.createTextNode(`${curveMetric} ${forecastNumber(values.find(Number.isFinite))}`));
           chart.append(marker);
           segment = [];
           return;
@@ -602,7 +609,7 @@ function forecastRunTileChart(tile, tiles, metric, training, selected = 'best') 
         marker.dataset.generation = generation;
         if (generation === selected) marker.dataset.selected = 'true';
         const title = document.createElementNS(svg.namespaceURI, 'title');
-        title.textContent = `gen ${generation} · ${curveMetric} ${Number(values.find(Number.isFinite).toPrecision(4))}`;
+        title.textContent = `gen ${generation} · ${curveMetric} ${forecastNumber(values.find(Number.isFinite))}`;
         marker.append(title);
         svg.append(marker);
       }
@@ -658,7 +665,7 @@ function forecastCreateRunTile(tile, index, tiles, metric, legacy, metrics, sele
   const score = tile.metrics?.wape || {
     validation: tile.curves?.[tile.best_generation]?.validation?.wape?.at(-1),
   };
-  const format = value => Number.isFinite(value) ? Number(value.toPrecision(4)) : '–';
+  const format = value => forecastNumber(value, '–');
   title.append(forecastNode('span', 'forecast-tile-name', `#${index + 1} ${forecastRunTileLabel(tile, tiles)}`));
   title.title = forecastRunTileLabel(tile, tiles);
   title.append(forecastNode('span', 'forecast-tile-score',
@@ -743,7 +750,7 @@ function forecastGenerationMenu(tile, selected, onGeneration) {
     const curve = tile.curves?.[generation === 'best' ? tile.best_generation : generation];
     const wape = curve?.validation?.wape?.filter(Number.isFinite).at(-1);
     button.append(forecastNode('span', '', generation === 'best' ? 'best' : `gen ${generation}`),
-      forecastNode('span', 'forecast-tile-dim', `${generation === 'best' ? `gen ${tile.best_generation} · ` : ''}${Number.isFinite(wape) ? Number(wape.toPrecision(4)) : '–'}`));
+      forecastNode('span', 'forecast-tile-dim', `${generation === 'best' ? `gen ${tile.best_generation} · ` : ''}${forecastNumber(wape, '–')}`));
     button.type = 'button';
     button.dataset.generation = generation;
     button.setAttribute('aria-pressed', String(generation === selected));
@@ -3134,7 +3141,7 @@ class ForecastTopic {
     wrap.classList.remove('hidden');
     if (!this.lossChart) this.lossChart = timeChart(
       document.getElementById(`${this.topic}-loss-chart`), {
-        height: 220, yFormat: value => String(Number(value.toPrecision(4))),
+        height: 220, yFormat: value => forecastNumber(value),
       }
     );
     const style = getComputedStyle(document.documentElement);
@@ -3162,8 +3169,8 @@ class ForecastTopic {
   paintLeaderboard(rows) {
     const wrap = document.getElementById(`${this.topic}-leaderboard`);
     const table = document.getElementById(`${this.topic}-leaderboard-table`);
-    table.innerHTML = '';
     wrap.classList.toggle('hidden', !rows.length);
+    if (!rows.length) table.replaceChildren();
     if (!rows.length) return;
     const entries = rows.slice(0, 10);
     const metrics = this.selectedMetrics(this.runCache.get(this.selectedRunId));
@@ -3172,46 +3179,24 @@ class ForecastTopic {
     lossHeader.title = FORECAST_LOSS_HELP;
     const columns = ['rank', 'family', 'generation found', ...metrics.map(forecastMetricHeader),
       lossHeader, 'tree depth', 'learning rate (eta)', 'features'];
-    const caption = forecastNode('caption', 'field-label',
-      'best ten recipes, ranked by validation error; lower is better. recipe wape and mae use saved validation values; test metrics are unavailable');
-    table.appendChild(caption);
-    const thead = document.createElement('thead');
-    const head = document.createElement('tr');
-    columns.forEach(c => {
-      if (c instanceof Node) { head.appendChild(c); return; }
-      const th = document.createElement('th');
-      th.textContent = c;
-      head.appendChild(th);
-    });
-    thead.appendChild(head);
-    table.appendChild(thead);
-    const tbody = document.createElement('tbody');
-    entries.forEach((entry, index) => {
-      const row = document.createElement('tr');
-      row.classList.toggle('on', index === 0);
+    const caption = 'best ten recipes, ranked by validation error; lower is better. recipe wape and mae use saved validation values; test metrics are unavailable';
+    const rowValues = entries.map((entry, index) => {
       const genome = entry.genome || {};
       const params = genome.params || {};
       const count = Array.isArray(genome.families) ? new Set(genome.families).size : entry.families;
       const loss = forecastNode('td', '', FORECAST_OBJECTIVES[genome.objective] || genome.objective || '-');
       loss.title = FORECAST_LOSS_HELP;
-      const values = [String(index + 1), forecastModelFamily(entry), integer(entry.generation),
-        ...metrics.map(metric => forecastMetricValue(metric, entry)), loss,
-        integer(params.max_depth), forecastNumber(params.eta)];
-      values.forEach(value => {
-        if (value instanceof Node) { row.appendChild(value); return; }
-        const td = document.createElement('td');
-        td.textContent = value;
-        td.title = String(value);
-        row.appendChild(td);
-      });
       const features = forecastNode('td');
-      const head = forecastNode('button', 'toggle dropdown-head', `${integer(count)} features`);
-      head.onclick = () => this.openRecipeMenu(head, entry, index + 1);
-      features.append(head);
-      row.append(features);
-      tbody.appendChild(row);
+      const toggle = forecastNode('button', 'toggle dropdown-head', `${integer(count)} features`);
+      toggle.onclick = () => this.openRecipeMenu(toggle, entry, index + 1);
+      features.append(toggle);
+      return [String(index + 1), forecastModelFamily(entry), integer(entry.generation),
+        ...metrics.map(metric => forecastMetricValue(metric, entry)), loss,
+        integer(params.max_depth), forecastNumber(params.eta), features];
     });
-    table.appendChild(tbody);
+    forecastFillTable(table, columns, rowValues, {
+      caption, decorateRow: (row, values, index) => row.classList.toggle('on', index === 0),
+    });
   }
 
   async loadRuns() {
@@ -4055,31 +4040,19 @@ class ForecastTopic {
 
   paintTable(data) {
     const table = document.getElementById(`${this.topic}-results-table`);
-    table.innerHTML = '';
-    const head = document.createElement('tr');
     const labels = data.objective === 'hazard'
       ? {median_weeks: 'median weeks', p10_weeks: 'p10 weeks', p90_weeks: 'p90 weeks', predicted_date: 'predicted date'} : {};
-    data.columns.forEach(col => {
-      const th = document.createElement('th');
-      th.textContent = labels[col] || col;
-      th.classList.add('sortable');
-      th.onclick = () => {
-        this.tableState.desc = this.tableState.sort === col ? !this.tableState.desc : false;
-        this.tableState.sort = col;
-        this.refreshTable();
-      };
-      head.appendChild(th);
-    });
-    table.appendChild(head);
-    data.rows.forEach(row => {
-      const tr = document.createElement('tr');
-      row.forEach(value => {
-        const td = document.createElement('td');
-        td.textContent = value === null || value === undefined ? '' : String(value);
-        td.title = td.textContent;
-        tr.appendChild(td);
-      });
-      table.appendChild(tr);
+    forecastFillTable(table, data.columns.map(col => labels[col] || col), data.rows, {
+      missing: '',
+      decorateHead: (th, index) => {
+        const col = data.columns[index];
+        th.classList.add('sortable');
+        th.onclick = () => {
+          this.tableState.desc = this.tableState.sort === col ? !this.tableState.desc : false;
+          this.tableState.sort = col;
+          this.refreshTable();
+        };
+      },
     });
     const pages = Math.max(1, Math.ceil(data.total / FORECAST_PAGE_SIZE));
     setText(`${this.topic}-page-info`, `page ${data.page + 1} / ${pages} - ${data.total} rows`);
