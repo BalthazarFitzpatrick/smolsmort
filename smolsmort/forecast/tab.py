@@ -469,6 +469,7 @@ def _start(app, payload: dict) -> dict:
                 "ensemble",
                 "nthread",
                 "plateau",
+                "min_generations",
                 "population",
                 "max_generations",
                 "effort",
