@@ -437,3 +437,35 @@ def test_v2_worker_launches_compatible_completed_checkpoint(worker_run, monkeypa
     status = json.loads((worker_run / "status.json").read_text())
     assert status["state"] == "cancelled"
     assert status["stopped"] == "cancelled"
+
+
+def fold_workspace():
+    days = np.datetime64("2024-01-01") + np.arange(7) * np.timedelta64(1, "D")
+    return SimpleNamespace(
+        spec=SimpleNamespace(task="regression"),
+        series_folds=tuple((days[index], days[index + 2]) for index in (0, 2, 4)),
+    ), np.tile(days[:6].astype(int), 2)
+
+
+def test_fold_without_actual_volume_is_excluded_from_the_average():
+    ws, periods = fold_workspace()
+    truth = np.tile([1, 1, 0, 0, 100, 100], 2).astype(float)
+    errors = np.tile([1, 1, 5, 5, 10, 50], 2).astype(float)
+    scored = pipeline._fitness(ws, truth + errors, truth, periods)
+    np.testing.assert_allclose(scored.metrics["fold_scores"], [1.0, 0.3])
+    assert scored.metrics["fold_count"] == 2
+    assert scored.fitness == pytest.approx(0.65)
+    assert scored.contrib.sum() == pytest.approx(scored.fitness)
+    # a perfect forecast of nothing is not a perfect score
+    zero = pipeline._fitness(ws, np.zeros(12), np.zeros(12), periods)
+    assert zero.fitness == float("inf")
+    assert np.isnan(zero.metrics["wape"])
+
+
+def test_candidate_without_any_defined_fold_is_unusable():
+    ws, periods = fold_workspace()
+    truth = np.zeros(12)
+    for prediction in (truth, truth + 3):
+        scored = pipeline._fitness(ws, prediction, truth, periods)
+        assert scored.fitness == float("inf")
+        assert np.isnan(scored.metrics["wape"])
