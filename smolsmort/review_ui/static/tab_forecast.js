@@ -2036,7 +2036,7 @@ class ForecastTopic {
           <span class="stat" id="${this.topic}-data-status"></span>
         </div>
         <div id="${this.topic}-prep-summary" class="train-facts"></div>
-        <details id="${this.topic}-sql-details">
+        <details>
           <summary>generated sql</summary>
           <pre id="${this.topic}-sql-text" class="forecast-sql"></pre>
         </details>
@@ -2768,9 +2768,8 @@ class ForecastTopic {
       if (this.runCache.get(run.id) !== run) return;
       run.tiles = view.tiles;
       if (this.selectedRunId === run.id) this.paintRunDetail(run);
-    } catch (error) {
+    } catch {
       // legacy runs can outlive their prepared data; keep the available poll metadata
-      run.tilesError = error.message;
     }
   }
 
@@ -2845,7 +2844,6 @@ class ForecastTopic {
       this.paintLeaderboard([]);
       return;
     }
-    this.displayTask = run.spec?.task || run.task || this.task;
     const stateLabel = run.state === 'cancelled' || run.stopped === 'cancelled' ? 'stopped' : run.state;
     setText(`${this.topic}-run-title`, `${run.id.split('-').at(-1)} · ${run.kind || 'search'} · ${stateLabel}`);
     setText(`${this.topic}-run-stop`, this.stopReason(run));
