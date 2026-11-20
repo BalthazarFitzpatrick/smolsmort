@@ -63,7 +63,7 @@ def test_tile_generation_picker_keeps_recipes_and_selection_on_poll(tmp_path, mo
         assert "best_feature" in feat.text_content() and "70%" in feat.text_content()
         assert "max_depth3" in param.text_content()
         gen.locator("summary").click()
-        assert tile.locator("summary > span:first-child").all_text_contents() == ["G", "P", "F"]
+        assert tile.locator("summary > span:first-child").all_text_contents() == ["g", "p", "f"]
         assert gen.locator("button > span:first-child").all_text_contents() == [
             "best",
             "gen 0",

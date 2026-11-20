@@ -652,7 +652,7 @@ function forecastCreateRunTile(tile, index, tiles, metric, legacy, metrics, sele
       generationMissing: selected !== 'best' && !genome});
     menus.prepend(forecastGenerationMenu(tile, selected, onGeneration));
     menus.append(menus.querySelector('[data-menu="feat"]'));
-    for (const [key, label] of [['param', 'P'], ['feat', 'F']]) {
+    for (const [key, label] of [['param', 'p'], ['feat', 'f']]) {
       menus.querySelector(`[data-menu="${key}"] summary > span`).textContent = label;
     }
     face.append(menus);
@@ -704,7 +704,7 @@ function forecastGenerationMenu(tile, selected, onGeneration) {
   const details = forecastNode('details');
   details.dataset.menu = 'gen';
   const summary = forecastNode('summary');
-  summary.append(forecastNode('span', '', 'G'), forecastNode('span', 'forecast-tile-dim', `${selected} ▾`));
+  summary.append(forecastNode('span', '', 'g'), forecastNode('span', 'forecast-tile-dim', `${selected} ▾`));
   const menu = forecastNode('div', 'forecast-tile-menu');
   const generations = Object.keys(tile.curves || {}).sort((a, b) => Number(a) - Number(b));
   ['best', ...generations].forEach(generation => {
@@ -4109,8 +4109,8 @@ window.addEventListener('smolsmort-topic', event => {
   smolsmortTabs.register({id: `${topic}-search`, label: 'training', topic, mount: p => ctl.mountSearch(p)});
   smolsmortTabs.register({id: `${topic}-results`, label: 'results', topic, mount: p => ctl.mountResults(p)});
   const flavours = topic === 'regression'
-    ? [{id: 'entity', label: 'Entity'}, {id: 'timeseries', label: 'Time series'}]
-    : [{id: 'entity', label: 'Entity'}];
+    ? [{id: 'entity', label: 'entity'}, {id: 'timeseries', label: 'time series'}]
+    : [{id: 'entity', label: 'entity'}];
   smolsmortTabs.setFlavours(topic, flavours);
   smolsmortTabs.onFlavour(topic, () => ctl.onFlavourChange());
 });
