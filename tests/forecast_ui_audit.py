@@ -128,6 +128,8 @@ CONTROL_SIZES = r"""() => {
     const rect = node.getBoundingClientRect();
     const style = getComputedStyle(node);
     if (!rect.width || !rect.height || style.visibility === 'hidden' || node.matches('.forecast-run-row')) return [];
+    // tile popover rows are compact list rows by design, not shared-height controls
+    if (node.closest('.forecast-tile-menu')) return [];
     return [{selector: path(node), text: (node.innerText || node.getAttribute('aria-label') || node.value || node.type || '').replace(/\s+/g, ' ').trim(),
       height: rect.height, targetHeight: node.matches('.nav-tab') ? target - 2 * borderWidth : target,
       width: rect.width, font: style.fontFamily, size: style.fontSize,
@@ -211,7 +213,11 @@ def visit_control_states(page, *, source, targets, run_id, capture, set_results_
         capture(f"results-{name}-info-menu")
         page.keyboard.press("Escape")
         for picker in ("results-model", "importance-family"):
-            if page.locator(f"#{name}-{picker}").is_visible():
+            # the importance picker stays disabled for a run with no saved importance
+            if (
+                page.locator(f"#{name}-{picker}").is_visible()
+                and page.locator(f"#{name}-{picker}").is_enabled()
+            ):
                 page.click(f"#{name}-{picker}")
                 page.locator(".menu-panel").wait_for()
                 capture(f"results-{name}-{picker}-menu")

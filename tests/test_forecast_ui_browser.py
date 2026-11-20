@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 import threading
 import time
 from contextlib import contextmanager
@@ -1721,18 +1722,14 @@ def test_forecast_controls_follow_the_shared_row_height(tmp_path, width):
         show_tab(page, "regression-search")
         rows = page.locator(f"#{TOPIC}-runs-list .forecast-run-row")
         assert rows.count() == 3
-        assert page.locator(
-            f'#{TOPIC}-runs-list [data-run-id="{old}"] > span:not(.forecast-run-bar, .forecast-run-metrics)'
-        ).all_text_contents() == ["older1", "done"]
-        assert page.locator(
-            f'#{TOPIC}-runs-list [data-run-id="{cancelled}"] > span:not(.forecast-run-bar, .forecast-run-metrics)'
-        ).all_text_contents() == ["stop01", "cancelled"]
-        assert page.locator(
-            f'#{TOPIC}-runs-list [data-run-id="{refit}"] > span:not(.forecast-run-bar, .forecast-run-metrics)'
-        ).all_text_contents() == ["refit1", "done"]
+        for run_id, status in ((old, "done"), (cancelled, "stopped"), (refit, "done")):
+            row = page.locator(f'#{TOPIC}-runs-list [data-run-id="{run_id}"]')
+            assert row.locator(":scope > .forecast-run-status").inner_text() == status
+            assert re.fullmatch(r"[0-9a-z]{5} \| .+", row.locator(":scope > .name").inner_text())
+            assert row.locator(":scope > .forecast-run-subtitle").count() == 1
         columns = []
         for row in rows.all():
-            spans = row.locator(":scope > span:not(.forecast-run-bar, .forecast-run-metrics)")
+            spans = row.locator(":scope > .name, :scope > .forecast-run-status")
             assert spans.count() == 2
             positions = [span.bounding_box() for span in spans.all()]
             assert len({position["y"] for position in positions}) == 1
