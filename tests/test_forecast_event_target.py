@@ -144,6 +144,7 @@ def test_default_event_keeps_the_prepared_cache_key_and_duration_bounds(tmp_path
     spec = make_spec(source, censor=Censor("created", as_of=as_of))
     legacy = asdict(spec)
     legacy["mode"] = "row"
+    legacy.pop("history_fill")
     legacy.pop("holidays_country")
     legacy["censor"].pop("event")
     # pre-flag specs never carried skip_missing or pin

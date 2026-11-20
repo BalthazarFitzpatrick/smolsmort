@@ -43,6 +43,8 @@ def legacy_digest(spec, legacy):
     data["mode"] = legacy
     if data["holidays_country"] is None:
         del data["holidays_country"]
+    if data["history_fill"] is None:
+        del data["history_fill"]
     # pre-flag specs never carried skip_missing or pin
     for column in data["columns"]:
         column.pop("skip_missing")
@@ -179,7 +181,7 @@ def test_legacy_requests_select_the_correct_view_and_table(
     tmp_path, monkeypatch, legacy, canonical
 ):
     request = {"spec": {**asdict(make_spec(canonical)), "mode": legacy}}
-    selected = {"model": "winner", "family": "xgboost", "members": []}
+    selected = {"model": "winner", "family": "xgboost", "members": [], "run_tiles": []}
     monkeypatch.setattr(views, "result_details", lambda *args: selected)
     monkeypatch.setattr(views, "_require_done", lambda *args: {})
     monkeypatch.setattr(views, "_select_model", lambda *args: selected)

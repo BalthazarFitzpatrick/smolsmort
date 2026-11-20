@@ -223,6 +223,7 @@ def test_default_country_digest_matches_the_legacy_spec():
     spec = make_spec()
     legacy = asdict(spec)
     legacy["mode"] = "series"
+    legacy.pop("history_fill")
     legacy.pop("holidays_country")
     for column in legacy["columns"]:
         column.pop("skip_missing")
@@ -252,6 +253,7 @@ def test_default_country_keeps_the_prepared_cache_key(tmp_path):
     )
     legacy = asdict(spec)
     legacy["mode"] = "series"
+    legacy.pop("history_fill")
     legacy.pop("holidays_country")
     for column in legacy["columns"]:
         column.pop("skip_missing")
