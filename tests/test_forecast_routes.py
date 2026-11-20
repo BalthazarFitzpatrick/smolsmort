@@ -5,6 +5,7 @@ every forecast test uses (forecast_fixtures.py), never real data."""
 from __future__ import annotations
 
 import json
+import shutil
 import time
 
 import pytest
@@ -594,9 +595,9 @@ def test_refit_reuses_the_saved_recipe(series_run):
 
 
 @pytest.fixture(scope="module")
-def row_run(tmp_path_factory):
+def hazard_run(tmp_path_factory):
     yield _run_to_done(
-        tmp_path_factory.mktemp("row_run"),
+        tmp_path_factory.mktemp("hazard_run"),
         lambda root: write_rows(root, n=2000),
         _entity_spec,
         "rows.csv",
@@ -604,10 +605,27 @@ def row_run(tmp_path_factory):
     )
 
 
+@pytest.fixture(scope="module")
+def row_run(hazard_run):
+    """a saved, finished entity run whose winner is a plain regression: the hazard run's folder
+    with the survival curve removed and the recipe objective set to squared"""
+    app, tab, run_id, root = hazard_run
+    source = root / ".forecast-runs" / run_id
+    plain_id = f"{run_id}-plain"
+    shutil.copytree(source, root / ".forecast-runs" / plain_id)
+    plain = root / ".forecast-runs" / plain_id
+    (plain / "curve.parquet").unlink()
+    recipe = json.loads((plain / "recipe.json").read_text())
+    recipe["genome"]["objective"] = "squared"
+    (plain / "recipe.json").write_text(json.dumps(recipe))
+    yield app, tab, plain_id, root
+
+
 def test_entity_mode_view_has_load_line_and_mc_band(row_run):
     app, tab, run_id, _root = row_run
     payload = _get(app, tab, "/api/forecast-view", {"id": run_id})
     assert payload["mode"] == "entity"
+    assert payload.get("objective") != "hazard"
     ids = {s["id"] for s in payload["series"]}
     assert "load" in ids
     load_line = next(s for s in payload["series"] if s["id"] == "load")
@@ -615,6 +633,15 @@ def test_entity_mode_view_has_load_line_and_mc_band(row_run):
     band = next((b for b in payload["bands"] if b["series"] == "load"), None)
     assert band is not None
     assert any(v is not None for v in band["lo"])
+
+
+def test_censored_entity_run_serves_the_hazard_view_without_series(hazard_run):
+    app, tab, run_id, _root = hazard_run
+    payload = _get(app, tab, "/api/forecast-view", {"id": run_id})
+    assert payload["mode"] == "entity"
+    assert payload["objective"] == "hazard"
+    assert payload["series"] == []
+    assert payload["verdict"]["accuracy"]["metric"] == "ibs"
 
 
 def test_entity_mode_table_grouped_carries_earliest_latest(row_run):
