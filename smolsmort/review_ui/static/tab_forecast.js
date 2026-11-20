@@ -192,6 +192,26 @@ function forecastModelLabel(view) {
     : view.family || 'xgboost';
 }
 
+// keyed dom reconcile: rebuild changed nodes (capture/restore keeps open menus and focus), reorder, drop leftovers
+function reconcileForecastTiles(grid, entries, {dataKey, keyOf, signature, create, capture, restore}) {
+  const existing = new Map([...grid.children].map(node => [node.dataset[dataKey], node]));
+  entries.forEach((tile, index) => {
+    const old = existing.get(keyOf(tile));
+    const sig = signature(tile, index);
+    let node = old;
+    if (!node || node.dataset.signature !== sig) {
+      const state = old ? capture(old) : {openMenus: [], open: [], focus: null, focusedMenu: null};
+      node = create(tile, index);
+      node.dataset.signature = sig;
+      if (old) old.replaceWith(node); else grid.append(node);
+      restore(node, state);
+    }
+    if (grid.children[index] !== node) grid.insertBefore(node, grid.children[index] || null);
+    existing.delete(keyOf(tile));
+  });
+  existing.forEach(node => node.remove());
+}
+
 // first selected metric that has tile data, wape when none does
 function forecastResolveTileMetric(selectedIds, registry, tiles) {
   const metricKeys = new Set((tiles || []).flatMap(tile => Object.keys(tile.metrics || {})));
@@ -2940,35 +2960,30 @@ class ForecastTopic {
       size: forecastTileSize(entries, metrics)};
     grid.style.setProperty('--tile-size', `${rounds.size}px`);
     setText(`${this.topic}-tiles-count`, `candidates · ${entries.length}`);
-    const existing = new Map([...grid.children].map(node => [node.dataset.family, node]));
-    entries.forEach((tile, index) => {
-      let node = existing.get(tile.name);
-      const signature = JSON.stringify([tile, index, metrics, scale, searchScale, rounds]);
-      if (!node || node.dataset.signature !== signature) {
-        const openMenus = [...(node?.querySelectorAll('details[open]') || [])].map(details => ({
+    reconcileForecastTiles(grid, entries, {
+      dataKey: 'family', keyOf: tile => tile.name,
+      signature: (tile, index) => JSON.stringify([tile, index, metrics, scale, searchScale, rounds]),
+      create: (tile, index) => forecastCreateTile(tile, index, metrics, scale, searchScale, rounds),
+      capture: node => {
+        const openMenus = [...node.querySelectorAll('details[open]')].map(details => ({
           side: details.closest('.forecast-tile-back') ? 'back' : 'front',
           key: details.dataset.menu, scroll: details.querySelector('.forecast-tile-menu').scrollTop,
         }));
-        const active = node?.contains(document.activeElement) ? document.activeElement.closest('details') : null;
+        const active = node.contains(document.activeElement) ? document.activeElement.closest('details') : null;
         const focus = active ? {
           side: active.closest('.forecast-tile-back') ? 'back' : 'front', key: active.dataset.menu,
         } : null;
-        const fresh = forecastCreateTile(tile, index, metrics, scale, searchScale, rounds);
-        fresh.dataset.signature = signature;
-        if (node) node.replaceWith(fresh);
-        else grid.append(fresh);
-        node = fresh;
+        return {openMenus, focus};
+      },
+      restore: (node, {openMenus, focus}) => {
         openMenus.forEach(({side, key, scroll}) => {
           const details = node.querySelector(`.forecast-tile-${side} details[data-menu="${key}"]`);
           details.open = true;
           details.querySelector('.forecast-tile-menu').scrollTop = scroll;
         });
         if (focus) node.querySelector(`.forecast-tile-${focus.side} details[data-menu="${focus.key}"] summary`).focus({preventScroll: true});
-      }
-      if (grid.children[index] !== node) grid.insertBefore(node, grid.children[index] || null);
-      existing.delete(tile.name);
+      },
     });
-    existing.forEach(node => node.remove());
     if (run && !entries.length) grid.append(forecastNode('div', 'forecast-tile-dim', 'family details not saved yet'));
     this.paintTileFlip();
   }
@@ -3016,28 +3031,25 @@ class ForecastTopic {
         : Number.isFinite(value) && Number.isFinite(baseline) && baseline > 0 ? value / baseline : undefined;
       if (tile.metrics) tile.metrics.test_ratio = {test: tile.test_ratio};
     });
-    const existing = new Map([...grid.children].map(node => [node.dataset.tileId, node]));
-    entries.forEach((tile, index) => {
-      const old = existing.get(tile.tile_id);
-      const selected = this.tileGenerations.get(tile.tile_id) || 'best';
-      const signature = JSON.stringify([tile, index, this.tileMetric, tiles, metrics, selected]);
-      let node = old;
-      if (!node || node.dataset.signature !== signature) {
-        const open = [...(node?.querySelectorAll('details[open]') || [])].map(item => item.dataset.menu);
-        const focusedMenu = node?.contains(document.activeElement) ? document.activeElement.closest('details')?.dataset.menu : null;
-        node = forecastCreateRunTile(tile, index, tiles, this.tileMetric, legacy.find(item => item.name === tile.family), metrics, selected, generation => {
+    reconcileForecastTiles(grid, entries, {
+      dataKey: 'tileId', keyOf: tile => tile.tile_id,
+      signature: (tile, index) => JSON.stringify(
+        [tile, index, this.tileMetric, tiles, metrics, this.tileGenerations.get(tile.tile_id) || 'best']),
+      create: (tile, index) => forecastCreateRunTile(tile, index, tiles, this.tileMetric,
+        legacy.find(item => item.name === tile.family), metrics,
+        this.tileGenerations.get(tile.tile_id) || 'best', generation => {
           this.tileGenerations.set(tile.tile_id, generation);
           this.paintContractTiles(run, grid);
-        });
-        node.dataset.signature = signature;
+        }),
+      capture: node => ({
+        open: [...node.querySelectorAll('details[open]')].map(item => item.dataset.menu),
+        focusedMenu: node.contains(document.activeElement) ? document.activeElement.closest('details')?.dataset.menu : null,
+      }),
+      restore: (node, {open, focusedMenu}) => {
         open.forEach(key => { const menu = node.querySelector(`details[data-menu="${key}"]`); if (menu) menu.open = true; });
-        if (old) old.replaceWith(node); else grid.append(node);
         if (focusedMenu) node.querySelector(`details[data-menu="${focusedMenu}"] summary`)?.focus({preventScroll: true});
-      }
-      if (grid.children[index] !== node) grid.insertBefore(node, grid.children[index] || null);
-      existing.delete(tile.tile_id);
+      },
     });
-    existing.forEach(node => node.remove());
   }
 
   paintTileFlip() {
