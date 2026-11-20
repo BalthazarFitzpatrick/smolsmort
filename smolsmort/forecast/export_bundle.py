@@ -13,16 +13,17 @@ from datetime import datetime
 from pathlib import Path
 
 from smolsmort.forecast import views
+from smolsmort.forecast.export_metrics import append_wapes, metric_columns, slice_wapes
 from smolsmort.forecast.export_wide import (
     PHASES,
     _format_cell,
     _read_predictions,
     _select_predictions,
+    calibrated_totals,
     export_wide_csv,
     normalize_columns,
 )
 from smolsmort.forecast.features import split_family_name
-from smolsmort.forecast.metrics import prediction_metrics
 from smolsmort.forecast.prep import prepare
 from smolsmort.forecast.spec import STEP, spec_from_dict
 from smolsmort.forecast.tables import read_table
@@ -441,6 +442,25 @@ def _describe_column(name, filename, spec):
     # export_wide.py: normalize_columns; evaluate.py: lead_errors
     # pipeline.py: _row_width_pct; views.py: export_csv
     roles = {column["name"]: column["role"] for column in spec.get("columns", [])}
+    if filename == "error_metrics.csv":
+        meanings = {
+            "horizon_step": "integer saved horizon step, or all for every horizon together",
+            "dataset_slice": "validation or test",
+            "wape": "sum absolute errors / sum absolute actuals over finite pairs at this level and horizon; unrounded fraction",
+            "ratio": "wape / naive_wape; blank when naive is missing or zero",
+            "bias": "mean prediction minus actual over finite pairs; positive means over-forecast",
+            "actual_sum": "sum of actuals over finite actual/prediction pairs",
+            "prediction_sum": "sum of predictions over finite actual/prediction pairs",
+            "rows": "number of finite actual/prediction pairs at this level and horizon",
+            "coverage_50": "share of finite pairs with actual inside the inclusive 50% band; blank if any band edge is missing",
+            "coverage_80": "share of finite pairs with actual inside the inclusive 80% band; blank if any band edge is missing",
+        }
+        if roles.get(name) == "dimension":
+            return "group value, all groups pooled, or total weekly sum"
+        if name in meanings:
+            return meanings[name]
+    if name == "total_wape":
+        return "sum of absolute errors divided by sum of absolute actuals over finite saved pairs across all groups and weeks in this slice and horizon_step; unrounded fraction repeated on every prediction row; blank for input, prediction, no finite pairs or zero denominator"
     if roles.get(name) in ("time", "anchor"):
         return (
             "target period date" if spec.get("mode") == "timeseries" else "observation anchor date"
@@ -496,6 +516,7 @@ def _file_sections(recipe):
         "test.csv": "saved test predictions for assessment after model selection",
         "forecast.csv": "saved predictions for future target periods",
         "lead_errors.csv": "saved pooled model and naive errors by horizon; no date, grouping or phase column is included",
+        "error_metrics.csv": "selected model's validation and test errors by group, pooled rows and weekly totals, for each horizon and all horizons",
         "README.md": "this report, with rounded display values",
         "recipe.json": "full saved model recipes and export metadata, including unrounded numbers; not fitted model weights",
     }
@@ -518,6 +539,11 @@ def _file_sections(recipe):
         lines += [""]
         if name == "wide.csv":
             lines += _total_definitions()
+        if name == "error_metrics.csv":
+            lines += [
+                "group rows score each dimension tuple. all groups pooled scores the original group rows together, exactly like demo_dataset.csv total_wape. total weekly sum first sums groups at each target date, forecast origin and horizon, then scores those sums; coverage uses the calibrated total bands shared with wide.csv, or is blank when unavailable. each level includes every horizon_step and all, which pools every saved step together. naive_wape uses finite saved actual/naive_prediction pairs and is blank when unavailable; ratio is blank when naive_wape is missing or zero. fractions are unrounded. no date column is included because each row spans target periods.",
+                "",
+            ]
         if name == "demo_dataset.csv":
             lines += [
                 "total_actual, total_prediction, total_lower_50, total_upper_50, total_lower_80 and total_upper_80 are plain sums of the group columns at the same date, horizon_step and slice, repeated on every row. missing groups and blank values do not add; all blank gives blank. total_actual is populated only in input; input prediction and band totals are blank. total bands are the sum of the group bounds, wider than a band fitted on the total itself, and differ from wide.csv total bands, which are calibrated on the total. total_wape pools finite saved actual/prediction pairs across all groups and weeks within each validation or test slice and horizon_step; it is a ratio of sums, not a sum of group ratios, and is blank for input, prediction or zero denominator.",
@@ -745,6 +771,8 @@ def render_readme(recipe: dict) -> str:
         lines += [f"- {recipe['input_status']}."]
     if recipe.get("demo_status"):
         lines += [f"- {recipe['demo_status']}."]
+    if recipe.get("metrics_status"):
+        lines += [f"- {recipe['metrics_status']}."]
     lines += ["", "## how to reproduce the numbers", ""]
     lines += [
         f"source dataset: {source_name}. use the saved preparation settings above. the as-of date is {_cell(spec.get('as_of', 'not recorded'))}; the source filter is shown below. do not treat the report date as the training cutoff.",
@@ -900,26 +928,10 @@ def _demo_csv(run_dir: Path, recipe: dict, history: bytes | None) -> bytes | Non
         rows = [
             dict(zip(table, values, strict=True)) for values in zip(*table.values(), strict=True)
         ]
-        groups = {}
-        horizons = {}
+        scores = {}
         if phase != "forecast":
-            for row in rows:
-                actuals, predictions = groups.setdefault(group_key(row), ([], []))
-                actual = row.get("actual", "")
-                prediction = row.get("forecast", "")
-                actuals.append(actual if actual != "" else float("nan"))
-                predictions.append(prediction if prediction != "" else float("nan"))
-                pooled_actuals, pooled_predictions = horizons.setdefault(
-                    row.get("horizon", ""), ([], [])
-                )
-                pooled_actuals.append(actuals[-1])
-                pooled_predictions.append(predictions[-1])
-        for horizon, (actuals, predictions) in horizons.items():
-            total_scores[phase, horizon] = prediction_metrics(actuals, predictions)["wape"]
-        scores = {
-            key: prediction_metrics(actuals, predictions)["wape"]
-            for key, (actuals, predictions) in groups.items()
-        }
+            scores, horizons = slice_wapes(table, keys[1:])
+            total_scores.update(((phase, horizon), score) for horizon, score in horizons.items())
         for row in rows:
             append_row(
                 row, "prediction" if phase == "forecast" else phase, scores.get(group_key(row))
@@ -975,6 +987,29 @@ def export_bundle(run_dir: Path, query: dict) -> Path:
         files["results.csv"] = _table_csv(normalize_columns(recipe["request"], columns))
         if recipe["request"]["spec"].get("mode") == "timeseries":
             files["wide.csv"] = export_wide_csv(run_dir, recipe["request"], model_query)
+            selected, tiles = _select_predictions(
+                run_dir, views._require_done(run_dir), model_query
+            )
+            tables = {phase: _read_predictions(run_dir, selected, phase, tiles) for phase in PHASES}
+            totals = {
+                phase: {(key[0][:10], key[1][:10], key[2]): value for key, value in rows.items()}
+                for phase, rows in calibrated_totals(tables).items()
+            }
+            spec = recipe["request"]["spec"]
+            date = next(column["name"] for column in spec["columns"] if column["role"] == "time")
+            files["error_metrics.csv"] = _table_csv(
+                metric_columns(
+                    {
+                        phase: normalize_columns(recipe["request"], table)
+                        for phase, table in tables.items()
+                    },
+                    views._spec_dims(spec),
+                    date,
+                    totals,
+                )
+            )
+        else:
+            recipe["metrics_status"] = "error_metrics.csv not written: entity run"
     if include == "everything":
         missing = []
         for kind in ("validation", "test", "forecast", "lead_errors"):
@@ -984,9 +1019,13 @@ def export_bundle(run_dir: Path, query: dict) -> Path:
             else:
                 path = views._optional_prediction_path(run_dir, model_query, kind)
             if path is not None:
-                files[f"{kind}.csv"] = _table_csv(
-                    normalize_columns(recipe["request"], read_table(path))
-                )
+                columns = normalize_columns(recipe["request"], read_table(path))
+                if (
+                    kind in ("validation", "test")
+                    and recipe["request"]["spec"].get("mode") == "timeseries"
+                ):
+                    columns = append_wapes(columns, views._spec_dims(recipe["request"]["spec"]))
+                files[f"{kind}.csv"] = _table_csv(columns)
             else:
                 missing.append(kind)
         recipe["missing_tables"] = missing

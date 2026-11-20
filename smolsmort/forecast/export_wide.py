@@ -157,6 +157,32 @@ def _format_cell(value):
     return value
 
 
+def calibrated_totals(tables):
+    """sum saved rows and calibrate total bands from validation residuals"""
+    output = {}
+    totals = {phase: _sum_totals(columns) for phase, columns in tables.items()}
+    validation = totals["validation"]
+    leads = np.array([key[2] for key in validation], dtype=int)
+    predictions = np.array([value[0] for value in validation.values()])
+    actuals = np.array([value[1] for value in validation.values()])
+    bands = {
+        level: ev.fit_lead_bands(actuals, predictions, leads, level=level) for level in (0.5, 0.8)
+    }
+    for phase, phase_totals in totals.items():
+        keys = list(phase_totals)
+        total_predictions = np.array([phase_totals[key][0] for key in keys])
+        total_leads = np.array([key[2] for key in keys], dtype=int)
+        edges = [
+            ev.apply_lead_bands(bands[level], total_predictions, total_leads)
+            for level in (0.5, 0.8)
+        ]
+        output[phase] = {
+            key: [*phase_totals[key], *(edge[i] for pair in edges for edge in pair)]
+            for i, key in enumerate(keys)
+        }
+    return output
+
+
 def export_wide_csv(run_dir: Path, request: dict, query: dict) -> bytes:
     """export all saved phases of the selected time series model, with calibrated totals"""
     result = views._require_done(run_dir)
@@ -168,14 +194,7 @@ def export_wide_csv(run_dir: Path, request: dict, query: dict) -> bytes:
     tables = {phase: _read_predictions(run_dir, selected, phase, tiles) for phase in PHASES}
     dims = views._spec_dims(request["spec"])
     keymap = _read_dimensions(request, dims)
-    totals = {phase: _sum_totals(columns) for phase, columns in tables.items()}
-    validation = totals["validation"]
-    leads = np.array([key[2] for key in validation], dtype=int)
-    predictions = np.array([value[0] for value in validation.values()])
-    actuals = np.array([value[1] for value in validation.values()])
-    bands = {
-        level: ev.fit_lead_bands(actuals, predictions, leads, level=level) for level in (0.5, 0.8)
-    }
+    totals = calibrated_totals(tables)
 
     buffer = io.StringIO(newline="")
     writer = csv.writer(buffer)
@@ -190,18 +209,7 @@ def export_wide_csv(run_dir: Path, request: dict, query: dict) -> bytes:
         ]
     )
     for phase, columns in tables.items():
-        phase_totals = totals[phase]
-        keys = list(phase_totals)
-        total_predictions = np.array([phase_totals[key][0] for key in keys])
-        total_leads = np.array([key[2] for key in keys], dtype=int)
-        edges = [
-            ev.apply_lead_bands(bands[level], total_predictions, total_leads)
-            for level in (0.5, 0.8)
-        ]
-        total_rows = {
-            key: [*phase_totals[key], *(edge[i] for pair in edges for edge in pair)]
-            for i, key in enumerate(keys)
-        }
+        total_rows = totals[phase]
         for index in range(len(columns.get("prediction", []))):
             lead = int(columns["weeks_ahead"][index])
             key = (str(columns["step"][index]), str(columns["origin"][index]), lead)
